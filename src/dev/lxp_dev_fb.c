@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * /dev/fb0 framebuffer class driver: exposes the ove_fb HAL as a Linux fbdev so
  * a stock LVGL fbdev program (lv_linux_fbdev, LV_LINUX_FBDEV_MMAP=0) can render
@@ -15,7 +15,7 @@
 
 #include "lxp/lxp_config.h"
 
-#if defined(LXP_ENABLE_DEV_FB)
+#if LXP_ENABLE_DEV_FB
 
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_dev.h"

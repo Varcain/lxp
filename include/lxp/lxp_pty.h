@@ -13,8 +13,8 @@
  * An FD_PTY fd carries @c file_idx = pty-pool index, @c rw = 1 master / 0 slave.
  * Gated on @c LXP_ENABLE_PTY.
  */
-#ifndef OVE_LINUX_PTY_H
-#define OVE_LINUX_PTY_H
+#ifndef LXP_PTY_H
+#define LXP_PTY_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -65,4 +65,4 @@ void lxp_pty_fstat(uint32_t *mode, uint64_t *size);
  *  @c -LXP_EAGAIN while still blocked. */
 long lxp_pty_retry(lxp_proc_t *p);
 
-#endif /* OVE_LINUX_PTY_H */
+#endif /* LXP_PTY_H */

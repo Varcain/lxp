@@ -27,20 +27,47 @@
 #endif
 
 /* ---- feature gates -----------------------------------------------------------
- * The module gates with #if defined(LXP_ENABLE_X) — so "defined" means ENABLED and
- * these must NOT be defined-to-0 to disable. The core (the personality itself +
- * the FDPIC loader) is always on; the optional subsystems are OPT-IN: the consumer
- * DEFINES the ones it wants (the oveRTOS build maps its Kconfig to -D flags; a
- * standalone consumer defines them here / in lxp_config_user.h / on the command
- * line). Optional gates (leave undefined to disable):
- *   LXP_ENABLE_NET, LXP_ENABLE_NETFS, LXP_ENABLE_NETFS_EXEC, LXP_ENABLE_PTY,
- *   LXP_ENABLE_DEV, LXP_ENABLE_DEV_FB, LXP_ENABLE_DEV_INPUT,
- *   LXP_ENABLE_DEV_INPUT_TESTPAD, LXP_ENABLE_TOUCH. */
+ * The module gates with #if LXP_ENABLE_X (VALUE-based, not presence-based): every
+ * gate is defined here — to 0 (off) by default — and the code tests its VALUE. So
+ * -DLXP_ENABLE_NET=1 enables and -DLXP_ENABLE_NET=0 (or leaving it unset) disables.
+ * There is no footgun where "-DLXP_ENABLE_NET=0" still enables the subsystem. The
+ * core (the personality itself + the FDPIC loader) is always on; the optional
+ * subsystems are OPT-IN — a consumer sets the ones it wants to 1 (the oveRTOS build
+ * maps its Kconfig to -D flags; a standalone CMake exposes them as option()s; or
+ * set them in lxp_config_user.h / on the command line). */
 #ifndef LXP_ENABLE_LINUX
 #define LXP_ENABLE_LINUX 1
 #endif
 #ifndef LXP_ENABLE_LOADER
 #define LXP_ENABLE_LOADER 1 /* the FDPIC loader is core; always on */
+#endif
+/* Optional subsystems — default OFF; a consumer sets the ones it wants to 1. */
+#ifndef LXP_ENABLE_NET
+#define LXP_ENABLE_NET 0
+#endif
+#ifndef LXP_ENABLE_NETFS
+#define LXP_ENABLE_NETFS 0 /* needs NET */
+#endif
+#ifndef LXP_ENABLE_NETFS_EXEC
+#define LXP_ENABLE_NETFS_EXEC 0 /* needs NETFS */
+#endif
+#ifndef LXP_ENABLE_PTY
+#define LXP_ENABLE_PTY 0
+#endif
+#ifndef LXP_ENABLE_DEV
+#define LXP_ENABLE_DEV 0
+#endif
+#ifndef LXP_ENABLE_DEV_FB
+#define LXP_ENABLE_DEV_FB 0 /* needs DEV + a display-ops port */
+#endif
+#ifndef LXP_ENABLE_DEV_INPUT
+#define LXP_ENABLE_DEV_INPUT 0 /* needs DEV */
+#endif
+#ifndef LXP_ENABLE_DEV_INPUT_TESTPAD
+#define LXP_ENABLE_DEV_INPUT_TESTPAD 0 /* needs DEV_INPUT */
+#endif
+#ifndef LXP_ENABLE_TOUCH
+#define LXP_ENABLE_TOUCH 0
 #endif
 
 /* ---- sizing / placement knobs (were the CONFIG_OVE_RTOS_* #if blocks) ------ */

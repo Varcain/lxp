@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Linux-personality character-device core: a registry of /dev nodes + a pooled
  * per-open state table, and the routing the FD_DEV branches of the syscall
@@ -17,14 +17,14 @@
 
 #include "lxp/lxp_config.h"
 
-#if defined(LXP_ENABLE_DEV)
+#if LXP_ENABLE_DEV
 
 #include "lxp/lxp_dev.h"
 
 #include <string.h>
 
 /* fd-slot kind for a device fd (fds[].file_idx = open-pool index). Kept in step
- * with the FD_* enumeration in ove_linux_syscall.c (free/console/file/pipe/
+ * with the FD_* enumeration in lxp_syscall.c (free/console/file/pipe/
  * tmpfs/proc = 0..5). */
 #ifndef LXP_FD_DEV
 #define LXP_FD_DEV 6
@@ -422,19 +422,19 @@ void lxp_dev_proc_exit(lxp_proc_t *p)
  * Gating makes the call a direct reference to the compiled class's strong definition.
  * Run once on the coordinator thread (blocking HAL init — ove_fb_init / ove_i2c_create
  * — is legal there). */
-#if defined(LXP_ENABLE_DEV_FB)
+#if LXP_ENABLE_DEV_FB
 void lxp_dev_autoreg_fb(void);
 #endif
-#if defined(LXP_ENABLE_DEV_INPUT)
+#if LXP_ENABLE_DEV_INPUT
 void lxp_dev_autoreg_input(void);
 #endif
 
 void lxp_dev_autoreg_all(void)
 {
-#if defined(LXP_ENABLE_DEV_FB)
+#if LXP_ENABLE_DEV_FB
 	lxp_dev_autoreg_fb();
 #endif
-#if defined(LXP_ENABLE_DEV_INPUT)
+#if LXP_ENABLE_DEV_INPUT
 	lxp_dev_autoreg_input();
 #endif
 }

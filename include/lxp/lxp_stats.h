@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Unified process/CPU snapshot for the Linux personality's synthetic /proc
  * (ps/top). The run-loop thread builds it each refresh from the live Linux slots
@@ -13,8 +13,8 @@
  * syscall layer free of run-loop symbols, so the host syscall tests link cleanly.
  */
 
-#ifndef OVE_LINUX_STATS_H
-#define OVE_LINUX_STATS_H
+#ifndef LXP_STATS_H
+#define LXP_STATS_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -59,4 +59,4 @@ const struct lxp_pentry *lxp_pent_at(int i); /* i-th LIVE entry */
 const struct lxp_pentry *lxp_pent_find(int pid);
 void lxp_cpu_totals(uint64_t *idle_us, uint64_t *busy_us);
 
-#endif /* OVE_LINUX_STATS_H */
+#endif /* LXP_STATS_H */

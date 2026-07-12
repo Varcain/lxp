@@ -3,22 +3,22 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 
-#ifndef OVE_LINUX_NET_H
-#define OVE_LINUX_NET_H
+#ifndef LXP_NET_H
+#define LXP_NET_H
 
 /**
  * @file net.h
- * @defgroup ove_linux_net Linux personality socket layer
- * @ingroup ove_linux
+ * @defgroup lxp_linux_net Linux personality socket layer
+ * @ingroup lxp_linux
  * @brief BSD sockets for the Linux personality, bridged to the ove_net HAL.
  *
  * The socket-family syscalls (socket/connect/send/recv/...) of a loaded FDPIC
  * program are routed to a small in-kernel socket model that bridges to the
  * engine-neutral @c ove_socket_* HAL (lwIP / NuttX net / Zephyr net). It mirrors
- * the /dev device layer (@ref ove_linux_dev): a refcounted per-open pool, and a
+ * the /dev device layer (@ref lxp_linux_dev): a refcounted per-open pool, and a
  * park/retry deferral for blocking I/O.
  *
  * Blocking model: like the syscall layer, the entry points run in the
@@ -43,7 +43,7 @@ extern "C" {
 #endif
 
 /** proc->sock_wait op codes: which parked socket op the coordinator retries.
- *  Shared with the run loop (backends/common/lxp_run.c). */
+ *  Shared with the run loop (src/lxp_run.c). */
 #define LXP_SOCKW_CONNECT 1u
 #define LXP_SOCKW_SEND 2u
 #define LXP_SOCKW_RECV 3u
@@ -127,7 +127,7 @@ typedef struct lxp_rtentry {
 	uint16_t rt_flags;
 } lxp_rtentry;
 
-/* ---- syscall-layer <-> socket-core interface (called from ove_linux_syscall.c) ---- */
+/* ---- syscall-layer <-> socket-core interface (called from lxp_syscall.c) ---- */
 /* Compiled only when LXP_ENABLE_NET is set (the FD_SOCKET branches are #if'd),
  * so no weak fallbacks are needed — the core is always linked when the feature is on
  * (firmware) or under test (host cmocka). */
@@ -194,7 +194,7 @@ long lxp_sock_retry(lxp_proc_t *p);
  * this after delivering a batch of frames to the stack (data/ACK may have arrived for a
  * parked recv/connect/accept). Without it a parked op waits up to the ≤5 ms retry tick,
  * bounding RTT; with it the coordinator retries the instant the frames land. Defined by the
- * run loop (backends/common/lxp_run.c), which posts its coordinator event. */
+ * run loop (src/lxp_run.c), which posts its coordinator event. */
 void lxp_sock_kick(void);
 
 /* Re-scan a parked poll(2)/select's fd set for readiness (called from lxp_sock_retry
@@ -207,7 +207,7 @@ void lxp_sock_fork_inherit(lxp_proc_t *child);
 void lxp_sock_proc_exit(lxp_proc_t *p);
 
 /** access_ok for the socket handlers to validate a guest pointer (confused-deputy
- *  guard — handlers run PRIVILEGED). Defined in ove_linux_syscall.c. */
+ *  guard — handlers run PRIVILEGED). Defined in lxp_syscall.c. */
 int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 
 #ifdef __cplusplus
@@ -216,4 +216,4 @@ int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 
 /** @} */
 
-#endif /* OVE_LINUX_NET_H */
+#endif /* LXP_NET_H */

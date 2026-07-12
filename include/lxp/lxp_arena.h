@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 
 #ifndef LXP_ARENA_H
@@ -12,7 +12,7 @@
 /**
  * @file arena.h
  * @defgroup lxp_arena Arena Allocator
- * @ingroup ove_mem
+ * @ingroup lxp_mem
  * @brief Bounded, backend-independent region allocator.
  *
  * An arena manages a single caller-supplied, fixed-size buffer and hands out
@@ -31,7 +31,6 @@
  * released in any order; adjacent free blocks coalesce so a fully-freed
  * arena returns to a single contiguous extent.
  *
- * @note Requires @c CONFIG_LXP_ARENA.
  * @{
  */
 
@@ -76,7 +75,6 @@ typedef struct lxp_arena {
  * @param[in]  size  Size of @p buf in bytes.
  * @return LXP_OK on success, LXP_ERR_INVALID_PARAM on NULL args,
  *         LXP_ERR_NO_MEMORY if the buffer is too small to host one block.
- * @note Requires @c CONFIG_LXP_ARENA.
  */
 int lxp_arena_init(lxp_arena_t *arena, void *buf, size_t size);
 

@@ -3,11 +3,11 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 
-#ifndef OVE_LINUX_RUN_H
-#define OVE_LINUX_RUN_H
+#ifndef LXP_RUN_H
+#define LXP_RUN_H
 
 #include "lxp/lxp_syscall.h"
 
@@ -19,7 +19,7 @@ extern "C" {
  * @file
  * @defgroup lxp_run Linux personality runner
  * @brief Engine-agnostic public API for running a Linux program under the
- *        oveRTOS Linux personality.
+ *        lxp Linux personality.
  *
  * The engine-agnostic core (@ref lxp_syscall) translates the Linux ABI into
  * oveRTOS primitives; a per-engine SEAM binds it to a concrete RTOS engine —
@@ -27,8 +27,8 @@ extern "C" {
  * own isolated memory domain, and implementing the NOMMU process model
  * (sequentialised vfork/exec/wait, signal delivery, the run loop). This header
  * is the public contract a host application uses; the seam provides the
- * implementation (currently @c backends/zephyr/zephyr_lnx.c for Cortex-M with
- * @c CONFIG_USERSPACE).
+ * implementation (a per-engine backend — e.g. the FreeRTOS/Zephyr/NuttX seams in
+ * oveRTOS, or the bundled QEMU / POSIX reference ports).
  *
  * A host supplies a parsed rootfs and console callbacks, then calls
  * @ref lxp_run with an init program.
@@ -90,4 +90,4 @@ void lxp_post_signal(int sig);
 }
 #endif
 
-#endif /* OVE_LINUX_RUN_H */
+#endif /* LXP_RUN_H */

@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 
 #ifndef LXP_LOADER_H
@@ -12,7 +12,7 @@
 /**
  * @file loader.h
  * @defgroup lxp_loader Module Loader
- * @ingroup ove_mem
+ * @ingroup lxp_mem
  * @brief Runtime loader for relocatable native code modules.
  *
  * Loads a relocatable ELF object (@c ET_REL — a freestanding @c .o, the same
@@ -36,7 +36,6 @@
  * are not yet implemented. Other classes/machines return
  * @c LXP_ERR_NOT_SUPPORTED.
  *
- * @note Requires @c CONFIG_LXP_LOADER.
  * @{
  */
 
@@ -103,7 +102,6 @@ typedef struct lxp_module {
  *         LXP_ERR_NO_MEMORY if @p region is too small or the module has too
  *         many sections;
  *         LXP_ERR_NOT_FOUND if an undefined symbol is not in @p imports.
- * @note Requires @c CONFIG_LXP_LOADER.
  */
 int lxp_loader_load(lxp_module_t *mod, const void *image, size_t image_size, void *region,
 		    size_t region_size, const lxp_loader_sym_t *imports, size_t n_imports);
@@ -185,7 +183,6 @@ typedef struct lxp_flat {
  *                         (auto-detected, @c is_dynamic reported) for ld.so to apply.
  * @return LXP_OK on success; LXP_ERR_INVALID_PARAM on a malformed/non-FDPIC image;
  *         LXP_ERR_NOT_SUPPORTED for an unhandled reloc; LXP_ERR_NO_MEMORY if too small.
- * @note Requires @c CONFIG_LXP_LOADER.
  */
 int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size, void *region,
 			  size_t region_size, int is_interp, int copy_text);

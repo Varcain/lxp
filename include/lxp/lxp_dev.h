@@ -3,16 +3,16 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 
-#ifndef OVE_LINUX_DEV_H
-#define OVE_LINUX_DEV_H
+#ifndef LXP_DEV_H
+#define LXP_DEV_H
 
 /**
  * @file dev.h
- * @defgroup ove_linux_dev Linux personality device layer
- * @ingroup ove_linux
+ * @defgroup lxp_linux_dev Linux personality device layer
+ * @ingroup lxp_linux
  * @brief Character-device nodes under /dev for the Linux personality.
  *
  * A small in-kernel device model bolted onto the syscall layer: class drivers
@@ -111,7 +111,7 @@ struct lxp_dev_open {
 /* LXP_MAP_NC/WT/DEV (map_device attribute hints) come from lxp_port.h. */
 
 /** dev_wait op codes: which parked device op the coordinator retries/completes.
- *  Shared with the run loop (backends/common/lxp_run.c) so it can special-case
+ *  Shared with the run loop (src/lxp_run.c) so it can special-case
  *  DEVW_MMAP (the only one needing the engine's map_device seam). */
 #define LXP_DEVW_READ 1u
 #define LXP_DEVW_WRITE 2u
@@ -145,7 +145,7 @@ void lxp_dev_kick(void);
  */
 void lxp_input_report_touch(int x, int y, int pressed);
 
-/* ---- syscall-layer <-> core interface (called from ove_linux_syscall.c) ---- */
+/* ---- syscall-layer <-> core interface (called from lxp_syscall.c) ---- */
 /* These are the seams the FD_DEV branches of the syscall handlers call. They
  * are compiled only when LXP_ENABLE_DEV is set (the branches are #if'd),
  * so no weak fallbacks are needed — the core is always linked when the feature
@@ -193,7 +193,7 @@ void lxp_dev_tick_register(void (*fn)(uint64_t now_us));
 /** access_ok for a driver's ioctl handler to validate its user pointer (the
  *  confused-deputy guard — device handlers run PRIVILEGED). read/write buffers
  *  are already validated by the core; ioctl args are not. Defined in
- *  ove_linux_syscall.c. */
+ *  lxp_syscall.c. */
 int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 
 /** Retry a parked device op for the coordinator; result or -EAGAIN (still blocked). */
@@ -213,4 +213,4 @@ void lxp_dev_proc_exit(lxp_proc_t *p);
 
 /** @} */
 
-#endif /* OVE_LINUX_DEV_H */
+#endif /* LXP_DEV_H */

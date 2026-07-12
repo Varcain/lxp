@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * The handle-based network port for the Linux personality. The personality's
  * socket + remote-fs cores reach the host TCP/IP stack ONLY through these ops:
@@ -15,8 +15,8 @@
  * stack. (Renamed to the neutral lxp_net_ops_t at the module-extraction rename.)
  */
 
-#ifndef OVE_LINUX_NET_OPS_H
-#define OVE_LINUX_NET_OPS_H
+#ifndef LXP_NET_OPS_H
+#define LXP_NET_OPS_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -46,4 +46,4 @@ extern const struct lxp_net_ops *g_lxp_net_ops;
 }
 #endif
 
-#endif /* OVE_LINUX_NET_OPS_H */
+#endif /* LXP_NET_OPS_H */

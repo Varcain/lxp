@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * /dev/input/event0 evdev touch class for the Linux personality. A single-touch
  * stream (ABS_X, ABS_Y, BTN_TOUCH, SYN_REPORT) fed by an engine-neutral feeder
@@ -14,7 +14,7 @@
 
 #include "lxp/lxp_config.h"
 
-#if defined(LXP_ENABLE_DEV_INPUT)
+#if LXP_ENABLE_DEV_INPUT
 
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_types.h"
@@ -172,7 +172,7 @@ static const struct lxp_dev_ops in_ops = {
 };
 
 /* ---- QEMU synthetic testpad: replay a canned gesture from the tick ---------- */
-#if defined(LXP_ENABLE_DEV_INPUT_TESTPAD)
+#if LXP_ENABLE_DEV_INPUT_TESTPAD
 static void testpad_tick(uint64_t now_us)
 {
 	/* A slow diagonal drag across the panel, then release, looping — deterministic
@@ -190,7 +190,7 @@ static void testpad_tick(uint64_t now_us)
 }
 #endif
 
-#if defined(LXP_ENABLE_TOUCH)
+#if LXP_ENABLE_TOUCH
 /* Poll the FT5336 controller over i2c (~60 Hz) and report the primary touch. */
 static void ft5336_tick(uint64_t now_us)
 {
@@ -220,13 +220,13 @@ void lxp_dev_autoreg_input(void)
 	 * both would let two sources drive one /dev/input/event0 — garbage. */
 	int touch_ready = 0;
 	(void)touch_ready;
-#if defined(LXP_ENABLE_TOUCH)
+#if LXP_ENABLE_TOUCH
 	if (g_lxp_disp_ops->touch_init() == 0) {
 		lxp_dev_tick_register(ft5336_tick); /* real HW touch panel */
 		touch_ready = 1;
 	}
 #endif
-#if defined(LXP_ENABLE_DEV_INPUT_TESTPAD)
+#if LXP_ENABLE_DEV_INPUT_TESTPAD
 	if (!touch_ready)
 		lxp_dev_tick_register(testpad_tick); /* QEMU synthetic gestures */
 #endif

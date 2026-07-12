@@ -3,23 +3,23 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 
-#ifndef OVE_LINUX_NETFS_H
-#define OVE_LINUX_NETFS_H
+#ifndef LXP_NETFS_H
+#define LXP_NETFS_H
 
 /**
  * @file netfs.h
- * @defgroup ove_linux_netfs Linux personality remote filesystem (9P2000.L)
- * @ingroup ove_linux
+ * @defgroup lxp_linux_netfs Linux personality remote filesystem (9P2000.L)
+ * @ingroup lxp_linux
  * @brief A read-only remote filesystem mounted under a path (e.g. /mnt/pi).
  *
  * A single mount over a coordinator-owned, non-blocking TCP connection to a 9P
  * server (diod on a Raspberry Pi). The guest browses it transparently — the
  * FD_NET branches of the syscall handlers route open/read/lseek/close/stat/
  * getdents on a /mnt/pi path to this layer, which speaks 9P2000.L and returns
- * Linux-ABI results. It mirrors the socket layer (linux/net/ove_linux_net.c): a
+ * Linux-ABI results. It mirrors the socket layer (linux/net/lxp_net.c): a
  * refcounted per-open pool (each = a 9P fid + cursor), fork/dup share an open,
  * and the last close clunks the fid.
  *
@@ -45,7 +45,7 @@ extern "C" {
 #endif
 
 /** proc->netfs_wait op codes: which parked netfs op the coordinator retries.
- *  Shared with the run loop (backends/common/lxp_run.c). */
+ *  Shared with the run loop (src/lxp_run.c). */
 #define LXP_NETFSW_OPEN 1u	  /**< open: Twalk -> Tlgetattr -> Tlopen -> install fd. */
 #define LXP_NETFSW_READ 2u	  /**< read: Tread -> copy to guest. */
 #define LXP_NETFSW_GETDENTS 3u /**< getdents64: Treaddir -> emit dirent64 records. */
@@ -70,7 +70,7 @@ void lxp_netfs_mount_config(const char *mountpoint, const uint8_t ip[4], uint16_
  *  the mount is marked DISCONNECTED and reconnected lazily; boot never hangs. */
 void lxp_netfs_init(void);
 
-/* ---- syscall-layer <-> netfs-core interface (called from ove_linux_syscall.c) ---- */
+/* ---- syscall-layer <-> netfs-core interface (called from lxp_syscall.c) ---- */
 
 /** @return mount id (>=0) if @p abspath is at or under the mount point, else -1. */
 int lxp_netfs_lookup(const char *abspath);
@@ -123,7 +123,7 @@ void lxp_netfs_tick(uint64_t now_us);
 /** 1 if any netfs request is outstanding (so the run loop holds its ≤5 ms retry tick). */
 int lxp_netfs_busy(void);
 
-/* ---- implemented in ove_linux_syscall.c, called by the netfs retry --------- */
+/* ---- implemented in lxp_syscall.c, called by the netfs retry --------- */
 
 /** Marshal remote attributes into the guest's stat/statx buffer (the netfs retry owns the
  *  9P transport; the syscall TU owns the kstat/statx layout + user_ok). @return 0 or -errno. */
@@ -131,11 +131,11 @@ long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t 
 			     uint64_t size, uint64_t mtime, uint64_t ino);
 
 /** access_ok for the netfs handlers to validate a guest pointer (confused-deputy guard —
- *  handlers run PRIVILEGED). Defined in ove_linux_syscall.c. */
+ *  handlers run PRIVILEGED). Defined in lxp_syscall.c. */
 int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 
 /* ---- Phase B: exec a program off the mount (LXP_ENABLE_NETFS_EXEC) ---- */
-#if defined(LXP_ENABLE_NETFS_EXEC)
+#if LXP_ENABLE_NETFS_EXEC
 /** exec_file_idx marker: the image to launch lives in the netfs exec staging buffer (RAM),
  *  not the rootfs table. The run loop's EV_EXEC sources it via lxp_netfs_exec_image. */
 #define LXP_NETFS_EXEC_SENTINEL (-2)
@@ -165,4 +165,4 @@ void lxp_netfs_kick(void);
 
 /** @} */
 
-#endif /* OVE_LINUX_NETFS_H */
+#endif /* LXP_NETFS_H */

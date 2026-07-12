@@ -3,10 +3,10 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Internal interface between the engine-agnostic Linux-personality run loop +
- * svc dispatch (backends/common/lxp_run.c) and the per-engine seams under
+ * svc dispatch (src/lxp_run.c) and the per-engine seams under
  * backends/zephyr, backends/freertos, backends/nuttx. NOT a public API.
  *
  * The shared core owns the NOMMU process model — the vfork/exec/wait run loop,
@@ -16,8 +16,8 @@
  * differs — e.g. Zephyr MPU partitions), and the task spawn/abort.
  */
 
-#ifndef OVE_BACKENDS_COMMON_LXP_RUN_H
-#define OVE_BACKENDS_COMMON_LXP_RUN_H
+#ifndef LXP_SEAM_H
+#define LXP_SEAM_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -129,4 +129,4 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc);
 int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 		       const char *path, int argc, const char *const argv[]);
 
-#endif /* OVE_BACKENDS_COMMON_LXP_RUN_H */
+#endif /* LXP_SEAM_H */

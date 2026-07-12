@@ -3,23 +3,23 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 
-#ifndef OVE_LINUX_SYSCALL_H
-#define OVE_LINUX_SYSCALL_H
+#ifndef LXP_SYSCALL_H
+#define LXP_SYSCALL_H
 
 /**
  * @file syscall.h
- * @defgroup ove_linux Linux personality
- * @ingroup ove_mem
+ * @defgroup lxp_linux Linux personality
+ * @ingroup lxp_mem
  * @brief Linux syscall dispatch for loaded FDPIC programs.
  *
- * The engine-agnostic core of the oveRTOS Linux personality: it impersonates
+ * The engine-agnostic core of the lxp Linux personality: it impersonates
  * the Linux kernel's syscall ABI for stock uClibc-ng binaries. A per-engine
- * SVC trap (e.g. @c backends/nuttx/nuttx_lnx_trap.c) decodes the trap frame and
- * calls @c lxp_syscall(); this layer translates the call into oveRTOS
- * primitives and bounded process state. It neither installs the trap nor
+ * SVC trap (the host's engine seam) decodes the trap frame and
+ * calls @c lxp_syscall(); this layer translates the call into host-agnostic
+ * module primitives and bounded process state. It neither installs the trap nor
  * touches memory protection — that is the engine seam's job.
  *
  * Scope (Phase A start): a minimal syscall set — @c write / @c writev /
@@ -396,7 +396,7 @@ typedef struct lxp_fd {
 } lxp_fd_t;
 
 /** Device fd kind (shared by the syscall + device layers; the FD_FREE..FD_PROC
- *  kinds stay private to ove_linux_syscall.c). @c file_idx = open-pool index. */
+ *  kinds stay private to lxp_syscall.c). @c file_idx = open-pool index. */
 #define LXP_FD_DEV 6
 /** Socket fd kind (shared by the syscall + socket layers). @c file_idx = open-pool index. */
 #define LXP_FD_SOCKET 7
@@ -741,4 +741,4 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 
 /** @} */
 
-#endif /* OVE_LINUX_SYSCALL_H */
+#endif /* LXP_SYSCALL_H */

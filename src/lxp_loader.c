@@ -3,12 +3,10 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 
 #include "lxp/lxp_config.h"
-
-#if 1 /* the FDPIC loader is core to the lxp module */
 
 #include "lxp/lxp_loader.h"
 
@@ -942,5 +940,3 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	prog->dynamic = dyn_off ? (uintptr_t)fdpic_rt(lm, nload, dyn_off) : 0;
 	return LXP_OK;
 }
-
-#endif /* CONFIG_LXP_LOADER */

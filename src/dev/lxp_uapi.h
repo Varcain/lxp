@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Private uapi mirrors for the Linux-personality device classes: the ioctl
  * command numbers and struct layouts the guest programs pass, spelled with
@@ -12,8 +12,8 @@
  * linux-headers — that is the layout-drift enforcement.
  */
 
-#ifndef OVE_LINUX_UAPI_H
-#define OVE_LINUX_UAPI_H
+#ifndef LXP_UAPI_H
+#define LXP_UAPI_H
 
 #include <stdint.h>
 
@@ -116,4 +116,4 @@ struct lxp_input_absinfo {
 #define LXP_EVIOCGNAME_NR 0x06
 #define LXP_EVIOCGABS_BASE 0x40 /* EVIOCGABS(abs) nr = 0x40 + abs */
 
-#endif /* OVE_LINUX_UAPI_H */
+#endif /* LXP_UAPI_H */

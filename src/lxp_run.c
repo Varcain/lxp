@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Engine-agnostic Linux-personality run loop + svc dispatch + signal delivery,
  * shared by the Zephyr / FreeRTOS / NuttX seams (see lxp_run.h). The
@@ -24,19 +24,18 @@
 
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_types.h"
-#include "lxp/lxp_types.h"
 #include "lxp/lxp_seam.h"
 #include "lxp/lxp_stats.h"
-#if defined(LXP_ENABLE_DEV)
+#if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h" /* device-layer park/retry + autoreg + tick + kick */
 #endif
-#if defined(LXP_ENABLE_NET)
+#if LXP_ENABLE_NET
 #include "lxp/lxp_net.h" /* socket-layer park/retry + fork/exit fd lifecycle */
 #endif
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 #include "lxp/lxp_netfs.h" /* remote-fs park/retry + init/pump + fork/exit lifecycle */
 #endif
-#if defined(LXP_ENABLE_PTY)
+#if LXP_ENABLE_PTY
 #include "lxp/lxp_pty.h" /* pty-layer park/retry (lxp_pty_retry) */
 #endif
 
@@ -191,7 +190,7 @@ int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actua
 const uint8_t *g_lxp_rootfs_lo;
 const uint8_t *g_lxp_rootfs_hi;
 
-/* access_ok (ove_linux_syscall.c) asks for the shared read-only rootfs span so a read-source user
+/* access_ok (lxp_syscall.c) asks for the shared read-only rootfs span so a read-source user
  * pointer may point into a program's .rodata (shared in-place from the cpio). Strong override of the
  * weak stub in the syscall layer. */
 void lxp_rootfs_bounds(uintptr_t *lo, uintptr_t *hi)
@@ -211,7 +210,7 @@ int lxp_proc_nslot(void)
 	return LXP_NSLOT;
 }
 
-#if defined(LXP_ENABLE_DEV)
+#if LXP_ENABLE_DEV
 /* Wake the coordinator so it retries parked device I/O at once (a driver calls this
  * from its data-ready path). Strong override of the weak no-op in the device core
  * — that stub is used only by the host test, which links no run loop. */
@@ -222,11 +221,11 @@ void lxp_dev_kick(void)
 }
 #endif
 
-#if defined(LXP_ENABLE_NET)
+#if LXP_ENABLE_NET
 /* Wake the coordinator so it retries parked socket I/O at once — the network RX task calls
  * this after delivering a batch of frames to the stack, so a parked recv/connect/accept
  * resumes the instant its data/ACK lands instead of on the next ≤5 ms retry tick. Mirrors
- * lxp_dev_kick; only ever called with LXP_ENABLE_NET (⇒ OVE_LINUX) set, so this
+ * lxp_dev_kick; only ever called with LXP_ENABLE_NET set, so this
  * run loop is always linked and no weak no-op is needed. */
 void lxp_sock_kick(void)
 {
@@ -235,7 +234,7 @@ void lxp_sock_kick(void)
 }
 #endif
 
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 /* Wake the coordinator so it pumps the 9P transport at once — the eth RX task calls this
  * after delivering frames, so a parked netfs op resumes the instant its reply lands. */
 void lxp_netfs_kick(void)
@@ -255,7 +254,7 @@ static struct lxp_resume_ctx g_ctx[LXP_NSLOT];
 /* Per-slot FDPIC runtime load addresses, exported (non-static) for SOURCE-LEVEL GDB DEBUGGING of
  * the userspace program. An FDPIC exec is loaded at runtime addresses (the loadmap relocates each
  * segment independently), so the on-disk ELF's link addresses don't match memory. A GDB helper
- * (config/scripts/ove-fdpic-gdb.py) reads this table and `add-symbol-file <elf> -o <text_base>`s the
+ * reads this table and `add-symbol-file <elf> -o <text_base>`s the
  * program, then walks the exec's _DYNAMIC[DT_DEBUG] rendezvous (populated by ld.so once it has run)
  * to auto-load ld.so + every shared library at its own FDPIC bias. comm[] (in g_lxp_proc) names
  * the program; text_base/data_base are the loadmap-relocated bases of its text/data segments. */
@@ -867,12 +866,12 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 	lxp_stats_reset();
 	for (int i = 0; i < LXP_NSLOT; i++)
 		g_sig_save[i].active = 0;
-#if defined(LXP_ENABLE_DEV)
+#if LXP_ENABLE_DEV
 	/* Register the Kconfig-enabled /dev class drivers (fb, input, ...) on this
 	 * coordinator thread, where blocking HAL init (ove_fb_init, ove_i2c_create) is legal. */
 	lxp_dev_autoreg_all();
 #endif
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 	/* Connect the remote-fs mount (9P Tversion/Tattach). Coordinator thread, where blocking
 	 * init is legal; a down server is non-fatal — the mount reconnects lazily. */
 	lxp_netfs_init();
@@ -979,14 +978,14 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 				et = EV_SOCKWAIT;
 				break;
 			}
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 			if (p->netfs_wait && g_lxp_used[s]) {
 				es = s;
 				et = EV_NETFSWAIT;
 				break;
 			}
 #endif
-#if defined(LXP_ENABLE_PTY)
+#if LXP_ENABLE_PTY
 			if (p->pty_wait && g_lxp_used[s]) {
 				es = s;
 				et = EV_PTYWAIT;
@@ -1023,13 +1022,13 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 			}
 			lxp_proc_t *ch = &g_lxp_proc[c];
 			*ch = *par; /* vfork shares the image + region */
-#if defined(LXP_ENABLE_DEV)
+#if LXP_ENABLE_DEV
 			lxp_dev_fork_inherit(ch); /* the child shares the parent's device opens */
 #endif
-#if defined(LXP_ENABLE_NET)
+#if LXP_ENABLE_NET
 			lxp_sock_fork_inherit(ch); /* the child shares the parent's socket opens */
 #endif
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 			lxp_netfs_fork_inherit(ch); /* the child shares the parent's remote-fs opens */
 #endif
 			ch->pid = next_pid++;
@@ -1084,13 +1083,13 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 				 * session: init+getty+inetd+dropbear+shell+members). Refuse the fork
 				 * (-ENOMEM) rather than share the parent's region and let the child
 				 * corrupt it; the caller sees a clean fork failure, not a fault. */
-#if defined(LXP_ENABLE_DEV)
+#if LXP_ENABLE_DEV
 				lxp_dev_proc_exit(ch); /* undo the fd fork-inherit refcounts */
 #endif
-#if defined(LXP_ENABLE_NET)
+#if LXP_ENABLE_NET
 				lxp_sock_proc_exit(ch);
 #endif
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 				lxp_netfs_proc_exit(ch);
 #endif
 				ch->alive = 0;
@@ -1171,7 +1170,7 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 			const uint8_t *img_data = cfg->rootfs[idx].data;
 			size_t img_size = cfg->rootfs[idx].size;
 			int rexec = 0;
-#if defined(LXP_ENABLE_NETFS_EXEC)
+#if LXP_ENABLE_NETFS_EXEC
 			/* A program off the remote mount: its bytes are in the netfs exec staging
 			 * buffer (RAM), not the rootfs; launch copies its text into the region (RWX). */
 			if (idx == LXP_NETFS_EXEC_SENTINEL) {
@@ -1201,13 +1200,13 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 			lxp_proc_t *p = &g_lxp_proc[es];
 			int cpid = p->pid, status = p->exit_status, vp = p->vfork_parent_slot,
 			    ppid = p->ppid;
-#if defined(LXP_ENABLE_DEV)
+#if LXP_ENABLE_DEV
 			lxp_dev_proc_exit(p); /* release the exiting process's device opens */
 #endif
-#if defined(LXP_ENABLE_NET)
+#if LXP_ENABLE_NET
 			lxp_sock_proc_exit(p); /* release the exiting process's socket opens */
 #endif
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 			lxp_netfs_proc_exit(p); /* release the exiting process's remote-fs opens */
 #endif
 			eng->abort_slot(es);
@@ -1261,14 +1260,14 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 			idle = 0;
 			continue;
 		}
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 		if (et == EV_NETFSWAIT) { /* free the spin thread; the netfs retry below resumes it. */
 			eng->abort_slot(es);
 			idle = 0;
 			continue;
 		}
 #endif
-#if defined(LXP_ENABLE_PTY)
+#if LXP_ENABLE_PTY
 		if (et == EV_PTYWAIT) { /* free the spin thread; the pty retry below resumes it. */
 			eng->abort_slot(es);
 			idle = 0;
@@ -1372,7 +1371,7 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 					deliver_signal_parked(eng, s, p, sig, -LXP_EINTR);
 					progress = 1;
 				}
-#if defined(LXP_ENABLE_PTY)
+#if LXP_ENABLE_PTY
 			} else if (p->pending_sig && !g_lxp_used[s] && p->pty_wait) {
 				/* Signal to a proc parked in a pty read/write: ^C (SIGINT) from the line
 				 * discipline lands here — the shell's handler runs and its slave read
@@ -1417,7 +1416,7 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 					progress = 1;
 				}
 			}
-#if defined(LXP_ENABLE_DEV)
+#if LXP_ENABLE_DEV
 			/* Blocked device I/O: retry (the driver may now have data/space); resume
 			 * the proc when the op completes. Mirrors the pipe retry above. */
 			if (p->dev_wait == LXP_DEVW_MMAP && !g_lxp_used[s]) {
@@ -1447,7 +1446,7 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 				}
 			}
 #endif
-#if defined(LXP_ENABLE_NET)
+#if LXP_ENABLE_NET
 			/* Blocked socket I/O: retry (connect may have completed, or data/space
 			 * arrived); resume the proc when the op completes. Mirrors the pipe/device
 			 * retries above. */
@@ -1460,7 +1459,7 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 				}
 			}
 #endif
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 			/* Blocked remote-fs I/O: pump the 9P transport + advance the parked op;
 			 * resume the proc when its reply completes. Mirrors the socket retry. */
 			if (p->netfs_wait && !g_lxp_used[s]) {
@@ -1475,7 +1474,7 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 				}
 			}
 #endif
-#if defined(LXP_ENABLE_PTY)
+#if LXP_ENABLE_PTY
 			/* Blocked pty I/O: retry (the peer end may have drained/filled the ring);
 			 * resume the proc when the op completes. Mirrors the pipe/socket retries. */
 			if (p->pty_wait && !g_lxp_used[s]) {
@@ -1522,10 +1521,10 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 			last_refresh_us = now;
 			refresh_stats();
 		}
-#if defined(LXP_ENABLE_DEV)
+#if LXP_ENABLE_DEV
 		lxp_dev_tick(now); /* coordinator-thread periodic work (fb flush, touch poll) */
 #endif
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 		lxp_netfs_tick(now); /* pump the 9P transport: background clunks + lazy reconnect */
 #endif
 		/* Block until a program parks (event_post) or the timeout. NOT a busy 1ms poll —

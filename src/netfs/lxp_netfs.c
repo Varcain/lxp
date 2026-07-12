@@ -3,12 +3,12 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Linux-personality remote filesystem: a coordinator-owned 9P2000.L client over a
  * single non-blocking TCP connection to a 9P server (diod), exposed as an FD_NET
  * provider the syscall handlers route /mnt/pi opens to. Read-only browse (+ exec
- * off the mount, Phase B). Mirrors linux/net/ove_linux_net.c: a refcounted per-open
+ * off the mount, Phase B). Mirrors linux/net/lxp_net.c: a refcounted per-open
  * pool (each = a 9P fid + cursor), fork/dup share, the last close clunks.
  *
  * Blocking is deferred, never inline: every op that needs a Pi round-trip submits a
@@ -19,7 +19,7 @@
 
 #include "lxp/lxp_config.h"
 
-#if defined(LXP_ENABLE_NETFS)
+#if LXP_ENABLE_NETFS
 
 #include "lxp/lxp_netfs.h"
 #include "lxp/lxp_port.h"
@@ -175,7 +175,7 @@ static struct netfs_req g_req[NETFS_NREQ];
 static uint32_t g_req_seq;
 static int g_inflight = -1; /* request whose message is being sent / awaiting reply. */
 
-#if defined(LXP_ENABLE_NETFS_EXEC)
+#if LXP_ENABLE_NETFS_EXEC
 static uint8_t *g_exec_buf;  /* the engine's RAM staging buffer for a fetched remote ELF */
 static size_t g_exec_cap;    /* staging capacity */
 static size_t g_exec_size;   /* bytes fetched so far (the valid image size on completion) */
@@ -491,7 +491,7 @@ static long req_build(struct netfs_req *r)
 	switch (r->op) {
 	case LXP_NETFSW_OPEN:
 	case LXP_NETFSW_STAT:
-#if defined(LXP_ENABLE_NETFS_EXEC)
+#if LXP_ENABLE_NETFS_EXEC
 	case LXP_NETFSW_EXECFETCH:
 #endif
 		if (r->step == 0) { /* Twalk(root -> fid, components) */
@@ -534,7 +534,7 @@ static long req_build(struct netfs_req *r)
 			msg_end(o);
 			return 0;
 		}
-#if defined(LXP_ENABLE_NETFS_EXEC)
+#if LXP_ENABLE_NETFS_EXEC
 		if (r->step == 3) { /* EXECFETCH: Tread the next chunk into the staging buffer */
 			uint32_t cnt = (uint32_t)(g_msize - 24);
 			if (r->off + cnt > g_exec_cap) /* never overflow the staging buffer */
@@ -806,7 +806,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 		}
 		break;
 
-#if defined(LXP_ENABLE_NETFS_EXEC)
+#if LXP_ENABLE_NETFS_EXEC
 	case LXP_NETFSW_EXECFETCH:
 		if (r->step == 0) { /* Rwalk */
 			uint16_t nwqid = get16(body, &o);
@@ -1199,7 +1199,7 @@ void lxp_netfs_close(int oi)
 	op->used = 0;
 }
 
-#if defined(LXP_ENABLE_NETFS_EXEC)
+#if LXP_ENABLE_NETFS_EXEC
 /* ---- exec off the mount: fetch the whole ELF into the engine staging buffer ---- */
 long lxp_netfs_exec_fetch(lxp_proc_t *p, const char *abspath)
 {
@@ -1257,7 +1257,7 @@ long lxp_netfs_retry(lxp_proc_t *p)
 		}
 		return fd;
 	}
-#if defined(LXP_ENABLE_NETFS_EXEC)
+#if LXP_ENABLE_NETFS_EXEC
 	if (op == LXP_NETFSW_EXECFETCH && result >= 0) {
 		/* the ELF is staged: flag the exec so the run loop's EV_EXEC launches it from the
 		 * staging buffer. Returning 0 with exec_pending set tells the run loop NOT to resume. */

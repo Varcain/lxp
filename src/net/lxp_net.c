@@ -3,12 +3,12 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Linux-personality socket core: a pooled per-open socket table bridged to the
  * engine-neutral ove_net HAL (lwIP / NuttX net / Zephyr net), and the routing the
  * FD_SOCKET branches of the syscall handlers call into. It mirrors the /dev device
- * layer (linux/dev/ove_linux_dev.c): the fd's file_idx indexes a refcounted open
+ * layer (linux/dev/lxp_dev.c): the fd's file_idx indexes a refcounted open
  * pool, fork/dup share an open, and the last close closes the socket.
  *
  * Blocking is deferred, never inline: the backing ove_socket is kept non-blocking,
@@ -19,7 +19,7 @@
 
 #include "lxp/lxp_config.h"
 
-#if defined(LXP_ENABLE_NET)
+#if LXP_ENABLE_NET
 
 #include "lxp/lxp_net.h"
 #include "lxp/lxp_net_ops.h"
@@ -28,7 +28,7 @@
 #include <string.h>
 
 /* fd-slot kind for a socket fd (fds[].file_idx = open-pool index). Kept in step
- * with the FD_* enumeration in ove_linux_syscall.c (free/console/file/pipe/tmpfs/
+ * with the FD_* enumeration in lxp_syscall.c (free/console/file/pipe/tmpfs/
  * proc/dev = 0..6). */
 #ifndef LXP_FD_SOCKET
 #define LXP_FD_SOCKET 7

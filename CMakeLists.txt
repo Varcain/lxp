@@ -25,6 +25,7 @@ option(LXP_ENABLE_DEV "Device layer (/dev)" OFF)
 option(LXP_ENABLE_DEV_FB "Framebuffer /dev/fb0 (display-ops port required)" OFF)
 option(LXP_ENABLE_DEV_INPUT "Input event device (/dev/input)" OFF)
 option(LXP_PORT_POSIX "Build the bundled POSIX reference port" OFF)
+option(LXP_BUILD_TESTS "Build the host (cmocka) unit-test suite" OFF)
 
 # ---- sources: collect whatever exists (the tree is populated incrementally) --
 file(GLOB_RECURSE LXP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
@@ -34,9 +35,14 @@ if(LXP_SOURCES)
   target_include_directories(lxp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
   target_include_directories(lxp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
+  # Value-based feature gates: the module tests `#if LXP_ENABLE_X`, so emit an
+  # explicit 0/1 for each (matches lxp_config.h's defaults and keeps the matrix
+  # build -Wundef-clean; -DLXP_ENABLE_X=0 genuinely disables).
   foreach(feat NET NETFS NETFS_EXEC PTY DEV DEV_FB DEV_INPUT)
     if(LXP_ENABLE_${feat})
       target_compile_definitions(lxp PUBLIC LXP_ENABLE_${feat}=1)
+    else()
+      target_compile_definitions(lxp PUBLIC LXP_ENABLE_${feat}=0)
     endif()
   endforeach()
 
@@ -51,3 +57,10 @@ else()
 endif()
 
 add_library(lxp::lxp ALIAS lxp)
+
+# ---- host test suite (scaffold: active once tests/ lands) --------------------
+# Enabled with -DLXP_BUILD_TESTS=ON; needs a POSIX port for the net/netfs suites.
+if(LXP_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+  enable_testing()
+  add_subdirectory(tests)
+endif()

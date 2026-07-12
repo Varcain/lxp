@@ -3,12 +3,10 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 
 #include "lxp/lxp_config.h"
-
-#if 1 /* arena is core to the lxp module */
 
 #include "lxp/lxp_arena.h"
 
@@ -194,5 +192,3 @@ size_t lxp_arena_high_water(const lxp_arena_t *arena)
 {
 	return arena ? arena->high_water : 0;
 }
-
-#endif /* CONFIG_LXP_ARENA */

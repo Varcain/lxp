@@ -17,7 +17,7 @@
 #include "lxp/lxp_config.h" /* LXP_PTY_BUF */
 #include "lxp/lxp_pty.h"
 
-#if defined(LXP_ENABLE_PTY)
+#if LXP_ENABLE_PTY
 
 #include <string.h>
 
