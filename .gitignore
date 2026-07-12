@@ -1,0 +1,4 @@
+# CMake / build outputs
+/build/
+/build-*/
+build-test/
