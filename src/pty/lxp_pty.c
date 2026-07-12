@@ -1,4 +1,9 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
+ */
 /*
  * Pseudo-terminal (Unix98 pty) layer for the Linux personality.
  *
