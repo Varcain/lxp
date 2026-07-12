@@ -1,8 +1,9 @@
 # Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Continuously verify the three things this module promises: it stays decoupled from
-# oveRTOS, its core passes host unit tests, and it runs end-to-end on Cortex-M QEMU.
+# Continuously verify what this module promises: it stays decoupled from oveRTOS, its
+# core passes host unit tests, every feature gate compiles independently (no gate-rot),
+# and it runs end-to-end on Cortex-M QEMU.
 name: ci
 
 on:
@@ -29,6 +30,35 @@ jobs:
 
       - name: Run host unit tests
         run: ctest --test-dir build -R lxp_unit --output-on-failure
+
+  gates:
+    # Gate-rot guard: cross-compile every src/ TU for Cortex-M under each LXP_ENABLE_*
+    # config, -Werror. A clean build proves the #if LXP_ENABLE_X gating holds in both
+    # directions — an unguarded reference to a disabled subsystem fails here, and each
+    # =0 config compiling clean proves the feature genuinely drops out (value-based, D3).
+    name: gate-rot matrix (${{ matrix.gates.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        gates:
+          - { name: minimal,  defs: "" }
+          - { name: net,      defs: "-DLXP_ENABLE_NET=1" }
+          - { name: netfs,    defs: "-DLXP_ENABLE_NET=1 -DLXP_ENABLE_NETFS=1 -DLXP_ENABLE_NETFS_EXEC=1" }
+          - { name: pty,      defs: "-DLXP_ENABLE_PTY=1" }
+          - { name: dev,      defs: "-DLXP_ENABLE_DEV=1" }
+          - { name: dev-full, defs: "-DLXP_ENABLE_DEV=1 -DLXP_ENABLE_DEV_FB=1 -DLXP_ENABLE_DEV_INPUT=1" }
+          - { name: all,      defs: "-DLXP_ENABLE_NET=1 -DLXP_ENABLE_NETFS=1 -DLXP_ENABLE_NETFS_EXEC=1 -DLXP_ENABLE_PTY=1 -DLXP_ENABLE_DEV=1 -DLXP_ENABLE_DEV_FB=1 -DLXP_ENABLE_DEV_INPUT=1" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arm-none-eabi toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi
+
+      - name: Compile all src/ for Cortex-M under these gates (-Werror)
+        run: ARMCC=arm-none-eabi-gcc sh scripts/gate-build.sh ${{ matrix.gates.defs }}
 
   qemu:
     name: QEMU mps2-an500 end-to-end (M1/M2/M3)
