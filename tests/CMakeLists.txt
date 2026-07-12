@@ -26,6 +26,7 @@ set(LXP_TEST_MODULE_SRC
   "${LXP_ROOT}/src/lxp_arena.c"
   "${LXP_ROOT}/src/lxp_loader.c"
   "${LXP_ROOT}/src/lxp_syscall.c"
+  "${LXP_ROOT}/src/fs/lxp_path.c"
   "${LXP_ROOT}/src/fs/lxp_pipe.c"
   "${LXP_ROOT}/src/fs/lxp_tmpfs.c"
   "${LXP_ROOT}/src/proc/lxp_procfs.c"
