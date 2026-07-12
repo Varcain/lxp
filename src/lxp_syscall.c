@@ -15,6 +15,7 @@
 #include "lxp/lxp_types.h"
 
 #include "fs/lxp_pipe.h"     /* pipe ring ops (FD_PIPE) */
+#include "fs/lxp_tmpfs.h"    /* writable VFS overlay nodes (FD_TMPFS) */
 #include "proc/lxp_procfs.h" /* synthetic /proc content generation (FD_PROC) */
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h" /* /dev character-device routing (FD_DEV) */
@@ -145,82 +146,6 @@ long user_strnlen(const lxp_proc_t *p, const char *s, size_t max)
 }
 
 
-/*
- * Writable VFS overlaid on the read-only CPIO rootfs: regular files, directories
- * (mkdir), and symlinks (ln -s) created at runtime live here (e.g. `mkdir /tmp/d`,
- * `echo x > /tmp/f`). Nodes are global kernel state (shared across processes, like
- * pipes), keyed by absolute path. File bytes come from a bump-allocated pool;
- * growth re-allocates (the old block leaks — bounded by the pool, ENOSPC when
- * exhausted), and unlink/rmdir frees the node (not its bytes). Not a tree: a node
- * is "in" a directory iff its path is one component below the dir's path.
- */
-#define LXP_NWNODE 32
-#define LXP_WFS_POOL (64u * 1024u)
-typedef struct {
-	char path[LXP_PATH_MAX]; /* absolute, normalized */
-	uint32_t mode;		     /* S_IFREG|perms, S_IFDIR|perms, or S_IFLNK */
-	uint8_t *data;		     /* file/symlink bytes (pool); NULL when empty */
-	size_t size;
-	size_t cap;
-	int used;
-} lxp_wnode_t;
-static lxp_wnode_t g_wnodes[LXP_NWNODE];
-static uint8_t g_wfs_pool[LXP_WFS_POOL];
-static size_t g_wfs_off;
-
-static uint8_t *wfs_alloc(size_t n)
-{
-	n = (n + 7u) & ~(size_t)7u;
-	if (g_wfs_off + n > sizeof(g_wfs_pool))
-		return NULL;
-	uint8_t *p = g_wfs_pool + g_wfs_off;
-	g_wfs_off += n;
-	return p;
-}
-
-/* Find a writable node by absolute path (any type), or -1. */
-static int wfs_find(const char *abspath)
-{
-	for (int i = 0; i < LXP_NWNODE; i++)
-		if (g_wnodes[i].used && strcmp(g_wnodes[i].path, abspath) == 0)
-			return i;
-	return -1;
-}
-
-/* Allocate a node for abspath with mode; -1 if the table is full / path too long. */
-static int wfs_create(const char *abspath, uint32_t mode)
-{
-	if (strlen(abspath) >= LXP_PATH_MAX)
-		return -1;
-	for (int i = 0; i < LXP_NWNODE; i++)
-		if (!g_wnodes[i].used) {
-			strcpy(g_wnodes[i].path, abspath);
-			g_wnodes[i].mode = mode;
-			g_wnodes[i].data = NULL;
-			g_wnodes[i].size = 0;
-			g_wnodes[i].cap = 0;
-			g_wnodes[i].used = 1;
-			return i;
-		}
-	return -1;
-}
-
-/* Ensure node i can hold `need` bytes (grows from the pool; old block leaks). */
-static int wfs_reserve(int i, size_t need)
-{
-	lxp_wnode_t *w = &g_wnodes[i];
-	if (need <= w->cap)
-		return 0;
-	size_t ncap = (need + 255u) & ~(size_t)255u;
-	uint8_t *nd = wfs_alloc(ncap);
-	if (!nd)
-		return -1;
-	if (w->data && w->size)
-		memcpy(nd, w->data, w->size);
-	w->data = nd;
-	w->cap = ncap;
-	return 0;
-}
 
 /* Synthetic /proc fd backing (content generated on open; see proc_* below). */
 #define LXP_NPROCF 12
@@ -587,7 +512,7 @@ static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 #endif
 	/* A writable-node file write copies into its (growable) buffer at the offset. */
 	if (s->kind == LXP_FD_TMPFS) {
-		lxp_wnode_t *t = &g_wnodes[s->file_idx];
+		lxp_wnode_t *t = wnode_at(s->file_idx);
 		if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 			return -LXP_EBADF;
 		if (wfs_reserve(s->file_idx, s->offset + len) != 0)
@@ -713,7 +638,7 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
 
 	/* A writable-node file read returns bytes from its buffer at the fd offset. */
 	if (s->kind == LXP_FD_TMPFS) {
-		lxp_wnode_t *t = &g_wnodes[s->file_idx];
+		lxp_wnode_t *t = wnode_at(s->file_idx);
 		if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 			return -LXP_EISDIR;
 		if (s->offset >= t->size)
@@ -776,7 +701,7 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off
 	const uint8_t *data;
 	size_t size;
 	if (s->kind == LXP_FD_TMPFS) {
-		lxp_wnode_t *t = &g_wnodes[s->file_idx];
+		lxp_wnode_t *t = wnode_at(s->file_idx);
 		if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 			return -LXP_EISDIR;
 		data = (const uint8_t *)t->data;
@@ -822,7 +747,7 @@ static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint3
 		return lxp_dev_pwrite(p, s->file_idx, buf, len, off);
 #endif
 	if (s->kind == LXP_FD_TMPFS) {
-		lxp_wnode_t *t = &g_wnodes[s->file_idx];
+		lxp_wnode_t *t = wnode_at(s->file_idx);
 		if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 			return -LXP_EBADF;
 		if (wfs_reserve(s->file_idx, (size_t)off + len) != 0)
@@ -1279,13 +1204,13 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 			if (wi < 0)
 				return -LXP_EMFILE;
 		} else {
-			if ((g_wnodes[wi].mode & LXP_S_IFMT) == LXP_S_IFDIR)
+			if ((wnode_at(wi)->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 				return -LXP_EISDIR;
 			if (flags & LXP_O_TRUNC)
-				g_wnodes[wi].size = 0;
+				wnode_at(wi)->size = 0;
 		}
 		return fd_alloc(p, LXP_FD_TMPFS, wi,
-				(flags & LXP_O_APPEND) ? g_wnodes[wi].size : 0);
+				(flags & LXP_O_APPEND) ? wnode_at(wi)->size : 0);
 	}
 
 	/* Read: a writable node shadows the rootfs; else the read-only rootfs. */
@@ -1438,7 +1363,7 @@ static long sys_lseek(lxp_proc_t *p, int fd, long off, int whence)
 	if (s->kind != LXP_FD_FILE && s->kind != LXP_FD_TMPFS)
 		return -LXP_ESPIPE; /* console/pipe is not seekable */
 
-	long end = (s->kind == LXP_FD_TMPFS) ? (long)g_wnodes[s->file_idx].size
+	long end = (s->kind == LXP_FD_TMPFS) ? (long)wnode_at(s->file_idx)->size
 						 : (long)p->fs[s->file_idx].size;
 	long base;
 	switch (whence) {
@@ -1488,7 +1413,7 @@ static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 		return -LXP_EBADF;
 	if (s->kind != LXP_FD_TMPFS)
 		return -LXP_EINVAL; /* the rootfs is read-only; console/pipe N/A */
-	lxp_wnode_t *t = &g_wnodes[s->file_idx];
+	lxp_wnode_t *t = wnode_at(s->file_idx);
 	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 		return -LXP_EISDIR;
 	size_t newlen = (size_t)length;
@@ -1530,7 +1455,7 @@ static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 			     file_mode(&p->fs[s->file_idx]), p->fs[s->file_idx].size);
 	else if (s->kind == LXP_FD_TMPFS)
 		fill_kstat64(statbuf, 0x100000u + (uint32_t)s->file_idx,
-			     g_wnodes[s->file_idx].mode, g_wnodes[s->file_idx].size);
+			     wnode_at(s->file_idx)->mode, wnode_at(s->file_idx)->size);
 	else if (s->kind == LXP_FD_PROC)
 		fill_kstat64(statbuf, 0x200000u + (uint32_t)s->file_idx,
 			     g_procf[s->file_idx].is_dir ? (LXP_S_IFDIR | 0555u)
@@ -1608,7 +1533,7 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 #endif
 	int wi = wfs_find(abspath); /* writable overlay shadows the rootfs */
 	if (wi >= 0) {
-		fill_kstat64(statbuf, 0x100000u + (uint32_t)wi, g_wnodes[wi].mode, g_wnodes[wi].size);
+		fill_kstat64(statbuf, 0x100000u + (uint32_t)wi, wnode_at(wi)->mode, wnode_at(wi)->size);
 		return 0;
 	}
 	int idx = fs_lookup(p, abspath);
@@ -1642,7 +1567,7 @@ static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufs
 	}
 	int wi = wfs_find(abspath); /* a writable symlink (ln -s) shadows the rootfs */
 	if (wi >= 0) {
-		lxp_wnode_t *w = &g_wnodes[wi];
+		lxp_wnode_t *w = wnode_at(wi);
 		if ((w->mode & LXP_S_IFMT) != LXP_S_IFLNK || !w->data)
 			return -LXP_EINVAL;
 		size_t n = w->size > bufsiz ? bufsiz : w->size;
@@ -1705,17 +1630,17 @@ static long sys_unlink(lxp_proc_t *p, const char *path, int is_rmdir)
 	int wi = wfs_find(abspath);
 	if (wi < 0)
 		return (fs_lookup(p, abspath) >= 0) ? -LXP_EROFS : -LXP_ENOENT;
-	int isdir = (g_wnodes[wi].mode & LXP_S_IFMT) == LXP_S_IFDIR;
+	int isdir = (wnode_at(wi)->mode & LXP_S_IFMT) == LXP_S_IFDIR;
 	if (is_rmdir && !isdir)
 		return -LXP_ENOTDIR;
 	if (!is_rmdir && isdir)
 		return -LXP_EISDIR;
 	if (isdir) {
 		for (int j = 0; j < LXP_NWNODE; j++)
-			if (g_wnodes[j].used && child_name(abspath, g_wnodes[j].path))
+			if (wnode_at(j)->used && child_name(abspath, wnode_at(j)->path))
 				return -LXP_ENOTEMPTY;
 	}
-	g_wnodes[wi].used = 0; /* node freed; its pool bytes leak (bounded) */
+	wnode_at(wi)->used = 0; /* node freed; its pool bytes leak (bounded) */
 	return 0;
 }
 
@@ -1737,8 +1662,8 @@ static long sys_rename(lxp_proc_t *p, const char *oldp, const char *newp)
 		return -LXP_ENAMETOOLONG;
 	int di = wfs_find(newabs); /* replace an existing destination node */
 	if (di >= 0 && di != wi)
-		g_wnodes[di].used = 0;
-	strcpy(g_wnodes[wi].path, newabs);
+		wnode_at(di)->used = 0;
+	strcpy(wnode_at(wi)->path, newabs);
 	return 0;
 }
 
@@ -1757,11 +1682,11 @@ static long sys_symlink(lxp_proc_t *p, const char *target, const char *linkp)
 		return -LXP_ENOSPC;
 	size_t tl = strlen(target);
 	if (wfs_reserve(wi, tl) < 0) {
-		g_wnodes[wi].used = 0;
+		wnode_at(wi)->used = 0;
 		return -LXP_ENOSPC;
 	}
-	memcpy(g_wnodes[wi].data, target, tl);
-	g_wnodes[wi].size = tl;
+	memcpy(wnode_at(wi)->data, target, tl);
+	wnode_at(wi)->size = tl;
 	return 0;
 }
 
@@ -1775,7 +1700,7 @@ static long sys_chmod(lxp_proc_t *p, const char *path, uint32_t mode)
 		return rr;
 	int wi = wfs_find(abspath);
 	if (wi >= 0) {
-		g_wnodes[wi].mode = (g_wnodes[wi].mode & LXP_S_IFMT) | (mode & 0777u);
+		wnode_at(wi)->mode = (wnode_at(wi)->mode & LXP_S_IFMT) | (mode & 0777u);
 		return 0;
 	}
 	return (fs_lookup(p, abspath) >= 0) ? 0 : -LXP_ENOENT; /* rootfs: accept, inert */
@@ -1923,9 +1848,9 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 			return -LXP_ENOTDIR;
 		dirpath = p->fs[s->file_idx].path;
 	} else if (s->kind == LXP_FD_TMPFS) {
-		if ((g_wnodes[s->file_idx].mode & LXP_S_IFMT) != LXP_S_IFDIR)
+		if ((wnode_at(s->file_idx)->mode & LXP_S_IFMT) != LXP_S_IFDIR)
 			return -LXP_ENOTDIR;
-		dirpath = g_wnodes[s->file_idx].path;
+		dirpath = wnode_at(s->file_idx)->path;
 	} else if (s->kind == LXP_FD_PROC) {
 		if (!g_procf[s->file_idx].is_dir)
 			return -LXP_ENOTDIR;
@@ -1954,13 +1879,13 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 	}
 	/* writable-overlay children */
 	for (int i = 0; i < LXP_NWNODE && !full; i++) {
-		if (!g_wnodes[i].used)
+		if (!wnode_at(i)->used)
 			continue;
-		const char *name = child_name(dirpath, g_wnodes[i].path);
+		const char *name = child_name(dirpath, wnode_at(i)->path);
 		if (!name)
 			continue;
 		if (!dirent_emit(out, count, &filled, &pos, s, (uint64_t)(100000 + i), name,
-				 g_wnodes[i].mode))
+				 wnode_at(i)->mode))
 			full = 1;
 	}
 #if LXP_ENABLE_DEV
@@ -2091,8 +2016,8 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 			return lxp_netfs_stat(p, abspath, (uintptr_t)buf, 1); /* parks */
 #endif
 		} else if ((wi = wfs_find(abspath)) >= 0) { /* writable overlay shadows rootfs */
-			mode = g_wnodes[wi].mode;
-			size = g_wnodes[wi].size;
+			mode = wnode_at(wi)->mode;
+			size = wnode_at(wi)->size;
 			ino = 0x100000u + (uint32_t)wi;
 		} else {
 			int idx = fs_lookup(p, abspath);
@@ -2116,8 +2041,8 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 			size = p->fs[s->file_idx].size;
 			ino = 1u + (uint32_t)s->file_idx;
 		} else if (s->kind == LXP_FD_TMPFS) {
-			mode = g_wnodes[s->file_idx].mode;
-			size = g_wnodes[s->file_idx].size;
+			mode = wnode_at(s->file_idx)->mode;
+			size = wnode_at(s->file_idx)->size;
 			ino = 0x100000u + (uint32_t)s->file_idx;
 #if LXP_ENABLE_DEV
 		} else if (s->kind == LXP_FD_DEV) {
@@ -2629,7 +2554,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		if (!(abspath[0] == '/' && abspath[1] == '\0')) {
 			int wi = wfs_find(abspath);
 			if (wi >= 0) {
-				if ((g_wnodes[wi].mode & LXP_S_IFMT) != LXP_S_IFDIR)
+				if ((wnode_at(wi)->mode & LXP_S_IFMT) != LXP_S_IFDIR)
 					return -LXP_ENOTDIR;
 			} else {
 				int idx = fs_lookup(proc, abspath);
