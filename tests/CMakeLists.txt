@@ -41,6 +41,7 @@ add_executable(lxp_test_stub
   "${CMAKE_CURRENT_SOURCE_DIR}/stub_main.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_arena.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_loader.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_loader_fdpic.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_fs.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_overflow.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_syscall.c"

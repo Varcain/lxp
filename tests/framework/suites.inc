@@ -14,6 +14,7 @@
 
 LXP_SUITE(arena,         "Arena allocator")
 LXP_SUITE(loader,        "ELF object loader (x86-64 host path + ld_oob guards)")
+LXP_SUITE(loader_fdpic,  "FDPIC program loader (valid + malformed images)")
 LXP_SUITE(fs,            "Extracted fs/proc subsystems + pointer validators")
 LXP_SUITE(overflow,      "Memory-safety overflow / bounds guards")
 LXP_SUITE(linux_syscall, "Linux personality: syscall dispatch")
