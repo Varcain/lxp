@@ -14,6 +14,8 @@
 #include "lxp/lxp_syscall.h"
 #include "lxp/lxp_types.h"
 
+#include "lxp_vfs.h"         /* per-fd-kind file-operation vtable (dispatch by kind) */
+
 #include "fs/lxp_path.h"     /* path resolution (resolve_path / fs_lookup / fs_follow) */
 #include "fs/lxp_pipe.h"     /* pipe ring ops (FD_PIPE) */
 #include "fs/lxp_tmpfs.h"    /* writable VFS overlay nodes (FD_TMPFS) */
@@ -53,6 +55,10 @@ volatile int g_lxp_halt;
 
 /* PRNG fill (defined with sys_getrandom); /dev/urandom reads use it before that point. */
 static void prng_fill(uint8_t *b, size_t count);
+
+/* fd-kind → file-operation vtable resolver (defined with the fops below); used by
+ * proc_init to seed the std streams before the fops block appears in the file. */
+static const struct lxp_file_ops *ops_for_kind(uint8_t kind);
 
 #if LXP_ENABLE_NET
 /* pselect6(2): select() over the poll machinery (busybox inetd + dropbear are
@@ -233,10 +239,13 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 	 * stays readable (the shell dups stdin for its interactive fd). */
 	proc->fds[0].kind = LXP_FD_CONSOLE;
 	proc->fds[0].file_idx = 0;
+	proc->fds[0].ops = ops_for_kind(LXP_FD_CONSOLE);
 	proc->fds[1].kind = LXP_FD_CONSOLE;
 	proc->fds[1].file_idx = 1;
+	proc->fds[1].ops = ops_for_kind(LXP_FD_CONSOLE);
 	proc->fds[2].kind = LXP_FD_CONSOLE;
 	proc->fds[2].file_idx = 1;
+	proc->fds[2].ops = ops_for_kind(LXP_FD_CONSOLE);
 	if (brk_bytes) {
 		void *brk = lxp_arena_alloc(arena, brk_bytes);
 		if (!brk)
@@ -453,6 +462,439 @@ static lxp_fd_t *fd_slot(lxp_proc_t *p, int fd)
 static long efd_read(lxp_proc_t *p, int ei, void *buf, size_t len);
 static long efd_write(lxp_proc_t *p, int ei, const void *buf, size_t len);
 
+/* Fill an ARM kstat64 (defined below with sys_fstat64); the fstat fops use it. */
+struct lxp_kstat64;
+static void fill_kstat64(struct lxp_kstat64 *st, uint32_t ino, uint32_t mode, uint64_t size);
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * VFS file-operation vtable (src/lxp_vfs.h). The fd syscalls dispatch on the
+ * open fd's kind through a per-kind ops table instead of an inline switch — the
+ * Linux struct file_operations / gVisor FileDescriptionImpl pattern. Each fd
+ * carries its kind's ops (set at creation via ops_for_kind); a NULL method means
+ * the kind does not support that operation. A blocking backend parks the proc
+ * (sets the coordinator park state) and returns 0, exactly as before.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* ---- read fops ---- */
+static long fop_read_console(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+{
+	if (s->file_idx == 1) /* output consoles (stdout/stderr) are not readable */
+		return -LXP_EBADF;
+	if (s->file_idx == 3) /* /dev/null */
+		return 0;     /* EOF */
+	if (s->file_idx == 4) { /* /dev/urandom + /dev/random: PRNG bytes */
+		prng_fill((uint8_t *)buf, len);
+		return (long)len;
+	}
+	if (!p->read_fn)
+		return 0; /* EOF */
+	/* Park until a key is ready (probed via console_poll) so the SVC handler
+	 * returns and the coordinator's background tasks — notably the Ethernet RX
+	 * poll — run, instead of read_fn busy-waiting in handler mode (which starves
+	 * a backgrounded server). Without a poll hook, fall back to a blocking read. */
+	if (p->console_poll && p->console_poll(p->io_ctx) == 0) {
+		p->console_wait = 1;
+		p->console_buf = (uintptr_t)buf;
+		p->console_len = len;
+		return 0; /* parked; the coordinator resumes it when a key arrives */
+	}
+	return p->read_fn(p->io_ctx, (int)(s - p->fds), buf, len);
+}
+
+/* A pipe read end drains the shared ring; blocks while empty + a writer is open,
+ * EOF (0) once all writers have closed. */
+static long fop_read_pipe(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+{
+	if (s->rw != 0)
+		return -LXP_EBADF;
+	long r = pipe_try_read(s->file_idx, buf, len);
+	if (r == -LXP_EAGAIN) { /* empty but a writer is open */
+		if (s->nonblock)
+			return -LXP_EAGAIN; /* O_NONBLOCK: don't park (self-pipe drain) */
+		p->pipe_wait = 1; /* blocking: park + retry */
+		p->pipe_idx = s->file_idx;
+		p->pipe_buf = (uintptr_t)buf;
+		p->pipe_len = len;
+		return 0;
+	}
+	return r; /* bytes read, or 0 (EOF) */
+}
+
+/* A writable-node file read returns bytes from its buffer at the fd offset. */
+static long fop_read_tmpfs(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+{
+	(void)p;
+	lxp_wnode_t *t = wnode_at(s->file_idx);
+	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
+		return -LXP_EISDIR;
+	if (s->offset >= t->size)
+		return 0; /* EOF */
+	size_t n = t->size - s->offset;
+	if (n > len)
+		n = len;
+	memcpy(buf, t->data + s->offset, n);
+	s->offset += n;
+	return (long)n;
+}
+
+/* A /proc file read returns bytes from the content generated at open. */
+static long fop_read_proc(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+{
+	(void)p;
+	if (g_procf[s->file_idx].is_dir)
+		return -LXP_EISDIR;
+	size_t plen = g_procf[s->file_idx].len;
+	if ((size_t)s->offset >= plen)
+		return 0; /* EOF */
+	size_t n = plen - s->offset;
+	if (n > len)
+		n = len;
+	memcpy(buf, g_procf[s->file_idx].buf + s->offset, n);
+	s->offset += n;
+	return (long)n;
+}
+
+/* Read from a read-only rootfs file at the current offset. */
+static long fop_read_rootfs(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+{
+	const lxp_file_t *f = &p->fs[s->file_idx];
+	if ((file_mode(f) & LXP_S_IFMT) == LXP_S_IFDIR)
+		return -LXP_EISDIR;
+	if (s->offset >= f->size)
+		return 0; /* EOF */
+	size_t n = f->size - s->offset;
+	if (n > len)
+		n = len;
+	memcpy(buf, f->data + s->offset, n);
+	s->offset += n;
+	return (long)n;
+}
+
+static long fop_read_eventfd(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+{
+	return efd_read(p, s->file_idx, buf, len);
+}
+
+#if LXP_ENABLE_DEV
+static long fop_read_dev(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+{
+	return lxp_dev_read(p, s->file_idx, buf, len);
+}
+#endif
+#if LXP_ENABLE_NET
+static long fop_read_socket(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+{
+	return lxp_sock_recv(p, s->file_idx, buf, len, 0, NULL, NULL);
+}
+#endif
+#if LXP_ENABLE_NETFS
+static long fop_read_netfs(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+{
+	return lxp_netfs_read(p, s->file_idx, buf, len);
+}
+#endif
+#if LXP_ENABLE_PTY
+/* A pty end drains its ring (master reads program output, slave reads program input);
+ * blocks while empty + the peer end is open, EOF (0) once the peer closes. */
+static long fop_read_pty(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+{
+	long r = lxp_pty_read(p, s->file_idx, s->rw, buf, len);
+	if (r == -LXP_EAGAIN && !lxp_pty_nonblock(s->file_idx, s->rw)) {
+		p->pty_wait = s->rw ? LXP_PTYW_MREAD : LXP_PTYW_SREAD;
+		p->pty_idx = s->file_idx;
+		p->pty_buf = (uintptr_t)buf;
+		p->pty_len = len;
+		return 0; /* parked; coordinator retries via lxp_pty_retry */
+	}
+	return r; /* bytes read, 0 (EOF), or -EAGAIN (O_NONBLOCK) */
+}
+#endif
+
+/* ---- write fops ---- */
+static long fop_write_console(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+{
+	if (s->file_idx == 3 || s->file_idx == 4)
+		return (long)len; /* /dev/null + /dev/urandom: discard writes */
+	if (s->file_idx == 0 || !p->write_fn) /* stdin is not writable; no sink → EBADF */
+		return -LXP_EBADF;
+	return p->write_fn(p->io_ctx, (int)(s - p->fds), buf, len);
+}
+
+/* A pipe write end appends to the shared ring; blocks when full (reader open). */
+static long fop_write_pipe(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+{
+	if (s->rw != 1)
+		return -LXP_EBADF;
+	long r = pipe_try_write(s->file_idx, buf, len);
+	if (r == -LXP_EAGAIN) { /* full but a reader is open */
+		if (s->nonblock)
+			return -LXP_EAGAIN; /* O_NONBLOCK: don't park */
+		p->pipe_wait = 2; /* blocking: park + retry */
+		p->pipe_idx = s->file_idx;
+		p->pipe_buf = (uintptr_t)buf;
+		p->pipe_len = len;
+		return 0; /* dispatch parks; coordinator completes via lxp_pipe_retry */
+	}
+	if (r == -LXP_EPIPE && /* no readers: SIGPIPE — default terminates the writer */
+	    p->sig_handler[LXP_SIGPIPE] != LXP_SIG_IGN) {
+		p->exited = 1;
+		p->exit_status = 128 + LXP_SIGPIPE;
+	}
+	return r; /* bytes written, or -EPIPE (no readers; writer exits unless it ignores it) */
+}
+
+/* A writable-node file write copies into its (growable) buffer at the offset. */
+static long fop_write_tmpfs(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+{
+	(void)p;
+	lxp_wnode_t *t = wnode_at(s->file_idx);
+	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
+		return -LXP_EBADF;
+	if (wfs_reserve(s->file_idx, s->offset + len) != 0)
+		return -LXP_EFBIG; /* writable-fs pool exhausted */
+	memcpy(t->data + s->offset, buf, len);
+	s->offset += len;
+	if (s->offset > t->size)
+		t->size = s->offset;
+	return (long)len;
+}
+
+static long fop_write_eventfd(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+{
+	return efd_write(p, s->file_idx, buf, len);
+}
+
+#if LXP_ENABLE_DEV
+static long fop_write_dev(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+{
+	return lxp_dev_write(p, s->file_idx, buf, len);
+}
+#endif
+#if LXP_ENABLE_NET
+static long fop_write_socket(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+{
+	return lxp_sock_send(p, s->file_idx, buf, len, 0, NULL, 0);
+}
+#endif
+#if LXP_ENABLE_NETFS
+static long fop_write_netfs(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+{
+	(void)p;
+	(void)s;
+	(void)buf;
+	(void)len;
+	return -LXP_EROFS; /* read-only remote mount */
+}
+#endif
+#if LXP_ENABLE_PTY
+/* A pty write feeds the peer's ring through the line discipline (master write runs
+ * input processing toward the slave; slave write runs output/ONLCR toward the master).
+ * Blocks (backpressure) when the destination ring is full and the peer is open. */
+static long fop_write_pty(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+{
+	long r = lxp_pty_write(p, s->file_idx, s->rw, buf, len);
+	if (r == -LXP_EAGAIN && !lxp_pty_nonblock(s->file_idx, s->rw)) {
+		p->pty_wait = s->rw ? LXP_PTYW_MWRITE : LXP_PTYW_SWRITE;
+		p->pty_idx = s->file_idx;
+		p->pty_buf = (uintptr_t)buf;
+		p->pty_len = len;
+		return 0; /* parked; coordinator completes via lxp_pty_retry */
+	}
+	return r; /* bytes consumed, or -EAGAIN (O_NONBLOCK) */
+}
+#endif
+
+/* ---- lseek fops ---- */
+/* Shared SEEK_SET/CUR/END arithmetic against a file of logical size @p end. */
+static long lseek_within(lxp_fd_t *s, long end, long off, int whence)
+{
+	long base;
+	switch (whence) {
+	case LXP_SEEK_SET:
+		base = 0;
+		break;
+	case LXP_SEEK_CUR:
+		base = (long)s->offset;
+		break;
+	case LXP_SEEK_END:
+		base = end;
+		break;
+	default:
+		return -LXP_EINVAL;
+	}
+	long pos = base + off;
+	if (pos < 0)
+		return -LXP_EINVAL;
+	s->offset = (size_t)pos;
+	return pos;
+}
+
+static long fop_lseek_rootfs(lxp_proc_t *p, lxp_fd_t *s, long off, int whence)
+{
+	return lseek_within(s, (long)p->fs[s->file_idx].size, off, whence);
+}
+
+static long fop_lseek_tmpfs(lxp_proc_t *p, lxp_fd_t *s, long off, int whence)
+{
+	(void)p;
+	return lseek_within(s, (long)wnode_at(s->file_idx)->size, off, whence);
+}
+
+#if LXP_ENABLE_DEV
+static long fop_lseek_dev(lxp_proc_t *p, lxp_fd_t *s, long off, int whence)
+{
+	(void)p;
+	return lxp_dev_lseek(s->file_idx, off, whence);
+}
+#endif
+#if LXP_ENABLE_NETFS
+static long fop_lseek_netfs(lxp_proc_t *p, lxp_fd_t *s, long off, int whence)
+{
+	(void)p;
+	return lxp_netfs_lseek(s->file_idx, off, whence);
+}
+#endif
+
+/* ---- fstat fops (each kind reports its own mode/size + a unique inode base) ---- */
+static long fop_fstat_rootfs(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+{
+	fill_kstat64(statbuf, 1u + (uint32_t)s->file_idx, file_mode(&p->fs[s->file_idx]),
+		     p->fs[s->file_idx].size);
+	return 0;
+}
+
+static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+{
+	(void)p;
+	fill_kstat64(statbuf, 0x100000u + (uint32_t)s->file_idx, wnode_at(s->file_idx)->mode,
+		     wnode_at(s->file_idx)->size);
+	return 0;
+}
+
+static long fop_fstat_proc(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+{
+	(void)p;
+	fill_kstat64(statbuf, 0x200000u + (uint32_t)s->file_idx,
+		     g_procf[s->file_idx].is_dir ? (LXP_S_IFDIR | 0555u) : (LXP_S_IFREG | 0444u),
+		     g_procf[s->file_idx].len);
+	return 0;
+}
+
+#if LXP_ENABLE_DEV
+static long fop_fstat_dev(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+{
+	(void)p;
+	uint32_t mode;
+	uint64_t rdev, size;
+	lxp_dev_fstat(s->file_idx, &mode, &rdev, &size);
+	fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, mode, size);
+	((struct lxp_kstat64 *)statbuf)->st_rdev = rdev;
+	return 0;
+}
+#endif
+#if LXP_ENABLE_NET
+static long fop_fstat_socket(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+{
+	(void)p;
+	uint32_t mode;
+	uint64_t size;
+	lxp_sock_fstat(s->file_idx, &mode, &size);
+	fill_kstat64(statbuf, 0x400000u + (uint32_t)s->file_idx, mode, size);
+	return 0;
+}
+#endif
+#if LXP_ENABLE_NETFS
+static long fop_fstat_netfs(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+{
+	uint32_t mode;
+	uint64_t size, mtime, ino;
+	if (lxp_netfs_fstat(s->file_idx, &mode, &size, &mtime, &ino) != 0)
+		return -LXP_EBADF;
+	return lxp_netfs_fill_stat(p, (uintptr_t)statbuf, 0, mode, size, mtime, ino);
+}
+#endif
+#if LXP_ENABLE_PTY
+static long fop_fstat_pty(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+{
+	(void)p;
+	uint32_t mode;
+	uint64_t size;
+	lxp_pty_fstat(&mode, &size); /* S_IFCHR so isatty() → interactive shell */
+	fill_kstat64(statbuf, 0x500000u + (uint32_t)s->file_idx, mode, size);
+	return 0;
+}
+#endif
+
+/* ---- per-kind ops tables + kind→ops resolver ----
+ * A NULL read/write means the kind rejects that direction: the syscall entry
+ * returns -EBADF (the errno the former fallthrough returned for rootfs/proc and
+ * a wrong-direction console). netfs is the exception — its write returns -EROFS,
+ * so it supplies an explicit write fop rather than a NULL. */
+static const lxp_file_ops_t console_fops = {.read = fop_read_console, .write = fop_write_console};
+static const lxp_file_ops_t rootfs_fops = {.read = fop_read_rootfs, /* read-only → write EBADF */
+					   .lseek = fop_lseek_rootfs,
+					   .fstat = fop_fstat_rootfs};
+static const lxp_file_ops_t tmpfs_fops = {.read = fop_read_tmpfs, .write = fop_write_tmpfs,
+					  .lseek = fop_lseek_tmpfs, .fstat = fop_fstat_tmpfs};
+static const lxp_file_ops_t pipe_fops = {.read = fop_read_pipe, .write = fop_write_pipe};
+static const lxp_file_ops_t proc_fops = {.read = fop_read_proc, /* read-only → write EBADF */
+					 .fstat = fop_fstat_proc};
+static const lxp_file_ops_t eventfd_fops = {.read = fop_read_eventfd, .write = fop_write_eventfd};
+#if LXP_ENABLE_DEV
+static const lxp_file_ops_t dev_fops = {.read = fop_read_dev, .write = fop_write_dev,
+					.lseek = fop_lseek_dev, .fstat = fop_fstat_dev};
+#endif
+#if LXP_ENABLE_NET
+static const lxp_file_ops_t socket_fops = {.read = fop_read_socket, .write = fop_write_socket,
+					   .fstat = fop_fstat_socket};
+#endif
+#if LXP_ENABLE_NETFS
+static const lxp_file_ops_t netfs_fops = {.read = fop_read_netfs, .write = fop_write_netfs,
+					  .lseek = fop_lseek_netfs, .fstat = fop_fstat_netfs};
+#endif
+#if LXP_ENABLE_PTY
+static const lxp_file_ops_t pty_fops = {.read = fop_read_pty, .write = fop_write_pty,
+					.fstat = fop_fstat_pty};
+#endif
+
+/* Resolve an fd kind to its ops table (stamped on the fd at creation). This is the
+ * ONE place the fd syscalls' former per-verb kind ladders collapse into. */
+static const struct lxp_file_ops *ops_for_kind(uint8_t kind)
+{
+	switch (kind) {
+	case LXP_FD_CONSOLE:
+		return &console_fops;
+	case LXP_FD_FILE:
+		return &rootfs_fops;
+	case LXP_FD_TMPFS:
+		return &tmpfs_fops;
+	case LXP_FD_PIPE:
+		return &pipe_fops;
+	case LXP_FD_PROC:
+		return &proc_fops;
+	case LXP_FD_EVENTFD:
+		return &eventfd_fops;
+#if LXP_ENABLE_DEV
+	case LXP_FD_DEV:
+		return &dev_fops;
+#endif
+#if LXP_ENABLE_NET
+	case LXP_FD_SOCKET:
+		return &socket_fops;
+#endif
+#if LXP_ENABLE_NETFS
+	case LXP_FD_NET:
+		return &netfs_fops;
+#endif
+#if LXP_ENABLE_PTY
+	case LXP_FD_PTY:
+		return &pty_fops;
+#endif
+	default:
+		return NULL;
+	}
+}
+
 static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 {
 	lxp_fd_t *s = fd_slot(p, fd);
@@ -460,76 +902,9 @@ static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 		return -LXP_EBADF;
 	if (!user_ok(p, buf, len, 0)) /* the kernel READS buf → reject a bad source pointer */
 		return -LXP_EFAULT;
-#if LXP_ENABLE_DEV
-	if (s->kind == LXP_FD_DEV)
-		return lxp_dev_write(p, s->file_idx, buf, len);
-#endif
-#if LXP_ENABLE_NET
-	if (s->kind == LXP_FD_SOCKET)
-		return lxp_sock_send(p, s->file_idx, buf, len, 0, NULL, 0);
-#endif
-#if LXP_ENABLE_NETFS
-	if (s->kind == LXP_FD_NET)
-		return -LXP_EROFS; /* read-only remote mount */
-#endif
-	if (s->kind == LXP_FD_EVENTFD)
-		return efd_write(p, s->file_idx, buf, len);
-	/* A pipe write end appends to the shared ring; blocks when full (reader open). */
-	if (s->kind == LXP_FD_PIPE) {
-		if (s->rw != 1)
-			return -LXP_EBADF;
-		long r = pipe_try_write(s->file_idx, buf, len);
-		if (r == -LXP_EAGAIN) { /* full but a reader is open */
-			if (s->nonblock)
-				return -LXP_EAGAIN; /* O_NONBLOCK: don't park */
-			p->pipe_wait = 2; /* blocking: park + retry */
-			p->pipe_idx = s->file_idx;
-			p->pipe_buf = (uintptr_t)buf;
-			p->pipe_len = len;
-			return 0; /* dispatch parks; coordinator completes via lxp_pipe_retry */
-		}
-		if (r == -LXP_EPIPE && /* no readers: SIGPIPE — default terminates the writer */
-		    p->sig_handler[LXP_SIGPIPE] != LXP_SIG_IGN) {
-			p->exited = 1;
-			p->exit_status = 128 + LXP_SIGPIPE;
-		}
-		return r; /* bytes written, or -EPIPE (no readers; writer exits unless it ignores it) */
-	}
-#if LXP_ENABLE_PTY
-	/* A pty write feeds the peer's ring through the line discipline (master write runs
-	 * input processing toward the slave; slave write runs output/ONLCR toward the master).
-	 * Blocks (backpressure) when the destination ring is full and the peer is open. */
-	if (s->kind == LXP_FD_PTY) {
-		long r = lxp_pty_write(p, s->file_idx, s->rw, buf, len);
-		if (r == -LXP_EAGAIN && !lxp_pty_nonblock(s->file_idx, s->rw)) {
-			p->pty_wait = s->rw ? LXP_PTYW_MWRITE : LXP_PTYW_SWRITE;
-			p->pty_idx = s->file_idx;
-			p->pty_buf = (uintptr_t)buf;
-			p->pty_len = len;
-			return 0; /* parked; coordinator completes via lxp_pty_retry */
-		}
-		return r; /* bytes consumed, or -EAGAIN (O_NONBLOCK) */
-	}
-#endif
-	/* A writable-node file write copies into its (growable) buffer at the offset. */
-	if (s->kind == LXP_FD_TMPFS) {
-		lxp_wnode_t *t = wnode_at(s->file_idx);
-		if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
-			return -LXP_EBADF;
-		if (wfs_reserve(s->file_idx, s->offset + len) != 0)
-			return -LXP_EFBIG; /* writable-fs pool exhausted */
-		memcpy(t->data + s->offset, buf, len);
-		s->offset += len;
-		if (s->offset > t->size)
-			t->size = s->offset;
-		return (long)len;
-	}
-	if (s->kind == LXP_FD_CONSOLE && (s->file_idx == 3 || s->file_idx == 4))
-		return (long)len; /* /dev/null + /dev/urandom: discard writes */
-	/* Only output consoles are writable (file_idx != 0); the rootfs is read-only. */
-	if (s->kind != LXP_FD_CONSOLE || s->file_idx == 0 || !p->write_fn)
-		return -LXP_EBADF;
-	return p->write_fn(p->io_ctx, fd, buf, len);
+	if (s->ops && s->ops->write)
+		return s->ops->write(p, s, buf, len);
+	return -LXP_EBADF; /* read-only kind (rootfs/proc) or wrong-direction console */
 }
 
 static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
@@ -563,122 +938,9 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
 		return -LXP_EBADF;
 	if (!user_ok(p, buf, len, 1)) /* the kernel WRITES buf → reject a bad destination pointer */
 		return -LXP_EFAULT;
-
-#if LXP_ENABLE_DEV
-	if (s->kind == LXP_FD_DEV)
-		return lxp_dev_read(p, s->file_idx, buf, len);
-#endif
-#if LXP_ENABLE_NET
-	if (s->kind == LXP_FD_SOCKET)
-		return lxp_sock_recv(p, s->file_idx, buf, len, 0, NULL, NULL);
-#endif
-#if LXP_ENABLE_NETFS
-	if (s->kind == LXP_FD_NET)
-		return lxp_netfs_read(p, s->file_idx, buf, len);
-#endif
-	if (s->kind == LXP_FD_EVENTFD)
-		return efd_read(p, s->file_idx, buf, len);
-
-	if (s->kind == LXP_FD_CONSOLE) {
-		if (s->file_idx == 1) /* output consoles (stdout/stderr) are not readable */
-			return -LXP_EBADF;
-		if (s->file_idx == 3) /* /dev/null */
-			return 0;     /* EOF */
-		if (s->file_idx == 4) { /* /dev/urandom + /dev/random: PRNG bytes */
-			prng_fill((uint8_t *)buf, len);
-			return (long)len;
-		}
-		if (!p->read_fn)
-			return 0; /* EOF */
-		/* Park until a key is ready (probed via console_poll) so the SVC handler
-		 * returns and the coordinator's background tasks — notably the Ethernet RX
-		 * poll — run, instead of read_fn busy-waiting in handler mode (which starves
-		 * a backgrounded server). Without a poll hook, fall back to a blocking read. */
-		if (p->console_poll && p->console_poll(p->io_ctx) == 0) {
-			p->console_wait = 1;
-			p->console_buf = (uintptr_t)buf;
-			p->console_len = len;
-			return 0; /* parked; the coordinator resumes it when a key arrives */
-		}
-		return p->read_fn(p->io_ctx, fd, buf, len);
-	}
-
-	/* A pipe read end drains the shared ring; blocks while empty + a writer is open,
-	 * EOF (0) once all writers have closed. */
-	if (s->kind == LXP_FD_PIPE) {
-		if (s->rw != 0)
-			return -LXP_EBADF;
-		long r = pipe_try_read(s->file_idx, buf, len);
-		if (r == -LXP_EAGAIN) { /* empty but a writer is open */
-			if (s->nonblock)
-				return -LXP_EAGAIN; /* O_NONBLOCK: don't park (self-pipe drain) */
-			p->pipe_wait = 1; /* blocking: park + retry */
-			p->pipe_idx = s->file_idx;
-			p->pipe_buf = (uintptr_t)buf;
-			p->pipe_len = len;
-			return 0;
-		}
-		return r; /* bytes read, or 0 (EOF) */
-	}
-
-#if LXP_ENABLE_PTY
-	/* A pty end drains its ring (master reads program output, slave reads program input);
-	 * blocks while empty + the peer end is open, EOF (0) once the peer closes. */
-	if (s->kind == LXP_FD_PTY) {
-		long r = lxp_pty_read(p, s->file_idx, s->rw, buf, len);
-		if (r == -LXP_EAGAIN && !lxp_pty_nonblock(s->file_idx, s->rw)) {
-			p->pty_wait = s->rw ? LXP_PTYW_MREAD : LXP_PTYW_SREAD;
-			p->pty_idx = s->file_idx;
-			p->pty_buf = (uintptr_t)buf;
-			p->pty_len = len;
-			return 0; /* parked; coordinator retries via lxp_pty_retry */
-		}
-		return r; /* bytes read, 0 (EOF), or -EAGAIN (O_NONBLOCK) */
-	}
-#endif
-
-	/* A writable-node file read returns bytes from its buffer at the fd offset. */
-	if (s->kind == LXP_FD_TMPFS) {
-		lxp_wnode_t *t = wnode_at(s->file_idx);
-		if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
-			return -LXP_EISDIR;
-		if (s->offset >= t->size)
-			return 0; /* EOF */
-		size_t n = t->size - s->offset;
-		if (n > len)
-			n = len;
-		memcpy(buf, t->data + s->offset, n);
-		s->offset += n;
-		return (long)n;
-	}
-
-	/* A /proc file read returns bytes from the content generated at open. */
-	if (s->kind == LXP_FD_PROC) {
-		if (g_procf[s->file_idx].is_dir)
-			return -LXP_EISDIR;
-		size_t plen = g_procf[s->file_idx].len;
-		if ((size_t)s->offset >= plen)
-			return 0; /* EOF */
-		size_t n = plen - s->offset;
-		if (n > len)
-			n = len;
-		memcpy(buf, g_procf[s->file_idx].buf + s->offset, n);
-		s->offset += n;
-		return (long)n;
-	}
-
-	/* Read from a rootfs file at the current offset. */
-	const lxp_file_t *f = &p->fs[s->file_idx];
-	if ((file_mode(f) & LXP_S_IFMT) == LXP_S_IFDIR)
-		return -LXP_EISDIR;
-	if (s->offset >= f->size)
-		return 0; /* EOF */
-	size_t n = f->size - s->offset;
-	if (n > len)
-		n = len;
-	memcpy(buf, f->data + s->offset, n);
-	s->offset += n;
-	return (long)n;
+	if (s->ops && s->ops->read)
+		return s->ops->read(p, s, buf, len);
+	return -LXP_EBADF;
 }
 
 /*
@@ -875,6 +1137,7 @@ static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
 			p->fds[fd].cloexec = 0;
 			p->fds[fd].file_idx = idx;
 			p->fds[fd].offset = off;
+			p->fds[fd].ops = ops_for_kind(kind);
 			return fd;
 		}
 	}
@@ -1129,10 +1392,10 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 	}
 	if (wfd < 0)
 		return -LXP_EMFILE;
-	p->fds[rfd] =
-		(lxp_fd_t){.kind = LXP_FD_PIPE, .rw = 0, .cloexec = cx, .nonblock = nb, .file_idx = pi};
-	p->fds[wfd] =
-		(lxp_fd_t){.kind = LXP_FD_PIPE, .rw = 1, .cloexec = cx, .nonblock = nb, .file_idx = pi};
+	p->fds[rfd] = (lxp_fd_t){.kind = LXP_FD_PIPE, .rw = 0, .cloexec = cx, .nonblock = nb,
+				 .file_idx = pi, .ops = ops_for_kind(LXP_FD_PIPE)};
+	p->fds[wfd] = (lxp_fd_t){.kind = LXP_FD_PIPE, .rw = 1, .cloexec = cx, .nonblock = nb,
+				 .file_idx = pi, .ops = ops_for_kind(LXP_FD_PIPE)};
 	fds[0] = rfd;
 	fds[1] = wfd;
 	return 0;
@@ -1208,38 +1471,9 @@ static long sys_lseek(lxp_proc_t *p, int fd, long off, int whence)
 	lxp_fd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-#if LXP_ENABLE_DEV
-	if (s->kind == LXP_FD_DEV)
-		return lxp_dev_lseek(s->file_idx, off, whence);
-#endif
-#if LXP_ENABLE_NETFS
-	if (s->kind == LXP_FD_NET)
-		return lxp_netfs_lseek(s->file_idx, off, whence);
-#endif
-	if (s->kind != LXP_FD_FILE && s->kind != LXP_FD_TMPFS)
-		return -LXP_ESPIPE; /* console/pipe is not seekable */
-
-	long end = (s->kind == LXP_FD_TMPFS) ? (long)wnode_at(s->file_idx)->size
-						 : (long)p->fs[s->file_idx].size;
-	long base;
-	switch (whence) {
-	case LXP_SEEK_SET:
-		base = 0;
-		break;
-	case LXP_SEEK_CUR:
-		base = (long)s->offset;
-		break;
-	case LXP_SEEK_END:
-		base = end;
-		break;
-	default:
-		return -LXP_EINVAL;
-	}
-	long pos = base + off;
-	if (pos < 0)
-		return -LXP_EINVAL;
-	s->offset = (size_t)pos;
-	return pos;
+	if (s->ops && s->ops->lseek)
+		return s->ops->lseek(p, s, off, whence);
+	return -LXP_ESPIPE; /* console/pipe/proc/eventfd/pty/socket not seekable */
 }
 
 /* _llseek(fd, offset_high, offset_low, loff_t *result, whence): the 64-bit-offset
@@ -1306,53 +1540,10 @@ static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 		return -LXP_EBADF;
 	if (!user_ok(p, statbuf, sizeof(struct lxp_kstat64), 1))
 		return -LXP_EFAULT;
-	if (s->kind == LXP_FD_FILE)
-		fill_kstat64(statbuf, 1u + (uint32_t)s->file_idx,
-			     file_mode(&p->fs[s->file_idx]), p->fs[s->file_idx].size);
-	else if (s->kind == LXP_FD_TMPFS)
-		fill_kstat64(statbuf, 0x100000u + (uint32_t)s->file_idx,
-			     wnode_at(s->file_idx)->mode, wnode_at(s->file_idx)->size);
-	else if (s->kind == LXP_FD_PROC)
-		fill_kstat64(statbuf, 0x200000u + (uint32_t)s->file_idx,
-			     g_procf[s->file_idx].is_dir ? (LXP_S_IFDIR | 0555u)
-							 : (LXP_S_IFREG | 0444u),
-			     g_procf[s->file_idx].len);
-#if LXP_ENABLE_DEV
-	else if (s->kind == LXP_FD_DEV) {
-		uint32_t mode;
-		uint64_t rdev, size;
-		lxp_dev_fstat(s->file_idx, &mode, &rdev, &size);
-		fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, mode, size);
-		((struct lxp_kstat64 *)statbuf)->st_rdev = rdev;
-	}
-#endif
-#if LXP_ENABLE_NET
-	else if (s->kind == LXP_FD_SOCKET) {
-		uint32_t mode;
-		uint64_t size;
-		lxp_sock_fstat(s->file_idx, &mode, &size);
-		fill_kstat64(statbuf, 0x400000u + (uint32_t)s->file_idx, mode, size);
-	}
-#endif
-#if LXP_ENABLE_NETFS
-	else if (s->kind == LXP_FD_NET) {
-		uint32_t mode;
-		uint64_t size, mtime, ino;
-		if (lxp_netfs_fstat(s->file_idx, &mode, &size, &mtime, &ino) != 0)
-			return -LXP_EBADF;
-		return lxp_netfs_fill_stat(p, (uintptr_t)statbuf, 0, mode, size, mtime, ino);
-	}
-#endif
-#if LXP_ENABLE_PTY
-	else if (s->kind == LXP_FD_PTY) {
-		uint32_t mode;
-		uint64_t size;
-		lxp_pty_fstat(&mode, &size); /* S_IFCHR so isatty() → interactive shell */
-		fill_kstat64(statbuf, 0x500000u + (uint32_t)s->file_idx, mode, size);
-	}
-#endif
-	else
-		fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, LXP_S_IFCHR | 0620u, 0);
+	if (s->ops && s->ops->fstat)
+		return s->ops->fstat(p, s, statbuf);
+	/* console/pipe/eventfd: a bare character device (S_IFCHR) so isatty()/stdio behaves. */
+	fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, LXP_S_IFCHR | 0620u, 0);
 	return 0;
 }
 

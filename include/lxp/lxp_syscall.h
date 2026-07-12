@@ -380,6 +380,8 @@ typedef struct lxp_file {
 			      *   path component below @c path). */
 } lxp_file_t;
 
+struct lxp_file_ops; /* per-fd-kind operation vtable; full definition in src/lxp_vfs.h */
+
 /** Open-file-descriptor slot. */
 typedef struct lxp_fd {
 	uint8_t kind;  /**< 0 = free, 1 = console, 2 = rootfs file, 3 = pipe, 4 = tmpfs,
@@ -393,6 +395,9 @@ typedef struct lxp_fd {
 			   *   loop; without this the final empty read parks forever). */
 	int file_idx;  /**< rootfs index (file) / pipe index (pipe) / open-pool index (device). */
 	size_t offset; /**< Read cursor (kind == file). */
+	const struct lxp_file_ops *ops; /**< read/write dispatch vtable for this fd's kind,
+					 *   set at creation via ops_for_kind() (the Linux
+					 *   struct file_operations pattern). */
 } lxp_fd_t;
 
 /* fd kinds (lxp_fd_t.kind). Shared across the syscall dispatcher + the subsystem TUs
