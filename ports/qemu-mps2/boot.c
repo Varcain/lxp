@@ -105,8 +105,18 @@ static void coordinator_task(void *arg)
 		.read_fn = con_read,
 		.io_ctx = NULL,
 	};
-	const char *const argv[] = {"hello", NULL};
-	int rc = lxp_run(&g_lxp_qemu_engine, NULL, NULL, NULL, &cfg, "/hello", 1, argv);
+	/* The initial program to run. Selected at build time so one cpio fixture serves
+	 * every milestone: M1 = /hello, M2 = /init (which execs /child), ... */
+#ifndef LXP_GUEST_ENTRY
+#define LXP_GUEST_ENTRY "/hello"
+#endif
+	const char *entry = LXP_GUEST_ENTRY;
+	const char *a0 = entry;
+	for (const char *q = entry; *q; q++)
+		if (*q == '/')
+			a0 = q + 1; /* argv[0] = basename */
+	const char *const argv[] = {a0, NULL};
+	int rc = lxp_run(&g_lxp_qemu_engine, NULL, NULL, NULL, &cfg, entry, 1, argv);
 	sh_exit(rc >= 0 ? rc : 100 - rc);
 }
 

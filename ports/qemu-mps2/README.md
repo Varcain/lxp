@@ -17,10 +17,13 @@ dependency on any OS, so `scripts/check-decoupled.sh` still passes.
 | `engine.c` | fills `lxp_os_ops_t` on top of FreeRTOS (SVC trap, fault containment, spawn/resume, region placement) |
 | `boot.c` | reset/vectors, semihosting console + exit, tick clock, coordinator task that calls `lxp_run()` |
 | `board/FreeRTOSConfig.h`, `board/mps2_an500.ld` | board config + link map |
-| `build.sh` | cross-compiles the module + FreeRTOS + engine/boot into `firmware.elf` |
-| `run.sh` | (re)generates the embedded cpio, builds, runs QEMU, asserts the guest marker |
+| `build.sh` | cross-compiles the module + FreeRTOS + engine/boot into `firmware.elf` (bakes in `GUEST_ENTRY`) |
+| `run.sh` | selects a milestone (`M=1`/`M=2`), (re)generates the embedded cpio, builds, runs QEMU, asserts the marker |
+| `guest/lxpsys.h` | shared FDPIC syscall shims (inline `svc`, no libc, no GOT dependency) |
 | `guest/hello.c` | the M1 guest (static FDPIC: `write` + `exit_group`) |
-| `guest/rootfs.cpio` | **pinned fixture** — the built guest, committed so CI needs no FDPIC toolchain |
+| `guest/init.c` | the M2 parent (`pipe` + `vfork` + `execve(/child)` + `wait4`, verifies the round trip) |
+| `guest/child.c` | the M2 exec'd child (writes a byte to the inherited pipe end, exits with a code) |
+| `guest/rootfs.cpio` | **pinned fixture** — every milestone's built guests, committed so CI needs no FDPIC toolchain |
 
 ## Prerequisites
 
@@ -35,16 +38,18 @@ Override tool paths via env: `ARMCC`, `QEMU`, `FDCC`.
 
 ```sh
 bash fetch-deps.sh          # once — vendors FreeRTOS-Kernel
-bash run.sh                 # builds from the pinned fixture, runs, asserts "lxp-m1-ok"
-REGEN_GUEST=1 bash run.sh   # rebuild guest/rootfs.cpio from guest/hello.c first (needs FDPIC gcc)
+M=1 bash run.sh             # M1: /hello       -> asserts "lxp-m1-ok"  (default M=1)
+M=2 bash run.sh             # M2: /init execs /child -> asserts "lxp-m2-ok"
+REGEN_GUEST=1 bash run.sh   # rebuild guest/rootfs.cpio from guest/*.c first (needs FDPIC gcc)
 ```
 
-`run.sh` exits 0 and prints `PASS: lxp-m1-ok` on success.
+`run.sh` exits 0 and prints `PASS: lxp-m<N>-ok` on success.
 
 ## Milestones
 
 - **M1** — static-FDPIC `hello` (`write`+`exit`) end-to-end. **Done.**
-- **M2** — `fork`/`execve`/`wait4`/`pipe` across slots. (todo)
+- **M2** — `pipe` + `vfork` + `execve` + `wait4` across slots (multi-slot spawn_launch +
+  spawn_resume, pipe IPC, reaped exit status). **Done.**
 - **M3** — dynamic-FDPIC busybox, unprivileged + full MPU, PSRAM XIP rootfs. (todo)
 
 ## Gotchas (learned the hard way)
