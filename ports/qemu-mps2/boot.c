@@ -151,8 +151,12 @@ static StackType_t g_coord_stack[4096]; /* lxp_run_common + the FDPIC loader run
 int main(void)
 {
 	/* The coordinator runs ABOVE the guest slots (SLOT_PRIO) so it preempts a parked
-	 * guest the instant event_post wakes it. */
-	xTaskCreateStatic(coordinator_task, "coord", 4096, NULL, 2, g_coord_stack, &g_coord_tcb);
+	 * guest the instant event_post wakes it. It runs the FDPIC loader + lxp_run_common
+	 * and touches the cpio, every program region and kernel state, so it must be
+	 * PRIVILEGED (portPRIVILEGE_BIT) under the MPU port — the guests are the only
+	 * unprivileged tasks. */
+	xTaskCreateStatic(coordinator_task, "coord", 4096, NULL, 2 | portPRIVILEGE_BIT,
+			  g_coord_stack, &g_coord_tcb);
 	vTaskStartScheduler();
 	for (;;) {
 	}

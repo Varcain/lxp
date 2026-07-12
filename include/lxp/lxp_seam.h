@@ -49,6 +49,15 @@ struct lxp_resume_ctx {
 	uint32_t lr;
 	uint32_t sp;
 	uint32_t pc;
+	/* r1..r3 at the parked svc. The Linux syscall ABI preserves r1-r14 across a
+	 * syscall (only r0 is the return); a parking syscall that resumes must therefore
+	 * restore them, or a guest that (validly) reuses an arg register after the call
+	 * sees garbage. Appended after pc so a seam prog_tramp that predates this still
+	 * reads r4_11/r12/lr/sp/pc at the same offsets. r0 is delivered separately (the
+	 * resume value). */
+	uint32_t r1;
+	uint32_t r2;
+	uint32_t r3;
 };
 
 /* The per-engine operations the shared run loop drives are the public port vtable

@@ -24,7 +24,15 @@ SECTIONS
         KEEP(*(.isr_vector))
         . = ALIGN(4);
         *(.text*)
-        *(.rodata*)          /* includes the embedded rootfs cpio */
+        /* ARM_CM4_MPU annotates kernel code PRIVILEGED_FUNCTION -> "privileged_functions"
+         * and the V1 wrappers put the unprivileged system-call entry points in
+         * "freertos_system_calls". BOTH must land in .text BEFORE __etext (else they
+         * become orphan sections after __etext, pushing .data's flash LMA past __etext
+         * so the startup .data-copy reads garbage). The whole flash is unprivileged-RX
+         * via the static MPU region, so no separate region is needed. */
+        *(privileged_functions)
+        *(freertos_system_calls)
+        *(.rodata*)          /* includes the embedded M1/M2 rootfs cpio */
         KEEP(*(.init))
         KEEP(*(.fini))
         *(.ARM.extab* .gnu.linkonce.armextab.*)
@@ -47,6 +55,7 @@ SECTIONS
     {
         __bss_start__ = .;
         *(.bss*)
+        *(privileged_data)   /* ARM_CM4_MPU kernel data (in RAM, no unpriv access) */
         *(COMMON)
         . = ALIGN(4);
         __bss_end__ = .;
@@ -77,4 +86,19 @@ SECTIONS
     {
         *(.psram*)
     } > PSRAM
+
+    /* ARM_CM4_MPU static-region bounds, referenced by prvSetupMPU(). The
+     * unprivileged-flash region spans the WHOLE flash RX, so an unprivileged guest
+     * executes its FDPIC text in-place from the flash cpio (M1/M2) and prog_tramp /
+     * lxp_park_loop. The privileged sub-regions are DEGENERATE (start==end at the
+     * segment end → a harmless empty region): isolation comes from the MPU background
+     * region + the per-task regions, not from privilege-gating the kernel code here. */
+    __FLASH_segment_start__        = ORIGIN(FLASH);
+    __FLASH_segment_end__          = ORIGIN(FLASH) + LENGTH(FLASH);
+    __SRAM_segment_start__         = ORIGIN(RAM);
+    __SRAM_segment_end__           = ORIGIN(RAM) + LENGTH(RAM);
+    __privileged_functions_start__ = ORIGIN(FLASH) + LENGTH(FLASH);
+    __privileged_functions_end__   = ORIGIN(FLASH) + LENGTH(FLASH);
+    __privileged_data_start__      = ORIGIN(RAM) + LENGTH(RAM);
+    __privileged_data_end__        = ORIGIN(RAM) + LENGTH(RAM);
 }

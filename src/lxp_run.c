@@ -283,6 +283,12 @@ static void capture_ctx(int s, const struct lxp_frame *f)
 	g_ctx[s].lr = f->r[14];
 	g_ctx[s].sp = f->r[13];	     /* the seam set r[13] = the pre-svc SP */
 	g_ctx[s].pc = f->r[15] | 1u; /* resume after the svc (Thumb) */
+	/* Preserve r1-r3 across the parking syscall (Linux preserves r1-r14; only r0 is
+	 * the return, supplied by the resume). A guest may reuse an arg register after a
+	 * syscall — so leaving these garbage on resume corrupts it (e.g. wait4's options). */
+	g_ctx[s].r1 = f->r[1];
+	g_ctx[s].r2 = f->r[2];
+	g_ctx[s].r3 = f->r[3];
 }
 
 /* Park the program frame at the spin loop until the coordinator reaps the event,

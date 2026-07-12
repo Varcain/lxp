@@ -58,7 +58,9 @@ rootfs (~11 MiB) instead of the minimal fixture.
   spawn_resume, pipe IPC, reaped exit status). **Done.**
 - **M3a** — dynamic-FDPIC busybox: `ld-uClibc.so.0` + `libuClibc` loaded/relocated, libc
   mmap'd into the PSRAM `dyn_pool`, cpio XIP'd from PSRAM. Runs **privileged**. **Done.**
-- **M3b** — unprivileged guests + per-slot MPU (W^X): the ARM_CM4_MPU port. (todo)
+- **M3b** — unprivileged guests + per-slot MPU (W^X) via the ARM_CM4_MPU port. All three
+  milestones run unprivileged; a stray access faults MemManage (contained as SIGSEGV).
+  **Done.**
 
 ## Gotchas (learned the hard way)
 
@@ -69,6 +71,17 @@ rootfs (~11 MiB) instead of the minimal fixture.
   Thumb text and its word literal pools must be word-aligned. An unaligned blob
   lands `_start` on an odd byte → misaligned Thumb → `INVSTATE`/`NOCP`. `run.sh`
   aligns the generated `rootfs_cpio[]` to 16.
-- **FPU-less FreeRTOS port.** The build uses the `ARM_CM3` (FPU-less, soft-float)
-  FreeRTOS port on the CM7 to avoid FPU lazy-stacking hazards in the SVC exception
-  context; soft-float everywhere. The CM7 runs the ARMv7-M subset fine.
+- **MPU region count.** `configTOTAL_MPU_REGIONS` must equal the hardware MPU region
+  count (QEMU's an500 CM7 reports 16) or the ARM_CM4_MPU port SILENTLY skips all MPU
+  setup and then HardFaults at scheduler start.
+- **CM4_MPU + softfp, not CM3_MPU.** A dynamic M3 guest needs 4 per-task MPU regions
+  (program + dyn_pool + two cpio windows); CM3_MPU exposes only 3, so the port is
+  ARM_CM4_MPU. Its context switch has VFP save/restore asm, so the firmware is built
+  `-mfloat-abi=softfp` (link-compatible with the soft-float guests; no firmware C uses
+  float, so FPCA stays 0 and the FPU save never runs).
+- **Syscall resume preserves r1-r3.** The Linux syscall ABI preserves r1-r14 (only r0
+  is the return). A parking syscall that resumes must restore r1-r3, or a guest that
+  reuses an arg register after the call reads garbage (this manifested as `wait4`
+  intermittently taking WNOHANG). The module captures them (`lxp_resume_ctx`); the
+  restore in `prog_tramp` stages `ctx.pc` 8 bytes below sp so it can't clobber the
+  descriptor's own `ctx.r3` (`stash_desc` leaves that gap).
