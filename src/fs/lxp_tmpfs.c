@@ -73,6 +73,10 @@ int wfs_reserve(int i, size_t need)
 	if (need > LXP_WFS_POOL) /* reject before the 256-round wraps a 32-bit size_t → tiny alloc */
 		return -1;
 	size_t ncap = (need + 255u) & ~(size_t)255u;
+	if (w->cap * 2 > ncap) /* geometric growth: O(n), not O(n^2), on echo-style appends */
+		ncap = w->cap * 2;
+	if (ncap > LXP_WFS_POOL) /* but never exceed the pool (need itself is already <= pool) */
+		ncap = LXP_WFS_POOL;
 	uint8_t *nd = wfs_alloc(ncap);
 	if (!nd)
 		return -1;

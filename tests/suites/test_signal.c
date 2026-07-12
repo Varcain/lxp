@@ -54,7 +54,7 @@ static void test_resolve_handler_nonfdpic(void **st)
 	memset(&p, 0, sizeof(p));
 	p.is_fdpic = 0;
 	p.sig_handler[SIG_CUSTOM] = 0xaaaa0000;
-	p.sig_restorer[SIG_CUSTOM] = 0xbbbb0000;
+	p.sig_restorer = 0xbbbb0000;
 	uintptr_t entry, restorer;
 	uint32_t got;
 	resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer);
@@ -73,7 +73,7 @@ static void test_resolve_handler_fdpic(void **st)
 	memset(&p, 0, sizeof(p));
 	p.is_fdpic = 1;
 	p.sig_handler[SIG_CUSTOM] = (uintptr_t)hdesc;
-	p.sig_restorer[SIG_CUSTOM] = (uintptr_t)rdesc;
+	p.sig_restorer = (uintptr_t)rdesc;
 	uintptr_t entry, restorer;
 	uint32_t got;
 	resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer);
@@ -148,7 +148,7 @@ static void test_deliver_and_restore(void **st)
 	memset(&p, 0, sizeof(p));
 	p.is_fdpic = 0;
 	p.sig_handler[SIG_CUSTOM] = 0xdead0000;	 /* handler entry */
-	p.sig_restorer[SIG_CUSTOM] = 0xbeef0000; /* sa_restorer */
+	p.sig_restorer = 0xbeef0000; /* sa_restorer */
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[1] = 0x11;

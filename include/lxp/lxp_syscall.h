@@ -465,10 +465,12 @@ typedef struct lxp_proc {
 	int child_pid[LXP_MAX_CHILD];    /**< pids of exited children. */
 	int child_status[LXP_MAX_CHILD]; /**< their exit codes. */
 	int child_count;		     /**< number queued. */
-	/* Signal disposition: per-signal handler address (or SIG_DFL/SIG_IGN) and
-	 * the libc-supplied sa_restorer the engine returns to after the handler. */
+	/* Signal disposition: per-signal handler address (or SIG_DFL/SIG_IGN). The
+	 * sa_restorer the engine returns to after a handler is ONE value per proc, not one
+	 * per signal — uClibc-ng installs the same __restore_rt trampoline for every signal
+	 * — which saves ~3K of .bss across the slot table. */
 	uintptr_t sig_handler[LXP_NSIG];
-	uintptr_t sig_restorer[LXP_NSIG];
+	uintptr_t sig_restorer;
 	/* execve request: the engine seam relaunches the thread on this rootfs
 	 * program with the captured argument vector (image replacement). */
 	int exec_pending;			 /**< Set when execve() should relaunch. */

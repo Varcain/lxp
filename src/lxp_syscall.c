@@ -165,8 +165,9 @@ long user_strnlen(const lxp_proc_t *p, const char *s, size_t max)
 /* Synthetic /proc fd backing (content generated on open; see proc_* below). */
 #define LXP_NPROCF 12
 #define LXP_PROCBUF 1024
+#define LXP_PROCPATH 64 /* /proc paths are short ("/proc/<pid>/status"); not LXP_PATH_MAX */
 static struct {
-	char path[LXP_PATH_MAX];
+	char path[LXP_PROCPATH];
 	char buf[LXP_PROCBUF];
 	size_t len;
 	int is_dir;
@@ -1424,6 +1425,8 @@ static long proc_open(lxp_proc_t *p, const char *abs)
 	uint32_t m = proc_mode(abs, p);
 	if (m == 0 || (m & LXP_S_IFMT) == LXP_S_IFLNK)
 		return -LXP_ENOENT; /* /proc/self resolves via readlink, not open */
+	if (strlen(abs) >= LXP_PROCPATH) /* the cached path buffer is /proc-sized, not PATH_MAX */
+		return -LXP_ENOENT;
 	int dir = (m & LXP_S_IFMT) == LXP_S_IFDIR;
 	for (int i = 0; i < LXP_NPROCF; i++) {
 		if (g_procf[i].used)
@@ -1455,19 +1458,20 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 	path = abspath;
 	if (proc_is(path)) /* synthetic /proc shadows everything */
 		return proc_open(p, path);
-	/* The console devices open as a read+write console (file_idx 2): getty opens
-	 * /dev/console, makes it the controlling tty, and dups it to fds 0/1/2. */
-	if (strcmp(path, "/dev/console") == 0 || strcmp(path, "/dev/tty") == 0 ||
-	    strcmp(path, "/dev/tty0") == 0 || strcmp(path, "/dev/ttyS0") == 0)
-		return fd_alloc(p, LXP_FD_CONSOLE, 2, 0);
-	/* /dev/null (file_idx 3): reads EOF, writes are discarded. init points a
-	 * child's stdio here when it has no controlling tty. */
-	if (strcmp(path, "/dev/null") == 0)
-		return fd_alloc(p, LXP_FD_CONSOLE, 3, 0);
-	/* /dev/urandom + /dev/random (file_idx 4): reads return PRNG bytes (dropbear/mbedTLS
-	 * open the device directly for entropy, not the getrandom syscall); writes discarded. */
-	if (strcmp(path, "/dev/urandom") == 0 || strcmp(path, "/dev/random") == 0)
-		return fd_alloc(p, LXP_FD_CONSOLE, 4, 0);
+	/* The synthetic console/null/random nodes all open as an FD_CONSOLE; file_idx selects
+	 * the behaviour (2 = r/w console, 3 = /dev/null → EOF/discard, 4 = /dev/urandom PRNG).
+	 * A small name→idx table instead of a strcmp chain (smaller .text). getty opens
+	 * /dev/console + dups it to fds 0/1/2; dropbear/mbedTLS open /dev/urandom for entropy. */
+	static const struct {
+		const char *path;
+		uint8_t idx;
+	} console_dev[] = {
+		{"/dev/console", 2}, {"/dev/tty", 2},	 {"/dev/tty0", 2}, {"/dev/ttyS0", 2},
+		{"/dev/null", 3},    {"/dev/urandom", 4}, {"/dev/random", 4},
+	};
+	for (size_t k = 0; k < sizeof(console_dev) / sizeof(console_dev[0]); k++)
+		if (strcmp(path, console_dev[k].path) == 0)
+			return fd_alloc(p, LXP_FD_CONSOLE, console_dev[k].idx, 0);
 #if LXP_ENABLE_PTY
 	/* Unix98 pty: each open of /dev/ptmx mints a fresh pair (the master, rw=1); the
 	 * slave is /dev/pts/N (rw=0), N = the pool index from TIOCGPTN/ptsname. */
@@ -3208,11 +3212,11 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			return -LXP_EFAULT;
 		if (oact) {
 			oact[0] = (uint32_t)proc->sig_handler[sig];
-			oact[2] = (uint32_t)proc->sig_restorer[sig];
+			oact[2] = (uint32_t)proc->sig_restorer;
 		}
 		if (act) {
 			proc->sig_handler[sig] = act[0];
-			proc->sig_restorer[sig] = act[2];
+			proc->sig_restorer = act[2];
 		}
 		return 0;
 	}

@@ -24,7 +24,7 @@ void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t
 			    uintptr_t *restorer)
 {
 	uintptr_t h = proc->sig_handler[sig];
-	uintptr_t r = proc->sig_restorer[sig];
+	uintptr_t r = proc->sig_restorer;
 	if (proc->is_fdpic) {
 		*entry = ((const uint32_t *)h)[0];
 		*got = ((const uint32_t *)h)[1];
