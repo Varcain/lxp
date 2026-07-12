@@ -31,10 +31,11 @@
  * sync.
  *
  * Supported: ELFCLASS64 / x86-64 (host development) and ELFCLASS32 / EM_ARM
- * (Cortex-M target). ARM support currently covers data relocations
- * (R_ARM_ABS32 / REL32 / TARGET1 / PREL31); Thumb-2 instruction relocations
- * are not yet implemented. Other classes/machines return
- * @c LXP_ERR_NOT_SUPPORTED.
+ * (Cortex-M target). ARM support covers the data relocations
+ * (R_ARM_ABS32 / REL32 / TARGET1 / PREL31) and the Thumb-2 call/jump instruction
+ * relocations (R_ARM_THM_CALL / THM_JUMP24, with range-extending veneers);
+ * MOVW/MOVT and GOT-based relocations return @c LXP_ERR_NOT_SUPPORTED, as do
+ * other classes/machines.
  *
  * @{
  */

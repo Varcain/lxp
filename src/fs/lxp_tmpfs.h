@@ -7,8 +7,9 @@
  * Writable VFS (tmpfs) overlaid on the read-only cpio rootfs: regular files,
  * directories (mkdir), and symlinks (ln -s) created at runtime live here (e.g.
  * `mkdir /tmp/d`, `echo x > /tmp/f`). Nodes are global kernel state (shared across
- * processes, like pipes), keyed by absolute path; file bytes come from a bump pool
- * (growth re-allocates, the old block leaks — bounded, ENOSPC when exhausted).
+ * processes, like pipes), keyed by absolute path; file bytes come from a fixed pool
+ * managed by the arena allocator, so a node's block is reclaimed on growth and on
+ * removal (ENOSPC only when the live set truly exhausts the pool).
  *
  * The node objects + pool live in src/fs/lxp_tmpfs.c; the syscall dispatcher owns the
  * FD_TMPFS read/write/stat/getdents integration and reaches a node via wnode_at().
@@ -41,7 +42,12 @@ int wfs_find(const char *abspath);
 /* Allocate a node for abspath with mode; -1 if the table is full / path too long. */
 int wfs_create(const char *abspath, uint32_t mode);
 
-/* Ensure node i can hold `need` bytes (grows from the pool; old block leaks). 0 / -1. */
+/* Ensure node i can hold `need` bytes (grows from the pool, reclaiming the old
+ * block). 0 on success, -1 if the pool is exhausted. */
 int wfs_reserve(int i, size_t need);
+
+/* Free node i: reclaim its pool bytes and mark the slot unused (unlink/rmdir, or a
+ * rename replacing an existing destination). */
+void wfs_free(int i);
 
 #endif /* LXP_FS_TMPFS_H */

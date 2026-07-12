@@ -1811,7 +1811,7 @@ static long sys_unlink(lxp_proc_t *p, const char *path, int is_rmdir)
 			if (wnode_at(j)->used && child_name(abspath, wnode_at(j)->path))
 				return -LXP_ENOTEMPTY;
 	}
-	wnode_at(wi)->used = 0; /* node freed; its pool bytes leak (bounded) */
+	wfs_free(wi); /* reclaim the node + its pool bytes */
 	return 0;
 }
 
@@ -1833,7 +1833,7 @@ static long sys_rename(lxp_proc_t *p, const char *oldp, const char *newp)
 		return -LXP_ENAMETOOLONG;
 	int di = wfs_find(newabs); /* replace an existing destination node */
 	if (di >= 0 && di != wi)
-		wnode_at(di)->used = 0;
+		wfs_free(di); /* reclaim the replaced destination's bytes */
 	strcpy(wnode_at(wi)->path, newabs);
 	return 0;
 }
@@ -1853,7 +1853,7 @@ static long sys_symlink(lxp_proc_t *p, const char *target, const char *linkp)
 		return -LXP_ENOSPC;
 	size_t tl = strlen(target);
 	if (wfs_reserve(wi, tl) < 0) {
-		wnode_at(wi)->used = 0;
+		wfs_free(wi); /* roll back the just-created node (its data is still NULL) */
 		return -LXP_ENOSPC;
 	}
 	memcpy(wnode_at(wi)->data, target, tl);

@@ -133,6 +133,35 @@ static void test_tmpfs_nodes(void **s)
 	assert_non_null(wnode_at(a)->data);
 }
 
+/* The pool reclaims freed blocks (arena-backed, not a leaky bump pool). Both cases
+ * below allocate far more than the 64K pool in total; they only pass because each
+ * removal / growth frees the prior block. Under the old bump pool they ENOSPC early. */
+static void test_tmpfs_reclaim(void **s)
+{
+	(void)s;
+	wfs_reset();
+
+	/* unlink reclaims a node's bytes: create+grow+free an 8K file 64 times (512K total). */
+	for (int i = 0; i < 64; i++) {
+		int n = wfs_create("/tmp/big", LXP_S_IFREG | 0644u);
+		assert_true(n >= 0);
+		assert_int_equal(wfs_reserve(n, 8192), 0);
+		assert_true(wnode_at(n)->cap >= 8192);
+		wfs_free(n);
+	}
+
+	/* growth reclaims the old block: grow one node through many sizes up to 16K in 1K
+	 * steps (each grow frees the previous block, so the leaked sum — well over the pool —
+	 * never accumulates; capped at 16K so the brief old+new overlap during the copy fits). */
+	int g = wfs_create("/tmp/grow", LXP_S_IFREG | 0644u);
+	assert_true(g >= 0);
+	for (size_t sz = 1024; sz <= 16u * 1024u; sz += 1024)
+		assert_int_equal(wfs_reserve(g, sz), 0);
+	assert_true(wnode_at(g)->cap >= 16u * 1024u);
+	wfs_free(g);
+	assert_null(wnode_at(g)->data); /* wfs_free clears the node */
+}
+
 /* ---- pipe: alloc + the empty/no-peer guard paths ------------------------------ */
 static void test_pipe_guards(void **s)
 {
@@ -204,6 +233,7 @@ int test_fs_run(void)
 		cmocka_unit_test(test_path_normalize),
 		cmocka_unit_test(test_path_rootfs_resolve),
 		cmocka_unit_test(test_tmpfs_nodes),
+		cmocka_unit_test(test_tmpfs_reclaim),
 		cmocka_unit_test(test_pipe_guards),
 		cmocka_unit_test(test_procfs),
 		cmocka_unit_test(test_user_helpers),
