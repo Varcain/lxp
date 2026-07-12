@@ -263,6 +263,7 @@ static int ld_oob(uint64_t off, uint64_t size, size_t limit)
 static int load64(lxp_module_t *mod, const uint8_t *img, size_t image_size, void *region,
 		  size_t region_size, const lxp_loader_sym_t *imports, size_t n_imports)
 {
+	(void)region; /* the ET_REL object loader relocates within region_size in place */
 	Elf64_Ehdr eh;
 	memcpy(&eh, img, sizeof(eh));
 
@@ -464,6 +465,7 @@ static int apply_rel_arm(lxp_module_t *mod, unsigned tgt, const Elf32_Rel *rel,
 static int load32_arm(lxp_module_t *mod, const uint8_t *img, size_t image_size, void *region,
 		      size_t region_size, const lxp_loader_sym_t *imports, size_t n_imports)
 {
+	(void)region; /* the ET_REL object loader relocates within region_size in place */
 	Elf32_Ehdr eh;
 	memcpy(&eh, img, sizeof(eh));
 

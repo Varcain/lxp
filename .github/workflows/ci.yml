@@ -1,0 +1,54 @@
+# Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Continuously verify the three things this module promises: it stays decoupled from
+# oveRTOS, its core passes host unit tests, and it runs end-to-end on Cortex-M QEMU.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host:
+    name: decouple guard + host cmocka
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decoupling guard (src/ + include/ must stay oveRTOS-free)
+        run: sh scripts/check-decoupled.sh
+
+      - name: Configure (fetches cmocka)
+        run: cmake -S . -B build -DLXP_BUILD_TESTS=ON
+
+      # Build only the test binary (-Werror). Skips liblxp, whose 32-bit-target casts
+      # warn on a 64-bit host — the module is not meant to run natively there.
+      - name: Build host tests (-Wall -Wextra -Werror)
+        run: cmake --build build -j"$(nproc)" --target lxp_test_stub
+
+      - name: Run host unit tests
+        run: ctest --test-dir build -R lxp_unit --output-on-failure
+
+  qemu:
+    name: QEMU mps2-an500 end-to-end (M1/M2/M3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arm-none-eabi toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi qemu-system-arm xxd
+
+      - name: Vendor FreeRTOS (fetch-deps)
+        run: cd ports/qemu-mps2 && bash fetch-deps.sh
+
+      # The pinned cpio fixtures are committed, so no Buildroot FDPIC toolchain is
+      # needed: M1/M2 embed guest/rootfs.cpio, M3 XIPs guest/rootfs_m3.cpio from PSRAM.
+      - name: M1 — static-FDPIC hello
+        run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=1 bash run.sh
+      - name: M2 — vfork/execve/wait4/pipe
+        run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=2 bash run.sh
+      - name: M3 — dynamic-FDPIC busybox (unprivileged + MPU)
+        run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=3 bash run.sh

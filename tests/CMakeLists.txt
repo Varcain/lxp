@@ -65,4 +65,8 @@ target_compile_definitions(lxp_test_stub PRIVATE
 
 target_link_libraries(lxp_test_stub PRIVATE cmocka-static pthread rt m)
 
+# The module TUs + port + suites must build warning-clean (the cmocka dependency,
+# fetched separately, is not held to this).
+target_compile_options(lxp_test_stub PRIVATE -Wall -Wextra -Werror)
+
 add_test(NAME lxp_unit COMMAND lxp_test_stub)
