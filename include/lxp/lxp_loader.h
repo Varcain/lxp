@@ -77,6 +77,7 @@ typedef struct lxp_module {
 	size_t region_used;			 /**< Bytes of @c region consumed by the load. */
 	uint16_t n_sections;			 /**< Section count. */
 	void *sec_addr[LXP_LOADER_MAX_SECTIONS]; /**< Runtime base per section. */
+	uint32_t sec_size[LXP_LOADER_MAX_SECTIONS]; /**< Byte size per section (bounds a reloc r_offset). */
 	const void *symtab;			 /**< Symbol table (within @c image). */
 	uint32_t sym_count;			 /**< Number of symbols. */
 	const char *strtab;			 /**< String table (within @c image). */

@@ -218,6 +218,9 @@ static int apply_rela64(const lxp_module_t *mod, unsigned tgt, const Elf64_Rela 
 	if (rc != LXP_OK)
 		return rc;
 
+	if (rela->r_offset > (uint64_t)mod->sec_size[tgt] ||
+	    (uint64_t)mod->sec_size[tgt] - rela->r_offset < 8u)
+		return LXP_ERR_INVALID_PARAM; /* r_offset must leave room for the (<=8B) reloc write */
 	uint8_t *loc = (uint8_t *)mod->sec_addr[tgt] + rela->r_offset;
 	int64_t A = rela->r_addend;
 	int64_t P = (int64_t)(uintptr_t)loc;
@@ -298,6 +301,7 @@ static int load64(lxp_module_t *mod, const uint8_t *img, size_t image_size, void
 				memcpy(dst, img + sh.sh_offset, sh.sh_size);
 			}
 			mod->sec_addr[i] = dst;
+			mod->sec_size[i] = (uint32_t)sh.sh_size;
 			off += sh.sh_size;
 		} else if (sh.sh_type == SHT_SYMTAB) {
 			if (sh.sh_entsize != sizeof(Elf64_Sym))
@@ -391,6 +395,8 @@ static int apply_rel_arm(lxp_module_t *mod, unsigned tgt, const Elf32_Rel *rel,
 	if (rc != LXP_OK)
 		return rc;
 
+	if (rel->r_offset > mod->sec_size[tgt] || mod->sec_size[tgt] - rel->r_offset < 4u)
+		return LXP_ERR_INVALID_PARAM; /* r_offset must leave room for the (4B) reloc write */
 	uint8_t *loc = (uint8_t *)mod->sec_addr[tgt] + rel->r_offset;
 	uint32_t A; /* REL: implicit addend read from the place. */
 	memcpy(&A, loc, 4);
@@ -500,6 +506,7 @@ static int load32_arm(lxp_module_t *mod, const uint8_t *img, size_t image_size, 
 				memcpy(dst, img + sh.sh_offset, sh.sh_size);
 			}
 			mod->sec_addr[i] = dst;
+			mod->sec_size[i] = (uint32_t)sh.sh_size;
 			off += sh.sh_size;
 		} else if (sh.sh_type == SHT_SYMTAB) {
 			if (sh.sh_entsize != sizeof(Elf32_Sym))

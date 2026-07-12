@@ -26,13 +26,12 @@ set(LXP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # file can never be silently dropped from host coverage again — that rot is what let
 # lxp_signal.c / lxp_dev_fb.c / lxp_dev_input.c escape testing. Only the coordinator is
 # deliberately excluded: src/lxp_run.c is 32-bit-target code (pointer casts that warn on
-# a 64-bit host; its OS hooks come from tests/stub_lnx_run.c), and src/lxp_signal.c is
-# coupled to it via lxp_run_internal.h (excluded until a stub lets test_signal.c drive
-# it — Stage 3).
+# a 64-bit host; its OS hooks come from tests/stub_lnx_run.c). src/lxp_signal.c IS built
+# now — its three coordinator symbols (g_sig_save/slot_of/park_frame) are stubbed in
+# tests/suites/test_signal.c, which drives it.
 file(GLOB_RECURSE LXP_TEST_MODULE_SRC CONFIGURE_DEPENDS "${LXP_ROOT}/src/*.c")
 list(REMOVE_ITEM LXP_TEST_MODULE_SRC
-  "${LXP_ROOT}/src/lxp_run.c"
-  "${LXP_ROOT}/src/lxp_signal.c")
+  "${LXP_ROOT}/src/lxp_run.c")
 
 add_executable(lxp_test_stub
   ${LXP_TEST_MODULE_SRC}
@@ -44,6 +43,7 @@ add_executable(lxp_test_stub
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_loader_fdpic.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_fs.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_overflow.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_signal.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_syscall.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_dev.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_net.c"
