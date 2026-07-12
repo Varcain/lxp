@@ -40,6 +40,13 @@
  * not link the run loop, still resolve the symbol. */
 volatile int g_lxp_halt;
 
+/* ABI pins for the tty/poll uapi structs (lxp_syscall.h). Fixed-width fields → these
+ * hold on the 32-bit target and the 64-bit host build; a drift fails the build. */
+LXP_STATIC_ASSERT(sizeof(struct lxp_termios) == 36, "termios ABI size drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_termios, c_cc) == 17, "termios c_cc offset drifted");
+LXP_STATIC_ASSERT(sizeof(struct lxp_winsize) == 8, "winsize ABI size drifted");
+LXP_STATIC_ASSERT(sizeof(struct lxp_pollfd) == 8, "pollfd ABI size drifted");
+
 /*
  * Linux syscall personality — engine-agnostic dispatch.
  *
@@ -191,6 +198,16 @@ struct lxp_kstat64 {
 	uint32_t st_ctime_nsec;
 	uint64_t st_ino;
 };
+/* ABI pins: the ARM-EABI struct stat64 layout uClibc-ng expects. A field-order or
+ * type drift (which would silently corrupt every stat/fstat) fails the build. The
+ * struct uses fixed-width fields, so these hold on the 32-bit target and the 64-bit
+ * host test build alike. */
+LXP_STATIC_ASSERT(sizeof(struct lxp_kstat64) == 104, "stat64 ABI size drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_mode) == 16, "stat64 st_mode offset drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_rdev) == 32, "stat64 st_rdev offset drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_size) == 48, "stat64 st_size offset drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_blocks) == 64, "stat64 st_blocks offset drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_ino) == 96, "stat64 st_ino offset drifted");
 
 /* getdents64 record: fixed 19-byte head (d_ino..d_type) then a NUL-terminated name. */
 struct lxp_dirent64 {
@@ -200,6 +217,7 @@ struct lxp_dirent64 {
 	uint8_t d_type;
 	char d_name[];
 };
+LXP_STATIC_ASSERT(offsetof(struct lxp_dirent64, d_name) == 19, "dirent64 head size drifted");
 
 /* Effective st_mode for a rootfs node (0 in the table means a regular file). */
 uint32_t file_mode(const lxp_file_t *f)
@@ -1911,6 +1929,9 @@ struct lxp_statfs64 {
 	uint64_t f_blocks, f_bfree, f_bavail, f_files, f_ffree;
 	uint32_t f_fsid[2], f_namelen, f_frsize, f_flags, f_spare[4];
 };
+LXP_STATIC_ASSERT(sizeof(struct lxp_statfs64) == 88, "statfs64 ABI size drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_blocks) == 8, "statfs64 f_blocks offset drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_namelen) == 56, "statfs64 f_namelen offset drifted");
 static long sys_statfs(lxp_proc_t *p, void *buf)
 {
 	if (!user_ok(p, buf, sizeof(struct lxp_statfs64), 1))
@@ -2128,6 +2149,10 @@ struct lxp_statx {
 	uint32_t stx_dev_minor;
 	uint8_t __rest[256 - 144];
 };
+LXP_STATIC_ASSERT(sizeof(struct lxp_statx) == 256, "statx ABI size drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_mode) == 28, "statx stx_mode offset drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_ino) == 32, "statx stx_ino offset drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_rdev_major) == 128, "statx stx_rdev offset drifted");
 
 /*
  * statx: the stat() uClibc-ng actually issues. With AT_EMPTY_PATH (or an empty
@@ -2820,6 +2845,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			uint32_t totalhigh, freehigh, mem_unit;
 			char _f[8];
 		} *si = (void *)(uintptr_t)a0;
+		LXP_STATIC_ASSERT(sizeof(struct lxp_sysinfo) == 64, "sysinfo ABI size drifted");
 		if (!user_ok(proc, si, sizeof(*si), 1))
 			return -LXP_EFAULT;
 		memset(si, 0, sizeof(*si));
