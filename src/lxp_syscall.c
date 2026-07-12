@@ -461,6 +461,7 @@ static lxp_fd_t *fd_slot(lxp_proc_t *p, int fd)
 /* eventfd counter read/write (defined below fd_alloc); sys_read/sys_write route to them. */
 static long efd_read(lxp_proc_t *p, int ei, void *buf, size_t len);
 static long efd_write(lxp_proc_t *p, int ei, const void *buf, size_t len);
+static void efd_close(int ei); /* release an eventfd pool slot (defined with efd_new). */
 
 /* Fill an ARM kstat64 (defined below with sys_fstat64); the fstat fops use it. */
 struct lxp_kstat64;
@@ -825,12 +826,119 @@ static long fop_fstat_pty(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
 }
 #endif
 
+/* ---- close fops (release the backing object; kinds with no backing omit it) ---- */
+static void fop_close_proc(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)p;
+	g_procf[s->file_idx].used = 0; /* release the generated-content slot */
+}
+
+static void fop_close_eventfd(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)p;
+	efd_close(s->file_idx); /* threads share the fd table → one close frees it */
+}
+
+#if LXP_ENABLE_DEV
+static void fop_close_dev(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)p;
+	lxp_dev_close(s->file_idx); /* refs--, ops->release at the last close */
+}
+#endif
+#if LXP_ENABLE_NET
+static void fop_close_socket(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)p;
+	lxp_sock_close(s->file_idx); /* refs--, socket close at the last close */
+}
+#endif
+#if LXP_ENABLE_NETFS
+static void fop_close_netfs(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)p;
+	lxp_netfs_close(s->file_idx); /* refs--, enqueue a Tclunk at the last close */
+}
+#endif
+
+/* ---- ioctl fops (dev/socket/pty delegate to their layers; console is the tty) ---- */
+static long fop_ioctl_console(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, unsigned long arg)
+{
+	/* Make the console fds look like a tty so the shell goes interactive
+	 * (isatty → prompt + line editing). */
+	(void)s;
+	switch (cmd) {
+	case LXP_TCGETS: {
+		lxp_termios *t = (lxp_termios *)(uintptr_t)arg;
+		if (!t)
+			return -LXP_EFAULT;
+		memset(t, 0, sizeof(*t));
+		t->c_iflag = LXP_ICRNL;
+		t->c_oflag = LXP_OPOST | LXP_ONLCR;
+		t->c_cflag = LXP_CS8 | LXP_CREAD;
+		t->c_lflag = LXP_ICANON | LXP_ECHO | LXP_ISIG;
+		t->c_cc[LXP_VINTR] = 3;	    /* ^C */
+		t->c_cc[LXP_VERASE] = 0x7f; /* DEL */
+		t->c_cc[LXP_VEOF] = 4;	    /* ^D */
+		t->c_cc[LXP_VMIN] = 1;
+		return 0;
+	}
+	case LXP_TCSETS:
+	case LXP_TCSETSW:
+	case LXP_TCSETSF:
+		return 0; /* accept mode changes; the console echo is the engine's job */
+	case LXP_TIOCGWINSZ: {
+		lxp_winsize *w = (lxp_winsize *)(uintptr_t)arg;
+		if (!w)
+			return -LXP_EFAULT;
+		w->ws_row = 24;
+		w->ws_col = 80;
+		w->ws_xpixel = 0;
+		w->ws_ypixel = 0;
+		return 0;
+	}
+	case LXP_TIOCSCTTY: /* getty/login: become/drop/set the tty session */
+	case LXP_TIOCNOTTY:
+	case LXP_TIOCSPGRP:
+		return 0;
+	case LXP_TIOCGPGRP: {
+		int *pgrp = (int *)(uintptr_t)arg;
+		if (pgrp)
+			*pgrp = p->pid;
+		return 0;
+	}
+	default:
+		return -LXP_ENOTTY;
+	}
+}
+
+#if LXP_ENABLE_DEV
+static long fop_ioctl_dev(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, unsigned long arg)
+{
+	return lxp_dev_ioctl(p, s->file_idx, cmd, arg);
+}
+#endif
+#if LXP_ENABLE_NET
+static long fop_ioctl_socket(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, unsigned long arg)
+{
+	(void)s;
+	return lxp_sock_ioctl(p, cmd, arg); /* SIOC* interface config (ifconfig/route) */
+}
+#endif
+#if LXP_ENABLE_PTY
+static long fop_ioctl_pty(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, unsigned long arg)
+{
+	return lxp_pty_ioctl(p, s->file_idx, s->rw, cmd, arg);
+}
+#endif
+
 /* ---- per-kind ops tables + kind→ops resolver ----
  * A NULL read/write means the kind rejects that direction: the syscall entry
  * returns -EBADF (the errno the former fallthrough returned for rootfs/proc and
  * a wrong-direction console). netfs is the exception — its write returns -EROFS,
  * so it supplies an explicit write fop rather than a NULL. */
-static const lxp_file_ops_t console_fops = {.read = fop_read_console, .write = fop_write_console};
+static const lxp_file_ops_t console_fops = {.read = fop_read_console, .write = fop_write_console,
+					    .ioctl = fop_ioctl_console};
 static const lxp_file_ops_t rootfs_fops = {.read = fop_read_rootfs, /* read-only → write EBADF */
 					   .lseek = fop_lseek_rootfs,
 					   .fstat = fop_fstat_rootfs};
@@ -838,23 +946,27 @@ static const lxp_file_ops_t tmpfs_fops = {.read = fop_read_tmpfs, .write = fop_w
 					  .lseek = fop_lseek_tmpfs, .fstat = fop_fstat_tmpfs};
 static const lxp_file_ops_t pipe_fops = {.read = fop_read_pipe, .write = fop_write_pipe};
 static const lxp_file_ops_t proc_fops = {.read = fop_read_proc, /* read-only → write EBADF */
-					 .fstat = fop_fstat_proc};
-static const lxp_file_ops_t eventfd_fops = {.read = fop_read_eventfd, .write = fop_write_eventfd};
+					 .fstat = fop_fstat_proc, .close = fop_close_proc};
+static const lxp_file_ops_t eventfd_fops = {.read = fop_read_eventfd, .write = fop_write_eventfd,
+					    .close = fop_close_eventfd};
 #if LXP_ENABLE_DEV
 static const lxp_file_ops_t dev_fops = {.read = fop_read_dev, .write = fop_write_dev,
-					.lseek = fop_lseek_dev, .fstat = fop_fstat_dev};
+					.lseek = fop_lseek_dev, .fstat = fop_fstat_dev,
+					.close = fop_close_dev, .ioctl = fop_ioctl_dev};
 #endif
 #if LXP_ENABLE_NET
 static const lxp_file_ops_t socket_fops = {.read = fop_read_socket, .write = fop_write_socket,
-					   .fstat = fop_fstat_socket};
+					   .fstat = fop_fstat_socket, .close = fop_close_socket,
+					   .ioctl = fop_ioctl_socket};
 #endif
 #if LXP_ENABLE_NETFS
 static const lxp_file_ops_t netfs_fops = {.read = fop_read_netfs, .write = fop_write_netfs,
-					  .lseek = fop_lseek_netfs, .fstat = fop_fstat_netfs};
+					  .lseek = fop_lseek_netfs, .fstat = fop_fstat_netfs,
+					  .close = fop_close_netfs};
 #endif
 #if LXP_ENABLE_PTY
 static const lxp_file_ops_t pty_fops = {.read = fop_read_pty, .write = fop_write_pty,
-					.fstat = fop_fstat_pty};
+					.fstat = fop_fstat_pty, .ioctl = fop_ioctl_pty};
 #endif
 
 /* Resolve an fd kind to its ops table (stamped on the fd at creation). This is the
@@ -1173,6 +1285,14 @@ static long efd_new(unsigned initval, int flags)
 	return -LXP_EMFILE;
 }
 
+/* Release an eventfd pool slot at close(2). Any close frees it — threads share the
+ * fd table, so one close is enough (matches the pre-vtable close semantics). */
+static void efd_close(int ei)
+{
+	if (ei >= 0 && ei < LXP_NEVENTFD)
+		g_efd[ei].used = 0;
+}
+
 /* eventfd read/write: 8-byte counter. read returns (and clears, or decrements in
  * SEMAPHORE mode) the counter, EAGAIN when zero (the caller polls first); write adds. */
 static long efd_read(lxp_proc_t *p, int ei, void *buf, size_t len)
@@ -1348,22 +1468,8 @@ static long sys_close(lxp_proc_t *p, int fd)
 	lxp_fd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-	if (s->kind == LXP_FD_PROC)
-		g_procf[s->file_idx].used = 0; /* release the generated-content slot */
-#if LXP_ENABLE_DEV
-	if (s->kind == LXP_FD_DEV)
-		lxp_dev_close(s->file_idx); /* refs--, ops->release at the last close */
-#endif
-	if (s->kind == LXP_FD_EVENTFD && s->file_idx >= 0 && s->file_idx < LXP_NEVENTFD)
-		g_efd[s->file_idx].used = 0; /* threads share the fd table → one close frees it */
-#if LXP_ENABLE_NET
-	if (s->kind == LXP_FD_SOCKET)
-		lxp_sock_close(s->file_idx); /* refs--, ove_socket_close at the last close */
-#endif
-#if LXP_ENABLE_NETFS
-	if (s->kind == LXP_FD_NET)
-		lxp_netfs_close(s->file_idx); /* refs--, enqueue a Tclunk at the last close */
-#endif
+	if (s->ops && s->ops->close)
+		s->ops->close(p, s); /* release the backing object (refcount-- / pool slot) */
 	s->kind = LXP_FD_FREE;
 	return 0;
 }
@@ -2563,75 +2669,12 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 
 static long sys_ioctl(lxp_proc_t *proc, long a0, long a1, long a2)
 {
-		/* Make the console fds look like a tty so the shell goes interactive
-		 * (isatty → prompt + line editing). Non-console fds are not ttys. */
-		lxp_fd_t *tty = fd_slot(proc, (int)a0);
-		if (!tty)
-			return -LXP_ENOTTY;
-#if LXP_ENABLE_DEV
-		/* Device ioctls (FBIOGET_VSCREENINFO, EVIOCG*, ...) dispatch to the driver
-		 * BEFORE the console-only tty gate below (which would else -ENOTTY them). */
-		if (tty->kind == LXP_FD_DEV)
-			return lxp_dev_ioctl(proc, tty->file_idx, (unsigned long)a1,
-						 (unsigned long)a2);
-#endif
-#if LXP_ENABLE_NET
-		/* Socket ioctls: SIOC* interface config (ifconfig/route) — before the tty gate. */
-		if (tty->kind == LXP_FD_SOCKET)
-			return lxp_sock_ioctl(proc, (unsigned long)a1, (unsigned long)a2);
-#endif
-#if LXP_ENABLE_PTY
-		/* A pty IS a tty: termios/winsize/ptmx ioctls dispatch to its own line-discipline
-		 * state (per-pty, not the single global console) — before the console tty gate. */
-		if (tty->kind == LXP_FD_PTY)
-			return lxp_pty_ioctl(proc, tty->file_idx, tty->rw, (unsigned long)a1,
-						 (unsigned long)a2);
-#endif
-		if (tty->kind != LXP_FD_CONSOLE)
-			return -LXP_ENOTTY;
-		switch ((unsigned long)a1) {
-		case LXP_TCGETS: {
-			lxp_termios *t = (lxp_termios *)(uintptr_t)a2;
-			if (!t)
-				return -LXP_EFAULT;
-			memset(t, 0, sizeof(*t));
-			t->c_iflag = LXP_ICRNL;
-			t->c_oflag = LXP_OPOST | LXP_ONLCR;
-			t->c_cflag = LXP_CS8 | LXP_CREAD;
-			t->c_lflag = LXP_ICANON | LXP_ECHO | LXP_ISIG;
-			t->c_cc[LXP_VINTR] = 3;	/* ^C */
-			t->c_cc[LXP_VERASE] = 0x7f; /* DEL */
-			t->c_cc[LXP_VEOF] = 4;	/* ^D */
-			t->c_cc[LXP_VMIN] = 1;
-			return 0;
-		}
-		case LXP_TCSETS:
-		case LXP_TCSETSW:
-		case LXP_TCSETSF:
-			return 0; /* accept mode changes; the console echo is the engine's job */
-		case LXP_TIOCGWINSZ: {
-			lxp_winsize *w = (lxp_winsize *)(uintptr_t)a2;
-			if (!w)
-				return -LXP_EFAULT;
-			w->ws_row = 24;
-			w->ws_col = 80;
-			w->ws_xpixel = 0;
-			w->ws_ypixel = 0;
-			return 0;
-		}
-		case LXP_TIOCSCTTY: /* getty/login: become/drop/set the tty session */
-		case LXP_TIOCNOTTY:
-		case LXP_TIOCSPGRP:
-			return 0;
-		case LXP_TIOCGPGRP: {
-			int *pgrp = (int *)(uintptr_t)a2;
-			if (pgrp)
-				*pgrp = proc->pid;
-			return 0;
-		}
-		default:
-			return -LXP_ENOTTY;
-		}
+	lxp_fd_t *s = fd_slot(proc, (int)a0);
+	if (!s)
+		return -LXP_ENOTTY;
+	if (s->ops && s->ops->ioctl)
+		return s->ops->ioctl(proc, s, (unsigned long)a1, (unsigned long)a2);
+	return -LXP_ENOTTY; /* not a tty / char device / socket */
 }
 
 long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, long a4,
