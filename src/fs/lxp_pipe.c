@@ -15,11 +15,11 @@
  */
 #include "fs/lxp_pipe.h"
 
+#include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read/write */
 #include "lxp/lxp_config.h"
 #include "lxp/lxp_syscall.h"
 
 #include <stddef.h>
-#include <string.h>
 
 typedef struct {
 	uint8_t buf[LXP_PIPE_BUF];
@@ -74,17 +74,7 @@ long pipe_try_read(int pi, void *buf, size_t len)
 		pipe_ends(pi, &rd, &wr);
 		return wr > 0 ? -LXP_EAGAIN : 0;
 	}
-	if (len > pp->count)
-		len = pp->count;
-	uint8_t *out = (uint8_t *)buf;
-	size_t n1 = LXP_PIPE_BUF - pp->rpos; /* contiguous bytes to the ring end */
-	if (n1 > len)
-		n1 = len;
-	memcpy(out, &pp->buf[pp->rpos], n1);
-	memcpy(out + n1, &pp->buf[0], len - n1); /* wrapped tail (len-n1 may be 0 = no-op) */
-	pp->rpos = (pp->rpos + len) % LXP_PIPE_BUF;
-	pp->count -= len;
-	return (long)len;
+	return (long)lxp_ring_read(pp->buf, LXP_PIPE_BUF, &pp->rpos, &pp->count, buf, len);
 }
 
 long pipe_try_write(int pi, const void *buf, size_t len)
@@ -94,20 +84,9 @@ long pipe_try_write(int pi, const void *buf, size_t len)
 	pipe_ends(pi, &rd, &wr);
 	if (rd == 0)
 		return -LXP_EPIPE;
-	size_t space = LXP_PIPE_BUF - pp->count;
-	if (space == 0)
-		return -LXP_EAGAIN;
-	if (len > space)
-		len = space;
-	const uint8_t *in = (const uint8_t *)buf;
-	size_t n1 = LXP_PIPE_BUF - pp->wpos; /* contiguous space to the ring end */
-	if (n1 > len)
-		n1 = len;
-	memcpy(&pp->buf[pp->wpos], in, n1);
-	memcpy(&pp->buf[0], in + n1, len - n1); /* wrapped tail (len-n1 may be 0 = no-op) */
-	pp->wpos = (pp->wpos + len) % LXP_PIPE_BUF;
-	pp->count += len;
-	return (long)len;
+	if (pp->count == LXP_PIPE_BUF)
+		return -LXP_EAGAIN; /* full but a reader is open */
+	return (long)lxp_ring_write(pp->buf, LXP_PIPE_BUF, &pp->wpos, &pp->count, buf, len);
 }
 
 /* Retry a parked pipe read/write for the run-loop coordinator (declared in lxp_syscall.h). */

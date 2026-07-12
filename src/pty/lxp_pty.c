@@ -26,6 +26,7 @@
 
 #include <string.h>
 
+#include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read */
 #include "lxp/lxp_dev.h" /* user_ok() (confused-deputy guard for ioctl arg pointers) */
 
 /* One pty pair = 2 concurrent SSH logins' worth on this tier (each login holds a
@@ -79,14 +80,7 @@ static void ring_putc(pty_ring_t *r, uint8_t c)
 }
 static size_t ring_read(pty_ring_t *r, uint8_t *out, size_t len)
 {
-	if (len > r->n)
-		len = r->n;
-	for (size_t i = 0; i < len; i++) {
-		out[i] = r->buf[r->r];
-		r->r = (r->r + 1) % LXP_PTY_BUF;
-	}
-	r->n -= len;
-	return len;
+	return lxp_ring_read(r->buf, LXP_PTY_BUF, &r->r, &r->n, out, len);
 }
 /* Canonical read: up to and INCLUDING the first newline (one line per read). */
 static size_t ring_read_line(pty_ring_t *r, uint8_t *out, size_t len)
