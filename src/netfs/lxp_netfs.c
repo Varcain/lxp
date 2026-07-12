@@ -24,6 +24,7 @@
 #include "lxp/lxp_netfs.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_net_ops.h"
+#include "lxp_pool.h" /* shared refcounted open-pool primitives */
 #include "lxp/lxp_types.h"
 
 #include <string.h>
@@ -1189,8 +1190,8 @@ int lxp_netfs_fstat(int oi, uint32_t *mode, uint64_t *size, uint64_t *mtime, uin
 void lxp_netfs_get(int oi)
 {
 	struct netfs_open *op = open_slot(oi);
-	if (op && op->refs < 0xff)
-		op->refs++;
+	if (op)
+		lxp_pool_get(&op->refs);
 }
 
 void lxp_netfs_close(int oi)
@@ -1198,10 +1199,8 @@ void lxp_netfs_close(int oi)
 	struct netfs_open *op = open_slot(oi);
 	if (!op)
 		return;
-	if (op->refs > 1) {
-		op->refs--;
+	if (!lxp_pool_put(&op->refs))
 		return;
-	}
 	if (!op->stale && op->fid > 0)
 		clunk_enqueue(op->fid);
 	else
@@ -1298,9 +1297,7 @@ int lxp_netfs_busy(void)
 /* ---- fork / exit fd lifecycle ---------------------------------------------- */
 void lxp_netfs_fork_inherit(lxp_proc_t *child)
 {
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (child->fds[fd].kind == LXP_FD_NET)
-			lxp_netfs_get(child->fds[fd].file_idx);
+	lxp_pool_fork_inherit(child, LXP_FD_NET, lxp_netfs_get);
 }
 
 void lxp_netfs_proc_exit(lxp_proc_t *p)

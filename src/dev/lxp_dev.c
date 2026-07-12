@@ -21,6 +21,7 @@
 
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_disp_ops.h" /* lxp_display_ops_t + g_lxp_disp_ops (published by lxp_run) */
+#include "lxp_pool.h"	       /* shared refcounted open-pool primitives */
 
 #include <string.h>
 
@@ -139,8 +140,8 @@ long lxp_dev_open_new(lxp_proc_t *p, int devidx, int flags)
 void lxp_dev_get(int oi)
 {
 	struct lxp_dev_open *o = open_slot(oi);
-	if (o && o->refs < 0xff)
-		o->refs++;
+	if (o)
+		lxp_pool_get(&o->refs);
 }
 
 void lxp_dev_setfl(int oi, int flags)
@@ -161,10 +162,8 @@ void lxp_dev_close(int oi)
 	struct lxp_dev_open *o = open_slot(oi);
 	if (!o)
 		return;
-	if (o->refs > 1) {
-		o->refs--;
+	if (!lxp_pool_put(&o->refs))
 		return;
-	}
 	struct lxp_dev *d = &g_lnx_devs[o->dev];
 	if (d->ops->release)
 		d->ops->release(d, o);
@@ -399,9 +398,7 @@ void lxp_dev_tick(uint64_t now_us)
 /* ---- fork / exit fd lifecycle ---------------------------------------------- */
 void lxp_dev_fork_inherit(lxp_proc_t *child)
 {
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (child->fds[fd].kind == LXP_FD_DEV)
-			lxp_dev_get(child->fds[fd].file_idx);
+	lxp_pool_fork_inherit(child, LXP_FD_DEV, lxp_dev_get);
 }
 
 void lxp_dev_proc_exit(lxp_proc_t *p)

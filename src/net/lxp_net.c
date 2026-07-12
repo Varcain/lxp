@@ -24,6 +24,7 @@
 #include "lxp/lxp_net.h"
 #include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_port.h"
+#include "lxp_pool.h" /* shared refcounted open-pool primitives */
 
 #include <string.h>
 
@@ -178,8 +179,8 @@ long lxp_sock_new(int domain, int type, int protocol)
 void lxp_sock_get(int oi)
 {
 	struct sock_open *o = open_slot(oi);
-	if (o && o->refs < 0xff)
-		o->refs++;
+	if (o)
+		lxp_pool_get(&o->refs);
 }
 
 void lxp_sock_close(int oi)
@@ -187,10 +188,8 @@ void lxp_sock_close(int oi)
 	struct sock_open *o = open_slot(oi);
 	if (!o)
 		return;
-	if (o->refs > 1) {
-		o->refs--;
+	if (!lxp_pool_put(&o->refs))
 		return;
-	}
 	g_lxp_net_ops->sock_close(o->sock);
 	o->used = 0;
 }
@@ -767,9 +766,7 @@ long lxp_sock_retry(lxp_proc_t *p)
 
 void lxp_sock_fork_inherit(lxp_proc_t *child)
 {
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (child->fds[fd].kind == LXP_FD_SOCKET)
-			lxp_sock_get(child->fds[fd].file_idx);
+	lxp_pool_fork_inherit(child, LXP_FD_SOCKET, lxp_sock_get);
 }
 
 void lxp_sock_proc_exit(lxp_proc_t *p)
