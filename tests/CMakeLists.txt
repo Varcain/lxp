@@ -38,6 +38,7 @@ add_executable(lxp_test_stub
   "${LXP_ROOT}/ports/posix/lxp_port_posix.c"  # g_lxp_net_ops over BSD sockets + netif
   "${CMAKE_CURRENT_SOURCE_DIR}/stub_lnx_run.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/stub_main.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_arena.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_syscall.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_dev.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_net.c"

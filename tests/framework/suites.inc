@@ -12,6 +12,7 @@
 #define LXP_SUITE(name, label)
 #endif
 
+LXP_SUITE(arena,         "Arena allocator")
 LXP_SUITE(linux_syscall, "Linux personality: syscall dispatch")
 LXP_SUITE(linux_dev,     "Linux personality: /dev device layer")
 LXP_SUITE(linux_net,     "Linux personality: socket layer")
