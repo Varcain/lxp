@@ -15,6 +15,7 @@
 LXP_SUITE(arena,         "Arena allocator")
 LXP_SUITE(loader,        "ELF object loader (x86-64 host path + ld_oob guards)")
 LXP_SUITE(fs,            "Extracted fs/proc subsystems + pointer validators")
+LXP_SUITE(overflow,      "Memory-safety overflow / bounds guards")
 LXP_SUITE(linux_syscall, "Linux personality: syscall dispatch")
 LXP_SUITE(linux_dev,     "Linux personality: /dev device layer")
 LXP_SUITE(linux_net,     "Linux personality: socket layer")

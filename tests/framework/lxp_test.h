@@ -27,6 +27,7 @@
 int test_arena_run(void);
 int test_loader_run(void);
 int test_fs_run(void);
+int test_overflow_run(void);
 int test_linux_syscall_run(void);
 int test_linux_dev_run(void);
 int test_linux_net_run(void);

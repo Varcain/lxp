@@ -1042,7 +1042,7 @@ static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
 	/* Any fd sys_write accepts: console, socket (uClibc stdio flushes a socket via
 	 * writev — this is how wget sends its HTTP request), device, file. sys_write
 	 * validates the fd (EBADF) and routes by kind. */
-	if (iovcnt < 0)
+	if (iovcnt < 0 || iovcnt > 1024) /* IOV_MAX; bound before iovcnt*sizeof(iovec) overflows */
 		return -LXP_EINVAL;
 	if (iovcnt && !user_ok(p, iov, (size_t)iovcnt * sizeof(*iov), 0))
 		return -LXP_EFAULT; /* the iov array itself; each iov_base is checked in sys_write */
@@ -1143,6 +1143,8 @@ static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint3
 		lxp_wnode_t *t = wnode_at(s->file_idx);
 		if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 			return -LXP_EBADF;
+		if ((size_t)off + len < len) /* off+len wrapped a 32-bit size_t → tiny reserve, OOB write */
+			return -LXP_EINVAL;
 		if (wfs_reserve(s->file_idx, (size_t)off + len) != 0)
 			return -LXP_EFBIG;
 		memcpy(t->data + off, buf, len);
@@ -1203,8 +1205,9 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 		lxp_fd_t *s = fd_slot(p, fd);
 		if (s && s->kind == LXP_FD_FILE) {
 			const lxp_file_t *f = &p->fs[s->file_idx];
-			if ((size_t)pgoff * 4096u + len <= f->size)
-				return (long)(uintptr_t)(f->data + (size_t)pgoff * 4096u);
+			size_t foff = (size_t)pgoff * 4096u; /* guard the *4096 and +len wraps (32-bit) */
+			if (foff / 4096u == (size_t)pgoff && foff <= f->size && f->size - foff >= len)
+				return (long)(uintptr_t)(f->data + foff);
 		}
 	}
 
@@ -1265,6 +1268,7 @@ static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
 			p->fds[fd].kind = kind;
 			p->fds[fd].rw = 0;
 			p->fds[fd].cloexec = 0;
+			p->fds[fd].nonblock = 0; /* else stale from the slot's prior occupant */
 			p->fds[fd].file_idx = idx;
 			p->fds[fd].offset = off;
 			p->fds[fd].ops = ops_for_kind(kind);
@@ -1367,7 +1371,10 @@ static long proc_open(lxp_proc_t *p, const char *abs)
 		g_procf[i].len = (size_t)n;
 		g_procf[i].is_dir = dir;
 		g_procf[i].used = 1;
-		return fd_alloc(p, LXP_FD_PROC, i, 0);
+		int fd = fd_alloc(p, LXP_FD_PROC, i, 0);
+		if (fd < 0)
+			g_procf[i].used = 0; /* no fd installed → release the content slot */
+		return fd;
 	}
 	return -LXP_EMFILE;
 }
@@ -1547,6 +1554,7 @@ static long sys_dup2(lxp_proc_t *p, int oldfd, int newfd)
 			lxp_netfs_close(p->fds[newfd].file_idx); /* dup2 closes the target first */
 #endif
 		p->fds[newfd] = *s;
+		p->fds[newfd].cloexec = 0; /* dup2/dup3 clear FD_CLOEXEC; dup3(O_CLOEXEC) re-sets it */
 #if LXP_ENABLE_DEV
 		if (s->kind == LXP_FD_DEV)
 			lxp_dev_get(s->file_idx); /* the new fd shares the open */
@@ -1572,6 +1580,7 @@ static long sys_dup(lxp_proc_t *p, int oldfd)
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
 		if (p->fds[fd].kind == LXP_FD_FREE) {
 			p->fds[fd] = *s;
+			p->fds[fd].cloexec = 0; /* dup(2) clears FD_CLOEXEC on the new fd */
 #if LXP_ENABLE_DEV
 			if (s->kind == LXP_FD_DEV)
 				lxp_dev_get(s->file_idx); /* the dup shares the open */
@@ -1842,6 +1851,8 @@ static long sys_symlink(lxp_proc_t *p, const char *target, const char *linkp)
 {
 	if (!target || !linkp)
 		return -LXP_EFAULT;
+	if (user_strnlen(p, target, LXP_PATH_MAX) < 0)
+		return -LXP_EFAULT; /* target is stored verbatim (strlen'd) — bound it in guest memory */
 	char linkabs[LXP_PATH_MAX];
 	long rr = resolve_path(p, linkp, linkabs, sizeof(linkabs));
 	if (rr < 0)
@@ -2544,6 +2555,8 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 {
 		lxp_pollfd *pfds = (lxp_pollfd *)(uintptr_t)a0;
 		unsigned nfds = (unsigned)a1;
+		if (nfds > LXP_MAX_FDS) /* bound before nfds*sizeof(pollfd) wraps a 32-bit size_t */
+			return -LXP_EINVAL;
 		if (nfds && !user_ok(proc, pfds, (size_t)nfds * sizeof(lxp_pollfd), 1))
 			return -LXP_EFAULT;
 		/* Timeout: poll(2) passes ms in a2 (<0 = block); ppoll passes a struct
@@ -2755,6 +2768,8 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_dup2:
 		return sys_dup2(proc, (int)a0, (int)a1);
 	case LXP_NR_dup3: { /* (old, new, flags) — flags carries O_CLOEXEC on the new fd */
+		if ((int)a0 == (int)a1) /* dup3 (unlike dup2) rejects oldfd == newfd */
+			return -LXP_EINVAL;
 		long nf = sys_dup2(proc, (int)a0, (int)a1);
 		if (nf >= 0 && ((int)a2 & LXP_O_CLOEXEC))
 			proc->fds[nf].cloexec = 1;

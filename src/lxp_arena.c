@@ -38,6 +38,8 @@ struct lxp_arena_blk {
 
 static inline size_t arena_align(size_t n)
 {
+	if (n > SIZE_MAX - (LXP_ARENA_ALIGN - 1))
+		return 0; /* rounding would wrap a (near-)SIZE_MAX request; 0 => "no fit" */
 	return (n + (LXP_ARENA_ALIGN - 1)) & ~(size_t)(LXP_ARENA_ALIGN - 1);
 }
 
@@ -91,6 +93,8 @@ void *lxp_arena_alloc(lxp_arena_t *arena, size_t size)
 		return NULL;
 
 	size_t need = arena_align(size == 0 ? 1 : size);
+	if (need == 0)
+		return NULL; /* the size request overflowed the alignment rounding */
 
 	struct lxp_arena_blk *b = (struct lxp_arena_blk *)arena->first;
 	while (b && !(b->is_free && b->payload >= need))

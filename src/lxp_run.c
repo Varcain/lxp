@@ -351,6 +351,10 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	if (nr == LXP_NR_kill || nr == LXP_NR_tkill || nr == LXP_NR_tgkill) {
 		int sig = (nr == LXP_NR_tgkill) ? (int)f->r[2] : (int)f->r[1];
 		int target = (int)f->r[0];
+		if (sig < 0 || sig >= LXP_NSIG) { /* sig indexes sig_handler[]/pending_sig — reject OOB */
+			f->r[0] = -LXP_EINVAL;
+			return;
+		}
 		/* halt/poweroff/reboot signal a shutdown to init (pid 1) — SIGUSR1/SIGUSR2/
 		 * SIGTERM respectively. init is parked and can't receive it, so honor a
 		 * shutdown signal to pid 1 directly as a system halt. */

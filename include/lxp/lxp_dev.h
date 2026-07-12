@@ -102,7 +102,7 @@ struct lxp_dev_open {
 			uint16_t addr;
 		} i2c; /**< I2C_SLAVE address (P2 i2c). */
 		struct {
-			uint16_t tail;
+			uint32_t tail; /* matches the uint32_t g_in_head; a uint16_t wrapped after 65536 events */
 			uint8_t overrun;
 		} input; /**< evdev ring cursor (P4 input). */
 	} u;

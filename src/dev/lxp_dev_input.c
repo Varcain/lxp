@@ -96,7 +96,7 @@ static long in_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, vo
 	struct lxp_input_event *out = buf;
 	for (size_t i = 0; i < nmax; i++)
 		out[i] = g_in_ring[(tail + i) % LXP_IN_RING];
-	o->u.input.tail = (uint16_t)(tail + nmax);
+	o->u.input.tail = tail + nmax;
 	return (long)(nmax * sizeof(struct lxp_input_event));
 }
 
@@ -110,7 +110,7 @@ static long in_open(struct lxp_dev *d, struct lxp_dev_open *o, int flags)
 {
 	(void)d;
 	(void)flags;
-	o->u.input.tail = (uint16_t)g_in_head; /* start at the live head — no stale backlog */
+	o->u.input.tail = g_in_head; /* start at the live head — no stale backlog */
 	o->u.input.overrun = 0;
 	return 0;
 }
