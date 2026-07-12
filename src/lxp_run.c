@@ -41,6 +41,8 @@
 #include "lxp/lxp_pty.h" /* pty-layer park/retry (lxp_pty_retry) */
 #endif
 
+#include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
+
 /* Declare a memory-mapped rootfs image window [base, base+len) so the coordinator task can
  * read it safely on the target.  Default: no-op — an ordinary CPU view of the window is already
  * correct (a RAM-backed rootfs, or an engine that covers the window with a global MPU region,
@@ -269,7 +271,7 @@ struct lxp_dbg_s {
 };
 struct lxp_dbg_s g_lxp_dbg[LXP_NSLOT];
 
-static int slot_of(const lxp_proc_t *p)
+int slot_of(const lxp_proc_t *p)
 {
 	return (int)(p - g_lxp_proc);
 }
@@ -293,7 +295,7 @@ static void capture_ctx(int s, const struct lxp_frame *f)
 
 /* Park the program frame at the spin loop until the coordinator reaps the event,
  * and wake the coordinator (it blocks in event_wait rather than busy-polling). */
-static void park_frame(struct lxp_frame *f)
+void park_frame(struct lxp_frame *f)
 {
 	f->r[15] = ((uint32_t)&lxp_park_loop) & ~1u;
 	f->xpsr |= (1u << 24);
@@ -307,10 +309,9 @@ static void park_frame(struct lxp_frame *f)
 /* Per-slot, NOT a single global: pthreads (LinuxThreads) deliver restart signals to
  * several threads concurrently — each slot's handler frame must save/restore its own
  * interrupted context, or one thread's sigreturn clobbers another's. */
-static struct sig_save_s {
-	uint32_t r0, r1, r2, r3, r9, r12, lr, pc, xpsr;
-	int active;
-} g_sig_save[LXP_NSLOT];
+/* struct sig_save_s is in lxp_run_internal.h; delivery/restore ops live in
+ * src/lxp_signal.c. g_sig_save is owned here (the coordinator clears it on run start). */
+struct sig_save_s g_sig_save[LXP_NSLOT];
 
 static volatile int g_tty_isig = 1;
 static volatile int g_pending_sig;
@@ -331,99 +332,6 @@ void lxp_park_loop(void)
 	}
 }
 
-/* ---- signal delivery (over the uniform frame) ------------------------------ */
-/* Resolve a handler + restorer for delivery. FDPIC: sa_handler/sa_restorer are function DESCRIPTORS
- * {entry, GOT} — deref, since the handler may live in a different module (e.g. libpthread) than the
- * interrupted code and needs its own r9=GOT. Non-FDPIC (e.g. the posix host test): raw entries, no
- * GOT change. */
-static void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
-			    uintptr_t *restorer)
-{
-	uintptr_t h = proc->sig_handler[sig];
-	uintptr_t r = proc->sig_restorer[sig];
-	if (proc->is_fdpic) {
-		*entry = ((const uint32_t *)h)[0];
-		*got = ((const uint32_t *)h)[1];
-		*restorer = ((const uint32_t *)r)[0];
-	} else {
-		*entry = h;
-		*got = 0;
-		*restorer = r;
-	}
-}
-
-/* Is signal `sig` effectively ignored for `proc`? True for SIG_IGN, or SIG_DFL of a
- * signal whose default action is "ignore" (SIGCHLD). Such a signal is swallowed by the
- * coordinator: it neither runs a handler nor terminates a parked proc — a parent must
- * not die because a child exited. */
-static int sig_swallowed(const lxp_proc_t *proc, int sig)
-{
-	uintptr_t h = proc->sig_handler[sig];
-	if (h == LXP_SIG_IGN)
-		return 1;
-	if (h == LXP_SIG_DFL && sig == LXP_SIGCHLD)
-		return 1;
-	return 0;
-}
-
-/* Deliver signal `sig` to `proc`; `ret` is the interrupted syscall's result
- * (0 for a kill/tkill, -EINTR for a console-interrupted read). */
-static void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
-{
-	if (sig < 1 || sig >= LXP_NSIG) {
-		f->r[0] = (uint32_t)-LXP_EINVAL;
-		return;
-	}
-	uintptr_t h = proc->sig_handler[sig];
-	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig == LXP_SIGCHLD)) {
-		f->r[0] = (uint32_t)ret; /* SIG_IGN, or a default-ignore signal (SIGCHLD) */
-		return;
-	}
-	if (h == LXP_SIG_DFL) {
-		proc->exited = 1;
-		proc->exit_status = 128 + sig;
-		park_frame(f); /* the coordinator reaps it */
-		return;
-	}
-	struct sig_save_s *sv = &g_sig_save[slot_of(proc)];
-	sv->r0 = (uint32_t)ret;
-	sv->r1 = f->r[1];
-	sv->r2 = f->r[2];
-	sv->r3 = f->r[3];
-	sv->r9 = f->r[9]; /* FDPIC GOT of the interrupted code — clobbered below, restored at sigreturn */
-	sv->r12 = f->r[12];
-	sv->lr = f->r[14];
-	sv->pc = f->r[15];
-	sv->xpsr = f->xpsr;
-	sv->active = 1;
-	uintptr_t entry, restorer;
-	uint32_t got;
-	resolve_handler(proc, sig, &entry, &got, &restorer);
-	if (proc->is_fdpic)
-		f->r[9] = got;			 /* FDPIC: r9 = the handler's own GOT */
-	f->r[15] = entry & ~1u;			 /* pc -> handler entry (Thumb via xPSR.T) */
-	f->r[0] = (uint32_t)sig;		 /* r0 = signo */
-	f->r[14] = restorer | 1u;		 /* lr -> sa_restorer */
-	f->xpsr |= (1u << 24);
-}
-
-/* rt_sigreturn: restore the context saved at delivery. */
-static void sig_restore(struct lxp_frame *f, const lxp_proc_t *proc)
-{
-	struct sig_save_s *sv = &g_sig_save[slot_of(proc)];
-	if (!sv->active)
-		return;
-	f->r[0] = sv->r0;
-	f->r[1] = sv->r1;
-	f->r[2] = sv->r2;
-	f->r[3] = sv->r3;
-	f->r[9] = sv->r9; /* FDPIC GOT: the handler ran with its own r9; restore the interrupted code's */
-	f->r[12] = sv->r12;
-	f->r[14] = sv->lr;
-	f->r[15] = sv->pc & ~1u;
-	f->xpsr = sv->xpsr;
-	sv->active = 0;
-}
 
 /* ---- the syscall dispatch body --------------------------------------------- */
 void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
