@@ -642,9 +642,15 @@ static void req_complete(struct netfs_req *r, long result)
 }
 
 /* Parse Rlgetattr body (cursor at first field after the 7-byte header) into attrs. */
-static void parse_getattr(const uint8_t *b, size_t o, uint32_t *mode, uint64_t *size,
+static void parse_getattr(const uint8_t *b, size_t o, size_t blen, uint32_t *mode, uint64_t *size,
 			  uint64_t *mtime, uint64_t *ino)
 {
+	*mode = 0;
+	*size = 0;
+	*mtime = 0;
+	*ino = 0;
+	if (o + 97 > blen) /* the Rgetattr fields read below span 97 bytes from o */
+		return;
 	(void)get64(b, &o); /* valid */
 	uint8_t qtype = get8(b, &o);
 	(void)get32(b, &o); /* qid.version */
@@ -705,7 +711,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 		if (r->step == 1) { /* Rlgetattr */
 			uint32_t mode;
 			uint64_t size, mtime, ino;
-			parse_getattr(body, o, &mode, &size, &mtime, &ino);
+			parse_getattr(body, o, blen, &mode, &size, &mtime, &ino);
 			struct netfs_open *op = &g_open[r->oi];
 			op->is_dir = (mode & LXP_S_IFMT) == LXP_S_IFDIR;
 			op->mode = mode;
@@ -730,7 +736,9 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 
 	case LXP_NETFSW_READ: {
 		uint32_t cnt = get32(body, &o);
-		if (cnt > blen - 4)
+		if (blen < 4)
+			cnt = 0; /* short Rread reply: don't underflow blen-4 → OOB read of the RX buffer */
+		else if (cnt > blen - 4)
 			cnt = (uint32_t)(blen - 4);
 		if (cnt > r->ulen)
 			cnt = (uint32_t)r->ulen;
@@ -743,7 +751,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 		return;
 	}
 	case LXP_NETFSW_GETDENTS: {
-		uint32_t cnt = get32(body, &o); /* bytes of readdir data */
+		uint32_t cnt = (blen < 4) ? 0u : get32(body, &o); /* bytes of readdir data */
 		size_t end = o + cnt;
 		size_t filled = 0;
 		struct netfs_open *op = open_slot(r->oi);
@@ -792,7 +800,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 		if (r->step == 1) { /* Rlgetattr → fill guest stat, then clunk */
 			uint32_t mode;
 			uint64_t size, mtime, ino;
-			parse_getattr(body, o, &mode, &size, &mtime, &ino);
+			parse_getattr(body, o, blen, &mode, &size, &mtime, &ino);
 			r->result = lxp_netfs_fill_stat(r->owner, r->ubuf, r->statkind, mode, size,
 							    mtime, ino);
 			r->step = 2; /* send Tclunk(fid) */
@@ -824,7 +832,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 		if (r->step == 1) { /* Rlgetattr → capture the file size (regular files only) */
 			uint32_t mode;
 			uint64_t size, mtime, ino;
-			parse_getattr(body, o, &mode, &size, &mtime, &ino);
+			parse_getattr(body, o, blen, &mode, &size, &mtime, &ino);
 			if ((mode & LXP_S_IFMT) != LXP_S_IFREG) {
 				r->result = -LXP_EACCES;
 				r->step = 4; /* skip open/read → just clunk the walked fid */
@@ -842,7 +850,9 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 		}
 		if (r->step == 3) { /* Rread → copy a chunk into staging */
 			uint32_t cnt = get32(body, &o);
-			if (cnt > blen - 4)
+			if (blen < 4)
+				cnt = 0; /* short Rread reply: don't underflow blen-4 */
+			else if (cnt > blen - 4)
 				cnt = (uint32_t)(blen - 4);
 			if (r->off + cnt > g_exec_cap)
 				cnt = (uint32_t)(g_exec_cap - r->off);

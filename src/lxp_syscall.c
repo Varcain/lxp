@@ -315,6 +315,8 @@ int lxp_cpio_to_rootfs(const uint8_t *cpio, size_t len, lxp_file_t *out, int max
 		if (pos + 110 + nsize > len)
 			return -1;
 		const char *name = h + 110;
+		if (nsize == 0 || name[nsize - 1] != '\0') /* the name field must be NUL-terminated */
+			return -1;
 		if (strcmp(name, "TRAILER!!!") == 0)
 			break;
 		size_t data_off = (pos + 110 + nsize + 3u) & ~(size_t)3u;

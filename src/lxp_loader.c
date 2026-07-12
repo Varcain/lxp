@@ -685,6 +685,23 @@ static uint32_t fdpic_rt(const uint8_t *lm, int nseg, uint32_t vaddr)
 	return 0;
 }
 
+/* Like fdpic_rt, but only maps [vaddr, vaddr+need) when the whole range fits within one
+ * loaded segment — for reads/writes driven by an untrusted reloc (rel_sz / r_offset / r_sym).
+ * @p vaddr is 64-bit so a caller can pass sym_v + r_sym*16 without a prior 32-bit wrap.
+ * Returns 0 if unmapped or if the range would overflow the segment. */
+static uint32_t fdpic_rt_n(const uint8_t *lm, int nseg, uint64_t vaddr, uint64_t need)
+{
+	if (vaddr > 0xffffffffu)
+		return 0;
+	for (int i = 0; i < nseg; i++) {
+		const uint8_t *e = lm + 4 + (size_t)i * 12;
+		uint32_t addr = le32(e), pv = le32(e + 4), msz = le32(e + 8);
+		if (vaddr >= pv && vaddr + need <= (uint64_t)pv + msz)
+			return addr + (uint32_t)(vaddr - pv);
+	}
+	return 0;
+}
+
 int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size, void *region,
 			  size_t region_size, int is_interp, int copy_text)
 {
@@ -704,6 +721,8 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	uint32_t e_phoff = le32(img + 28);
 	uint16_t e_phentsize = le16(img + 42);
 	uint16_t e_phnum = le16(img + 44);
+	if (e_phentsize < 32) /* a valid Elf32_Phdr is 32B; a smaller entry lets the ph+N reads spill */
+		return LXP_ERR_INVALID_PARAM;
 	if ((uint64_t)e_phoff + (uint64_t)e_phnum * e_phentsize > image_size)
 		return LXP_ERR_INVALID_PARAM;
 
@@ -742,6 +761,10 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	if (!have_text || nload < 1)
 		return LXP_ERR_INVALID_PARAM;
 	uint32_t rw_span = (rw_hi > rw_lo) ? (rw_hi - rw_lo) : 0;
+	/* Reject a dynamic table whose (attacker-influenced) p_vaddr/p_memsz escapes the RW region;
+	 * its runtime address + dyn_sz is walked below and would otherwise read OOB. */
+	if (dyn_off && (dyn_off < rw_lo || (uint64_t)dyn_off + dyn_sz > rw_hi))
+		dyn_off = 0;
 	uint32_t rw_a = (rw_span + 3u) & ~3u; /* the loadmap follows the RW block, 4-aligned */
 	uint32_t loadmap_sz = 4u + (uint32_t)nload * 12u;
 	/* A copy_text load reserves the region's head for the program's own text (copied in below,
@@ -779,6 +802,8 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 		uint32_t p_off = le32(ph + 4), p_vaddr = le32(ph + 8);
 		uint32_t p_filesz = le32(ph + 16), p_memsz = le32(ph + 20);
 		uint32_t p_flags = le32(ph + 24);
+		if (p_filesz > p_memsz) /* the copy is p_filesz bytes into a p_memsz-sized region slot */
+			return LXP_ERR_INVALID_PARAM;
 		if ((uint64_t)p_off + p_filesz > image_size)
 			return LXP_ERR_INVALID_PARAM;
 		uint32_t seg_addr;
@@ -839,7 +864,7 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	 * FUNCDESC_VALUE. Addresses resolve through the loadmap (fdpic_rt): rel/symtab are read
 	 * from the in-place text, GOT slots written in the per-process RW region. */
 	uint32_t got_base = fdpic_rt(lm, nload, pltgot_v);
-	const uint8_t *rel0 = (const uint8_t *)(uintptr_t)fdpic_rt(lm, nload, rel_v);
+	const uint8_t *rel0 = (const uint8_t *)(uintptr_t)fdpic_rt_n(lm, nload, rel_v, rel_sz);
 	/* A descriptor pool just past the loadmap (per-process, in the region); at most one per
 	 * reloc (upper bound). */
 	uint32_t pool_off = ((uint32_t)(rw_a + loadmap_sz) + 7u) & ~7u;
@@ -857,7 +882,7 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 		const uint8_t *r = rel0 + o;
 		uint32_t r_offset = le32(r), r_info = le32(r + 4);
 		uint32_t r_type = r_info & 0xffu, r_sym = r_info >> 8;
-		uint8_t *where = (uint8_t *)(uintptr_t)fdpic_rt(lm, nload, r_offset);
+		uint8_t *where = (uint8_t *)(uintptr_t)fdpic_rt_n(lm, nload, r_offset, 8u);
 		if (!where)
 			continue;
 		if (r_type == ELF_R_ARM_RELATIVE || r_type == ELF_R_ARM_ABS32) {
@@ -868,10 +893,10 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 			 * st_value (carries the Thumb bit) PLUS the in-place addend ONLY for a
 			 * STB_LOCAL symbol, mapped through the loadmap; got = the module GOT. An
 			 * UNDEFINED (weak EH) symbol → null {0,0} so the crt's guarded call skips it. */
-			const uint8_t *sym =
-				(const uint8_t *)(uintptr_t)fdpic_rt(lm, nload, sym_v) + r_sym * 16u;
+			const uint8_t *sym = (const uint8_t *)(uintptr_t)fdpic_rt_n(
+				lm, nload, (uint64_t)sym_v + (uint64_t)r_sym * 16u, 16u);
 			uint32_t w0 = 0, w1 = 0;
-			if (sym_v && le16(sym + 14) != 0) { /* st_shndx != SHN_UNDEF */
+			if (sym_v && sym && le16(sym + 14) != 0) { /* st_shndx != SHN_UNDEF */
 				uint32_t fnv = le32(sym + 4);
 				if ((sym[12] >> 4) == 0) /* ELF_ST_BIND == STB_LOCAL */
 					fnv += le32(where);
@@ -885,10 +910,10 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 			 * FUNCDESC_VALUE relocates) — but NULL for an undefined weak symbol, so a
 			 * caller's "if (funcptr) call" guard skips it rather than dereferencing a
 			 * {0,0} descriptor and branching to 0. */
-			const uint8_t *sym =
-				(const uint8_t *)(uintptr_t)fdpic_rt(lm, nload, sym_v) + r_sym * 16u;
+			const uint8_t *sym = (const uint8_t *)(uintptr_t)fdpic_rt_n(
+				lm, nload, (uint64_t)sym_v + (uint64_t)r_sym * 16u, 16u);
 			uint32_t descr = 0;
-			if (sym_v && le16(sym + 14) != 0) { /* defined (st_shndx != SHN_UNDEF) */
+			if (sym_v && sym && le16(sym + 14) != 0) { /* defined (st_shndx != SHN_UNDEF) */
 				for (uint32_t p = 0; p + rel_ent <= rel_sz; p += rel_ent) {
 					uint32_t i2 = le32(rel0 + p + 4);
 					if ((i2 & 0xffu) == ELF_R_ARM_FUNCDESC_VALUE &&
