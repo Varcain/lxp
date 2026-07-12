@@ -482,6 +482,7 @@ static lxp_fd_t *fd_slot(lxp_proc_t *p, int fd)
 static long efd_read(lxp_proc_t *p, int ei, void *buf, size_t len);
 static long efd_write(lxp_proc_t *p, int ei, const void *buf, size_t len);
 static void efd_close(int ei); /* release an eventfd pool slot (defined with efd_new). */
+static int efd_readable(int ei); /* eventfd counter nonzero? (poll readiness; defined with efd_new). */
 
 /* Fill an ARM kstat64 (defined below with sys_fstat64); the fstat fops use it. */
 struct lxp_kstat64;
@@ -952,32 +953,76 @@ static long fop_ioctl_pty(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, unsigne
 }
 #endif
 
+/* ---- poll fops (readiness bits; a kind with no poll fop is always ready) ---- */
+static unsigned fop_poll_console(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)s;
+	int key = (p->console_poll && p->console_poll(p->io_ctx) > 0);
+	return (unsigned)((p->console_poll ? (key ? LXP_POLLIN : 0) : LXP_POLLIN) | LXP_POLLOUT);
+}
+
+static unsigned fop_poll_eventfd(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)p;
+	return (unsigned)LXP_POLLOUT | (efd_readable(s->file_idx) ? (unsigned)LXP_POLLIN : 0u);
+}
+
+static unsigned fop_poll_pipe(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)p;
+	return (unsigned)pipe_poll(s->file_idx, s->rw); /* real readiness (empty self-pipe!) */
+}
+
+#if LXP_ENABLE_DEV
+static unsigned fop_poll_dev(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)p;
+	return (unsigned)lxp_dev_poll(s->file_idx);
+}
+#endif
+#if LXP_ENABLE_NET
+static unsigned fop_poll_socket(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)p;
+	return (unsigned)lxp_sock_poll(s->file_idx);
+}
+#endif
+#if LXP_ENABLE_PTY
+static unsigned fop_poll_pty(lxp_proc_t *p, lxp_fd_t *s)
+{
+	(void)p;
+	return (unsigned)lxp_pty_poll(s->file_idx, s->rw);
+}
+#endif
+
 /* ---- per-kind ops tables + kind→ops resolver ----
  * A NULL read/write means the kind rejects that direction: the syscall entry
  * returns -EBADF (the errno the former fallthrough returned for rootfs/proc and
  * a wrong-direction console). netfs is the exception — its write returns -EROFS,
  * so it supplies an explicit write fop rather than a NULL. */
 static const lxp_file_ops_t console_fops = {.read = fop_read_console, .write = fop_write_console,
-					    .ioctl = fop_ioctl_console};
+					    .ioctl = fop_ioctl_console, .poll = fop_poll_console};
 static const lxp_file_ops_t rootfs_fops = {.read = fop_read_rootfs, /* read-only → write EBADF */
 					   .lseek = fop_lseek_rootfs,
 					   .fstat = fop_fstat_rootfs};
 static const lxp_file_ops_t tmpfs_fops = {.read = fop_read_tmpfs, .write = fop_write_tmpfs,
 					  .lseek = fop_lseek_tmpfs, .fstat = fop_fstat_tmpfs};
-static const lxp_file_ops_t pipe_fops = {.read = fop_read_pipe, .write = fop_write_pipe};
+static const lxp_file_ops_t pipe_fops = {.read = fop_read_pipe, .write = fop_write_pipe,
+					 .poll = fop_poll_pipe};
 static const lxp_file_ops_t proc_fops = {.read = fop_read_proc, /* read-only → write EBADF */
 					 .fstat = fop_fstat_proc, .close = fop_close_proc};
 static const lxp_file_ops_t eventfd_fops = {.read = fop_read_eventfd, .write = fop_write_eventfd,
-					    .close = fop_close_eventfd};
+					    .close = fop_close_eventfd, .poll = fop_poll_eventfd};
 #if LXP_ENABLE_DEV
 static const lxp_file_ops_t dev_fops = {.read = fop_read_dev, .write = fop_write_dev,
 					.lseek = fop_lseek_dev, .fstat = fop_fstat_dev,
-					.close = fop_close_dev, .ioctl = fop_ioctl_dev};
+					.close = fop_close_dev, .ioctl = fop_ioctl_dev,
+					.poll = fop_poll_dev};
 #endif
 #if LXP_ENABLE_NET
 static const lxp_file_ops_t socket_fops = {.read = fop_read_socket, .write = fop_write_socket,
 					   .fstat = fop_fstat_socket, .close = fop_close_socket,
-					   .ioctl = fop_ioctl_socket};
+					   .ioctl = fop_ioctl_socket, .poll = fop_poll_socket};
 #endif
 #if LXP_ENABLE_NETFS
 static const lxp_file_ops_t netfs_fops = {.read = fop_read_netfs, .write = fop_write_netfs,
@@ -986,7 +1031,8 @@ static const lxp_file_ops_t netfs_fops = {.read = fop_read_netfs, .write = fop_w
 #endif
 #if LXP_ENABLE_PTY
 static const lxp_file_ops_t pty_fops = {.read = fop_read_pty, .write = fop_write_pty,
-					.fstat = fop_fstat_pty, .ioctl = fop_ioctl_pty};
+					.fstat = fop_fstat_pty, .ioctl = fop_ioctl_pty,
+					.poll = fop_poll_pty};
 #endif
 
 /* Resolve an fd kind to its ops table (stamped on the fd at creation). This is the
@@ -1315,6 +1361,11 @@ static void efd_close(int ei)
 {
 	if (ei >= 0 && ei < LXP_NEVENTFD)
 		g_efd[ei].used = 0;
+}
+
+static int efd_readable(int ei)
+{
+	return (ei >= 0 && ei < LXP_NEVENTFD && g_efd[ei].ctr) ? 1 : 0;
 }
 
 /* eventfd read/write: 8-byte counter. read returns (and clears, or decrements in
@@ -3343,39 +3394,17 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
  * real key readiness rather than the vi/top ESC-probe heuristic. */
 static int lxp_poll_scan(lxp_proc_t *proc, lxp_pollfd *pfds, unsigned nfds)
 {
-	int key = (proc->console_poll && proc->console_poll(proc->io_ctx) > 0);
 	int ready = 0;
 	for (unsigned i = 0; i < nfds; i++) {
 		pfds[i].revents = 0;
 		lxp_fd_t *s = fd_slot(proc, pfds[i].fd);
 		if (!s)
 			continue;
-		unsigned pb;
-		if (s->kind == LXP_FD_SOCKET)
-			pb = lxp_sock_poll(s->file_idx);
-#if LXP_ENABLE_DEV
-		else if (s->kind == LXP_FD_DEV)
-			pb = lxp_dev_poll(s->file_idx);
-#endif
-#if LXP_ENABLE_PTY
-		else if (s->kind == LXP_FD_PTY)
-			pb = lxp_pty_poll(s->file_idx, s->rw);
-#endif
-		else if (s->kind == LXP_FD_CONSOLE)
-			pb = (unsigned)((proc->console_poll ? (key ? LXP_POLLIN : 0)
-							    : LXP_POLLIN) |
-					LXP_POLLOUT);
-		else if (s->kind == LXP_FD_EVENTFD)
-			pb = LXP_POLLOUT | ((s->file_idx >= 0 && s->file_idx < LXP_NEVENTFD &&
-						g_efd[s->file_idx].ctr)
-						       ? LXP_POLLIN
-						       : 0u);
-		else if (s->kind == LXP_FD_PIPE)
-			pb = pipe_poll(s->file_idx, s->rw); /* real readiness (empty self-pipe!) */
-		else
-			pb = LXP_POLLIN | LXP_POLLOUT; /* regular files: always ready */
-		pfds[i].revents =
-			(short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
+		/* Dispatch readiness through the fd's ops; a kind with no poll fop
+		 * (regular file / tmpfs / proc / netfs) is always ready. */
+		unsigned pb = (s->ops && s->ops->poll) ? s->ops->poll(proc, s)
+						       : (unsigned)(LXP_POLLIN | LXP_POLLOUT);
+		pfds[i].revents = (short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
 		if (pfds[i].revents)
 			ready++;
 	}

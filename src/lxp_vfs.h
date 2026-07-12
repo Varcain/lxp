@@ -46,6 +46,9 @@ struct lxp_file_ops {
 	 *  character device / socket (the syscall returns -ENOTTY). @p arg is the raw
 	 *  third argument (a pointer for the tty ioctls). */
 	long (*ioctl)(lxp_proc_t *p, lxp_fd_t *f, unsigned long cmd, unsigned long arg);
+	/** poll/select readiness: the ready bits (LXP_POLLIN | LXP_POLLOUT) for this fd
+	 *  right now. NULL means the kind is always ready (a regular file). */
+	unsigned (*poll)(lxp_proc_t *p, lxp_fd_t *f);
 };
 
 typedef struct lxp_file_ops lxp_file_ops_t;
