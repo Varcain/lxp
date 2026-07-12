@@ -43,10 +43,24 @@ left at their safe defaults.
   `target_link_libraries(app PRIVATE lxp::lxp)`, then set the `LXP_ENABLE_*`
   and sizing defines from your own config and supply the ops adapters.
 
+## Testing
+
+* **Host unit tests** (cmocka, fetched at configure time — no system dep):
+  `cmake -S . -B build -DLXP_BUILD_TESTS=ON && ctest --test-dir build -R lxp_unit`.
+  44 tests / 6 groups drive `lxp_syscall()` and the arena directly on x86-64
+  (syscall / dev / net / netfs / pty + a fresh arena suite), with no emulator —
+  the module's OS-agnostic TUs compiled without the coordinator. See `tests/`.
+* **QEMU end-to-end** (Cortex-M): `ports/qemu-mps2/` runs the full personality on
+  `qemu-system-arm -M mps2-an500` under FreeRTOS — static + dynamic (busybox)
+  FDPIC guests, unprivileged behind a per-slot MPU. See `ports/qemu-mps2/README.md`.
+
 ## Reference ports
 
-* `ports/posix/lxp_port_posix.c` — POSIX sockets + monotonic clock; the
-  standalone build + host test target (proves the decoupling).
+* `ports/posix/lxp_port_posix.c` — the network port (`lxp_net_ops_t`) over BSD
+  sockets + a synthetic netif; what `-DLXP_PORT_POSIX` and the host net/netfs tests
+  link. Runs no guest (the process model is exercised on target).
+* `ports/qemu-mps2/` — a FreeRTOS-backed `lxp_os_ops_t` that runs FDPIC guests
+  under QEMU (the standalone end-to-end harness).
 * The oveRTOS consumer wires the ops to its own HALs in a thin adapter and its
   per-engine (FreeRTOS / NuttX / Zephyr) seams.
 
