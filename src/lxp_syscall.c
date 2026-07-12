@@ -14,6 +14,7 @@
 #include "lxp/lxp_syscall.h"
 #include "lxp/lxp_types.h"
 
+#include "lxp_internal.h"    /* user_ok / user_strnlen / file_mode / lxp_encode_wstatus */
 #include "lxp_vfs.h"         /* per-fd-kind file-operation vtable (dispatch by kind) */
 
 #include "fs/lxp_path.h"     /* path resolution (resolve_path / fs_lookup / fs_follow) */
@@ -1595,6 +1596,44 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 	return 0;
 }
 
+/* dup/dup2/F_DUPFD: the new fd aliases oldfd's backing object, so take a reference on the
+ * refcounted-backend kinds. Consolidates the get all three call sites open-coded (F_DUPFD
+ * had previously omitted netfs — now consistent). */
+static void fd_dup_backing(const lxp_fd_t *s)
+{
+	(void)s;
+#if LXP_ENABLE_DEV
+	if (s->kind == LXP_FD_DEV)
+		lxp_dev_get(s->file_idx);
+#endif
+#if LXP_ENABLE_NET
+	if (s->kind == LXP_FD_SOCKET)
+		lxp_sock_get(s->file_idx);
+#endif
+#if LXP_ENABLE_NETFS
+	if (s->kind == LXP_FD_NET)
+		lxp_netfs_get(s->file_idx);
+#endif
+}
+
+/* dup2 replaces its target fd: release the replaced fd's backing (dev/socket/netfs) first. */
+static void fd_release_backing(const lxp_fd_t *s)
+{
+	(void)s;
+#if LXP_ENABLE_DEV
+	if (s->kind == LXP_FD_DEV)
+		lxp_dev_close(s->file_idx);
+#endif
+#if LXP_ENABLE_NET
+	if (s->kind == LXP_FD_SOCKET)
+		lxp_sock_close(s->file_idx);
+#endif
+#if LXP_ENABLE_NETFS
+	if (s->kind == LXP_FD_NET)
+		lxp_netfs_close(s->file_idx);
+#endif
+}
+
 /* dup2/dup3: make newfd alias oldfd's target (the pipe wiring the shell does). */
 static long sys_dup2(lxp_proc_t *p, int oldfd, int newfd)
 {
@@ -1604,32 +1643,10 @@ static long sys_dup2(lxp_proc_t *p, int oldfd, int newfd)
 	if (newfd < 0 || newfd >= LXP_MAX_FDS)
 		return -LXP_EBADF;
 	if (oldfd != newfd) {
-#if LXP_ENABLE_DEV
-		if (p->fds[newfd].kind == LXP_FD_DEV)
-			lxp_dev_close(p->fds[newfd].file_idx); /* dup2 closes the target first */
-#endif
-#if LXP_ENABLE_NET
-		if (p->fds[newfd].kind == LXP_FD_SOCKET)
-			lxp_sock_close(p->fds[newfd].file_idx); /* dup2 closes the target first */
-#endif
-#if LXP_ENABLE_NETFS
-		if (p->fds[newfd].kind == LXP_FD_NET)
-			lxp_netfs_close(p->fds[newfd].file_idx); /* dup2 closes the target first */
-#endif
+		fd_release_backing(&p->fds[newfd]); /* dup2 closes the target first */
 		p->fds[newfd] = *s;
 		p->fds[newfd].cloexec = 0; /* dup2/dup3 clear FD_CLOEXEC; dup3(O_CLOEXEC) re-sets it */
-#if LXP_ENABLE_DEV
-		if (s->kind == LXP_FD_DEV)
-			lxp_dev_get(s->file_idx); /* the new fd shares the open */
-#endif
-#if LXP_ENABLE_NET
-		if (s->kind == LXP_FD_SOCKET)
-			lxp_sock_get(s->file_idx); /* the new fd shares the open */
-#endif
-#if LXP_ENABLE_NETFS
-		if (s->kind == LXP_FD_NET)
-			lxp_netfs_get(s->file_idx); /* the new fd shares the open */
-#endif
+		fd_dup_backing(s);	   /* the new fd shares oldfd's backing */
 	}
 	return newfd;
 }
@@ -1644,18 +1661,7 @@ static long sys_dup(lxp_proc_t *p, int oldfd)
 		if (p->fds[fd].kind == LXP_FD_FREE) {
 			p->fds[fd] = *s;
 			p->fds[fd].cloexec = 0; /* dup(2) clears FD_CLOEXEC on the new fd */
-#if LXP_ENABLE_DEV
-			if (s->kind == LXP_FD_DEV)
-				lxp_dev_get(s->file_idx); /* the dup shares the open */
-#endif
-#if LXP_ENABLE_NET
-			if (s->kind == LXP_FD_SOCKET)
-				lxp_sock_get(s->file_idx); /* the dup shares the open */
-#endif
-#if LXP_ENABLE_NETFS
-			if (s->kind == LXP_FD_NET)
-				lxp_netfs_get(s->file_idx); /* the dup shares the open */
-#endif
+			fd_dup_backing(s);	/* the dup shares oldfd's backing */
 			return fd;
 		}
 	}
@@ -2543,14 +2549,7 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 					proc->fds[nfd] = *s;
 					proc->fds[nfd].cloexec =
 						((int)a1 == LXP_F_DUPFD_CLOEXEC) ? 1 : 0;
-#if LXP_ENABLE_DEV
-					if (s->kind == LXP_FD_DEV)
-						lxp_dev_get(s->file_idx);
-#endif
-#if LXP_ENABLE_NET
-					if (s->kind == LXP_FD_SOCKET)
-						lxp_sock_get(s->file_idx);
-#endif
+					fd_dup_backing(s); /* share the backing (now incl. netfs) */
 					return nfd;
 				}
 			}
@@ -3242,8 +3241,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			proc->child_count--;
 			int *status = (int *)(uintptr_t)a1;
 			if (status)
-				*status = (code > 128 && code <= 128 + 31) ? (code - 128)
-									   : ((code & 0xff) << 8);
+				*status = lxp_encode_wstatus(code);
 			return pid;
 		}
 		if (proc->live_children == 0)

@@ -27,4 +27,13 @@ long user_strnlen(const lxp_proc_t *p, const char *s, size_t max);
 /* The stat mode (S_IF* | perms) of a rootfs file entry. */
 uint32_t file_mode(const lxp_file_t *f);
 
+/* Encode a child's exit code (our convention: 128 + signal for a signal-killed child) as
+ * a Linux wait(2) status word: WIFSIGNALED with the signal in the low 7 bits for 129..159,
+ * else WIFEXITED with the code in bits 8-15. Shared by sys_wait4 + the coordinator's
+ * reap_to_parent (1..31 covers every signal the personality delivers). */
+static inline int lxp_encode_wstatus(int code)
+{
+	return (code > 128 && code <= 128 + 31) ? (code - 128) : ((code & 0xff) << 8);
+}
+
 #endif /* LXP_INTERNAL_H */

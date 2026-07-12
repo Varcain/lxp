@@ -41,6 +41,7 @@
 #include "lxp/lxp_pty.h" /* pty-layer park/retry (lxp_pty_retry) */
 #endif
 
+#include "lxp_internal.h" /* lxp_encode_wstatus (shared with sys_wait4) */
 #include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
 
 /* Declare a memory-mapped rootfs image window [base, base+len) so the coordinator task can
@@ -609,9 +610,7 @@ static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int stat
 			 * convention is 128 + signal) becomes WIFSIGNALED — low 7 bits = the signal — so the
 			 * shell prints "Terminated"/"Killed", not "Done"; a normal exit stays WIFEXITED with
 			 * the code in bits 8-15. (1..31 covers every signal we deliver.) */
-			int raw = (status > 128 && status <= 128 + 31) ? (status - 128)
-								       : ((status & 0xff) << 8);
-			*(int *)(uintptr_t)par->wait_status_p = raw;
+						*(int *)(uintptr_t)par->wait_status_p = lxp_encode_wstatus(status);
 		}
 		par->wait_pending = 0;
 		if (g_lxp_used[pslot]) /* abort the parked-waiter spin thread first */
