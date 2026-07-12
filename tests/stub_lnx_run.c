@@ -49,3 +49,47 @@ void lxp_cache_invalidate(const void *base, size_t len)
 	(void)base;
 	(void)len;
 }
+
+#if LXP_ENABLE_DEV_FB
+/* A mock display port so the /dev/fb0 driver (src/dev/lxp_dev_fb.c) links + runs on the
+ * host. g_lxp_disp_ops is normally published by lxp_run() (excluded here); back it with a
+ * small static RGB565 framebuffer so the fbdev ioctls/mmap/pan paths are exercisable. */
+#include "lxp/lxp_disp_ops.h"
+
+static uint8_t g_mock_fb[64 * 64 * 2];
+static int mock_fb_init(void)
+{
+	return 0;
+}
+static int mock_fb_get_info(lxp_fb_info_t *i)
+{
+	i->width = 64;
+	i->height = 64;
+	i->stride_bytes = 64 * 2;
+	i->fmt = 0; /* RGB565 */
+	i->smem_len = (uint32_t)sizeof(g_mock_fb);
+	return 0;
+}
+static void *mock_fb_get_buffer(void)
+{
+	return g_mock_fb;
+}
+static void mock_fb_flush(int x, int y, int w, int h)
+{
+	(void)x;
+	(void)y;
+	(void)w;
+	(void)h;
+}
+static void mock_fb_present(void)
+{
+}
+static const lxp_display_ops_t g_mock_disp = {
+	.fb_init = mock_fb_init,
+	.fb_get_info = mock_fb_get_info,
+	.fb_get_buffer = mock_fb_get_buffer,
+	.fb_flush = mock_fb_flush,
+	.fb_present = mock_fb_present,
+};
+const lxp_display_ops_t *g_lxp_disp_ops = &g_mock_disp;
+#endif

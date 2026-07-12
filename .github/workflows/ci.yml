@@ -31,6 +31,24 @@ jobs:
       - name: Run host unit tests
         run: ctest --test-dir build -R lxp_unit --output-on-failure
 
+  sanitizers:
+    name: ASan + UBSan (host cmocka)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure with ASan+UBSan (fetches cmocka)
+        run: cmake -S . -B build -DLXP_BUILD_TESTS=ON -DLXP_SANITIZE=ON
+
+      - name: Build host tests (ASan+UBSan)
+        run: cmake --build build -j"$(nproc)" --target lxp_test_stub
+
+      # OOB reads/writes and signed/unsigned overflow are hard errors here
+      # (-fno-sanitize-recover=all). Leak detection is off: the target is the 32-bit
+      # overflow / OOB bug class, and the static test pools trip LSan false positives.
+      - name: Run under ASan+UBSan
+        run: ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build -R lxp_unit --output-on-failure
+
   gates:
     # Gate-rot guard: cross-compile every src/ TU for Cortex-M under each LXP_ENABLE_*
     # config, -Werror. A clean build proves the #if LXP_ENABLE_X gating holds in both

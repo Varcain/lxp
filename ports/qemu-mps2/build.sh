@@ -23,17 +23,23 @@ FLAGS="-mcpu=cortex-m7 -mthumb -mfloat-abi=softfp -mfpu=fpv5-d16 -ffreestanding 
 # Which milestone this firmware runs (M1=/hello, M2=/init, M3=busybox from PSRAM).
 MILESTONE="${MILESTONE:-1}"
 FLAGS="$FLAGS -DLXP_MILESTONE=$MILESTONE"
+# Warnings-as-errors for our code. The lxp module gets full strictness incl. -Wundef,
+# matching scripts/gate-build.sh (src/ includes no host headers, so it stays -Wundef-clean).
+# The port TUs (engine.c/boot.c) include vendored FreeRTOS headers that are not -Wundef-clean,
+# so they get -Wextra -Werror without -Wundef. Vendored FreeRTOS keeps the base -Wall.
+LXPFLAGS="$FLAGS -Wextra -Werror -Wundef"
+PORTFLAGS="$FLAGS -Wextra -Werror"
 
 rm -rf build && mkdir -p build
 err=0
 for f in $(find "$LXP_ROOT/src" -name '*.c'); do
-    $ARMCC $FLAGS $INC -c "$f" -o "build/$(basename "$f").o" || err=1
+    $ARMCC $LXPFLAGS $INC -c "$f" -o "build/$(basename "$f").o" || err=1
 done
 for f in "$FRT/tasks.c" "$FRT/queue.c" "$FRT/list.c" "$PORT/port.c" "$MPU_WRAP"; do
     $ARMCC $FLAGS $INC -c "$f" -o "build/$(basename "$f").o" || err=1
 done
 for f in engine.c boot.c; do
-    $ARMCC $FLAGS $INC -c "$f" -o "build/$(basename "$f").o" || err=1
+    $ARMCC $PORTFLAGS $INC -c "$f" -o "build/$(basename "$f").o" || err=1
 done
 if [ "$err" -ne 0 ]; then echo "COMPILE FAILED"; exit 1; fi
 
