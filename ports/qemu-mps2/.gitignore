@@ -1,0 +1,10 @@
+# vendored deps (fetched by fetch-deps.sh) + build artifacts — never committed
+vendor/
+build/
+*.elf
+*.map
+*.log
+rootfs_cpio.h
+guest/root/
+guest/*.elf
+# guest/rootfs.cpio is the PINNED fixture — intentionally committed (not ignored)
