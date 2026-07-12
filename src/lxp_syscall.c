@@ -13,6 +13,8 @@
 #include "lxp/lxp_stats.h"
 #include "lxp/lxp_syscall.h"
 #include "lxp/lxp_types.h"
+
+#include "fs/lxp_pipe.h" /* pipe ring ops (FD_PIPE) */
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h" /* /dev character-device routing (FD_DEV) */
 #endif
@@ -44,11 +46,7 @@ volatile int g_lxp_halt;
  * directly after a NULL check (a future MMU tier would translate them).
  */
 
-/* fd-slot kinds (lxp_fd.kind). */
-#define LXP_FD_FREE 0
-#define LXP_FD_CONSOLE 1
-#define LXP_FD_FILE 2
-#define LXP_FD_PIPE 3
+/* fd-slot kinds (lxp_fd.kind) are now in lxp_syscall.h (shared with the subsystem TUs). */
 
 /* PRNG fill (defined with sys_getrandom); /dev/urandom reads use it before that point. */
 static void prng_fill(uint8_t *b, size_t count);
@@ -61,39 +59,12 @@ static long sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwf
 			 uintptr_t uefds, uintptr_t utimeout);
 #endif
 
-/*
- * Pipe objects. A pipe is shared kernel state (like a real kernel's pipe inode):
- * a bounded ring buffer with concurrent producer/consumer (Phase D2). A read on an
- * empty pipe blocks while any write end is open (EOF only once all writers close); a
- * write on a full pipe blocks while a reader is open (-EPIPE once all readers close).
- * The run-loop coordinator parks/wakes the blocked proc — see lxp_pipe_retry.
- */
-/* dropbear's SSH session uses 4 pipes at once (stdin/stdout/stderr to the shell + its own
- * SIGCHLD self-pipe), so the shell running a pipeline or command substitution needs headroom
- * beyond that — 4 total starved `ls | head` / `$(cmd)` with "Too many open files". On the real
- * STM32F746 the FreeRTOS build parks the pool in external SDRAM (.sdram_bss, alongside the guest
- * pools) so a bigger pool costs no scarce internal SRAM (it actually frees the old 16 KiB); every
- * other target keeps the pool in .bss at the original size. */
-/* Ring size: a bigger ring means a typical write/splice fits in fewer shots (no partial-write
- * park/resume round trip per chunk), so streaming throughput is copy-bound not coordinator-bound.
- * 4 KiB on FreeRTOS/NuttX (4 pipes × 4 KiB = 16 KiB .bss). Zephyr runs programs in per-program
- * K_USER MPU domains + privilege stacks that eat the STM32F746's internal SRAM, so 4 KiB there
- * overflows RAM by ~5 KiB — cap it at 2 KiB (still 2x the old 1 KiB). */
-typedef struct {
-	uint8_t buf[LXP_PIPE_BUF];
-	size_t rpos;  /* ring read index [0, BUF) */
-	size_t wpos;  /* ring write index [0, BUF) */
-	size_t count; /* bytes currently buffered */
-	int used;
-} lxp_pipe_t;
-static lxp_pipe_t g_pipes[LXP_NPIPE] LXP_FAR_BSS; /* LXP_FAR_BSS relocates the pool (STM32: .sdram_bss) */
+/* The pipe subsystem (ring buffer + read/write/poll ops) lives in src/fs/lxp_pipe.c;
+ * this dispatcher calls it via fs/lxp_pipe.h. */
 
-/* Count a pipe's open read/write ends across ALL live procs' fd tables (a pipe end
- * is open in every proc that holds an fd onto it — inherited across fork, dropped on
- * close/exit). Recomputed on demand → no per-fd refcount bookkeeping to keep in sync. */
-/* Weak fallbacks so the host syscall test (which links this layer but not the run
- * loop) resolves these; the run loop supplies the strong on-target versions. The
- * host test never exercises pipes, so pipe_ends is never actually called there. */
+/* lxp_proc_table / lxp_proc_nslot enumerate the live procs (used by the pipe layer's
+ * open-ends count). Weak fallbacks so the host syscall test — which links these layers
+ * but not the run loop — resolves them; the run loop supplies the strong versions. */
 __attribute__((weak)) lxp_proc_t *lxp_proc_table(void)
 {
 	return NULL;
@@ -172,95 +143,6 @@ long user_strnlen(const lxp_proc_t *p, const char *s, size_t max)
 	return -LXP_EFAULT; /* no NUL within the range / max */
 }
 
-static void pipe_ends(int pi, int *readers, int *writers)
-{
-	*readers = 0;
-	*writers = 0;
-	lxp_proc_t *tab = lxp_proc_table();
-	int n = lxp_proc_nslot();
-	if (!tab)
-		return;
-	for (int s = 0; s < n; s++) {
-		if (!tab[s].alive)
-			continue;
-		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (tab[s].fds[fd].kind == LXP_FD_PIPE && tab[s].fds[fd].file_idx == pi)
-				(tab[s].fds[fd].rw ? (*writers)++ : (*readers)++);
-	}
-}
-
-/* Drain up to len bytes from pipe pi. >0 = bytes read; 0 = EOF (empty, no writers);
- * -EAGAIN = empty but a writer is open (caller should block). */
-static long pipe_try_read(int pi, void *buf, size_t len)
-{
-	lxp_pipe_t *pp = &g_pipes[pi];
-	if (pp->count == 0) {
-		int rd, wr;
-		pipe_ends(pi, &rd, &wr);
-		return wr > 0 ? -LXP_EAGAIN : 0;
-	}
-	if (len > pp->count)
-		len = pp->count;
-	uint8_t *out = (uint8_t *)buf;
-	size_t n1 = LXP_PIPE_BUF - pp->rpos; /* contiguous bytes to the ring end */
-	if (n1 > len)
-		n1 = len;
-	memcpy(out, &pp->buf[pp->rpos], n1);
-	memcpy(out + n1, &pp->buf[0], len - n1); /* wrapped tail (len-n1 may be 0 = no-op) */
-	pp->rpos = (pp->rpos + len) % LXP_PIPE_BUF;
-	pp->count -= len;
-	return (long)len;
-}
-
-/* Append up to len bytes to pipe pi. >0 = bytes written; -EPIPE = no readers open
- * (broken pipe); -EAGAIN = full but a reader is open (caller should block). */
-static long pipe_try_write(int pi, const void *buf, size_t len)
-{
-	lxp_pipe_t *pp = &g_pipes[pi];
-	int rd, wr;
-	pipe_ends(pi, &rd, &wr);
-	if (rd == 0)
-		return -LXP_EPIPE;
-	size_t space = LXP_PIPE_BUF - pp->count;
-	if (space == 0)
-		return -LXP_EAGAIN;
-	if (len > space)
-		len = space;
-	const uint8_t *in = (const uint8_t *)buf;
-	size_t n1 = LXP_PIPE_BUF - pp->wpos; /* contiguous space to the ring end */
-	if (n1 > len)
-		n1 = len;
-	memcpy(&pp->buf[pp->wpos], in, n1);
-	memcpy(&pp->buf[0], in + n1, len - n1); /* wrapped tail (len-n1 may be 0 = no-op) */
-	pp->wpos = (pp->wpos + len) % LXP_PIPE_BUF;
-	pp->count += len;
-	return (long)len;
-}
-
-/* Retry a parked pipe read/write for the run-loop coordinator (declared in syscall.h). */
-long lxp_pipe_retry(lxp_proc_t *p)
-{
-	if (p->pipe_wait == 1)
-		return pipe_try_read(p->pipe_idx, (void *)p->pipe_buf, p->pipe_len);
-	if (p->pipe_wait == 2)
-		return pipe_try_write(p->pipe_idx, (const void *)p->pipe_buf, p->pipe_len);
-	return 0;
-}
-
-/* poll/select readiness for a pipe end (@p rw = fd.rw: 0 read end, 1 write end). Reporting
- * a pipe as "always ready" (the old default) breaks select() on a self-pipe: a program that
- * selects an EMPTY self-pipe would be told it is readable, read it, and block forever (this
- * is exactly how dropbear hung). Report real readiness: a read end is POLLIN when it has data
- * or all writers closed (EOF); a write end is POLLOUT when it has space or all readers closed. */
-static unsigned pipe_poll(int pi, int rw)
-{
-	lxp_pipe_t *pp = &g_pipes[pi];
-	int rd, wr;
-	pipe_ends(pi, &rd, &wr);
-	if (rw == 0)
-		return (pp->count > 0 || wr == 0) ? LXP_POLLIN : 0u;
-	return (pp->count < LXP_PIPE_BUF || rd == 0) ? LXP_POLLOUT : 0u;
-}
 
 /*
  * Writable VFS overlaid on the read-only CPIO rootfs: regular files, directories
@@ -271,7 +153,6 @@ static unsigned pipe_poll(int pi, int rw)
  * exhausted), and unlink/rmdir frees the node (not its bytes). Not a tree: a node
  * is "in" a directory iff its path is one component below the dir's path.
  */
-#define LXP_FD_TMPFS 4
 #define LXP_NWNODE 32
 #define LXP_WFS_POOL (64u * 1024u)
 typedef struct {
@@ -341,7 +222,6 @@ static int wfs_reserve(int i, size_t need)
 }
 
 /* Synthetic /proc fd backing (content generated on open; see proc_* below). */
-#define LXP_FD_PROC 5
 #define LXP_NPROCF 12
 #define LXP_PROCBUF 1024
 static struct {
@@ -1720,17 +1600,9 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 		return -LXP_EFAULT;
 	uint8_t cx = (flags & LXP_O_CLOEXEC) ? 1 : 0;
 	uint8_t nb = (flags & LXP_O_NONBLOCK) ? 1 : 0; /* pipe2(O_NONBLOCK): both ends non-blocking */
-	/* A pipe slot is free when no live proc holds either end (auto-reclaimed when
-	 * both ends close or the holders exit — there is no explicit pipe free path). */
-	int pi = -1;
-	for (int i = 0; i < LXP_NPIPE; i++) {
-		int rd, wr;
-		pipe_ends(i, &rd, &wr);
-		if (rd == 0 && wr == 0) {
-			pi = i;
-			break;
-		}
-	}
+	/* Claim a free pipe slot (one with no live holders — auto-reclaimed when both ends
+	 * close or the holders exit; there is no explicit pipe free path). */
+	int pi = lxp_pipe_alloc();
 	if (pi < 0)
 		return -LXP_EMFILE;
 	int rfd = -1, wfd = -1;
@@ -1744,10 +1616,6 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 	}
 	if (wfd < 0)
 		return -LXP_EMFILE;
-	g_pipes[pi].used = 1;
-	g_pipes[pi].rpos = 0;
-	g_pipes[pi].wpos = 0;
-	g_pipes[pi].count = 0;
 	p->fds[rfd] =
 		(lxp_fd_t){.kind = LXP_FD_PIPE, .rw = 0, .cloexec = cx, .nonblock = nb, .file_idx = pi};
 	p->fds[wfd] =

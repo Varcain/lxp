@@ -395,8 +395,15 @@ typedef struct lxp_fd {
 	size_t offset; /**< Read cursor (kind == file). */
 } lxp_fd_t;
 
-/** Device fd kind (shared by the syscall + device layers; the FD_FREE..FD_PROC
- *  kinds stay private to lxp_syscall.c). @c file_idx = open-pool index. */
+/* fd kinds (lxp_fd_t.kind). Shared across the syscall dispatcher + the subsystem TUs
+ * (pipe/tmpfs/proc/dev/socket/pty/netfs) that own the backing objects. */
+#define LXP_FD_FREE 0    /**< unused slot */
+#define LXP_FD_CONSOLE 1 /**< stdio console (host write_fn/read_fn) */
+#define LXP_FD_FILE 2    /**< read-only rootfs file; @c file_idx = rootfs index, @c offset = cursor */
+#define LXP_FD_PIPE 3    /**< pipe end; @c file_idx = pipe-pool index, @c rw = 1 write end */
+#define LXP_FD_TMPFS 4   /**< writable tmpfs node; @c file_idx = wnode index */
+#define LXP_FD_PROC 5    /**< synthetic /proc file; @c file_idx = proc-fd backing index */
+/** Device fd kind (shared by the syscall + device layers). @c file_idx = open-pool index. */
 #define LXP_FD_DEV 6
 /** Socket fd kind (shared by the syscall + socket layers). @c file_idx = open-pool index. */
 #define LXP_FD_SOCKET 7
