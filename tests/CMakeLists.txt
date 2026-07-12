@@ -15,9 +15,8 @@ FetchContent_Declare(
   GIT_SHALLOW    TRUE
 )
 set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(WITH_STATIC_LIB ON CACHE BOOL "" FORCE)
-set(UNIT_TESTING ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(cmocka)
+set(UNIT_TESTING ON CACHE BOOL "" FORCE) # builds cmocka-static; also registers cmocka's own
+FetchContent_MakeAvailable(cmocka) #   self-tests in CTest — filter ours with `ctest -R lxp_unit`.
 
 set(LXP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
@@ -29,15 +28,20 @@ set(LXP_TEST_MODULE_SRC
   "${LXP_ROOT}/src/lxp_syscall.c"
   "${LXP_ROOT}/src/lxp_stats.c"
   "${LXP_ROOT}/src/dev/lxp_dev.c"
+  "${LXP_ROOT}/src/net/lxp_net.c"
+  "${LXP_ROOT}/src/netfs/lxp_netfs.c"
   "${LXP_ROOT}/src/pty/lxp_pty.c"
 )
 
 add_executable(lxp_test_stub
   ${LXP_TEST_MODULE_SRC}
+  "${LXP_ROOT}/ports/posix/lxp_port_posix.c"  # g_lxp_net_ops over BSD sockets + netif
   "${CMAKE_CURRENT_SOURCE_DIR}/stub_lnx_run.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/stub_main.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_syscall.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_dev.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_net.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_netfs.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_pty.c"
 )
 
@@ -51,9 +55,9 @@ target_include_directories(lxp_test_stub PRIVATE
 target_compile_definitions(lxp_test_stub PRIVATE
   LXP_ENABLE_DEV=1
   LXP_ENABLE_PTY=1
-  LXP_ENABLE_NET=0
-  LXP_ENABLE_NETFS=0
-  LXP_ENABLE_NETFS_EXEC=0
+  LXP_ENABLE_NET=1
+  LXP_ENABLE_NETFS=1
+  LXP_ENABLE_NETFS_EXEC=1
   LXP_ENABLE_DEV_FB=0
   LXP_ENABLE_DEV_INPUT=0
 )

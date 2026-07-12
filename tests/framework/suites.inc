@@ -14,7 +14,8 @@
 
 LXP_SUITE(linux_syscall, "Linux personality: syscall dispatch")
 LXP_SUITE(linux_dev,     "Linux personality: /dev device layer")
+LXP_SUITE(linux_net,     "Linux personality: socket layer")
+LXP_SUITE(linux_netfs,   "Linux personality: remote filesystem (9P)")
 LXP_SUITE(linux_pty,     "Linux personality: pseudo-terminal layer")
-/* net + netfs land once the POSIX net-ops port + decouple edits are in. */
 
 #undef LXP_SUITE

@@ -400,7 +400,7 @@ static void stop_mock(void)
 	g_mock_ls = -1;
 }
 
-#if defined(CONFIG_OVE_LINUX_NETFS_EXEC)
+#if LXP_ENABLE_NETFS_EXEC
 /* The engine staging buffer for a fetched remote ELF (the STM32 backend puts this in SDRAM). */
 static uint8_t g_stage[64 * 1024];
 uint8_t *lxp_netfs_exec_stage(size_t *cap)
@@ -526,7 +526,7 @@ static void test_netfs_browse(void **state)
 				   (long)(uintptr_t) "/mnt/pi/hello.txt", LXP_O_WRONLY, 0, 0, 0),
 			 -LXP_EROFS);
 
-#if defined(CONFIG_OVE_LINUX_NETFS_EXEC)
+#if LXP_ENABLE_NETFS_EXEC
 	/* exec-fetch: execve("/mnt/pi/prog") pulls the whole file into the staging buffer and, on
 	 * completion, the retry sets exec_pending + a SENTINEL exec_file_idx (it does NOT resume —
 	 * the run loop's EV_EXEC launches from the staging buffer). */

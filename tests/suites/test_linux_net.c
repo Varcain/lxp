@@ -17,7 +17,9 @@
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_net.h"
 #include "lxp/lxp_syscall.h"
-#include "ove/net.h" /* ove_netif_init/storage for the ifconfig ioctl test */
+/* The POSIX reference port (ports/posix/lxp_port_posix.c) provides the synthetic
+ * netif the SIOC* ioctl test binds via lxp_sock_set_netif(). */
+lxp_netif_t lxp_posix_netif(void);
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -346,10 +348,7 @@ static void test_net_ifconfig(void **state)
 	lxp_proc_t p;
 	setup(&p, &arena);
 
-	static ove_netif_storage_t nifs;
-	ove_netif_t nif = NULL;
-	assert_int_equal(ove_netif_init(&nif, &nifs), OVE_OK);
-	lxp_sock_set_netif(nif);
+	lxp_sock_set_netif(lxp_posix_netif());
 
 	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_DGRAM, 0, 0, 0,
 				  0);
