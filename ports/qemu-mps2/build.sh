@@ -13,9 +13,9 @@ PORT="$FRT/portable/GCC/ARM_CM3"
 if [ ! -f "$PORT/port.c" ]; then echo "FreeRTOS missing — run: bash fetch-deps.sh"; exit 1; fi
 INC="-I$LXP_ROOT/include -I$LXP_ROOT/src -I$HERE -I$HERE/board -I$FRT/include -I$PORT"
 FLAGS="-mcpu=cortex-m7 -mthumb -mfloat-abi=soft -ffreestanding -Os -g -Wall -ffunction-sections -fdata-sections"
-# Which rootfs program the coordinator runs first (per-milestone). Default: M1 hello.
-GUEST_ENTRY="${GUEST_ENTRY:-/hello}"
-FLAGS="$FLAGS -DLXP_GUEST_ENTRY=\"$GUEST_ENTRY\""
+# Which milestone this firmware runs (M1=/hello, M2=/init, M3=busybox from PSRAM).
+MILESTONE="${MILESTONE:-1}"
+FLAGS="$FLAGS -DLXP_MILESTONE=$MILESTONE"
 
 rm -rf build && mkdir -p build
 err=0

@@ -23,7 +23,9 @@ dependency on any OS, so `scripts/check-decoupled.sh` still passes.
 | `guest/hello.c` | the M1 guest (static FDPIC: `write` + `exit_group`) |
 | `guest/init.c` | the M2 parent (`pipe` + `vfork` + `execve(/child)` + `wait4`, verifies the round trip) |
 | `guest/child.c` | the M2 exec'd child (writes a byte to the inherited pipe end, exits with a code) |
-| `guest/rootfs.cpio` | **pinned fixture** — every milestone's built guests, committed so CI needs no FDPIC toolchain |
+| `guest/rootfs.cpio` | **M1/M2 pinned fixture** — the built hand-written guests (embedded in flash) |
+| `guest/mkrootfs_m3.sh` | rebuilds the minimal busybox rootfs from a Buildroot FDPIC target tree |
+| `guest/rootfs_m3.cpio` | **M3 pinned fixture** — minimal dynamic-FDPIC busybox (busybox + ld.so + libc, ~620 KiB) |
 
 ## Prerequisites
 
@@ -38,19 +40,25 @@ Override tool paths via env: `ARMCC`, `QEMU`, `FDCC`.
 
 ```sh
 bash fetch-deps.sh          # once — vendors FreeRTOS-Kernel
-M=1 bash run.sh             # M1: /hello       -> asserts "lxp-m1-ok"  (default M=1)
+M=1 bash run.sh             # M1: /hello             -> asserts "lxp-m1-ok"  (default M=1)
 M=2 bash run.sh             # M2: /init execs /child -> asserts "lxp-m2-ok"
+M=3 bash run.sh             # M3: /bin/busybox echo  -> asserts "lxp-m3-ok"  (busybox from PSRAM)
 REGEN_GUEST=1 bash run.sh   # rebuild guest/rootfs.cpio from guest/*.c first (needs FDPIC gcc)
 ```
 
-`run.sh` exits 0 and prints `PASS: lxp-m<N>-ok` on success.
+`run.sh` exits 0 and prints `PASS: lxp-m<N>-ok` on success. M1/M2 embed a small cpio in
+flash; M3 XIPs `guest/rootfs_m3.cpio` from PSRAM `@0x60000000` (QEMU `-device loader`).
+Point `M3_CPIO=...` at a full Buildroot `output/images/rootfs.cpio` to run the complete
+rootfs (~11 MiB) instead of the minimal fixture.
 
 ## Milestones
 
 - **M1** — static-FDPIC `hello` (`write`+`exit`) end-to-end. **Done.**
 - **M2** — `pipe` + `vfork` + `execve` + `wait4` across slots (multi-slot spawn_launch +
   spawn_resume, pipe IPC, reaped exit status). **Done.**
-- **M3** — dynamic-FDPIC busybox, unprivileged + full MPU, PSRAM XIP rootfs. (todo)
+- **M3a** — dynamic-FDPIC busybox: `ld-uClibc.so.0` + `libuClibc` loaded/relocated, libc
+  mmap'd into the PSRAM `dyn_pool`, cpio XIP'd from PSRAM. Runs **privileged**. **Done.**
+- **M3b** — unprivileged guests + per-slot MPU (W^X): the ARM_CM4_MPU port. (todo)
 
 ## Gotchas (learned the hard way)
 

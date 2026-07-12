@@ -38,6 +38,14 @@ extern uint64_t lxp_qemu_now_us(void);
  * .bss + arena — starting zeroed. A NOLOAD section would be uninitialised garbage. */
 static uint8_t g_prog_regions[LXP_NREG][LXP_PROG_REGION_SIZE] __attribute__((aligned(8)));
 
+/* ---- M3 dynamic-FDPIC dyn_pools, in PSRAM ---------------------------------- */
+/* A dynamic proc's shared arena: every loaded .so's RW segment + brk/mmap heap.
+ * ld.so mmaps libc.so (~500K) here — far past the in-region 96K static arena. Lives
+ * in PSRAM (.psram, top 4M) so it stays off the 4M SRAM; 8*512K = exactly 4M. Unused
+ * by M1/M2 (static FDPIC), so this costs nothing there. */
+static uint8_t g_dyn_pools[LXP_NREG][LXP_DYN_POOL_SIZE]
+	__attribute__((section(".psram"), aligned(LXP_DYN_POOL_SIZE)));
+
 #define SLOT_PRIO 1 /* guests run below the coordinator (which calls lxp_run) */
 #define TRAMP_STACK_WORDS 256
 static StackType_t g_tramp_stacks[LXP_NSLOT][TRAMP_STACK_WORDS]
@@ -185,6 +193,14 @@ static uint8_t *qemu_region(int ridx)
 	return g_prog_regions[ridx];
 }
 
+/* M3: the PSRAM dyn_pool backing a dynamic proc's arena (libc.so mmap + heap). */
+static uint8_t *qemu_dyn_pool(int ridx, size_t *sz)
+{
+	if (sz)
+		*sz = LXP_DYN_POOL_SIZE;
+	return g_dyn_pools[ridx];
+}
+
 static int spawn_common(int sidx, struct resume_desc *desc)
 {
 	char nm[5] = {'l', 'n', 'x', (char)('0' + sidx), 0};
@@ -285,6 +301,8 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.prepare = qemu_prepare,
 	.time_us = qemu_time_us,
 	.time_ns = qemu_time_ns,
-	/* dyn_pool / map_device / thread_list / cache_* / rootfs_window / exec_stage:
-	 * NULL — M1 is static FDPIC on a coherent, MPU-less target. */
+	.dyn_pool = qemu_dyn_pool, /* M3: hosts a dynamic proc's libc.so mmap + arena */
+	/* map_device / thread_list / cache_* / rootfs_window / exec_stage: NULL — the
+	 * target is coherent (no cache), the rootfs is a plain RAM/PSRAM window (weak
+	 * lxp_rootfs_window no-op), and MPU/devices/netfs are later milestones. */
 };

@@ -19,7 +19,19 @@
 #include "lxp/lxp_run.h"
 #include "lxp/lxp_syscall.h"
 
+/* Which milestone this firmware runs (set by build.sh -DLXP_MILESTONE). M1/M2 embed a
+ * small cpio in flash; M3 XIPs a big busybox cpio from PSRAM (QEMU `-device loader`). */
+#ifndef LXP_MILESTONE
+#define LXP_MILESTONE 1
+#endif
+#if LXP_MILESTONE < 3
 #include "rootfs_cpio.h" /* generated: rootfs_cpio[], rootfs_cpio_len */
+#else
+/* M3: the raw cpio is injected into PSRAM @ 0x60000000 by `-device loader`. The length
+ * is an upper bound (the 12 MiB bottom-of-PSRAM window); the parser stops at TRAILER!!!. */
+#define LXP_PSRAM_ROOTFS ((const uint8_t *)0x60000000u)
+#define LXP_PSRAM_ROOTFS_MAX (12u * 1024u * 1024u)
+#endif
 
 extern const lxp_os_ops_t g_lxp_qemu_engine;
 
@@ -85,13 +97,21 @@ static long con_read(void *ctx, int fd, void *buf, size_t len)
 }
 
 /* ---- the coordinator task: parse the rootfs, run the guest ----------------- */
-static lxp_file_t g_files[32];
-static char g_names[4096];
+/* Sized for a real busybox rootfs (the full Buildroot cpio has ~400 entries). */
+static lxp_file_t g_files[512];
+static char g_names[24576];
 
 static void coordinator_task(void *arg)
 {
 	(void)arg;
-	int n = lxp_cpio_to_rootfs((const uint8_t *)rootfs_cpio, rootfs_cpio_len, g_files,
+#if LXP_MILESTONE < 3
+	const uint8_t *cpio = (const uint8_t *)rootfs_cpio;
+	size_t cpio_len = rootfs_cpio_len;
+#else
+	const uint8_t *cpio = LXP_PSRAM_ROOTFS;
+	size_t cpio_len = LXP_PSRAM_ROOTFS_MAX;
+#endif
+	int n = lxp_cpio_to_rootfs(cpio, cpio_len, g_files,
 				   (int)(sizeof(g_files) / sizeof(g_files[0])), g_names,
 				   sizeof(g_names));
 	if (n <= 0) {
@@ -105,18 +125,23 @@ static void coordinator_task(void *arg)
 		.read_fn = con_read,
 		.io_ctx = NULL,
 	};
-	/* The initial program to run. Selected at build time so one cpio fixture serves
-	 * every milestone: M1 = /hello, M2 = /init (which execs /child), ... */
-#ifndef LXP_GUEST_ENTRY
-#define LXP_GUEST_ENTRY "/hello"
+	/* The initial program + argv, selected at build time per milestone:
+	 *   M1 = /hello           M2 = /init (execs /child)
+	 *   M3 = /bin/busybox echo lxp-m3-ok  (dynamic-FDPIC: ld.so + libc.so + busybox) */
+#if LXP_MILESTONE >= 3
+	const char *entry = "/bin/busybox";
+	const char *const argv[] = {"busybox", "echo", "lxp-m3-ok", NULL};
+	int argc = 3;
+#elif LXP_MILESTONE == 2
+	const char *entry = "/init";
+	const char *const argv[] = {"init", NULL};
+	int argc = 1;
+#else
+	const char *entry = "/hello";
+	const char *const argv[] = {"hello", NULL};
+	int argc = 1;
 #endif
-	const char *entry = LXP_GUEST_ENTRY;
-	const char *a0 = entry;
-	for (const char *q = entry; *q; q++)
-		if (*q == '/')
-			a0 = q + 1; /* argv[0] = basename */
-	const char *const argv[] = {a0, NULL};
-	int rc = lxp_run(&g_lxp_qemu_engine, NULL, NULL, NULL, &cfg, entry, 1, argv);
+	int rc = lxp_run(&g_lxp_qemu_engine, NULL, NULL, NULL, &cfg, entry, argc, argv);
 	sh_exit(rc >= 0 ? rc : 100 - rc);
 }
 

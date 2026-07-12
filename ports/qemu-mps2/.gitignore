@@ -6,5 +6,6 @@ build/
 *.log
 rootfs_cpio.h
 guest/root/
+guest/m3root/
 guest/*.elf
-# guest/rootfs.cpio is the PINNED fixture — intentionally committed (not ignored)
+# guest/rootfs.cpio + guest/rootfs_m3.cpio are PINNED fixtures — intentionally committed
