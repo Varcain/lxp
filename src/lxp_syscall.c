@@ -478,6 +478,16 @@ static lxp_fd_t *fd_slot(lxp_proc_t *p, int fd)
 	return &p->fds[fd];
 }
 
+#if LXP_ENABLE_NET
+/* Resolve @p fd to its socket open-pool index, or -1 if @p fd is not a socket. Collapses
+ * the fd_slot + kind check that the socket syscalls all repeat. */
+static int sock_slot(lxp_proc_t *p, int fd)
+{
+	lxp_fd_t *s = fd_slot(p, fd);
+	return (s && s->kind == LXP_FD_SOCKET) ? s->file_idx : -1;
+}
+#endif
+
 /* eventfd counter read/write (defined below fd_alloc); sys_read/sys_write route to them. */
 static long efd_read(lxp_proc_t *p, int ei, void *buf, size_t len);
 static long efd_write(lxp_proc_t *p, int ei, const void *buf, size_t len);
@@ -3298,84 +3308,84 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return fd;
 	}
 	case LXP_NR_connect: { /* (fd, addr, addrlen) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
-		return lxp_sock_connect(proc, s->file_idx, (const void *)(uintptr_t)a1,
+		return lxp_sock_connect(proc, oi, (const void *)(uintptr_t)a1,
 					    (unsigned)a2);
 	}
 	case LXP_NR_send:	  /* (fd, buf, len, flags) */
 	case LXP_NR_sendto: { /* (fd, buf, len, flags, dest, destlen) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
 		const void *dest = (nr == LXP_NR_sendto) ? (const void *)(uintptr_t)a4 : NULL;
-		return lxp_sock_send(proc, s->file_idx, (const void *)(uintptr_t)a1, (size_t)a2,
+		return lxp_sock_send(proc, oi, (const void *)(uintptr_t)a1, (size_t)a2,
 					 (int)a3, dest, (unsigned)a5);
 	}
 	case LXP_NR_recv:	    /* (fd, buf, len, flags) */
 	case LXP_NR_recvfrom: { /* (fd, buf, len, flags, src, srclen) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
 		void *src = (nr == LXP_NR_recvfrom) ? (void *)(uintptr_t)a4 : NULL;
 		void *srclen = (nr == LXP_NR_recvfrom) ? (void *)(uintptr_t)a5 : NULL;
-		return lxp_sock_recv(proc, s->file_idx, (void *)(uintptr_t)a1, (size_t)a2, (int)a3,
+		return lxp_sock_recv(proc, oi, (void *)(uintptr_t)a1, (size_t)a2, (int)a3,
 					 src, srclen);
 	}
 	case LXP_NR_shutdown: { /* (fd, how) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
-		return lxp_sock_shutdown(s->file_idx, (int)a1);
+		return lxp_sock_shutdown(oi, (int)a1);
 	}
 	case LXP_NR_getsockname: { /* (fd, addr, addrlen) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
-		return lxp_sock_getsockname(proc, s->file_idx, (void *)(uintptr_t)a1,
+		return lxp_sock_getsockname(proc, oi, (void *)(uintptr_t)a1,
 						(void *)(uintptr_t)a2);
 	}
 	case LXP_NR_getpeername: { /* (fd, addr, addrlen) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
-		return lxp_sock_getpeername(proc, s->file_idx, (void *)(uintptr_t)a1,
+		return lxp_sock_getpeername(proc, oi, (void *)(uintptr_t)a1,
 						(void *)(uintptr_t)a2);
 	}
 	case LXP_NR_setsockopt: { /* (fd, level, optname, optval, optlen) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
-		return lxp_sock_setsockopt(proc, s->file_idx, (int)a1, (int)a2,
+		return lxp_sock_setsockopt(proc, oi, (int)a1, (int)a2,
 					       (const void *)(uintptr_t)a3, (unsigned)a4);
 	}
 	case LXP_NR_getsockopt: { /* (fd, level, optname, optval, optlen) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
-		return lxp_sock_getsockopt(proc, s->file_idx, (int)a1, (int)a2,
+		return lxp_sock_getsockopt(proc, oi, (int)a1, (int)a2,
 					       (void *)(uintptr_t)a3, (void *)(uintptr_t)a4);
 	}
 	case LXP_NR_bind: { /* (fd, addr, addrlen) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
-		return lxp_sock_bind(proc, s->file_idx, (const void *)(uintptr_t)a1, (unsigned)a2);
+		return lxp_sock_bind(proc, oi, (const void *)(uintptr_t)a1, (unsigned)a2);
 	}
 	case LXP_NR_listen: { /* (fd, backlog) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
-		return lxp_sock_listen(s->file_idx, (int)a1);
+		return lxp_sock_listen(oi, (int)a1);
 	}
 	case LXP_NR_accept:	   /* (fd, addr, addrlen) */
 	case LXP_NR_accept4: { /* (fd, addr, addrlen, flags) */
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s || s->kind != LXP_FD_SOCKET)
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
 			return -LXP_ENOTSOCK;
 		int flags = (nr == LXP_NR_accept4) ? (int)a3 : 0;
-		return lxp_sock_accept(proc, s->file_idx, (void *)(uintptr_t)a1,
+		return lxp_sock_accept(proc, oi, (void *)(uintptr_t)a1,
 					   (void *)(uintptr_t)a2, flags);
 	}
 	case LXP_NR_socketpair:
