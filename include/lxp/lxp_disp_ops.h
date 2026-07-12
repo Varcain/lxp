@@ -26,22 +26,14 @@ extern "C" {
 
 #include "lxp/lxp_port.h" /* lxp_fb_info_t */
 
-/* The display / input port. fb_* are required when /dev/fb0 is built; touch_* may
- * be NULL when there is no touch controller (the input driver then relies on the
- * synthetic testpad or an external feeder). */
-struct lxp_disp_ops {
-	int (*fb_init)(void);
-	int (*fb_get_info)(lxp_fb_info_t *info);
-	void *(*fb_get_buffer)(void);
-	void (*fb_flush)(int x, int y, int w, int h);
-	void (*fb_present)(void);
-	int (*touch_init)(void);
-	int (*touch_read)(int *x, int *y, int *pressed);
-};
+/* The display / input port is the public lxp_display_ops_t (lxp_port.h): fb_* are
+ * required when /dev/fb0 is built; touch_* may be NULL when there is no touch
+ * controller (the input driver then relies on the synthetic testpad or an external
+ * feeder). */
 
-/* The active display port. Set by the host (on oveRTOS: statically to the ove_fb /
- * ove_ft5336 adapter). */
-extern const struct lxp_disp_ops *g_lxp_disp_ops;
+/* The active display port. Published by lxp_run() from its disp_ops argument (on
+ * oveRTOS the ove_fb / ove_ft5336 adapter; a host test may set it directly). */
+extern const lxp_display_ops_t *g_lxp_disp_ops;
 
 /* Set the display geometry used to clamp / report touch coordinates (replaces the
  * board_desc.h OVE_DISPLAY_* constants). Non-positive args are ignored; the

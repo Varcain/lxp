@@ -9,6 +9,7 @@
 #ifndef LXP_RUN_H
 #define LXP_RUN_H
 
+#include "lxp/lxp_port.h" /* lxp_os_ops_t / lxp_net_ops_t / lxp_display_ops_t / lxp_config_t */
 #include "lxp/lxp_syscall.h"
 
 #ifdef __cplusplus
@@ -58,16 +59,30 @@ typedef struct lxp_run_config {
 
 /**
  * Load @p path from the rootfs and run it as pid 1, driving the NOMMU process
- * model (vfork/exec/wait, signals, pipes) until it exits.
+ * model (vfork/exec/wait, signals, pipes) until it exits. This is THE port entry
+ * (the lwIP sys_arch / FatFs diskio pattern): the host fills three ops vtables and
+ * passes them here rather than wiring module globals directly.
  *
- * @p argv[0] is the program name seen by the program (it may differ from
- * @p path, e.g. run @c /bin/busybox as @c "sh"). @p path must name a regular
- * file in @p cfg->rootfs. Calls are sequential: each run tears down its threads
- * before returning, so a host may call this repeatedly.
+ * @p os_ops     the engine / OS port (required): program-memory placement, task
+ *               spawn/abort, critical section, run-loop event wait/post, monotonic
+ *               time, + optional cache / thread-introspection / prepare / teardown.
+ * @p net_ops    the handle-based socket port, or NULL when built without NET.
+ * @p disp_ops   the framebuffer / touch port, or NULL when built without DEV.
+ * @p config     geometry + optional sizing overrides (0 fields => lxp_config.h
+ *               defaults); may be NULL.
+ * @p run_config the rootfs table + console read/write callbacks (required).
+ *
+ * @p argv[0] is the program name seen by the program (it may differ from @p path,
+ * e.g. run @c /bin/busybox as @c "sh"). @p path must name a regular file in
+ * @p run_config->rootfs. Calls are sequential: each run publishes the ops, runs
+ * @c os_ops->prepare(), drives the loop, then @c os_ops->teardown() and tears down
+ * its threads before returning, so a host may call this repeatedly.
  *
  * @return the init exit status (>= 0), or one of the @c LXP_RUN_E* codes (< 0).
  */
-int lxp_run(const lxp_run_config_t *cfg, const char *path, int argc,
+int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
+		const lxp_display_ops_t *disp_ops, const lxp_config_t *config,
+		const lxp_run_config_t *run_config, const char *path, int argc,
 		const char *const argv[]);
 
 /**

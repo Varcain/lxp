@@ -20,6 +20,7 @@
 #if LXP_ENABLE_DEV
 
 #include "lxp/lxp_dev.h"
+#include "lxp/lxp_disp_ops.h" /* lxp_display_ops_t + g_lxp_disp_ops (published by lxp_run) */
 
 #include <string.h>
 

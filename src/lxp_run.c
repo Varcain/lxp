@@ -28,9 +28,11 @@
 #include "lxp/lxp_stats.h"
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h" /* device-layer park/retry + autoreg + tick + kick */
+#include "lxp/lxp_disp_ops.h" /* g_lxp_disp_ops (published by lxp_run) + lxp_disp_set_geometry */
 #endif
 #if LXP_ENABLE_NET
 #include "lxp/lxp_net.h" /* socket-layer park/retry + fork/exit fd lifecycle */
+#include "lxp/lxp_net_ops.h" /* g_lxp_net_ops (published by lxp_run) */
 #endif
 #if LXP_ENABLE_NETFS
 #include "lxp/lxp_netfs.h" /* remote-fs park/retry + init/pump + fork/exit lifecycle */
@@ -144,7 +146,7 @@ static lxp_arena_t g_arenas[LXP_NREG];
  * BYTES are snapshotted into a spare region, but g_arenas[] lives in coordinator memory. */
 static lxp_arena_t g_snap_arena[LXP_NSLOT];
 static const lxp_run_config_t *g_cfg;
-static const struct lxp_engine *g_eng; /* for the dispatch to post coordinator events */
+static const lxp_os_ops_t *g_eng; /* for the dispatch to post coordinator events */
 
 /* ---- OS-service hooks routed through the engine ops ------------------------
  * The personality core calls these instead of the host's ove_time_* / cache
@@ -534,7 +536,7 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 /* Load an FDPIC ELF into region ridx + set up slot sidx's proc, then spawn it. @p remote_exec:
  * the image is a RAM staging buffer (a program off the remote mount), so the exec's own text is
  * copied into the region and the region is mapped executable (RWX) — gated by the caller. */
-static int launch(const struct lxp_engine *eng, int sidx, int ridx, const uint8_t *data,
+static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *data,
 		  size_t len, int pid, int ppid, int argc, const char *const argv[], int remote_exec)
 {
 	uint8_t *region = eng->region(ridx);
@@ -670,7 +672,7 @@ static int launch(const struct lxp_engine *eng, int sidx, int ridx, const uint8_
 /* A child (cpid, status) exited: hand it to its parent (ppid). Wake a parent blocked
  * in wait4 (resume returning cpid + write *status), else queue the zombie for a later
  * wait4. Decrements the parent's live-children count either way. */
-static void reap_to_parent(const struct lxp_engine *eng, int ppid, int cpid, int status)
+static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int status)
 {
 	int pslot = -1;
 	for (int t = 0; t < LXP_NSLOT; t++)
@@ -718,7 +720,7 @@ static void reap_to_parent(const struct lxp_engine *eng, int ppid, int cpid, int
  * frame (to resume with `ret` = -EINTR), then resume the proc INTO its handler; the handler's
  * sa_restorer -> rt_sigreturn restores the saved frame and the syscall returns -EINTR. SIG_IGN
  * just resumes with `ret`; SIG_DFL terminates (the EV_EXIT pass reaps it). */
-static void deliver_signal_parked(const struct lxp_engine *eng, int slot,
+static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 				  lxp_proc_t *proc, int sig, long ret)
 {
 	uintptr_t h = proc->sig_handler[sig];
@@ -785,7 +787,7 @@ static int region_free(int r, const int *rowner)
  * dyn_pool are copied (the stack is skipped — the child uses frames below the shared sp, and the
  * parent's frames above are untouched); g_arenas[] allocator metadata is saved separately.
  * Returns the reserved scratch region index, or -1 if none is free (→ share, as before). */
-static int vfork_snapshot(const struct lxp_engine *eng, lxp_proc_t *par, int child_slot,
+static int vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, int child_slot,
 			  int *rowner)
 {
 	int rsnap = -1;
@@ -815,7 +817,7 @@ static int vfork_snapshot(const struct lxp_engine *eng, lxp_proc_t *par, int chi
 
 /* Undo a vfork child's writes to the shared region before the parent resumes: copy the snapshot back
  * over the parent's region + dyn_pool and restore its arena metadata. */
-static void vfork_restore(const struct lxp_engine *eng, lxp_proc_t *par, int rsnap,
+static void vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *par, int rsnap,
 			  int child_slot)
 {
 	uint8_t *pr = eng->region(par->region);
@@ -839,7 +841,7 @@ static void vfork_restore(const struct lxp_engine *eng, lxp_proc_t *par, int rsn
 	g_arenas[par->region] = g_snap_arena[child_slot];
 }
 
-int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
+int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		       const char *path, int argc, const char *const argv[])
 {
 	if (!eng || !cfg || !cfg->rootfs || !path || argc < 1 || !argv)
@@ -1552,5 +1554,53 @@ int lxp_run_common(const struct lxp_engine *eng, const lxp_run_config_t *cfg,
 		if (g_lxp_used[i])
 			eng->abort_slot(i);
 	g_lxp_active = 0;
+	return rc;
+}
+
+/* THE port entry (see lxp_run.h). Publishes the net/display ports the subsystem
+ * cores read through the module globals, seeds display geometry from the config,
+ * and brackets the shared run loop with the engine's optional prepare()/teardown()
+ * — where a host homes its per-run bring-up (semaphore, faults, MPU, svc IRQ). */
+int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
+	    const lxp_display_ops_t *disp_ops, const lxp_config_t *config,
+	    const lxp_run_config_t *run_config, const char *path, int argc,
+	    const char *const argv[])
+{
+	if (!os_ops)
+		return LXP_RUN_ELAUNCH;
+
+	/* Publish the optional ports the subsystem cores read via the module globals
+	 * (net.c / netfs.c / dev_fb.c). The globals are DEFINED by the host port (the
+	 * oveRTOS adapter, the POSIX reference port, or a bare-metal seam); we only
+	 * assign a NON-NULL argument, so a host that pre-sets the globals statically
+	 * (and passes NULL here) is never clobbered. Built-out subsystems only. */
+#if LXP_ENABLE_NET
+	if (net_ops)
+		g_lxp_net_ops = net_ops;
+#else
+	(void)net_ops;
+#endif
+#if LXP_ENABLE_DEV
+	if (disp_ops)
+		g_lxp_disp_ops = disp_ops;
+#else
+	(void)disp_ops;
+#endif
+#if LXP_ENABLE_DEV_INPUT
+	/* Seed the touch/report geometry from the run config (replaces a host calling
+	 * lxp_disp_set_geometry directly). 0 fields keep the compiled-in default. */
+	if (config && config->display_width > 0 && config->display_height > 0)
+		lxp_disp_set_geometry(config->display_width, config->display_height);
+#endif
+	(void)config; /* sizing knobs (prog_region_size, nreg, ...) remain compile-time */
+
+	if (os_ops->prepare) {
+		int prc = os_ops->prepare();
+		if (prc < 0)
+			return LXP_RUN_ELAUNCH;
+	}
+	int rc = lxp_run_common(os_ops, run_config, path, argc, argv);
+	if (os_ops->teardown)
+		os_ops->teardown();
 	return rc;
 }

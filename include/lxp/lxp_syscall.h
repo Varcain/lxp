@@ -644,8 +644,8 @@ void lxp_guest_invalidate(const void *base, size_t len);
 /* ---- OS-service hooks routed through the engine ops ------------------------
  * The personality core calls these module-internal wrappers instead of the
  * host's clock / cache primitives; the per-engine seam fills the underlying
- * ops (see struct lxp_engine). This lets the personality build against any
- * host without referencing ove_time_* directly.
+ * ops (see lxp_os_ops_t in lxp_port.h). This lets the personality build against
+ * any host without referencing ove_time_* directly.
  *
  * lxp_cache_clean/invalidate are the ops-routed equivalents of
  * lxp_guest_flush/invalidate above (which remain for the direct callers

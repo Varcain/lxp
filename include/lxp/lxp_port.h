@@ -125,6 +125,14 @@ typedef struct lxp_os_ops {
 	void (*rootfs_window)(const void *base, size_t len);
 	/* Staging buffer for fetching a remote exec image. NULL => no remote exec. */
 	uint8_t *(*exec_stage)(size_t *cap);
+
+	/* Optional per-run bring-up / teardown, invoked by lxp_run() around the run
+	 * loop. A host homes its engine-specific setup here — create the coordinator
+	 * semaphore, enable Bus/UsageFault, program the MPU, attach the svc IRQ — and
+	 * its restore in teardown. NULL => skipped. prepare() returning < 0 aborts the
+	 * run (lxp_run returns LXP_RUN_ELAUNCH); teardown() runs after the loop exits. */
+	int (*prepare)(void);
+	void (*teardown)(void);
 } lxp_os_ops_t;
 
 /* ─────────────────────────────────────────────────────────────────────────
