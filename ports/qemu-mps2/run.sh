@@ -16,6 +16,14 @@ cd "$HERE"
 FDCC="${FDCC:-$HOME/projects/private/hIRoic/buildroot/output/host/bin/arm-buildroot-uclinuxfdpiceabi-gcc}"
 QEMU="${QEMU:-/usr/bin/qemu-system-arm}"
 
+# Force the AN500's Cortex-M7 to its real 16 MPU regions. QEMU modelled the AN500 M7 with the
+# CPU default of 8 regions until the fix in qemu 10.0.3 ("Configure the AN500 CPU with 16 MPU
+# regions"); on an older QEMU (Ubuntu 24.04 ships 8.2) the FreeRTOS ARM_CM4_MPU port sees a
+# count != configTOTAL_MPU_REGIONS(16), SILENTLY skips MPU setup, and every guest HardFaults at
+# scheduler start. This -global overrides the CPU default so the emulation matches real hardware;
+# it is a no-op on QEMU >=10.0.3, which already configures 16.
+QEMU_MPU="-global cortex-m7-arm-cpu.pmsav7-dregion=16"
+
 M="${M:-1}"
 case "$M" in
     1) MARK="lxp-m1-ok" ;;
@@ -53,7 +61,7 @@ if [ "$M" -lt 3 ] || [ "$M" = 4 ]; then
     MILESTONE="$M" bash build.sh > build.log 2>&1 || { echo "BUILD FAILED"; grep -iE 'error|undefined|will not fit' build.log | head; exit 1; }
 
     echo "=== M$M QEMU run ==="
-    timeout "${TIMEOUT:-10}" "$QEMU" -M mps2-an500 -m 16 -nographic -no-reboot \
+    timeout "${TIMEOUT:-10}" "$QEMU" -M mps2-an500 -m 16 -nographic -no-reboot $QEMU_MPU \
         -semihosting-config enable=on -kernel firmware.elf > "$LOG" 2>&1 || true
 else
     # ---- M3: dynamic-FDPIC busybox cpio XIP'd from PSRAM @0x60000000 ---------
@@ -66,7 +74,7 @@ else
     MILESTONE=3 bash build.sh > build.log 2>&1 || { echo "BUILD FAILED"; grep -iE 'error|undefined|will not fit' build.log | head; exit 1; }
 
     echo "=== M3 QEMU run (/bin/busybox echo) ==="
-    timeout "${TIMEOUT:-30}" "$QEMU" -M mps2-an500 -m 16 -nographic -no-reboot \
+    timeout "${TIMEOUT:-30}" "$QEMU" -M mps2-an500 -m 16 -nographic -no-reboot $QEMU_MPU \
         -semihosting-config enable=on -kernel firmware.elf \
         -device "loader,file=$M3_CPIO,addr=0x60000000,force-raw=on" > "$LOG" 2>&1 || true
 fi

@@ -157,6 +157,21 @@ static StackType_t g_coord_stack[4096]; /* lxp_run_common + the FDPIC loader run
 
 int main(void)
 {
+	/* The ARM_CM4_MPU port requires the hardware MPU region count (MPU_TYPE.DREGION) to equal
+	 * configTOTAL_MPU_REGIONS (16 — what the real AN500 has); on a mismatch it SILENTLY skips
+	 * MPU setup and the first unprivileged guest task HardFaults with no clue why. QEMU's
+	 * mps2-an500 modelled the M7 with the CPU default of 8 regions until the fix that landed in
+	 * qemu 10.0.3 ("Configure the AN500 CPU with 16 MPU regions") — so on an older QEMU the
+	 * guests HardFault unless run.sh forces 16 via -global. Fail LOUDLY here instead. */
+	uint32_t dregion = (*(volatile uint32_t *)0xe000ed90u >> 8) & 0xffu;
+	if (dregion != configTOTAL_MPU_REGIONS) {
+		lxp_dbg("lxp: FATAL — emulated MPU has ");
+		sh_putc((char)('0' + (dregion / 10) % 10));
+		sh_putc((char)('0' + dregion % 10));
+		lxp_dbg(" regions, need 16. Upgrade QEMU to >=10.0.3, or pass\n"
+			"      -global cortex-m7-arm-cpu.pmsav7-dregion=16 (see ports/qemu-mps2/run.sh).\n");
+		sh_exit(83);
+	}
 	/* The coordinator runs ABOVE the guest slots (SLOT_PRIO) so it preempts a parked
 	 * guest the instant event_post wakes it. It runs the FDPIC loader + lxp_run_common
 	 * and touches the cpio, every program region and kernel state, so it must be
