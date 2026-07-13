@@ -79,8 +79,7 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	sv->lr = f->r[14];
 	sv->pc = f->r[15];
 	sv->xpsr = f->xpsr;
-	sv->saved_mask = proc->sig_blocked;	  /* restored at rt_sigreturn */
-	proc->sig_blocked |= lxp_sig_bit(sig); /* block this signal for its own handler (no reentry) */
+	sig_block_for_handler(sv, proc, sig); /* self-block the signal; restored at rt_sigreturn */
 	sv->active = 1;
 	uintptr_t entry, restorer;
 	uint32_t got;

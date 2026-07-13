@@ -25,6 +25,16 @@ struct sig_save_s {
 };
 extern struct sig_save_s g_sig_save[LXP_NSLOT];
 
+/* On handler entry: save the current signal mask into @p sv and block the delivered signal
+ * for the handler's duration (POSIX: a handler does not re-enter on its own signal). Restored
+ * from @c sv->saved_mask at rt_sigreturn (sig_restore). Shared by deliver_signal (running
+ * frame) and deliver_signal_parked (parked proc). */
+static inline void sig_block_for_handler(struct sig_save_s *sv, lxp_proc_t *proc, int sig)
+{
+	sv->saved_mask = proc->sig_blocked;
+	proc->sig_blocked |= lxp_sig_bit(sig);
+}
+
 /* ---- coordinator primitives (lxp_run.c) ------------------------------------ */
 int slot_of(const lxp_proc_t *p);	/* slot index of proc (proc - g_lxp_proc) */
 void park_frame(struct lxp_frame *f);	/* park the frame at the spin loop + wake the coordinator */

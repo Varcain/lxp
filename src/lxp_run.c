@@ -790,8 +790,7 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 	sv->lr = g_ctx[slot].lr;
 	sv->pc = g_ctx[slot].pc; /* the rt_sigsuspend resume point */
 	sv->xpsr = (1u << 24);	 /* Thumb */
-	sv->saved_mask = proc->sig_blocked;	  /* restored at rt_sigreturn */
-	proc->sig_blocked |= lxp_sig_bit(sig); /* block this signal for its own handler */
+	sig_block_for_handler(sv, proc, sig); /* self-block the signal; restored at rt_sigreturn */
 	sv->active = 1;
 	/* Reuse the slot ctx as the handler-entry frame; sp + r4-r11 stay = the thread's, except r9
 	 * (the handler's own GOT for FDPIC — resolve_handler derefs the {entry,GOT} funcdescs; the

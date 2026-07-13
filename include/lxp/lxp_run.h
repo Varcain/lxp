@@ -36,7 +36,10 @@ extern "C" {
  * @{
  */
 
-/** Host configuration for a personality run. */
+/** Host configuration for a personality run. Zero-initialize it (a designated initializer
+ * such as @c {.rootfs=..., .write_fn=...} or @c memset) so every optional field reads NULL/0:
+ * the runner dereferences pointer fields like @c env, so an uninitialized one faults at
+ * launch. New optional fields are always added at the end and default to "unset" when zero. */
 typedef struct lxp_run_config {
 	const lxp_file_t *rootfs; /**< Parsed (read-only) rootfs table. */
 	int rootfs_count;	      /**< Entry count in @p rootfs. */
