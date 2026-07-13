@@ -38,8 +38,9 @@ esac
 mkdir -p build
 LOG="$HERE/build/m$M.log"
 
-if [ "$M" -lt 3 ] || [ "$M" = 4 ] || [ "$M" = 5 ]; then
-    # ---- M1/M2/M4/M5: small cpio embedded in flash .rodata ------------------
+# The dynamic busybox milestones (M3, M6) XIP the cpio from PSRAM; the rest embed it in flash.
+if [ "$M" != 3 ] && [ "$M" != 6 ]; then
+    # ---- flash-embedded fixture (M1/M2/M4/M5) ------------------------------
     GUESTS="hello init child syscheck spin futex"
     if [ "${REGEN_GUEST:-0}" = 1 ]; then
         [ -x "$FDCC" ] || { echo "REGEN_GUEST=1 but FDPIC gcc not found: $FDCC"; exit 1; }

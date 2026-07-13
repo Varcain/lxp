@@ -451,9 +451,12 @@ typedef struct lxp_fd {
 /** Bounds for an execve() argument vector captured for the engine to relaunch. */
 #define LXP_EXEC_MAXARGS 8
 #define LXP_EXEC_ARGBUF 256
-/** Bounds for an execve() environment vector captured for the engine to relaunch. */
-#define LXP_EXEC_MAXENVS 16
-#define LXP_EXEC_ENVBUF 512
+/** Bounds for an execve() environment vector captured for the engine to relaunch. Sized
+ * like the argv store above: a board environment is a handful of short strings (the QEMU
+ * port's is ~90 bytes), and this backing store is replicated per slot, so it is kept small.
+ * A larger environment is truncated at capture (degrade capacity, never correctness). */
+#define LXP_EXEC_MAXENVS 8
+#define LXP_EXEC_ENVBUF 256
 
 /**
  * @brief A Linux process context — the state syscalls act on.
@@ -548,10 +551,10 @@ typedef struct lxp_proc {
 	/* futex(2) uaddr-keyed wait/wake for co-running CLONE_VM threads. A FUTEX_WAIT whose
 	 * word still holds the expected value parks (only when a co-runner shares the region —
 	 * else no one could wake it, so it returns -EAGAIN); a peer's FUTEX_WAKE marks matching
-	 * waiters and the coordinator resumes them with 0. */
-	int futex_pending;     /**< FUTEX_WAIT asked to park (transient; -> EV_FUTEXWAIT). */
-	int futex_wait;	       /**< Parked in FUTEX_WAIT on @c futex_uaddr. */
-	int futex_woken;       /**< A FUTEX_WAKE marked this waiter for resume. */
+	 * waiters and the coordinator resumes them with 0. Parked/resume-eligible is told apart
+	 * by g_lxp_used[slot], as for sock_wait/pipe_wait — no separate "pending" flag needed. */
+	uint8_t futex_wait;    /**< Parked in FUTEX_WAIT on @c futex_uaddr. */
+	uint8_t futex_woken;   /**< A FUTEX_WAKE marked this waiter for resume. */
 	uintptr_t futex_uaddr; /**< The futex word this thread is queued on. */
 	/* Blocking pipe I/O (Phase D2): a read on an empty pipe with a writer still open,
 	 * or a write on a full pipe with a reader still open, parks the proc; the

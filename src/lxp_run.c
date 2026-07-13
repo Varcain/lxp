@@ -373,7 +373,7 @@ static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc)
 			return;
 		}
 		proc->futex_uaddr = uaddr;
-		proc->futex_pending = 1;
+		proc->futex_wait = 1;
 		capture_ctx(slot_of(proc), f);
 		park_frame(f); /* the coordinator parks us; a FUTEX_WAKE resumes with r0 = 0 */
 		return;
@@ -395,6 +395,21 @@ static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc)
 		return;
 	}
 	f->r[0] = 0; /* REQUEUE / WAKE_OP / etc.: accepted, no queued waiter affected */
+}
+
+/* Copy a captured argv/envp vector out of the proc into a static staging buffer (needed
+ * because launch() re-inits the slot, clearing exec_argv_buf/exec_env_buf), writing the
+ * NUL-terminated pointers into ptrs[0..count] with a trailing NULL. */
+static void flatten_vec(char *buf, const char **ptrs, char *const *src, int count)
+{
+	size_t off = 0;
+	for (int j = 0; j < count; j++) {
+		size_t n = strlen(src[j]) + 1;
+		memcpy(buf + off, src[j], n);
+		ptrs[j] = buf + off;
+		off += n;
+	}
+	ptrs[count] = NULL;
 }
 
 /* ---- the syscall dispatch body --------------------------------------------- */
@@ -954,8 +969,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				et = EV_SLEEP;
 				break;
 			}
-			if (p->futex_pending) {
-				p->futex_pending = 0;
+			if (p->futex_wait && g_lxp_used[s]) {
 				es = s;
 				et = EV_FUTEXWAIT;
 				break;
@@ -1046,7 +1060,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			ch->pty_wait = 0;
 			ch->console_wait = 0;
 			ch->pending_sig = 0;
-			ch->futex_pending = ch->futex_wait = ch->futex_woken = 0;
+			ch->futex_wait = ch->futex_woken = 0;
 			ch->futex_uaddr = 0;
 			ch->alarm_deadline_us = 0; /* itimers are not inherited across fork */
 			ch->alarm_interval_us = 0;
@@ -1122,22 +1136,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			static const char *ptrs[LXP_EXEC_MAXARGS + 1];
 			static char envs[LXP_EXEC_ENVBUF];
 			static const char *eptrs[LXP_EXEC_MAXENVS + 1];
-			size_t off = 0;
-			for (int j = 0; j < eargc; j++) {
-				size_t n = strlen(p->exec_argv[j]) + 1;
-				memcpy(args + off, p->exec_argv[j], n);
-				ptrs[j] = args + off;
-				off += n;
-			}
-			ptrs[eargc] = NULL;
-			size_t eoff = 0;
-			for (int j = 0; j < eenvc; j++) {
-				size_t n = strlen(p->exec_env[j]) + 1;
-				memcpy(envs + eoff, p->exec_env[j], n);
-				eptrs[j] = envs + eoff;
-				eoff += n;
-			}
-			eptrs[eenvc] = NULL;
+			flatten_vec(args, ptrs, p->exec_argv, eargc);
+			flatten_vec(envs, eptrs, p->exec_env, eenvc);
 			/* Reuse the reserved snapshot region as the exec image region — it's free once we
 			 * restore the parent from it below, and reserving it at fork is why exec always has
 			 * a region. No snapshot (region-pressure fallback) → find a free region as before. */
@@ -1256,9 +1256,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			idle = 0;
 			continue;
 		}
-		if (et == EV_FUTEXWAIT) { /* park on the futex until a peer's FUTEX_WAKE marks it. */
+		if (et == EV_FUTEXWAIT) { /* free the waiter's spin thread until a peer's FUTEX_WAKE. */
 			eng->abort_slot(es);
-			g_lxp_proc[es].futex_wait = 1;
 			idle = 0;
 			continue;
 		}
@@ -1422,7 +1421,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				}
 			}
 			/* Parked FUTEX_WAIT: a peer's FUTEX_WAKE set futex_woken; resume with 0. */
-			if (p->futex_wait) {
+			if (p->futex_wait && !g_lxp_used[s]) {
 				any_busy = 1;
 				if (p->futex_woken) {
 					p->futex_wait = 0;

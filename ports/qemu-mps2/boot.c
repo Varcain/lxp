@@ -24,7 +24,10 @@
 #ifndef LXP_MILESTONE
 #define LXP_MILESTONE 1
 #endif
-#if LXP_MILESTONE < 3 || LXP_MILESTONE == 4 || LXP_MILESTONE == 5
+/* Only the dynamic busybox milestones (M3, M6) XIP the big cpio from PSRAM; the rest embed
+ * the small fixture in flash. Name it once so a new milestone touches one line, not three. */
+#define LXP_ROOTFS_PSRAM (LXP_MILESTONE == 3 || LXP_MILESTONE == 6)
+#if !LXP_ROOTFS_PSRAM
 #include "rootfs_cpio.h" /* generated: rootfs_cpio[], rootfs_cpio_len */
 #else
 /* M3: the raw cpio is injected into PSRAM @ 0x60000000 by `-device loader`. The length
@@ -104,8 +107,8 @@ static char g_names[24576];
 static void coordinator_task(void *arg)
 {
 	(void)arg;
-#if LXP_MILESTONE < 3 || LXP_MILESTONE == 4 || LXP_MILESTONE == 5
-	/* M1/M2/M4/M5 embed a small cpio in flash; only M3 XIPs the big busybox cpio from PSRAM. */
+#if !LXP_ROOTFS_PSRAM
+	/* Flash-embedded fixture (M1/M2/M4/M5); the busybox milestones XIP from PSRAM instead. */
 	const uint8_t *cpio = (const uint8_t *)rootfs_cpio;
 	size_t cpio_len = rootfs_cpio_len;
 #else

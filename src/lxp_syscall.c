@@ -2463,31 +2463,33 @@ long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t 
  * success the old image is gone; on failure we report a negated errno.
  */
 /* Append one NUL-terminated arg to the pending-exec argv; ignore on overflow. */
+/* Append one NUL-terminated string to a bounded pending-exec vector (argv or envp), storing
+ * the copy in @p buf and its pointer in @p vec[]; ignore silently on element/byte overflow. */
+static void exec_push(char **vec, char *buf, size_t bufsz, int max, int *n, size_t *off,
+		      const char *str)
+{
+	if (*n >= max)
+		return;
+	size_t len = strlen(str) + 1;
+	if (*off + len > bufsz)
+		return;
+	memcpy(buf + *off, str, len);
+	vec[*n] = buf + *off;
+	*off += len;
+	(*n)++;
+}
+
 static void exec_push_arg(lxp_proc_t *p, int *argc, size_t *off, const char *str)
 {
-	if (*argc >= LXP_EXEC_MAXARGS)
-		return;
-	size_t n = strlen(str) + 1;
-	if (*off + n > sizeof(p->exec_argv_buf))
-		return;
-	memcpy(p->exec_argv_buf + *off, str, n);
-	p->exec_argv[*argc] = p->exec_argv_buf + *off;
-	*off += n;
-	(*argc)++;
+	exec_push(p->exec_argv, p->exec_argv_buf, sizeof(p->exec_argv_buf), LXP_EXEC_MAXARGS, argc,
+		  off, str);
 }
 
 /* Append one NUL-terminated env string to the pending-exec environment; ignore on overflow. */
 static void exec_push_env(lxp_proc_t *p, int *envc, size_t *off, const char *str)
 {
-	if (*envc >= LXP_EXEC_MAXENVS)
-		return;
-	size_t n = strlen(str) + 1;
-	if (*off + n > sizeof(p->exec_env_buf))
-		return;
-	memcpy(p->exec_env_buf + *off, str, n);
-	p->exec_env[*envc] = p->exec_env_buf + *off;
-	*off += n;
-	(*envc)++;
+	exec_push(p->exec_env, p->exec_env_buf, sizeof(p->exec_env_buf), LXP_EXEC_MAXENVS, envc,
+		  off, str);
 }
 
 static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char *const envp[])
