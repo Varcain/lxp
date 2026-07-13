@@ -1,0 +1,18 @@
+# libFuzzer/AFL++ dictionary for the ELF loaders (FDPIC + ET_REL).
+# Magic + the class/machine/type constants the loaders gate on, so the mutator
+# can synthesize a header the parser accepts and reach the interesting code.
+magic="\x7fELF"
+class32="\x01"
+class64="\x02"
+data_le="\x01"
+osabi_fdpic="\x41"
+et_rel="\x01\x00"
+et_dyn="\x03\x00"
+em_arm="\x28\x00"
+em_x86_64="\x3e\x00"
+ef_arm_fdpic="\x00\x00\x00\x10"
+pt_load="\x01\x00\x00\x00"
+pt_dynamic="\x02\x00\x00\x00"
+dt_needed="\x01\x00\x00\x00"
+dt_rel="\x11\x00\x00\x00"
+dt_pltgot="\x03\x00\x00\x00"

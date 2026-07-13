@@ -49,6 +49,28 @@ jobs:
       - name: Run under ASan+UBSan
         run: ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build -R lxp_unit --output-on-failure
 
+  fuzz:
+    # Corpus-regression for the untrusted-input parsers (FDPIC/ET_REL loaders, cpio, path,
+    # 9P reply, syscall). Replays the committed seed corpora — including a regression seed
+    # for every bug the fuzzer has found — through each harness once under ASan/UBSan. This
+    # is gcc-only (the `replay` engine); no fuzzing engine is needed, so CI stays clang-free.
+    # Live coverage-guided runs (libFuzzer locally / AFL++) are documented in fuzz/README.md.
+    name: fuzz corpus regression (ASan + UBSan replay)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure fuzz harnesses (replay engine, gcc + ASan/UBSan)
+        run: cmake -S . -B build -DLXP_BUILD_FUZZ=ON -DLXP_FUZZ_ENGINE=replay -DLXP_SANITIZE=ON
+
+      - name: Build the fuzz harnesses
+        run: >
+          cmake --build build -j"$(nproc)"
+          --target fuzz_fdpic fuzz_etrel fuzz_cpio fuzz_path fuzz_9p fuzz_syscall
+
+      - name: Replay the seed corpora under ASan+UBSan
+        run: ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build -R _corpus --output-on-failure
+
   gates:
     # Gate-rot guard: cross-compile every src/ TU for Cortex-M under each LXP_ENABLE_*
     # config, -Werror. A clean build proves the #if LXP_ENABLE_X gating holds in both

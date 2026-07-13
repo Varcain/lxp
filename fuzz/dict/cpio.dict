@@ -1,0 +1,9 @@
+# libFuzzer/AFL++ dictionary for the newc cpio parser.
+newc_magic="070701"
+trailer="TRAILER!!!"
+# ASCII hex field values the parser reads (8 chars each) — common sizes/modes.
+zero8="00000000"
+one8="00000001"
+mode_file="000081A4"
+mode_dir="000041ED"
+mode_link="0000A1FF"

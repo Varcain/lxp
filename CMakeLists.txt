@@ -26,6 +26,7 @@ option(LXP_ENABLE_DEV_FB "Framebuffer /dev/fb0 (display-ops port required)" OFF)
 option(LXP_ENABLE_DEV_INPUT "Input event device (/dev/input)" OFF)
 option(LXP_PORT_POSIX "Build the bundled POSIX reference port" OFF)
 option(LXP_BUILD_TESTS "Build the host (cmocka) unit-test suite" OFF)
+option(LXP_BUILD_FUZZ "Build the coverage-guided fuzz harnesses" OFF)
 
 # ---- sources: collect whatever exists (the tree is populated incrementally) --
 file(GLOB_RECURSE LXP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
@@ -63,4 +64,10 @@ add_library(lxp::lxp ALIAS lxp)
 if(LXP_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+# ---- fuzz harnesses (opt-in; libFuzzer/AFL++/replay over the untrusted parsers) --
+if(LXP_BUILD_FUZZ AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/CMakeLists.txt")
+  enable_testing()
+  add_subdirectory(fuzz)
 endif()
