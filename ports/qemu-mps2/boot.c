@@ -142,7 +142,19 @@ static void coordinator_task(void *arg)
 	/* The initial program + argv, selected at build time per milestone:
 	 *   M1 = /hello           M2 = /init (execs /child)
 	 *   M3 = /bin/busybox echo lxp-m3-ok  (dynamic-FDPIC: ld.so + libc.so + busybox) */
-#if LXP_MILESTONE == 5
+#if LXP_MILESTONE == 6
+	/* M6 = a real busybox /bin/sh script (dynamic FDPIC: ld.so + libc + busybox). Proves an
+	 * unmodified shell runs and that the port-supplied environment reaches it ($TERM/$HOME/
+	 * $PATH) — the payoff of the env plumbing. Uses only shell builtins so the check is
+	 * deterministic; prints lxp-m6-ok iff the environment came through. */
+	const char *entry = "/bin/busybox";
+	const char *const argv[] = {
+		"busybox", "sh", "-c",
+		"test \"$TERM\" = vt100 && test \"$HOME\" = /root && "
+		"case \"$PATH\" in */bin*) echo lxp-m6-ok ;; *) echo lxp-m6-FAIL ;; esac",
+		NULL};
+	int argc = 4;
+#elif LXP_MILESTONE == 5
 	/* M5 = /futex: two co-running CLONE_VM threads hand off through a real uaddr-keyed
 	 * futex (WAIT parks, WAKE resumes) — the path host cmocka cannot reach. */
 	const char *entry = "/futex";

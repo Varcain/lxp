@@ -116,7 +116,7 @@ jobs:
         run: ARMCC=arm-none-eabi-gcc sh scripts/gate-build.sh ${{ matrix.gates.defs }}
 
   qemu:
-    name: QEMU mps2-an500 end-to-end (M1..M5)
+    name: QEMU mps2-an500 end-to-end (M1..M6)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -159,3 +159,5 @@ jobs:
         run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=4 bash run.sh
       - name: M5 — real futex (two CLONE_VM threads: FUTEX_WAIT parks, FUTEX_WAKE resumes)
         run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=5 bash run.sh
+      - name: M6 — busybox /bin/sh smoke (unmodified shell sees the port-supplied environment)
+        run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=6 bash run.sh

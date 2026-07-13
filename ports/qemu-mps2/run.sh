@@ -31,7 +31,8 @@ case "$M" in
     3) MARK="lxp-m3-ok" ;;
     4) MARK="lxp-m4-ok" ;;
     5) MARK="lxp-m5-ok" ;;
-    *) echo "unknown milestone M=$M (use 1, 2, 3, 4 or 5)"; exit 2 ;;
+    6) MARK="lxp-m6-ok" ;;
+    *) echo "unknown milestone M=$M (use 1..6)"; exit 2 ;;
 esac
 
 mkdir -p build
@@ -72,9 +73,9 @@ else
     [ -f "$M3_CPIO" ] || { echo "missing M3 rootfs cpio: $M3_CPIO (build it: bash guest/mkrootfs_m3.sh)"; exit 1; }
     echo "M3 rootfs: $M3_CPIO ($(stat -c %s "$M3_CPIO") bytes)"
 
-    MILESTONE=3 bash build.sh > build.log 2>&1 || { echo "BUILD FAILED"; grep -iE 'error|undefined|will not fit' build.log | head; exit 1; }
+    MILESTONE="$M" bash build.sh > build.log 2>&1 || { echo "BUILD FAILED"; grep -iE 'error|undefined|will not fit' build.log | head; exit 1; }
 
-    echo "=== M3 QEMU run (/bin/busybox echo) ==="
+    echo "=== M$M QEMU run (dynamic-FDPIC busybox from PSRAM) ==="
     timeout "${TIMEOUT:-30}" "$QEMU" -M mps2-an500 -m 16 -nographic -no-reboot $QEMU_MPU \
         -semihosting-config enable=on -kernel firmware.elf \
         -device "loader,file=$M3_CPIO,addr=0x60000000,force-raw=on" > "$LOG" 2>&1 || true
