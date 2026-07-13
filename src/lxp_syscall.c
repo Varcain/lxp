@@ -2251,6 +2251,10 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 	uint64_t size;
 	uint64_t rdev = 0;	  /* device id for a character node, else 0 */
 	uint32_t ino = 0x300000u; /* unique, non-zero inode: ld.so dedups by (st_dev, st_ino) */
+	/* Validate the path pointer before the path[0] empty-check deref below — resolve_path
+	 * validates it too, but only after this reads path[0] (a bad pointer would fault here). */
+	if (path && user_strnlen(p, path, LXP_PATH_MAX) < 0)
+		return -LXP_EFAULT;
 	if (path && path[0] && !(flags & LXP_AT_EMPTY_PATH)) {
 		char abspath[LXP_PATH_MAX];
 		long rr = resolve_path(p, path, abspath, sizeof(abspath));

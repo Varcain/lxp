@@ -76,8 +76,11 @@ int proc_pid(const char *abs, const lxp_proc_t *p, const char **file)
 		pid = p->pid;
 		s += 4;
 	} else if (*s >= '0' && *s <= '9') {
-		while (*s >= '0' && *s <= '9')
-			pid = pid * 10 + (*s++ - '0');
+		while (*s >= '0' && *s <= '9') {
+			if (pid < 1000000) /* clamp: no real pid is this large; guards int overflow (UB) */
+				pid = pid * 10 + (*s - '0');
+			s++;
+		}
 	} else {
 		return 0;
 	}
