@@ -618,11 +618,18 @@ void *lxp_loader_sym(const lxp_module_t *mod, const char *name)
 		if (bind != STB_GLOBAL && bind != STB_WEAK)
 			continue;
 		const char *sn = sym_name(mod, st_name);
-		if (sn && strcmp(sn, name) == 0)
-			/* On ARM, a Thumb function symbol already carries the
-			 * Thumb bit (bit 0) in st_value, so the address is
-			 * directly callable as a function pointer. */
+		if (sn && strcmp(sn, name) == 0) {
+			/* Bound the symbol's in-section offset: a hostile st_value would otherwise
+			 * overflow sec_addr[shndx] + value (pointer-arithmetic UB) and return a wild
+			 * address to the caller (found by the etrel fuzzer). A valid function symbol
+			 * lies within its section — including a Thumb symbol, whose (offset | 1) is
+			 * still <= sec_size. */
+			if (value > mod->sec_size[shndx])
+				return NULL;
+			/* On ARM, a Thumb function symbol already carries the Thumb bit (bit 0) in
+			 * st_value, so the address is directly callable as a function pointer. */
 			return (uint8_t *)mod->sec_addr[shndx] + value;
+		}
 	}
 	return NULL;
 }
@@ -759,15 +766,27 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 			text_off = p_off;
 			have_text = 1;
 		} else {
+			/* Compute the extent in 64-bit: a hostile p_vaddr+p_memsz must not wrap
+			 * uint32 and understate rw_hi (which would send pass-2's RW memcpy past the
+			 * region). Clamp to 4 GiB — an over-large span is rejected against the region
+			 * just below regardless. */
+			uint64_t end = (uint64_t)v + msz;
 			if (v < rw_lo)
 				rw_lo = v;
-			if (v + msz > rw_hi)
-				rw_hi = v + msz;
+			if (end > rw_hi)
+				rw_hi = (end > 0xffffffffu) ? 0xffffffffu : (uint32_t)end;
 		}
 	}
 	if (!have_text || nload < 1)
 		return LXP_ERR_INVALID_PARAM;
 	uint32_t rw_span = (rw_hi > rw_lo) ? (rw_hi - rw_lo) : 0;
+	/* Bound the RW span to the region before deriving anything from it: a ~4 GiB span
+	 * makes the (rw_span + 3) alignment below wrap uint32 to a tiny value that slips the
+	 * region_size check, turning memset(base, 0, rw_span) into a wild write (found by the
+	 * fdpic fuzzer). The aligned block is re-checked with the loadmap at the NO_MEMORY
+	 * guard below; this catches the span itself first. */
+	if (rw_span > region_size)
+		return LXP_ERR_NO_MEMORY;
 	/* Reject a dynamic table whose (attacker-influenced) p_vaddr/p_memsz escapes the RW region;
 	 * its runtime address + dyn_sz is walked below and would otherwise read OOB. */
 	if (dyn_off && (dyn_off < rw_lo || (uint64_t)dyn_off + dyn_sz > rw_hi))
@@ -777,9 +796,13 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	/* A copy_text load reserves the region's head for the program's own text (copied in below,
 	 * run from RAM because its image is not the executable XIP window); the RW block + loadmap +
 	 * pool follow it. A normal load leaves the text shared in-place from the image (text_a = 0). */
-	uint32_t text_a = copy_text ? ((text_sz + 15u) & ~15u) : 0;
-	if ((uint64_t)text_a + rw_a + loadmap_sz > region_size)
+	/* Align in 64-bit: a hostile text p_memsz near UINT32_MAX would otherwise make
+	 * (text_sz + 15) & ~15 wrap to a tiny value that slips the region_size check below and
+	 * mis-places `base`. text_a is narrowed only after the check bounds it to the region. */
+	uint64_t text_a64 = copy_text ? (((uint64_t)text_sz + 15u) & ~(uint64_t)15u) : 0;
+	if (text_a64 + rw_a + loadmap_sz > region_size)
 		return LXP_ERR_NO_MEMORY;
+	uint32_t text_a = (uint32_t)text_a64;
 
 	/* For a normal load the region holds ONLY the RW block (text shared in-place) + the loadmap +
 	 * the descriptor pool. For a copy_text load the region head additionally holds the text. */
@@ -815,6 +838,13 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 			return LXP_ERR_INVALID_PARAM;
 		uint32_t seg_addr;
 		if (p_flags & ELF_PF_X) {
+			/* An executable segment is code + rodata — no bss — so a valid one has
+			 * p_filesz == p_memsz. Enforcing it keeps the loadmap's p_memsz (the segment's
+			 * runtime read-extent) bounded to the in-image p_filesz, so a read-resolution
+			 * through text (fdpic_rt_n: the dyn table, rel entries, symbols) cannot run past
+			 * the image on a malformed p_memsz. */
+			if (p_filesz != p_memsz)
+				return LXP_ERR_INVALID_PARAM;
 			if (copy_text) {
 				/* copy the text into the region head (region[0], reserved above) so it
 				 * runs from RAM — the image is a RAM staging buffer, not the XIP window. */
@@ -842,7 +872,10 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	uint32_t rel_v = 0, rel_sz = 0, rel_ent = 8, pltgot_v = 0, sym_v = 0;
 	int is_dynamic = 0;
 	if (dyn_off) {
-		const uint8_t *dp = (const uint8_t *)(uintptr_t)fdpic_rt(lm, nload, dyn_off);
+		/* Bound the whole [dyn_off, dyn_off+dyn_sz) table to a single backed segment (as the
+		 * reloc table already is): fdpic_rt would map only the start and let the dyn_sz walk
+		 * below run off the end of the segment's backing (found by the fdpic fuzzer). */
+		const uint8_t *dp = (const uint8_t *)(uintptr_t)fdpic_rt_n(lm, nload, dyn_off, dyn_sz);
 		for (uint32_t o = 0; dp && o + 8 <= dyn_sz; o += 8) {
 			uint32_t tag = le32(dp + o), val = le32(dp + o + 4);
 			if (tag == ELF_DT_NULL)
