@@ -509,6 +509,12 @@ static long sys_sendmsg(lxp_proc_t *p, int oi, const lxp_msghdr *umsg, int flags
 		return -LXP_EFAULT; /* the iov array; each iov_base is checked in lxp_sock_send */
 	const void *dest = (m.msg_name && m.msg_namelen) ? m.msg_name : NULL;
 
+	/* A datagram is one message: gather every segment into a single packet, or a per-segment
+	 * send would fragment it into several datagrams. Stream sockets keep the per-segment loop
+	 * below (byte-stream, so segment boundaries don't matter). */
+	if (m.msg_iovlen > 1 && lxp_sock_is_dgram(oi))
+		return lxp_sock_sendmsg(p, oi, iov, (int)m.msg_iovlen, flags, dest, m.msg_namelen);
+
 	long total = 0;
 	for (size_t i = 0; i < m.msg_iovlen; i++) {
 		if (iov[i].iov_len == 0)
@@ -549,6 +555,12 @@ static long sys_recvmsg(lxp_proc_t *p, int oi, lxp_msghdr *umsg, int flags)
 	umsg->msg_controllen = 0; /* no ancillary data is ever produced */
 	umsg->msg_flags = 0;
 
+	/* Receive into the first non-empty segment only. A blocking recv parks with a single
+	 * guest buffer, so a multi-segment scatter cannot be resumed after a park — and the
+	 * transport does not report a datagram's true length, so MSG_TRUNC cannot be set. This is
+	 * a legal short read for a stream socket; for a datagram it means the tail of a message
+	 * larger than the first segment is lost. Callers that need the whole datagram should pass
+	 * a single sufficiently large segment. */
 	void *src = (m.msg_name && m.msg_namelen) ? m.msg_name : NULL;
 	void *srclen = src ? &umsg->msg_namelen : NULL;
 	for (size_t i = 0; i < m.msg_iovlen; i++) {

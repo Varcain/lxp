@@ -41,6 +41,7 @@ struct sock_open {
 	uint8_t used;
 	uint8_t refs;
 	uint8_t connecting;  /* a non-blocking connect is in flight */
+	uint8_t type;	     /* lxp_sock_type_t: STREAM / DGRAM / RAW (for sendmsg gathering) */
 	uint16_t oflags;     /* guest fd status flags (O_NONBLOCK gates parking) */
 	uintptr_t rx_src;    /* parked recvfrom: user sockaddr* to fill (0 => recv) */
 	uintptr_t rx_srclen; /* parked recvfrom: user socklen_t* */
@@ -171,9 +172,18 @@ long lxp_sock_new(int domain, int type, int protocol)
 	g_lxp_net_ops->sock_set_nonblock(o->sock, 1);
 	o->used = 1;
 	o->refs = 1;
+	o->type = (uint8_t)ot;
 	if (type & LXP_SOCK_NONBLOCK)
 		o->oflags |= LXP_O_NONBLOCK;
 	return oi;
+}
+
+/* Whether socket @p oi is a datagram socket — sendmsg gathers a multi-segment message into
+ * one datagram for these (a per-segment send would fragment it into several). */
+int lxp_sock_is_dgram(int oi)
+{
+	struct sock_open *o = open_slot(oi);
+	return o && o->type == LXP_SOCK_DGRAM;
 }
 
 void lxp_sock_get(int oi)
@@ -384,6 +394,48 @@ long lxp_sock_send(lxp_proc_t *p, int oi, const void *ubuf, size_t len, int flag
 		p->sock_len = len;
 		return 0; /* parked */
 	}
+	return net_errno_to_lnx(r);
+}
+
+/* sendmsg on a datagram socket: gather all iovec segments into ONE datagram and send it as a
+ * single packet (a per-segment send would put each segment on the wire as its own datagram,
+ * corrupting message boundaries). Bounded — a message larger than the gather buffer is
+ * -EMSGSIZE. Datagram sends never park, so a kernel-side gather buffer is safe here. */
+long lxp_sock_sendmsg(lxp_proc_t *p, int oi, const lxp_iovec *iov, int iovcnt, int flags,
+		      const void *udest, unsigned destlen)
+{
+	struct sock_open *o = open_slot(oi);
+	if (!o)
+		return -LXP_EBADF;
+	char buf[1024];
+	size_t off = 0;
+	for (int i = 0; i < iovcnt; i++) {
+		size_t n = iov[i].iov_len;
+		if (n == 0)
+			continue;
+		if (off + n > sizeof(buf))
+			return -LXP_EMSGSIZE;
+		if (!iov[i].iov_base || !user_ok(p, iov[i].iov_base, n, 0))
+			return -LXP_EFAULT;
+		memcpy(buf + off, iov[i].iov_base, n);
+		off += n;
+	}
+	size_t sent = 0;
+	lxp_sockaddr_t oa;
+	if (udest) {
+		if (destlen < sizeof(lxp_sockaddr_in) ||
+		    !user_ok(p, udest, sizeof(lxp_sockaddr_in), 0))
+			return -LXP_EFAULT;
+		guest_sin_to_addr((const lxp_sockaddr_in *)udest, &oa);
+	}
+	lxp_cache_clean(buf, off);
+	int r = udest ? g_lxp_net_ops->sock_sendto(o->sock, buf, off, &sent, &oa)
+		      : g_lxp_net_ops->sock_send(o->sock, buf, off, &sent);
+	(void)flags;
+	if (r == LXP_OK)
+		return (long)sent;
+	if (r == LXP_ERR_TIMEOUT)
+		return -LXP_EAGAIN; /* a datagram send does not park */
 	return net_errno_to_lnx(r);
 }
 

@@ -537,6 +537,51 @@ static void test_net_sendmsg_recvmsg(void **state)
 	close(ls);
 }
 
+/* A multi-segment sendmsg on a DATAGRAM socket must be gathered into ONE datagram, not sent
+ * as one packet per segment (which would corrupt message boundaries). */
+static void test_net_sendmsg_dgram(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+
+	/* Host UDP listener on an ephemeral loopback port. */
+	int hs = socket(AF_INET, SOCK_DGRAM, 0);
+	assert_true(hs >= 0);
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	assert_int_equal(bind(hs, (struct sockaddr *)&sa, sizeof(sa)), 0);
+	socklen_t sl = sizeof(sa);
+	assert_int_equal(getsockname(hs, (struct sockaddr *)&sa, &sl), 0);
+
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_DGRAM, 0, 0, 0, 0);
+	assert_true(fd >= 3);
+	lxp_sockaddr_in dst;
+	guest_addr(&dst, ntohs(sa.sin_port));
+	char s0[] = "hel", s1[] = "lo";
+	lxp_iovec iov[2] = {{s0, 3}, {s1, 2}};
+	lxp_msghdr sm;
+	memset(&sm, 0, sizeof(sm));
+	sm.msg_name = &dst;
+	sm.msg_namelen = sizeof(dst);
+	sm.msg_iov = iov;
+	sm.msg_iovlen = 2;
+	long sr = call_pump(&p, LXP_NR_sendmsg, fd, (long)(uintptr_t)&sm, 0, 0, 0, 0);
+	assert_int_equal(sr, 5);
+
+	/* One 5-byte datagram "hello" arrives — with per-segment fragmentation the first recv
+	 * would return only "hel" (3 bytes). */
+	char buf[64] = {0};
+	assert_int_equal((int)recv(hs, buf, sizeof(buf), 0), 5);
+	assert_memory_equal(buf, "hello", 5);
+
+	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+	close(hs);
+}
+
 int test_linux_net_run(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -544,6 +589,7 @@ int test_linux_net_run(void)
 		cmocka_unit_test(test_net_connect_errors),
 		cmocka_unit_test(test_net_loopback_roundtrip),
 		cmocka_unit_test(test_net_sendmsg_recvmsg),
+		cmocka_unit_test(test_net_sendmsg_dgram),
 		cmocka_unit_test(test_net_nonblock),
 		cmocka_unit_test(test_net_dup_close),
 		cmocka_unit_test(test_net_poll),

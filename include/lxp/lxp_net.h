@@ -158,6 +158,12 @@ long lxp_sock_accept(lxp_proc_t *p, int oi, void *uaddr, void *uaddrlen, int fla
  *  sent, a negative Linux errno, or parks. */
 long lxp_sock_send(lxp_proc_t *p, int oi, const void *ubuf, size_t len, int flags,
 		       const void *udest, unsigned destlen);
+/** Whether socket @p oi is a datagram socket (SOCK_DGRAM). */
+int lxp_sock_is_dgram(int oi);
+/** sendmsg on a datagram socket: gather @p iov into one datagram (bounded; -EMSGSIZE if too
+ *  large). @p udest NULL => send; non-NULL => sendto. Returns bytes sent, errno; never parks. */
+long lxp_sock_sendmsg(lxp_proc_t *p, int oi, const lxp_iovec *iov, int iovcnt, int flags,
+		      const void *udest, unsigned destlen);
 /** recv(2)/recvfrom(2). @p usrc NULL => recv; non-NULL => recvfrom (fills
  *  @p usrc / @p usrclen). Returns bytes received, 0 (peer closed), errno, or parks. */
 long lxp_sock_recv(lxp_proc_t *p, int oi, void *ubuf, size_t len, int flags, void *usrc,
