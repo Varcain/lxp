@@ -357,7 +357,7 @@ static int futex_has_corunner(const lxp_proc_t *proc)
  * it (else -EAGAIN); FUTEX_WAKE marks up to `val` matching waiters and asks the coordinator to
  * resume them (with 0). Other ops are accepted inert. Intercepted here (not in the dispatch
  * switch) because the wake path needs the coordinator's proc table + event_post. */
-static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc)
+static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 {
 	uintptr_t uaddr = (uintptr_t)f->r[0];
 	int op = (int)f->r[1] & 0x7f; /* mask FUTEX_PRIVATE_FLAG / FUTEX_CLOCK_REALTIME */
@@ -376,10 +376,37 @@ static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc)
 			f->r[0] = (uint32_t)-LXP_EAGAIN; /* single-threaded: retry the userspace lock */
 			return;
 		}
+		/* Optional timeout (arg4): FUTEX_WAIT is relative, FUTEX_WAIT_BITSET absolute (against
+		 * our monotonic clock; a CLOCK_REALTIME absolute is approximated). Without it the wait
+		 * is infinite. The coordinator resumes with -ETIMEDOUT once the deadline passes. */
+		uint64_t deadline = 0;
+		uintptr_t utimeout = (uintptr_t)f->r[3];
+		if (utimeout) {
+			if (!user_ok(proc, (const void *)utimeout, is_time64 ? 16u : 8u, 0)) {
+				f->r[0] = (uint32_t)-LXP_EFAULT;
+				return;
+			}
+			uint64_t sec, nsec;
+			if (is_time64) {
+				const int64_t *t = (const int64_t *)utimeout;
+				sec = (uint64_t)t[0];
+				nsec = (uint64_t)t[1];
+			} else {
+				const int32_t *t = (const int32_t *)utimeout;
+				sec = (uint64_t)(uint32_t)t[0];
+				nsec = (uint64_t)(uint32_t)t[1];
+			}
+			uint64_t ts_us = sec * 1000000ull + nsec / 1000ull, now = 0;
+			lxp_time_us(&now);
+			deadline = (op == 0) ? now + ts_us : ts_us;
+			if (!deadline)
+				deadline = 1; /* 0 encodes "no timeout"; keep a nonzero deadline */
+		}
 		proc->futex_uaddr = uaddr;
 		proc->futex_wait = 1;
+		proc->futex_deadline_us = deadline;
 		capture_ctx(slot_of(proc), f);
-		park_frame(f); /* the coordinator parks us; a FUTEX_WAKE resumes with r0 = 0 */
+		park_frame(f); /* the coordinator parks us; FUTEX_WAKE / timeout resumes us */
 		return;
 	}
 	if (op == 1 || op == 10) { /* FUTEX_WAKE / FUTEX_WAKE_BITSET */
@@ -509,7 +536,7 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	/* futex: a co-running thread's WAIT parks here / WAKE resumes peers (needs the proc
 	 * table + event_post, so it is coordinator-handled, not a plain dispatch case). */
 	if (nr == LXP_NR_futex || nr == LXP_NR_futex_time64) {
-		lxp_futex(f, proc);
+		lxp_futex(f, proc, nr == LXP_NR_futex_time64);
 		return;
 	}
 
@@ -1079,6 +1106,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			ch->pending_sigs = 0;
 			ch->futex_wait = ch->futex_woken = 0;
 			ch->futex_uaddr = 0;
+			ch->futex_deadline_us = 0;
 			ch->alarm_deadline_us = 0; /* itimers are not inherited across fork */
 			ch->alarm_interval_us = 0;
 			ch->child_count = ch->live_children = 0;
@@ -1418,6 +1446,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				p->pending_sigs &= ~lxp_sig_bit(psig);
 				if (!sig_swallowed(p, psig)) {
 					p->futex_wait = p->futex_woken = 0;
+					p->futex_deadline_us = 0;
 					deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
 					progress = 1;
 				}
@@ -1445,14 +1474,22 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					next_sleep = p->sleep_until_us; /* wake the coordinator at this deadline */
 				}
 			}
-			/* Parked FUTEX_WAIT: a peer's FUTEX_WAKE set futex_woken; resume with 0. */
+			/* Parked FUTEX_WAIT: a peer's FUTEX_WAKE set futex_woken (resume 0), or the
+			 * optional timeout deadline passed (resume -ETIMEDOUT). */
 			if (p->futex_wait && !g_lxp_used[s]) {
 				any_busy = 1;
 				if (p->futex_woken) {
-					p->futex_wait = 0;
-					p->futex_woken = 0;
+					p->futex_wait = p->futex_woken = 0;
+					p->futex_deadline_us = 0;
 					eng->spawn_resume(s, p->region, &g_ctx[s], 0);
 					progress = 1;
+				} else if (p->futex_deadline_us && now >= p->futex_deadline_us) {
+					p->futex_wait = 0;
+					p->futex_deadline_us = 0;
+					eng->spawn_resume(s, p->region, &g_ctx[s], -LXP_ETIMEDOUT);
+					progress = 1;
+				} else if (p->futex_deadline_us && p->futex_deadline_us < next_sleep) {
+					next_sleep = p->futex_deadline_us;
 				}
 			}
 			/* Blocked pipe I/O: retry now that a peer may have drained/filled the

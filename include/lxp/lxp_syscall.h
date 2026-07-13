@@ -320,6 +320,7 @@ extern "C" {
 #define LXP_ENAMETOOLONG 36
 #define LXP_ENOTEMPTY 39
 #define LXP_ENOSYS 38
+#define LXP_ETIMEDOUT 110 /* a futex wait whose timeout expired */
 /* socket errnos (asm-generic values; ARM shares them). */
 #define LXP_ENOTSOCK 88
 #define LXP_EMSGSIZE 90
@@ -556,6 +557,7 @@ typedef struct lxp_proc {
 	uint8_t futex_wait;    /**< Parked in FUTEX_WAIT on @c futex_uaddr. */
 	uint8_t futex_woken;   /**< A FUTEX_WAKE marked this waiter for resume. */
 	uintptr_t futex_uaddr; /**< The futex word this thread is queued on. */
+	uint64_t futex_deadline_us; /**< FUTEX_WAIT timeout deadline (0 = wait forever). */
 	/* Blocking pipe I/O (Phase D2): a read on an empty pipe with a writer still open,
 	 * or a write on a full pipe with a reader still open, parks the proc; the
 	 * coordinator retries each pass and resumes it when the peer drains/fills. */

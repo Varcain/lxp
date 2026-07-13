@@ -11,10 +11,11 @@
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1
 
-/* futex(uaddr, op, val, timeout, uaddr2, val3) — NR 240. */
-static inline long sys_futex(volatile int *uaddr, int op, int val)
+/* futex(uaddr, op, val, timeout, uaddr2, val3) — NR 240. `timeout` is a relative timespec
+ * for FUTEX_WAIT, or NULL to wait forever. */
+static inline long sys_futex(volatile int *uaddr, int op, int val, void *timeout)
 {
-	return lxp_svc6(240, (long)uaddr, op, val, 0, 0, 0);
+	return lxp_svc6(240, (long)uaddr, op, val, (long)timeout, 0, 0);
 }
 
 /* nanosleep(req, rem) — NR 162. 32-bit timespec {tv_sec, tv_nsec}. */
@@ -25,11 +26,11 @@ static void sleep_ms(long ms)
 }
 
 /* The second thread's body: block until the main thread wakes us. A real futex parks and
- * returns 0 on wake; the stub would return -EAGAIN at once (never blocking). Exit 42 iff we
- * observed a genuine wake. Marked `used` — it is only reached from the clone trampoline's asm. */
+ * returns 0 on wake (the stub returned -EAGAIN at once, never blocking). Exit 42 iff woken.
+ * Marked `used` — it is only reached from the clone trampoline's asm. */
 __attribute__((used)) static void thread_body(volatile int *word)
 {
-	long r = sys_futex(word, FUTEX_WAIT, 0); /* *word still 0 -> park; woken -> 0 */
+	long r = sys_futex(word, FUTEX_WAIT, 0, (void *)0); /* *word still 0 -> park; woken -> 0 */
 	sys_exit(r == 0 ? 42 : 1);
 }
 
@@ -67,9 +68,9 @@ void _start(void)
 		sys_exit(1);
 	}
 
-	sleep_ms(50);			      /* let the child reach FUTEX_WAIT and park */
-	word = 1;			      /* change the value the child waited on... */
-	long woke = sys_futex(&word, FUTEX_WAKE, 1); /* ...and wake it */
+	sleep_ms(50);					       /* let the child reach FUTEX_WAIT and park */
+	word = 1;					       /* change the value the child waited on... */
+	long woke = sys_futex(&word, FUTEX_WAKE, 1, (void *)0); /* ...and wake it */
 
 	int status = 0;
 	long w = sys_wait4((int)tid, &status, 0, 0);

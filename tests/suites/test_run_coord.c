@@ -277,7 +277,7 @@ static void test_futex_wake_marks_waiters(void **state)
 	f.r[0] = uaddr;
 	f.r[1] = 1; /* FUTEX_WAKE */
 	f.r[2] = 1; /* wake at most one */
-	lxp_futex(&f, &g_lxp_proc[0]);
+	lxp_futex(&f, &g_lxp_proc[0], 0);
 
 	assert_int_equal(f.r[0], 1); /* reported one woken */
 	assert_int_equal(g_lxp_proc[1].futex_woken + g_lxp_proc[2].futex_woken, 1); /* exactly one */
@@ -288,7 +288,7 @@ static void test_futex_wake_marks_waiters(void **state)
 	f.r[0] = uaddr;
 	f.r[1] = 1;
 	f.r[2] = 0x7fffffff;
-	lxp_futex(&f, &g_lxp_proc[0]);
+	lxp_futex(&f, &g_lxp_proc[0], 0);
 	assert_int_equal(f.r[0], 1); /* the one still-parked waiter */
 	assert_int_equal(g_lxp_proc[1].futex_woken, 1);
 	assert_int_equal(g_lxp_proc[2].futex_woken, 1);
