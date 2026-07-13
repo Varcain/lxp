@@ -23,6 +23,8 @@ dependency on any OS, so `scripts/check-decoupled.sh` still passes.
 | `guest/hello.c` | the M1 guest (static FDPIC: `write` + `exit_group`) |
 | `guest/init.c` | the M2 parent (`pipe` + `vfork` + `execve(/child)` + `wait4`, verifies the round trip) |
 | `guest/child.c` | the M2 exec'd child (writes a byte to the inherited pipe end, exits with a code) |
+| `guest/syscheck.c` | the M4 conformance guest (resume-register ABI, 32-bit r0, statx via svc6, fork/kill/wait4) |
+| `guest/spin.c` | the M4 helper — blocks forever so the parent can kill a live process |
 | `guest/rootfs.cpio` | **M1/M2 pinned fixture** — the built hand-written guests (embedded in flash) |
 | `guest/mkrootfs_m3.sh` | rebuilds the minimal busybox rootfs from a Buildroot FDPIC target tree |
 | `guest/rootfs_m3.cpio` | **M3 pinned fixture** — minimal dynamic-FDPIC busybox (busybox + ld.so + libc, ~620 KiB) |
@@ -43,6 +45,7 @@ bash fetch-deps.sh          # once — vendors FreeRTOS-Kernel
 M=1 bash run.sh             # M1: /hello             -> asserts "lxp-m1-ok"  (default M=1)
 M=2 bash run.sh             # M2: /init execs /child -> asserts "lxp-m2-ok"
 M=3 bash run.sh             # M3: /bin/busybox echo  -> asserts "lxp-m3-ok"  (busybox from PSRAM)
+M=4 bash run.sh             # M4: /syscheck          -> asserts "lxp-m4-ok"  (syscall conformance)
 REGEN_GUEST=1 bash run.sh   # rebuild guest/rootfs.cpio from guest/*.c first (needs FDPIC gcc)
 ```
 
@@ -60,6 +63,13 @@ rootfs (~11 MiB) instead of the minimal fixture.
   mmap'd into the PSRAM `dyn_pool`, cpio XIP'd from PSRAM. Runs **privileged**. **Done.**
 - **M3b** — unprivileged guests + per-slot MPU (W^X) via the ARM_CM4_MPU port. All three
   milestones run unprivileged; a stray access faults MemManage (contained as SIGSEGV).
+- **M4** — syscall conformance on the true SVC path. `/syscheck` drives exactly what host
+  cmocka (`tests/suites/test_syscall_conformance.c`) cannot reach: the `lxp_dispatch`
+  resume-register ABI (r1-r3 survive the trap — the class of the M2 wait4 bug), the 32-bit-r0
+  truncation, the `-errno` sign through the real frame, the >4-arg (svc6) struct-returning
+  marshalling (`statx`), and the run-loop-intercepted `fork`/`kill`/`wait4` (execs `/spin`,
+  signals it with SIGTERM, reaps a WIFSIGNALED child). The host suite owns value/errno/struct
+  correctness under ASan/UBSan; M4 owns the execution-fidelity residual. **Done.**
   **Done.**
 
 ## Gotchas (learned the hard way)

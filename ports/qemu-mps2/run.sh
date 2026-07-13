@@ -21,15 +21,16 @@ case "$M" in
     1) MARK="lxp-m1-ok" ;;
     2) MARK="lxp-m2-ok" ;;
     3) MARK="lxp-m3-ok" ;;
-    *) echo "unknown milestone M=$M (use 1, 2 or 3)"; exit 2 ;;
+    4) MARK="lxp-m4-ok" ;;
+    *) echo "unknown milestone M=$M (use 1, 2, 3 or 4)"; exit 2 ;;
 esac
 
 mkdir -p build
 LOG="$HERE/build/m$M.log"
 
-if [ "$M" -lt 3 ]; then
-    # ---- M1/M2: small cpio embedded in flash .rodata ------------------------
-    GUESTS="hello init child"
+if [ "$M" -lt 3 ] || [ "$M" = 4 ]; then
+    # ---- M1/M2/M4: small cpio embedded in flash .rodata ---------------------
+    GUESTS="hello init child syscheck spin"
     if [ "${REGEN_GUEST:-0}" = 1 ]; then
         [ -x "$FDCC" ] || { echo "REGEN_GUEST=1 but FDPIC gcc not found: $FDCC"; exit 1; }
         ( cd guest

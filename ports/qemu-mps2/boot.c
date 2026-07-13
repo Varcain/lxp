@@ -24,7 +24,7 @@
 #ifndef LXP_MILESTONE
 #define LXP_MILESTONE 1
 #endif
-#if LXP_MILESTONE < 3
+#if LXP_MILESTONE < 3 || LXP_MILESTONE == 4
 #include "rootfs_cpio.h" /* generated: rootfs_cpio[], rootfs_cpio_len */
 #else
 /* M3: the raw cpio is injected into PSRAM @ 0x60000000 by `-device loader`. The length
@@ -104,7 +104,8 @@ static char g_names[24576];
 static void coordinator_task(void *arg)
 {
 	(void)arg;
-#if LXP_MILESTONE < 3
+#if LXP_MILESTONE < 3 || LXP_MILESTONE == 4
+	/* M1/M2/M4 embed a small cpio in flash; only M3 XIPs the big busybox cpio from PSRAM. */
 	const uint8_t *cpio = (const uint8_t *)rootfs_cpio;
 	size_t cpio_len = rootfs_cpio_len;
 #else
@@ -128,7 +129,13 @@ static void coordinator_task(void *arg)
 	/* The initial program + argv, selected at build time per milestone:
 	 *   M1 = /hello           M2 = /init (execs /child)
 	 *   M3 = /bin/busybox echo lxp-m3-ok  (dynamic-FDPIC: ld.so + libc.so + busybox) */
-#if LXP_MILESTONE >= 3
+#if LXP_MILESTONE == 4
+	/* M4 = /syscheck: drives the SVC/dispatch/resume ABI, 32-bit r0, statx via svc6, and the
+	 * run-loop-intercepted fork/kill/wait4 that host cmocka cannot reach (execs /spin). */
+	const char *entry = "/syscheck";
+	const char *const argv[] = {"syscheck", NULL};
+	int argc = 1;
+#elif LXP_MILESTONE >= 3
 	const char *entry = "/bin/busybox";
 	const char *const argv[] = {"busybox", "echo", "lxp-m3-ok", NULL};
 	int argc = 3;

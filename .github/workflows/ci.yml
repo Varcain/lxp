@@ -125,3 +125,5 @@ jobs:
         run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=2 bash run.sh
       - name: M3 — dynamic-FDPIC busybox (unprivileged + MPU)
         run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=3 bash run.sh
+      - name: M4 — syscall conformance (dispatch/resume ABI, r0 width, statx/svc6, fork/kill/wait4)
+        run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=4 bash run.sh
