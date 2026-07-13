@@ -26,10 +26,11 @@ jobs:
       - name: Configure (fetches cmocka)
         run: cmake -S . -B build -DLXP_BUILD_TESTS=ON
 
-      # Build only the test binary (-Werror). Skips liblxp, whose 32-bit-target casts
-      # warn on a 64-bit host — the module is not meant to run natively there.
+      # Build the test binaries (-Werror). Skips liblxp, whose 32-bit-target casts warn
+      # on a 64-bit host — the module is not meant to run natively there. lxp_coord_test
+      # (the coordinator suite) is built without -Werror since src/lxp_run.c warns there.
       - name: Build host tests (-Wall -Wextra -Werror)
-        run: cmake --build build -j"$(nproc)" --target lxp_test_stub
+        run: cmake --build build -j"$(nproc)" --target lxp_test_stub lxp_coord_test
 
       - name: Run host unit tests
         run: ctest --test-dir build -R lxp_unit --output-on-failure
@@ -44,7 +45,7 @@ jobs:
         run: cmake -S . -B build -DLXP_BUILD_TESTS=ON -DLXP_SANITIZE=ON
 
       - name: Build host tests (ASan+UBSan)
-        run: cmake --build build -j"$(nproc)" --target lxp_test_stub
+        run: cmake --build build -j"$(nproc)" --target lxp_test_stub lxp_coord_test
 
       # OOB reads/writes and signed/unsigned overflow are hard errors here
       # (-fno-sanitize-recover=all). Leak detection is off: the target is the 32-bit

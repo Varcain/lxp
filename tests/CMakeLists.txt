@@ -86,3 +86,35 @@ if(LXP_SANITIZE)
 endif()
 
 add_test(NAME lxp_unit COMMAND lxp_test_stub)
+
+# ---- coordinator (src/lxp_run.c) unit tests -------------------------------------
+# The coordinator is deliberately absent from lxp_test_stub above: its 32-bit-target
+# pointer casts warn on a 64-bit host, and the OS-service symbols it defines would clash
+# with tests/stub_lnx_run.c. So it has only ever run end-to-end on QEMU. This dedicated
+# binary tests its process-bookkeeping state machine on the host: suites/test_run_coord.c
+# #includes lxp_run.c to reach its static helpers and drives them with a mock engine (no
+# guest threads). Built WITHOUT -Werror because lxp_run.c intentionally warns on the host.
+add_executable(lxp_coord_test
+  ${LXP_TEST_MODULE_SRC}
+  "${LXP_ROOT}/ports/posix/lxp_port_posix.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_run_coord.c"
+)
+target_include_directories(lxp_coord_test PRIVATE
+  "${LXP_ROOT}/include"
+  "${LXP_ROOT}/src"
+  "${LXP_ROOT}/fuzz"
+  "${cmocka_SOURCE_DIR}/include"
+)
+# Minimal feature set: the coordinator's process model (fork/exec/wait/reap, region
+# liveness) is feature-independent, and the optional subsystems (DEV/NET/NETFS/PTY) pull
+# in host-provided globals (g_lxp_disp_ops, lxp_netfs_exec_stage) that only the port /
+# stub supplies. Keeping them off avoids re-stubbing them for no added coordinator coverage.
+target_compile_options(lxp_coord_test PRIVATE -Wall -Wextra)
+target_link_libraries(lxp_coord_test PRIVATE cmocka-static pthread rt m)
+if(LXP_SANITIZE)
+  target_compile_options(lxp_coord_test PRIVATE
+    -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+  target_link_options(lxp_coord_test PRIVATE -fsanitize=address,undefined)
+endif()
+
+add_test(NAME lxp_unit_coord COMMAND lxp_coord_test)
