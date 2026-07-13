@@ -31,6 +31,7 @@ int test_fs_run(void);
 int test_overflow_run(void);
 int test_signal_run(void);
 int test_linux_syscall_run(void);
+int test_syscall_conformance_run(void);
 int test_linux_dev_run(void);
 int test_linux_net_run(void);
 int test_linux_netfs_run(void);

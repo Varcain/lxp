@@ -45,6 +45,7 @@ add_executable(lxp_test_stub
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_overflow.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_signal.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_syscall.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_syscall_conformance.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_dev.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_net.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_netfs.c"
@@ -54,6 +55,7 @@ add_executable(lxp_test_stub
 target_include_directories(lxp_test_stub PRIVATE
   "${LXP_ROOT}/include"
   "${LXP_ROOT}/src"
+  "${LXP_ROOT}/fuzz"  # the syscall-conformance suite reuses fuzz_common.h's low-4GiB helper
   "${cmocka_SOURCE_DIR}/include"
 )
 

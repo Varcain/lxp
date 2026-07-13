@@ -168,14 +168,36 @@ static void test_deliver_and_restore(void **st)
 	assert_int_equal(g_sig_save[0].active, 1);
 	assert_int_equal(g_sig_save[0].pc, 0x1000);	    /* interrupted context saved */
 	assert_int_equal(g_sig_save[0].lr, 0x2000);
+	/* the full r1-r3 caller-arg triple is saved (the class of the M2 wait4 resume bug). */
 	assert_int_equal(g_sig_save[0].r1, 0x11);
+	assert_int_equal(g_sig_save[0].r2, 0x22);
+	assert_int_equal(g_sig_save[0].r3, 0x33);
 
 	sig_restore(&f, &p);
 	assert_int_equal(f.r[15], 0x1000u & ~1u); /* interrupted pc restored */
 	assert_int_equal(f.r[14], 0x2000);
-	assert_int_equal(f.r[1], 0x11);
+	assert_int_equal(f.r[1], 0x11); /* r1-r3 restored exactly */
+	assert_int_equal(f.r[2], 0x22);
+	assert_int_equal(f.r[3], 0x33);
 	assert_int_equal(f.r[12], 0xcc);
 	assert_int_equal(g_sig_save[0].active, 0);
+}
+
+/* A spurious rt_sigreturn (no signal frame in flight) is a safe no-op — it must not corrupt
+ * the interrupted context. */
+static void test_sig_restore_noop(void **st)
+{
+	(void)st;
+	lxp_proc_t p;
+	memset(&p, 0, sizeof(p));
+	struct lxp_frame f;
+	memset(&f, 0, sizeof(f));
+	f.r[0] = 0x1234;
+	f.r[15] = 0x5678;
+	g_sig_save[0].active = 0;
+	sig_restore(&f, &p);
+	assert_int_equal(f.r[0], 0x1234); /* untouched */
+	assert_int_equal(f.r[15], 0x5678);
 }
 
 int test_signal_run(void)
@@ -189,6 +211,7 @@ int test_signal_run(void)
 		cmocka_unit_test(test_deliver_default_terminates),
 		cmocka_unit_test(test_deliver_sigchld_swallowed),
 		cmocka_unit_test(test_deliver_and_restore),
+		cmocka_unit_test(test_sig_restore_noop),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
