@@ -95,10 +95,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Cache the toolchain .debs so the 7 matrix legs (and re-runs) install from disk instead
+      # of re-downloading gcc-arm-none-eabi each time. Shared key across the matrix.
+      - name: Cache arm-none-eabi packages
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-arm-none-eabi-${{ runner.os }}
+
       - name: Install arm-none-eabi toolchain
         run: |
+          mkdir -p ~/apt-cache
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi
+          sudo apt-get install -y -o Dir::Cache::archives="$HOME/apt-cache" gcc-arm-none-eabi
+          sudo rm -rf ~/apt-cache/partial ~/apt-cache/lock
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-cache
 
       - name: Compile all src/ for Cortex-M under these gates (-Werror)
         run: ARMCC=arm-none-eabi-gcc sh scripts/gate-build.sh ${{ matrix.gates.defs }}
@@ -109,10 +120,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache arm-none-eabi + QEMU packages
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-qemu-${{ runner.os }}
+
       - name: Install arm-none-eabi toolchain + QEMU
         run: |
+          mkdir -p ~/apt-cache
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi qemu-system-arm xxd
+          sudo apt-get install -y -o Dir::Cache::archives="$HOME/apt-cache" \
+            gcc-arm-none-eabi qemu-system-arm xxd
+          sudo rm -rf ~/apt-cache/partial ~/apt-cache/lock
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-cache
+
+      # fetch-deps.sh shallow-clones FreeRTOS-Kernel (pinned) and no-ops if it is already
+      # present, so caching vendor/ skips the clone on every subsequent run.
+      - name: Cache FreeRTOS-Kernel (vendored, pinned)
+        uses: actions/cache@v4
+        with:
+          path: ports/qemu-mps2/vendor
+          key: freertos-${{ hashFiles('ports/qemu-mps2/fetch-deps.sh') }}
 
       - name: Vendor FreeRTOS (fetch-deps)
         run: cd ports/qemu-mps2 && bash fetch-deps.sh
