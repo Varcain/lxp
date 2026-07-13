@@ -1,0 +1,160 @@
+# Disposition manifest for the lxp syscall surface — the classification the coverage
+# guard (scripts/syscalls/check-syscalls.sh) freezes against drift. Every LXP_NR_* in
+# include/lxp/lxp_syscall.h must have exactly one row here; adding a syscall without
+# classifying it fails CI. The guard also proves each row still matches the source:
+#
+#   implemented | benign-stub | refused-eopnotsupp  -> must be a `case LXP_NR_x` in src/lxp_syscall.c
+#   run-loop-handled                                 -> intercepted in src/lxp_run.c, NOT a dispatch case
+#   deliberately-enosys                              -> deliberately falls to `default: -ENOSYS` (no case)
+#
+# "benign-stub" = accepted and answered with a fixed/inert result on purpose (the tier
+# does not need the real semantics); "implemented" = does the syscall's real work.
+# Columns: <name> <TAB> <disposition> <TAB> <note>.  Lines starting with # are ignored.
+
+# ---- implemented (real work) -------------------------------------------------
+read	implemented
+write	implemented
+writev	implemented
+pread64	implemented
+pwrite64	implemented
+open	implemented
+openat	implemented
+close	implemented
+lseek	implemented
+_llseek	implemented
+dup	implemented
+dup2	implemented
+dup3	implemented
+pipe	implemented
+pipe2	implemented
+fcntl	implemented
+fcntl64	implemented
+ioctl	implemented
+ftruncate64	implemented
+eventfd2	implemented	curl threaded-resolver wakeup
+brk	implemented
+mmap2	implemented	anonymous mappings only (arena-backed)
+munmap	implemented
+fstat64	implemented
+stat64	implemented
+lstat64	implemented
+fstatat64	implemented
+statx	implemented	mask arg ignored
+statfs64	implemented	synthetic df values
+fstatfs64	implemented	synthetic df values
+getdents	implemented	32-bit dirent (uClibc readdir)
+getdents64	implemented
+access	implemented
+faccessat	implemented
+faccessat2	implemented
+readlink	implemented
+readlinkat	implemented
+unlink	implemented
+unlinkat	implemented
+rmdir	implemented
+rename	implemented
+renameat	implemented
+renameat2	implemented	flags ignored
+symlink	implemented
+symlinkat	implemented
+chmod	implemented
+fchmodat	implemented
+mkdir	implemented
+mkdirat	implemented
+chdir	implemented
+getcwd	implemented
+umask	implemented	stored per-proc, returns previous
+getpid	implemented
+getppid	implemented
+gettid	implemented	single-threaded: tid == pid
+gettimeofday	implemented
+clock_gettime	implemented	32-bit time_t
+clock_gettime64	implemented	64-bit time_t
+nanosleep	implemented	parks via the run loop
+clock_nanosleep	implemented	parks via the run loop
+clock_nanosleep_time64	implemented	parks via the run loop
+poll	implemented
+ppoll_time64	implemented
+pselect6_time64	implemented	NET-gated
+uname	implemented	Linux/overtos/6.1.0/oveRTOS/armv7l/(none)
+sysinfo	implemented	uptime + canned ram totals
+times	implemented	uptime ticks; per-proc breakdown zeroed
+setitimer	implemented	ITIMER_REAL -> SIGALRM
+getrandom	implemented
+reboot	implemented	HALT/POWEROFF/RESTART latch the run
+rt_sigaction	implemented	records the per-signal disposition
+rt_sigsuspend	implemented	LinuxThreads suspend(): parks, returns -EINTR
+wait4	implemented	reaps / blocks via the run loop
+execve	implemented	captured; the run loop loads the image
+exit	implemented
+exit_group	implemented
+socket	implemented	NET-gated
+bind	implemented	NET-gated
+connect	implemented	NET-gated
+listen	implemented	NET-gated
+accept	implemented	NET-gated
+accept4	implemented	NET-gated
+getsockname	implemented	NET-gated
+getpeername	implemented	NET-gated
+send	implemented	NET-gated
+sendto	implemented	NET-gated
+recv	implemented	NET-gated
+recvfrom	implemented	NET-gated
+shutdown	implemented	NET-gated
+setsockopt	implemented	NET-gated
+getsockopt	implemented	NET-gated
+
+# ---- benign-stub (accepted, inert on purpose) --------------------------------
+mount	benign-stub	no-op (synthetic /proc + overlay always present)
+umount2	benign-stub	no-op
+mprotect	benign-stub	no-op (NOMMU: no page protection)
+utimensat	benign-stub	times not tracked
+utimensat_time64	benign-stub	times not tracked
+sync	benign-stub	no backing store to flush
+fsync	benign-stub	writable overlay is RAM
+fdatasync	benign-stub	writable overlay is RAM
+sched_yield	benign-stub	FreeRTOS time-slices peers
+prctl	benign-stub	accepted (inert)
+setpgid	benign-stub	accepted (inert)
+setsid	benign-stub	returns pid; no session machinery
+getpgrp	benign-stub	returns pid; process group == pid
+fchmod	benign-stub	modes not tracked
+fchown32	benign-stub	ownership not enforced
+setgroups32	benign-stub	uid/gid not enforced (inert)
+setuid32	benign-stub	uid/gid not enforced (inert)
+setgid32	benign-stub	uid/gid not enforced (inert)
+setreuid32	benign-stub	privilege drop accepted (inert)
+setregid32	benign-stub	privilege drop accepted (inert)
+setresuid32	benign-stub	privilege drop accepted (inert)
+setresgid32	benign-stub	privilege drop accepted (inert)
+getresuid32	benign-stub	all root (0)
+getresgid32	benign-stub	all root (0)
+getuid32	benign-stub	returns 0 (root)
+geteuid32	benign-stub	returns 0 (root)
+getgid32	benign-stub	returns 0 (root)
+getegid32	benign-stub	returns 0 (root)
+prlimit64	benign-stub	reports finite limits; new accepted (inert)
+rt_sigprocmask	benign-stub	returns 0
+set_robust_list	benign-stub	returns 0
+set_tid_address	benign-stub	returns a fixed tid
+futex	benign-stub	WAIT-family -> -EAGAIN, WAKE etc. -> 0
+futex_time64	benign-stub	WAIT-family -> -EAGAIN, WAKE etc. -> 0
+
+# ---- refused-eopnotsupp (explicitly declined) --------------------------------
+socketpair	refused-eopnotsupp	NET-gated
+sendmsg	refused-eopnotsupp	NET-gated; scatter/gather not yet supported
+recvmsg	refused-eopnotsupp	NET-gated; scatter/gather not yet supported
+
+# ---- run-loop-handled (intercepted before dispatch, in src/lxp_run.c) --------
+fork	run-loop-handled	spawns a child sharing the parent region
+vfork	run-loop-handled	parent parks until the child execs/exits
+clone	run-loop-handled	CLONE_VM treated as a co-running thread
+kill	run-loop-handled	self-signal inline / cross-proc via pending_sig
+tkill	run-loop-handled
+tgkill	run-loop-handled
+sigreturn	run-loop-handled	restores the pre-signal frame
+rt_sigreturn	run-loop-handled	restores the pre-signal frame
+
+# ---- deliberately-enosys (intentionally unimplemented; falls to default) -----
+# (none today — the sole -ENOSYS is the dispatcher default. This section exists so a
+#  future "we deliberately do not implement X" is recorded and frozen, not silent.)

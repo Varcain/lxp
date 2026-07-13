@@ -20,6 +20,9 @@ jobs:
       - name: Decoupling guard (src/ + include/ must stay oveRTOS-free)
         run: sh scripts/check-decoupled.sh
 
+      - name: Syscall coverage guard (LXP_NR_* vs ARM EABI reference)
+        run: sh scripts/syscalls/check-syscalls.sh
+
       - name: Configure (fetches cmocka)
         run: cmake -S . -B build -DLXP_BUILD_TESTS=ON
 
