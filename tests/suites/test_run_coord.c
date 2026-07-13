@@ -233,10 +233,74 @@ static void test_region_free(void **state)
 	assert_true(region_free(2, rowner));
 }
 
+/* ---- futex: co-runner gate + FUTEX_WAKE bookkeeping ------------------------- */
+/* futex_has_corunner: a FUTEX_WAIT only parks when another live thread shares the region
+ * (else nobody could ever wake it). */
+static void test_futex_has_corunner(void **state)
+{
+	(void)state;
+	g_lxp_proc[0].alive = 1;
+	g_lxp_proc[0].region = 2;
+	assert_false(futex_has_corunner(&g_lxp_proc[0])); /* alone in region 2 */
+
+	g_lxp_proc[1].alive = 1;
+	g_lxp_proc[1].region = 3;
+	assert_false(futex_has_corunner(&g_lxp_proc[0])); /* a live proc, but a different region */
+
+	g_lxp_proc[2].alive = 1;
+	g_lxp_proc[2].region = 2;
+	assert_true(futex_has_corunner(&g_lxp_proc[0])); /* a co-runner shares region 2 */
+
+	g_lxp_proc[2].alive = 0;
+	assert_false(futex_has_corunner(&g_lxp_proc[0])); /* it exited -> no longer a co-runner */
+}
+
+/* FUTEX_WAKE marks up to `val` waiters queued on the same uaddr (and no others). The
+ * addresses here are only compared, never dereferenced, so plain integers stand in for the
+ * 32-bit guest pointers (the deref path is covered on-target by the M5 QEMU guest). */
+static void test_futex_wake_marks_waiters(void **state)
+{
+	(void)state;
+	const uint32_t uaddr = 0x2000, other = 0x3000;
+	g_lxp_proc[1].alive = 1;
+	g_lxp_proc[1].futex_wait = 1;
+	g_lxp_proc[1].futex_uaddr = uaddr;
+	g_lxp_proc[2].alive = 1;
+	g_lxp_proc[2].futex_wait = 1;
+	g_lxp_proc[2].futex_uaddr = uaddr;
+	g_lxp_proc[3].alive = 1;
+	g_lxp_proc[3].futex_wait = 1;
+	g_lxp_proc[3].futex_uaddr = other; /* a different futex; must be untouched */
+
+	struct lxp_frame f;
+	memset(&f, 0, sizeof(f));
+	f.r[0] = uaddr;
+	f.r[1] = 1; /* FUTEX_WAKE */
+	f.r[2] = 1; /* wake at most one */
+	lxp_futex(&f, &g_lxp_proc[0]);
+
+	assert_int_equal(f.r[0], 1); /* reported one woken */
+	assert_int_equal(g_lxp_proc[1].futex_woken + g_lxp_proc[2].futex_woken, 1); /* exactly one */
+	assert_int_equal(g_lxp_proc[3].futex_woken, 0); /* other uaddr not disturbed */
+
+	/* A second WAKE(all) picks up the remaining waiter on uaddr, still not the other. */
+	memset(&f, 0, sizeof(f));
+	f.r[0] = uaddr;
+	f.r[1] = 1;
+	f.r[2] = 0x7fffffff;
+	lxp_futex(&f, &g_lxp_proc[0]);
+	assert_int_equal(f.r[0], 1); /* the one still-parked waiter */
+	assert_int_equal(g_lxp_proc[1].futex_woken, 1);
+	assert_int_equal(g_lxp_proc[2].futex_woken, 1);
+	assert_int_equal(g_lxp_proc[3].futex_woken, 0);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_encode_wstatus, reset_state),
+		cmocka_unit_test_setup(test_futex_has_corunner, reset_state),
+		cmocka_unit_test_setup(test_futex_wake_marks_waiters, reset_state),
 		cmocka_unit_test_setup(test_reap_wakes_blocking_parent, reset_state),
 		cmocka_unit_test_setup(test_reap_signaled_child_status, reset_state),
 		cmocka_unit_test_setup(test_reap_specific_pid_not_woken, reset_state),

@@ -334,6 +334,69 @@ void lxp_park_loop(void)
 }
 
 
+/* Another live thread shares this proc's memory region (a co-running CLONE_VM thread or its
+ * creator) — the only case where a parked FUTEX_WAIT could ever be woken. Without one, the
+ * wait would deadlock, so the futex handler returns -EAGAIN instead of parking (which keeps
+ * single-threaded behaviour byte-identical to the old stub). */
+static int futex_has_corunner(const lxp_proc_t *proc)
+{
+	for (int s = 0; s < LXP_NSLOT; s++) {
+		const lxp_proc_t *q = &g_lxp_proc[s];
+		if (q != proc && q->alive && q->region == proc->region)
+			return 1;
+	}
+	return 0;
+}
+
+/* futex(2): a uaddr-keyed wait/wake over the shared region of co-running threads. FUTEX_WAIT
+ * parks the caller when *uaddr still equals the expected value AND a co-runner exists to wake
+ * it (else -EAGAIN); FUTEX_WAKE marks up to `val` matching waiters and asks the coordinator to
+ * resume them (with 0). Other ops are accepted inert. Intercepted here (not in the dispatch
+ * switch) because the wake path needs the coordinator's proc table + event_post. */
+static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc)
+{
+	uintptr_t uaddr = (uintptr_t)f->r[0];
+	int op = (int)f->r[1] & 0x7f; /* mask FUTEX_PRIVATE_FLAG / FUTEX_CLOCK_REALTIME */
+	uint32_t val = (uint32_t)f->r[2];
+
+	if (op == 0 || op == 9) { /* FUTEX_WAIT / FUTEX_WAIT_BITSET */
+		if (!user_ok(proc, (const void *)uaddr, sizeof(uint32_t), 0)) {
+			f->r[0] = (uint32_t)-LXP_EFAULT;
+			return;
+		}
+		if (*(const volatile uint32_t *)uaddr != val) {
+			f->r[0] = (uint32_t)-LXP_EAGAIN; /* value already moved: do not sleep */
+			return;
+		}
+		if (!futex_has_corunner(proc)) {
+			f->r[0] = (uint32_t)-LXP_EAGAIN; /* single-threaded: retry the userspace lock */
+			return;
+		}
+		proc->futex_uaddr = uaddr;
+		proc->futex_pending = 1;
+		capture_ctx(slot_of(proc), f);
+		park_frame(f); /* the coordinator parks us; a FUTEX_WAKE resumes with r0 = 0 */
+		return;
+	}
+	if (op == 1 || op == 10) { /* FUTEX_WAKE / FUTEX_WAKE_BITSET */
+		uint32_t woken = 0;
+		for (int s = 0; s < LXP_NSLOT && woken < val; s++) {
+			lxp_proc_t *q = &g_lxp_proc[s];
+			/* !futex_woken: a waiter already marked by an earlier WAKE (not yet resumed by
+			 * the coordinator) must not be woken — or counted — twice. */
+			if (q->alive && q->futex_wait && !q->futex_woken && q->futex_uaddr == uaddr) {
+				q->futex_woken = 1;
+				woken++;
+			}
+		}
+		if (woken && g_eng && g_eng->event_post)
+			g_eng->event_post();
+		f->r[0] = woken;
+		return;
+	}
+	f->r[0] = 0; /* REQUEUE / WAKE_OP / etc.: accepted, no queued waiter affected */
+}
+
 /* ---- the syscall dispatch body --------------------------------------------- */
 void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 {
@@ -408,6 +471,12 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		capture_ctx(slot_of(proc), f);
 		proc->fork_pending = 1;
 		park_frame(f);
+		return;
+	}
+	/* futex: a co-running thread's WAIT parks here / WAKE resumes peers (needs the proc
+	 * table + event_post, so it is coordinator-handled, not a plain dispatch case). */
+	if (nr == LXP_NR_futex || nr == LXP_NR_futex_time64) {
+		lxp_futex(f, proc);
 		return;
 	}
 
@@ -848,6 +917,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			EV_EXEC,
 			EV_FORK,
 			EV_SLEEP,
+			EV_FUTEXWAIT,
 			EV_WAITPARK,
 			EV_PIPE,
 			EV_DEVWAIT,
@@ -882,6 +952,12 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				p->sleep_pending = 0;
 				es = s;
 				et = EV_SLEEP;
+				break;
+			}
+			if (p->futex_pending) {
+				p->futex_pending = 0;
+				es = s;
+				et = EV_FUTEXWAIT;
 				break;
 			}
 			if (p->wait_pending && g_lxp_used[s]) {
@@ -970,6 +1046,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			ch->pty_wait = 0;
 			ch->console_wait = 0;
 			ch->pending_sig = 0;
+			ch->futex_pending = ch->futex_wait = ch->futex_woken = 0;
+			ch->futex_uaddr = 0;
 			ch->alarm_deadline_us = 0; /* itimers are not inherited across fork */
 			ch->alarm_interval_us = 0;
 			ch->child_count = ch->live_children = 0;
@@ -1178,6 +1256,12 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			idle = 0;
 			continue;
 		}
+		if (et == EV_FUTEXWAIT) { /* park on the futex until a peer's FUTEX_WAKE marks it. */
+			eng->abort_slot(es);
+			g_lxp_proc[es].futex_wait = 1;
+			idle = 0;
+			continue;
+		}
 		if (et ==
 		    EV_WAITPARK) { /* free the blocked waiter's spin thread until a child exits. */
 			eng->abort_slot(es);
@@ -1335,6 +1419,16 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					progress = 1;
 				} else if (p->sleep_until_us < next_sleep) {
 					next_sleep = p->sleep_until_us; /* wake the coordinator at this deadline */
+				}
+			}
+			/* Parked FUTEX_WAIT: a peer's FUTEX_WAKE set futex_woken; resume with 0. */
+			if (p->futex_wait) {
+				any_busy = 1;
+				if (p->futex_woken) {
+					p->futex_wait = 0;
+					p->futex_woken = 0;
+					eng->spawn_resume(s, p->region, &g_ctx[s], 0);
+					progress = 1;
 				}
 			}
 			/* Blocked pipe I/O: retry now that a peer may have drained/filled the

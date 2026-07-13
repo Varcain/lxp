@@ -139,8 +139,6 @@ getegid32	benign-stub	returns 0 (root)
 prlimit64	benign-stub	reports finite limits; new accepted (inert)
 set_robust_list	benign-stub	returns 0
 set_tid_address	benign-stub	returns a fixed tid
-futex	benign-stub	WAIT-family -> -EAGAIN, WAKE etc. -> 0
-futex_time64	benign-stub	WAIT-family -> -EAGAIN, WAKE etc. -> 0
 
 # ---- refused-eopnotsupp (explicitly declined) --------------------------------
 socketpair	refused-eopnotsupp	NET-gated; fd-passing (SCM_RIGHTS) unsupported
@@ -154,6 +152,8 @@ tkill	run-loop-handled
 tgkill	run-loop-handled
 sigreturn	run-loop-handled	restores the pre-signal frame
 rt_sigreturn	run-loop-handled	restores the pre-signal frame
+futex	run-loop-handled	co-running threads: WAIT parks, WAKE resumes (lxp_futex)
+futex_time64	run-loop-handled	same as futex
 
 # ---- deliberately-enosys (intentionally unimplemented; falls to default) -----
 # (none today — the sole -ENOSYS is the dispatcher default. This section exists so a

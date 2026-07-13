@@ -545,6 +545,14 @@ typedef struct lxp_proc {
 	int wait_nohang;  /**< WNOHANG was set. */
 	uintptr_t wait_status_p; /**< User int* to fill with the wait status on wake. */
 	int live_children;	 /**< Count of live (un-reaped) children, for wait4. */
+	/* futex(2) uaddr-keyed wait/wake for co-running CLONE_VM threads. A FUTEX_WAIT whose
+	 * word still holds the expected value parks (only when a co-runner shares the region —
+	 * else no one could wake it, so it returns -EAGAIN); a peer's FUTEX_WAKE marks matching
+	 * waiters and the coordinator resumes them with 0. */
+	int futex_pending;     /**< FUTEX_WAIT asked to park (transient; -> EV_FUTEXWAIT). */
+	int futex_wait;	       /**< Parked in FUTEX_WAIT on @c futex_uaddr. */
+	int futex_woken;       /**< A FUTEX_WAKE marked this waiter for resume. */
+	uintptr_t futex_uaddr; /**< The futex word this thread is queued on. */
 	/* Blocking pipe I/O (Phase D2): a read on an empty pipe with a writer still open,
 	 * or a write on a full pipe with a reader still open, parks the proc; the
 	 * coordinator retries each pass and resumes it when the peer drains/fills. */

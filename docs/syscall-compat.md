@@ -8,7 +8,7 @@ Every syscall the lxp personality answers, cross-checked against the ARM EABI re
 Numbers come from `include/lxp/lxp_syscall.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/lxp_run.c` by the coverage guard.
 
-Surface: 136 LXP_NR_* — 94 implemented, 33 benign-stub, 1 refused-eopnotsupp, 8 run-loop-handled, 0 deliberately-enosys.
+Surface: 136 LXP_NR_* — 94 implemented, 31 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
 
 | Number | Name | Disposition | Notes |
 |---:|---|---|---|
@@ -97,7 +97,7 @@ Surface: 136 LXP_NR_* — 94 implemented, 33 benign-stub, 1 refused-eopnotsupp, 
 | 221 | fcntl64 | implemented |  |
 | 224 | gettid | implemented | single-threaded: tid == pid |
 | 238 | tkill | run-loop-handled |  |
-| 240 | futex | benign-stub | WAIT-family -> -EAGAIN, WAKE etc. -> 0 |
+| 240 | futex | run-loop-handled | co-running threads: WAIT parks, WAKE resumes (lxp_futex) |
 | 248 | exit_group | implemented |  |
 | 256 | set_tid_address | benign-stub | returns a fixed tid |
 | 263 | clock_gettime | implemented | 32-bit time_t |
@@ -146,5 +146,5 @@ Surface: 136 LXP_NR_* — 94 implemented, 33 benign-stub, 1 refused-eopnotsupp, 
 | 412 | utimensat_time64 | benign-stub | times not tracked |
 | 413 | pselect6_time64 | implemented | NET-gated |
 | 414 | ppoll_time64 | implemented |  |
-| 422 | futex_time64 | benign-stub | WAIT-family -> -EAGAIN, WAKE etc. -> 0 |
+| 422 | futex_time64 | run-loop-handled | same as futex |
 | 439 | faccessat2 | implemented |  |

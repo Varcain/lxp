@@ -653,10 +653,9 @@ static void test_conf_deliberate(void **state)
 	lxp_proc_t p;
 	CONF_BEGIN(fx, p, NULL, 0);
 
-	/* futex: WAIT-family -> -EAGAIN, WAKE etc. -> 0 (both the number and the time64 alias). */
-	assert_int_equal(SC(&p, LXP_NR_futex, 0, 0 /*FUTEX_WAIT*/, 0, 0, 0, 0), -LXP_EAGAIN);
-	assert_int_equal(SC(&p, LXP_NR_futex, 0, 1 /*FUTEX_WAKE*/, 0, 0, 0, 0), 0);
-	assert_int_equal(SC(&p, LXP_NR_futex_time64, 0, 0, 0, 0, 0, 0), -LXP_EAGAIN);
+	/* futex/futex_time64 are coordinator-handled (src/lxp_run.c), not a dispatch case, so
+	 * they are not exercised through lxp_syscall() here — the on-target M5 guest drives the
+	 * real uaddr-keyed wait/wake between co-running threads. */
 
 	/* mount/umount2/mprotect/utimensat: accepted no-ops. */
 	assert_int_equal(SC(&p, LXP_NR_mount, 0, 0, 0, 0, 0, 0), 0);
