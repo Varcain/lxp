@@ -433,6 +433,9 @@ typedef struct lxp_fd {
 /** Bounds for an execve() argument vector captured for the engine to relaunch. */
 #define LXP_EXEC_MAXARGS 8
 #define LXP_EXEC_ARGBUF 256
+/** Bounds for an execve() environment vector captured for the engine to relaunch. */
+#define LXP_EXEC_MAXENVS 16
+#define LXP_EXEC_ENVBUF 512
 
 /**
  * @brief A Linux process context — the state syscalls act on.
@@ -478,6 +481,9 @@ typedef struct lxp_proc {
 	int exec_argc;				 /**< Captured argument count. */
 	char *exec_argv[LXP_EXEC_MAXARGS];	 /**< Captured argv (into exec_argv_buf). */
 	char exec_argv_buf[LXP_EXEC_ARGBUF]; /**< Backing store for exec_argv. */
+	int exec_envc;				 /**< Captured environment count. */
+	char *exec_env[LXP_EXEC_MAXENVS];	 /**< Captured envp (into exec_env_buf). */
+	char exec_env_buf[LXP_EXEC_ENVBUF];	 /**< Backing store for exec_env. */
 	/* nanosleep request: the dispatch parks the program and the run loop delays
 	 * to the deadline (so RTOS idle/kernel threads run + time advances). */
 	int sleep_pending;	 /**< Set when nanosleep() should park + delay. */

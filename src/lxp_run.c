@@ -456,7 +456,8 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
  * the image is a RAM staging buffer (a program off the remote mount), so the exec's own text is
  * copied into the region and the region is mapped executable (RWX) — gated by the caller. */
 static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *data,
-		  size_t len, int pid, int ppid, int argc, const char *const argv[], int remote_exec)
+		  size_t len, int pid, int ppid, int argc, const char *const argv[],
+		  const char *const envp[], int remote_exec)
 {
 	uint8_t *region = eng->region(ridx);
 	lxp_flat_t prog;
@@ -568,7 +569,7 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 		g_lxp_proc[sidx].comm[cl] = '\0';
 	}
 	lxp_proc_set_rootfs(&g_lxp_proc[sidx], g_cfg->rootfs, g_cfg->rootfs_count);
-	void *sp = lxp_setup_stack(stack_lo, (size_t)(rw_end - stack_lo), argc, argv, NULL,
+	void *sp = lxp_setup_stack(stack_lo, (size_t)(rw_end - stack_lo), argc, argv, envp,
 				       prog.is_fdpic, prog.phdr, prog.phnum, at_entry, at_base);
 	if (!sp)
 		return -1;
@@ -816,7 +817,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	g_lxp_active = 1;
 	g_lxp_halt = 0;
 	rowner[0] = 0;
-	if (launch(eng, 0, 0, cfg->rootfs[bb].data, cfg->rootfs[bb].size, 1, 0, argc, argv, 0) != 0) {
+	if (launch(eng, 0, 0, cfg->rootfs[bb].data, cfg->rootfs[bb].size, 1, 0, argc, argv, cfg->env,
+		   0) != 0) {
 		g_lxp_active = 0;
 		return LXP_RUN_ELAUNCH;
 	}
@@ -1030,9 +1032,13 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		if (et ==
 		    EV_EXEC) { /* the child gets its own region → resume any vfork parent NOW. */
 			lxp_proc_t *p = &g_lxp_proc[es];
-			int idx = p->exec_file_idx, eargc = p->exec_argc;
+			int idx = p->exec_file_idx, eargc = p->exec_argc, eenvc = p->exec_envc;
+			/* Copy argv AND envp out of the proc into static buffers before launch()
+			 * re-inits the slot (which clears exec_argv_buf / exec_env_buf). */
 			static char args[LXP_EXEC_ARGBUF];
 			static const char *ptrs[LXP_EXEC_MAXARGS + 1];
+			static char envs[LXP_EXEC_ENVBUF];
+			static const char *eptrs[LXP_EXEC_MAXENVS + 1];
 			size_t off = 0;
 			for (int j = 0; j < eargc; j++) {
 				size_t n = strlen(p->exec_argv[j]) + 1;
@@ -1041,6 +1047,14 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				off += n;
 			}
 			ptrs[eargc] = NULL;
+			size_t eoff = 0;
+			for (int j = 0; j < eenvc; j++) {
+				size_t n = strlen(p->exec_env[j]) + 1;
+				memcpy(envs + eoff, p->exec_env[j], n);
+				eptrs[j] = envs + eoff;
+				eoff += n;
+			}
+			eptrs[eenvc] = NULL;
 			/* Reuse the reserved snapshot region as the exec image region — it's free once we
 			 * restore the parent from it below, and reserving it at fork is why exec always has
 			 * a region. No snapshot (region-pressure fallback) → find a free region as before. */
@@ -1098,7 +1112,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			}
 #endif
 			if (!img_data ||
-			    launch(eng, es, nr, img_data, img_size, pid, ppid, eargc, ptrs, rexec) != 0) {
+			    launch(eng, es, nr, img_data, img_size, pid, ppid, eargc, ptrs, eptrs,
+				   rexec) != 0) {
 				rowner[nr] = -1;
 				g_lxp_proc[es].alive = 0;
 				g_lxp_used[es] = 0;

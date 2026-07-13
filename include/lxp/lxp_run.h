@@ -49,6 +49,11 @@ typedef struct lxp_run_config {
 	 * without it the console transport is blocking-only and poll falls back to a
 	 * heuristic. Backed by a UART RX-ready check when the host uses a UART console. */
 	int (*console_poll)(void *ctx);
+	/** Optional NULL-terminated initial environment for pid 1 (e.g. @c PATH, @c HOME,
+	 * @c TERM). NULL → an empty environment. The strings are copied onto the guest's
+	 * startup stack; a guest's @c execve(2) replaces the environment for the new image,
+	 * and a @c fork inherits it. Bounded by @c LXP_EXEC_MAXENVS / @c LXP_EXEC_ENVBUF. */
+	const char *const *env;
 } lxp_run_config_t;
 
 /** @ref lxp_run outcomes (negative; a non-negative result is the init

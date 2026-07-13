@@ -119,12 +119,25 @@ static void coordinator_task(void *arg)
 		lxp_dbg("lxp: rootfs parse failed\n");
 		sh_exit(70);
 	}
+	/* A minimal initial environment for pid 1, as a real board/bootloader would supply.
+	 * Guests read these (busybox sh's PATH, TERM for interactive tools) and propagate
+	 * them through execve; without it every program starts with an empty environ. */
+	static const char *const g_env[] = {
+		"PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+		"HOME=/root",
+		"TERM=vt100",
+		"PWD=/",
+		"SHELL=/bin/sh",
+		"USER=root",
+		NULL,
+	};
 	lxp_run_config_t cfg = {
 		.rootfs = g_files,
 		.rootfs_count = n,
 		.write_fn = con_write,
 		.read_fn = con_read,
 		.io_ctx = NULL,
+		.env = g_env,
 	};
 	/* The initial program + argv, selected at build time per milestone:
 	 *   M1 = /hello           M2 = /init (execs /child)

@@ -263,6 +263,19 @@ static void test_lnx_setup_stack(void **state)
 	assert_non_null((void *)aux[3]); /* AT_RANDOM points into the stack */
 	assert_int_equal(aux[4], LXP_AT_NULL);
 
+	/* FDPIC inline layout: sp -> argc, argv[] inline, NULL, envp[] inline, NULL, auxv.
+	 * The crt reads envp as &argv[argc+1], so the env must be laid out here too. */
+	uintptr_t *fsp = lxp_setup_stack(stk, sizeof(stk), 2, argv, envp, 1, 0, 0, 0, 0);
+	assert_non_null(fsp);
+	assert_int_equal((int)fsp[0], 2); /* argc */
+	assert_string_equal((char *)fsp[1], "/bin/app");
+	assert_string_equal((char *)fsp[2], "arg1");
+	assert_null((void *)fsp[3]); /* argv terminator */
+	assert_string_equal((char *)fsp[4], "PATH=/bin");
+	assert_string_equal((char *)fsp[5], "HOME=/");
+	assert_null((void *)fsp[6]);		 /* envp terminator */
+	assert_int_equal(fsp[7], LXP_AT_PHDR); /* auxv begins right after the envp NULL */
+
 	/* A NULL environment is accepted (empty envp). */
 	uintptr_t *sp2 = lxp_setup_stack(stk, sizeof(stk), 1, argv, NULL, 0, 0, 0, 0, 0);
 	assert_non_null(sp2);
@@ -495,6 +508,21 @@ static void test_lnx_execve(void **state)
 	assert_int_equal(p.exec_argc, 2);
 	assert_string_equal(p.exec_argv[0], "prog");
 	assert_string_equal(p.exec_argv[1], "x");
+
+	/* execve also captures the environment (a2 = envp) for the relaunch to re-emit. */
+	char *const envp[] = {"PATH=/bin:/sbin", "TERM=vt100", NULL};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/bin/sh",
+					 (long)(uintptr_t)argv, (long)(uintptr_t)envp, 0, 0, 0),
+			 0);
+	assert_int_equal(p.exec_envc, 2);
+	assert_string_equal(p.exec_env[0], "PATH=/bin:/sbin");
+	assert_string_equal(p.exec_env[1], "TERM=vt100");
+
+	/* A NULL envp captures an empty environment (the new image starts with none). */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/bin/sh",
+					 (long)(uintptr_t)argv, 0, 0, 0, 0),
+			 0);
+	assert_int_equal(p.exec_envc, 0);
 
 	/* A missing path is -ENOENT; exec'ing a directory is -EACCES. */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/nope",

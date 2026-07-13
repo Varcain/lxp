@@ -2406,7 +2406,21 @@ static void exec_push_arg(lxp_proc_t *p, int *argc, size_t *off, const char *str
 	(*argc)++;
 }
 
-static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[])
+/* Append one NUL-terminated env string to the pending-exec environment; ignore on overflow. */
+static void exec_push_env(lxp_proc_t *p, int *envc, size_t *off, const char *str)
+{
+	if (*envc >= LXP_EXEC_MAXENVS)
+		return;
+	size_t n = strlen(str) + 1;
+	if (*off + n > sizeof(p->exec_env_buf))
+		return;
+	memcpy(p->exec_env_buf + *off, str, n);
+	p->exec_env[*envc] = p->exec_env_buf + *off;
+	*off += n;
+	(*envc)++;
+}
+
+static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char *const envp[])
 {
 	if (!path)
 		return -LXP_EFAULT;
@@ -2425,6 +2439,26 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[])
 				return -LXP_EFAULT;
 		}
 	}
+	/* Validate the envp vector the same way, then capture it now: the environment is
+	 * independent of any #!/interpreter rewriting below, and a partially-written
+	 * exec_env_buf is never read unless exec_pending is set (past every error check). A
+	 * NULL envp keeps no environment (the new image starts empty). */
+	int envc = 0;
+	size_t eoff = 0;
+	if (envp) {
+		for (int j = 0;; j++) {
+			if (j > 256)
+				return -LXP_EINVAL;
+			if (!user_ok(p, &envp[j], sizeof(envp[j]), 0))
+				return -LXP_EFAULT;
+			if (!envp[j])
+				break;
+			if (user_strnlen(p, envp[j], (size_t)-1) < 0)
+				return -LXP_EFAULT;
+			exec_push_env(p, &envc, &eoff, envp[j]);
+		}
+	}
+	p->exec_envc = envc;
 	char execabs[LXP_PATH_MAX];
 	long rr = resolve_path(p, path, execabs, sizeof(execabs));
 	if (rr < 0)
@@ -2819,8 +2853,9 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			proc->fds[f].cloexec = 1;
 		return f;
 	}
-	case LXP_NR_execve: /* (path, argv, envp); envp ignored for now */
-		return sys_execve(proc, (const char *)(uintptr_t)a0, (char *const *)(uintptr_t)a1);
+	case LXP_NR_execve: /* (path, argv, envp) */
+		return sys_execve(proc, (const char *)(uintptr_t)a0, (char *const *)(uintptr_t)a1,
+				  (char *const *)(uintptr_t)a2);
 	case LXP_NR_openat: {
 		long f = sys_openat(proc, (int)a0, (const char *)(uintptr_t)a1, (int)a2);
 		if (f >= 0 && ((int)a2 & LXP_O_CLOEXEC))
