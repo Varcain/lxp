@@ -157,7 +157,7 @@ jobs:
         run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=3 bash run.sh
       - name: M4 — syscall conformance (dispatch/resume ABI, r0 width, statx/svc6, fork/kill/wait4)
         run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=4 bash run.sh
-      - name: M5 — real futex (two CLONE_VM threads: FUTEX_WAIT parks, FUTEX_WAKE resumes)
+      - name: M5 — real futex (two CLONE_VM threads: timed WAIT -> ETIMEDOUT, WAKE resumes)
         run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=5 bash run.sh
       - name: M6 — busybox /bin/sh smoke (unmodified shell sees the port-supplied environment)
         run: cd ports/qemu-mps2 && ARMCC=arm-none-eabi-gcc QEMU=qemu-system-arm M=6 bash run.sh

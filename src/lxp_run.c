@@ -1357,7 +1357,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		uint64_t now = 0;
 		lxp_time_us(&now);
 		int progress = 0, any_alive = 0, any_busy = 0, any_pipe_wait = 0, any_dev_wait = 0,
-		    any_sock_wait = 0, any_netfs_wait = 0, any_pty_wait = 0, any_console_wait = 0;
+		    any_sock_wait = 0, any_netfs_wait = 0, any_pty_wait = 0, any_console_wait = 0,
+		    any_futex_wait = 0;
 		uint64_t next_sleep = UINT64_MAX; /* earliest future sleeper deadline (µs) */
 		for (int s = 0; s < LXP_NSLOT; s++) {
 			lxp_proc_t *p = &g_lxp_proc[s];
@@ -1477,6 +1478,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * optional timeout deadline passed (resume -ETIMEDOUT). */
 			if (p->futex_wait && !g_lxp_used[s]) {
 				any_busy = 1;
+				any_futex_wait = 1;
 				if (p->futex_woken) {
 					p->futex_wait = p->futex_woken = 0;
 					p->futex_deadline_us = 0;
@@ -1627,7 +1629,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		 * fixed 50ms), clamped to a short poll while a pipe is blocked; a pipe read/write
 		 * that unblocks a peer also kicks us directly (lxp_pipe_kick). */
 		unsigned to = (any_pipe_wait || any_dev_wait || any_sock_wait || any_netfs_wait ||
-			       any_pty_wait || any_console_wait)
+			       any_pty_wait || any_console_wait || any_futex_wait)
 				      ? 5u
 				      : 50u;
 		if (next_sleep != UINT64_MAX && next_sleep > now) {

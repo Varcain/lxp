@@ -1,28 +1,24 @@
 /* M5 guest: exercise the real uaddr-keyed futex between two co-running CLONE_VM threads.
  *
  * The main thread spawns a second thread (clone(CLONE_VM)) that blocks in FUTEX_WAIT on a
- * word shared through the common region. The main thread sleeps (letting the child reach the
- * wait and park), changes the word, and FUTEX_WAKEs it. A FUTEX_WAIT that genuinely parked
- * and was woken returns 0 — the old stub returned -EAGAIN immediately without blocking — so
- * the child encodes that distinction in its exit code and the parent asserts it. Built
- * static-FDPIC. Prints "lxp-m5-ok" only if the block-and-wake actually happened. */
+ * shared word. Main then does a *timed* FUTEX_WAIT on a second word nobody wakes — with the
+ * child as a live co-runner it genuinely parks, and the deadline must return -ETIMEDOUT
+ * (rather than hang). Main then changes the child's word and FUTEX_WAKEs it: a wait that
+ * parked and was woken returns 0 (the old stub returned -EAGAIN at once, never blocking), so
+ * the child exits 42 only on a genuine block+wake. Two concurrent futex waiters + a wake also
+ * cover the coordinator's multi-waiter path. Built static-FDPIC; prints "lxp-m5-ok" iff the
+ * timeout, the block+wake and the reap all hold. */
 #include "lxpsys.h"
 
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1
+#define ETIMEDOUT 110
 
 /* futex(uaddr, op, val, timeout, uaddr2, val3) — NR 240. `timeout` is a relative timespec
  * for FUTEX_WAIT, or NULL to wait forever. */
 static inline long sys_futex(volatile int *uaddr, int op, int val, void *timeout)
 {
 	return lxp_svc6(240, (long)uaddr, op, val, (long)timeout, 0, 0);
-}
-
-/* nanosleep(req, rem) — NR 162. 32-bit timespec {tv_sec, tv_nsec}. */
-static void sleep_ms(long ms)
-{
-	long ts[2] = {ms / 1000, (ms % 1000) * 1000000L};
-	lxp_svc1(162, (long)ts, 0);
 }
 
 /* The second thread's body: block until the main thread wakes us. A real futex parks and
@@ -68,14 +64,20 @@ void _start(void)
 		sys_exit(1);
 	}
 
-	sleep_ms(50);					       /* let the child reach FUTEX_WAIT and park */
+	/* Timed wait on a word nobody wakes: with the child co-running we park, and the 20 ms
+	 * deadline must return -ETIMEDOUT. This also lets the child reach its own FUTEX_WAIT. */
+	volatile int mword = 0;
+	long ts[2] = {0, 20 * 1000000L};
+	long t = sys_futex(&mword, FUTEX_WAIT, 0, ts);
+
 	word = 1;					       /* change the value the child waited on... */
 	long woke = sys_futex(&word, FUTEX_WAKE, 1, (void *)0); /* ...and wake it */
 
 	int status = 0;
 	long w = sys_wait4((int)tid, &status, 0, 0);
-	/* Pass iff the child reaped as tid, exited 42 (real block+wake), and WAKE reported 1. */
-	int ok = (w == tid) && (((status >> 8) & 0xff) == 42) && (woke == 1);
+	/* Pass iff the timed wait timed out, the child reaped as tid having exited 42 (real
+	 * block+wake), and the wake reported one waiter. */
+	int ok = (t == -ETIMEDOUT) && (w == tid) && (((status >> 8) & 0xff) == 42) && (woke == 1);
 	sys_write(1, ok ? "lxp-m5-ok\n" : "lxp-m5-FAIL\n", ok ? 10 : 12);
 	sys_exit(ok ? 0 : 1);
 }
