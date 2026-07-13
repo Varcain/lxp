@@ -702,10 +702,13 @@ static void test_conf_deliberate(void **state)
 	 * and covered by test_linux_net.c; the errno-translation boundary (lxp_err_t -> LXP_E*)
 	 * is covered there and in test_linux_netfs.c. Not duplicated here. */
 
-	/* scatter/gather sockets are explicitly refused. */
+	/* socketpair is still refused (fd-passing unsupported); sendmsg/recvmsg are implemented
+	 * (iovec scatter/gather, no ancillary) and reject a non-socket fd with -ENOTSOCK. Their
+	 * loopback data path is covered in test_linux_net.c. */
 	assert_int_equal(SC(&p, LXP_NR_socketpair, 0, 0, 0, 0, 0, 0), -LXP_EOPNOTSUPP);
-	assert_int_equal(SC(&p, LXP_NR_sendmsg, 0, 0, 0, 0, 0, 0), -LXP_EOPNOTSUPP);
-	assert_int_equal(SC(&p, LXP_NR_recvmsg, 0, 0, 0, 0, 0, 0), -LXP_EOPNOTSUPP);
+	assert_int_equal(SC(&p, LXP_NR_sendmsg, 0 /*stdin: not a socket*/, 0, 0, 0, 0, 0),
+			 -LXP_ENOTSOCK);
+	assert_int_equal(SC(&p, LXP_NR_recvmsg, 0, 0, 0, 0, 0, 0), -LXP_ENOTSOCK);
 
 	/* reboot(CAD_OFF) is a no-op (does NOT latch the halt — that path is global). */
 	assert_int_equal(SC(&p, LXP_NR_reboot, 0, 0, 0 /*CAD_OFF*/, 0, 0, 0), 0);

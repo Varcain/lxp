@@ -100,6 +100,8 @@ send	implemented	NET-gated
 sendto	implemented	NET-gated
 recv	implemented	NET-gated
 recvfrom	implemented	NET-gated
+sendmsg	implemented	NET-gated; iovec gather, no ancillary data
+recvmsg	implemented	NET-gated; iovec scatter, no ancillary data
 shutdown	implemented	NET-gated
 setsockopt	implemented	NET-gated
 getsockopt	implemented	NET-gated
@@ -141,9 +143,7 @@ futex	benign-stub	WAIT-family -> -EAGAIN, WAKE etc. -> 0
 futex_time64	benign-stub	WAIT-family -> -EAGAIN, WAKE etc. -> 0
 
 # ---- refused-eopnotsupp (explicitly declined) --------------------------------
-socketpair	refused-eopnotsupp	NET-gated
-sendmsg	refused-eopnotsupp	NET-gated; scatter/gather not yet supported
-recvmsg	refused-eopnotsupp	NET-gated; scatter/gather not yet supported
+socketpair	refused-eopnotsupp	NET-gated; fd-passing (SCM_RIGHTS) unsupported
 
 # ---- run-loop-handled (intercepted before dispatch, in src/lxp_run.c) --------
 fork	run-loop-handled	spawns a child sharing the parent region

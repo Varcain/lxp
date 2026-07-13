@@ -478,12 +478,72 @@ static void test_net_server_accept(void **state)
 	lxp_syscall(&p, LXP_NR_close, ls, 0, 0, 0, 0, 0);
 }
 
+/* sendmsg gathers a multi-segment iovec into the stream; recvmsg scatters a read into
+ * the first segment. Ancillary data is never produced (msg_controllen/msg_flags cleared). */
+static void test_net_sendmsg_recvmsg(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+
+	int port = 0;
+	int ls = host_listen(&port);
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
+	assert_true(fd >= 3);
+	lxp_sockaddr_in a;
+	guest_addr(&a, port);
+	assert_int_equal(call_pump(&p, LXP_NR_connect, fd, (long)(uintptr_t)&a, sizeof(a), 0, 0, 0),
+			 0);
+	int conn = accept(ls, NULL, NULL);
+	assert_true(conn >= 0);
+
+	/* guest sendmsg (two segments "hel" + "lo") → host recv "hello". */
+	char s0[] = "hel", s1[] = "lo";
+	lxp_iovec siov[2] = {{s0, 3}, {s1, 2}};
+	lxp_msghdr sm;
+	memset(&sm, 0, sizeof(sm));
+	sm.msg_iov = siov;
+	sm.msg_iovlen = 2;
+	long sr = call_pump(&p, LXP_NR_sendmsg, fd, (long)(uintptr_t)&sm, 0, 0, 0, 0);
+	assert_int_equal(sr, 5);
+	char hbuf[16] = {0};
+	assert_int_equal((int)recv(conn, hbuf, sizeof(hbuf), 0), 5);
+	assert_memory_equal(hbuf, "hello", 5);
+
+	/* host send → guest recvmsg into the first segment; ancillary fields are cleared. */
+	assert_int_equal((int)send(conn, "world", 5, 0), 5);
+	char gbuf[16] = {0};
+	lxp_iovec riov = {gbuf, sizeof(gbuf)};
+	lxp_msghdr rm;
+	memset(&rm, 0, sizeof(rm));
+	rm.msg_iov = &riov;
+	rm.msg_iovlen = 1;
+	rm.msg_controllen = 123; /* must be zeroed by recvmsg */
+	rm.msg_flags = 456;	 /* must be zeroed by recvmsg */
+	long rr = call_pump(&p, LXP_NR_recvmsg, fd, (long)(uintptr_t)&rm, 0, 0, 0, 0);
+	assert_int_equal(rr, 5);
+	assert_memory_equal(gbuf, "world", 5);
+	assert_int_equal(rm.msg_controllen, 0);
+	assert_int_equal(rm.msg_flags, 0);
+
+	/* A bad msghdr pointer → -EFAULT; a non-socket fd → -ENOTSOCK. */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_recvmsg, fd, 0, 0, 0, 0, 0), -LXP_EFAULT);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_sendmsg, 1, (long)(uintptr_t)&sm, 0, 0, 0, 0),
+			 -LXP_ENOTSOCK);
+
+	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+	close(conn);
+	close(ls);
+}
+
 int test_linux_net_run(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_net_socket_open_stat),
 		cmocka_unit_test(test_net_connect_errors),
 		cmocka_unit_test(test_net_loopback_roundtrip),
+		cmocka_unit_test(test_net_sendmsg_recvmsg),
 		cmocka_unit_test(test_net_nonblock),
 		cmocka_unit_test(test_net_dup_close),
 		cmocka_unit_test(test_net_poll),

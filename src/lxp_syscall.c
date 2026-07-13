@@ -488,6 +488,76 @@ static int sock_slot(lxp_proc_t *p, int fd)
 	lxp_fd_t *s = fd_slot(p, fd);
 	return (s && s->kind == LXP_FD_SOCKET) ? s->file_idx : -1;
 }
+
+/* sendmsg(2): gather the message's iovec segments out over the socket. Ancillary data
+ * (msg_control) is not interpreted — SCM_RIGHTS fd-passing is unsupported — so only the
+ * ordinary payload is sent. Mirrors sys_writev: each segment goes through lxp_sock_send,
+ * accumulating; a short segment ends the gather (a short sendmsg is legal). msg_name, when
+ * present, is the datagram destination. If a later segment would block after earlier ones
+ * were sent, the accumulated count is returned rather than parking mid-gather (the single-
+ * buffer park cannot resume a partially-gathered message); a first-segment block parks as
+ * usual and the coordinator retry completes it. */
+static long sys_sendmsg(lxp_proc_t *p, int oi, const lxp_msghdr *umsg, int flags)
+{
+	if (!user_ok(p, umsg, sizeof(*umsg), 0))
+		return -LXP_EFAULT;
+	lxp_msghdr m = *umsg;
+	if (m.msg_iovlen > 1024) /* IOV_MAX; bound before iovlen*sizeof(iovec) overflows */
+		return -LXP_EINVAL;
+	const lxp_iovec *iov = m.msg_iov;
+	if (m.msg_iovlen && !user_ok(p, iov, m.msg_iovlen * sizeof(*iov), 0))
+		return -LXP_EFAULT; /* the iov array; each iov_base is checked in lxp_sock_send */
+	const void *dest = (m.msg_name && m.msg_namelen) ? m.msg_name : NULL;
+
+	long total = 0;
+	for (size_t i = 0; i < m.msg_iovlen; i++) {
+		if (iov[i].iov_len == 0)
+			continue;
+		long r = lxp_sock_send(p, oi, iov[i].iov_base, iov[i].iov_len, flags, dest,
+				       m.msg_namelen);
+		if (r < 0)
+			return total ? total : r;
+		if (p->sock_wait) {	 /* this segment parked */
+			if (total > 0) { /* earlier segments already sent: short send, do not park */
+				p->sock_wait = 0;
+				return total;
+			}
+			return 0; /* first segment: let the coordinator retry complete it */
+		}
+		total += r;
+		if ((size_t)r < iov[i].iov_len)
+			break; /* short send */
+	}
+	return total;
+}
+
+/* recvmsg(2): scatter received bytes into the message's iovec. A single underlying recv
+ * fills the first non-empty segment — a short read is always legal, and it keeps the
+ * blocking recv's single-buffer park valid on the resume. No ancillary data is produced
+ * (msg_controllen/msg_flags are cleared); msg_name, when present, is filled with the
+ * source address (and msg_namelen updated) as recvfrom does. */
+static long sys_recvmsg(lxp_proc_t *p, int oi, lxp_msghdr *umsg, int flags)
+{
+	if (!user_ok(p, umsg, sizeof(*umsg), 1)) /* msg_controllen / msg_flags are written back */
+		return -LXP_EFAULT;
+	lxp_msghdr m = *umsg;
+	if (m.msg_iovlen > 1024)
+		return -LXP_EINVAL;
+	const lxp_iovec *iov = m.msg_iov;
+	if (m.msg_iovlen && !user_ok(p, iov, m.msg_iovlen * sizeof(*iov), 0))
+		return -LXP_EFAULT;
+	umsg->msg_controllen = 0; /* no ancillary data is ever produced */
+	umsg->msg_flags = 0;
+
+	void *src = (m.msg_name && m.msg_namelen) ? m.msg_name : NULL;
+	void *srclen = src ? &umsg->msg_namelen : NULL;
+	for (size_t i = 0; i < m.msg_iovlen; i++) {
+		if (iov[i].iov_len == 0)
+			continue;
+		return lxp_sock_recv(p, oi, iov[i].iov_base, iov[i].iov_len, flags, src, srclen);
+	}
+	return 0; /* no buffer space in the iov: nothing received */
+}
 #endif
 
 /* eventfd counter read/write (defined below fd_alloc); sys_read/sys_write route to them. */
@@ -3429,9 +3499,19 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return lxp_sock_accept(proc, oi, (void *)(uintptr_t)a1,
 					   (void *)(uintptr_t)a2, flags);
 	}
-	case LXP_NR_socketpair:
-	case LXP_NR_sendmsg: /* scatter/gather lands in P1 */
-	case LXP_NR_recvmsg:
+	case LXP_NR_sendmsg: { /* (fd, msghdr, flags) */
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
+			return -LXP_ENOTSOCK;
+		return sys_sendmsg(proc, oi, (const lxp_msghdr *)(uintptr_t)a1, (int)a2);
+	}
+	case LXP_NR_recvmsg: { /* (fd, msghdr, flags) */
+		int oi = sock_slot(proc, (int)a0);
+		if (oi < 0)
+			return -LXP_ENOTSOCK;
+		return sys_recvmsg(proc, oi, (lxp_msghdr *)(uintptr_t)a1, (int)a2);
+	}
+	case LXP_NR_socketpair: /* fd-passing (SCM_RIGHTS) unsupported */
 		return -LXP_EOPNOTSUPP;
 #endif
 	default:

@@ -338,6 +338,19 @@ typedef struct lxp_iovec {
 	size_t iov_len; /**< Length of the buffer in bytes. */
 } lxp_iovec;
 
+/** Message header for sendmsg(2)/recvmsg(2), matching the target's @c struct msghdr.
+ * Ancillary data (@c msg_control) is not interpreted — SCM_RIGHTS fd-passing is
+ * unsupported — so only the iovec payload is carried. */
+typedef struct lxp_msghdr {
+	void *msg_name;		  /**< Optional address (datagram dest / source), or NULL. */
+	unsigned int msg_namelen; /**< Length of @c msg_name (in, and out on recvmsg). */
+	lxp_iovec *msg_iov;	  /**< Scatter/gather buffer array. */
+	size_t msg_iovlen;	  /**< Entries in @c msg_iov. */
+	void *msg_control;	  /**< Ancillary data (ignored). */
+	size_t msg_controllen;	  /**< Length of @c msg_control (out: 0). */
+	int msg_flags;		  /**< Flags (out: 0 on recvmsg). */
+} lxp_msghdr;
+
 /** Kernel @c struct termios (ARM, NCCS=19), filled by the TCGETS ioctl. */
 typedef struct lxp_termios {
 	uint32_t c_iflag;

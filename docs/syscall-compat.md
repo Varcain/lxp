@@ -8,7 +8,7 @@ Every syscall the lxp personality answers, cross-checked against the ARM EABI re
 Numbers come from `include/lxp/lxp_syscall.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/lxp_run.c` by the coverage guard.
 
-Surface: 136 LXP_NR_* — 91 implemented, 34 benign-stub, 3 refused-eopnotsupp, 8 run-loop-handled, 0 deliberately-enosys.
+Surface: 136 LXP_NR_* — 93 implemented, 34 benign-stub, 1 refused-eopnotsupp, 8 run-loop-handled, 0 deliberately-enosys.
 
 | Number | Name | Disposition | Notes |
 |---:|---|---|---|
@@ -112,7 +112,7 @@ Surface: 136 LXP_NR_* — 91 implemented, 34 benign-stub, 3 refused-eopnotsupp, 
 | 285 | accept | implemented | NET-gated |
 | 286 | getsockname | implemented | NET-gated |
 | 287 | getpeername | implemented | NET-gated |
-| 288 | socketpair | refused-eopnotsupp | NET-gated |
+| 288 | socketpair | refused-eopnotsupp | NET-gated; fd-passing (SCM_RIGHTS) unsupported |
 | 289 | send | implemented | NET-gated |
 | 290 | sendto | implemented | NET-gated |
 | 291 | recv | implemented | NET-gated |
@@ -120,8 +120,8 @@ Surface: 136 LXP_NR_* — 91 implemented, 34 benign-stub, 3 refused-eopnotsupp, 
 | 293 | shutdown | implemented | NET-gated |
 | 294 | setsockopt | implemented | NET-gated |
 | 295 | getsockopt | implemented | NET-gated |
-| 296 | sendmsg | refused-eopnotsupp | NET-gated; scatter/gather not yet supported |
-| 297 | recvmsg | refused-eopnotsupp | NET-gated; scatter/gather not yet supported |
+| 296 | sendmsg | implemented | NET-gated; iovec gather, no ancillary data |
+| 297 | recvmsg | implemented | NET-gated; iovec scatter, no ancillary data |
 | 322 | openat | implemented |  |
 | 323 | mkdirat | implemented |  |
 | 327 | fstatat64 | implemented |  |
