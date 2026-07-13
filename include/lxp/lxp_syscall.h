@@ -102,7 +102,7 @@ extern "C" {
 #define LXP_NR_openat 322
 #define LXP_NR_set_robust_list 338
 #define LXP_NR_futex 240
-#define LXP_NR_futex_time64 421
+#define LXP_NR_futex_time64 422
 #define LXP_NR_statx 397
 /* path-based metadata: stat/lstat/readlink/access families. */
 #define LXP_NR_access 33
