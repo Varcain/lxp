@@ -680,7 +680,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 	(void)blen;
 
 	if (type == P9_RLERROR) {
-		uint32_t ecode = get32(body, &o);
+		uint32_t ecode = (blen < 4) ? (uint32_t)LXP_EIO : get32(body, &o); /* truncated Rlerror */
 		/* clean up any fid this op had walked to */
 		if (r->fid > 0) {
 			clunk_enqueue(r->fid);
@@ -695,7 +695,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 	switch (r->op) {
 	case LXP_NETFSW_OPEN:
 		if (r->step == 0) { /* Rwalk: nwqid must equal the requested component count */
-			uint16_t nwqid = get16(body, &o);
+			uint16_t nwqid = (blen < 2) ? 0 : get16(body, &o); /* truncated Rwalk */
 			const char *cp[NETFS_MAXWELEM];
 			size_t cl[NETFS_MAXWELEM];
 			int n = path_split(r->path, cp, cl, NETFS_MAXWELEM);
@@ -736,10 +736,8 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 		break;
 
 	case LXP_NETFSW_READ: {
-		uint32_t cnt = get32(body, &o);
-		if (blen < 4)
-			cnt = 0; /* short Rread reply: don't underflow blen-4 → OOB read of the RX buffer */
-		else if (cnt > blen - 4)
+		uint32_t cnt = (blen < 4) ? 0u : get32(body, &o); /* short Rread: don't read the count OOB */
+		if (blen >= 4 && cnt > blen - 4)
 			cnt = (uint32_t)(blen - 4);
 		if (cnt > r->ulen)
 			cnt = (uint32_t)r->ulen;
@@ -786,7 +784,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 	}
 	case LXP_NETFSW_STAT:
 		if (r->step == 0) { /* Rwalk: walked to the temp fid (or a component missing) */
-			uint16_t nwqid = get16(body, &o);
+			uint16_t nwqid = (blen < 2) ? 0 : get16(body, &o); /* truncated Rwalk */
 			const char *cp[NETFS_MAXWELEM];
 			size_t cl[NETFS_MAXWELEM];
 			int n = path_split(r->path, cp, cl, NETFS_MAXWELEM);
@@ -818,7 +816,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 #if LXP_ENABLE_NETFS_EXEC
 	case LXP_NETFSW_EXECFETCH:
 		if (r->step == 0) { /* Rwalk */
-			uint16_t nwqid = get16(body, &o);
+			uint16_t nwqid = (blen < 2) ? 0 : get16(body, &o); /* truncated Rwalk */
 			const char *cp[NETFS_MAXWELEM];
 			size_t cl[NETFS_MAXWELEM];
 			int n = path_split(r->path, cp, cl, NETFS_MAXWELEM);
@@ -850,10 +848,8 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 			return;
 		}
 		if (r->step == 3) { /* Rread → copy a chunk into staging */
-			uint32_t cnt = get32(body, &o);
-			if (blen < 4)
-				cnt = 0; /* short Rread reply: don't underflow blen-4 */
-			else if (cnt > blen - 4)
+			uint32_t cnt = (blen < 4) ? 0u : get32(body, &o); /* short Rread: don't read the count OOB */
+			if (blen >= 4 && cnt > blen - 4)
 				cnt = (uint32_t)(blen - 4);
 			if (r->off + cnt > g_exec_cap)
 				cnt = (uint32_t)(g_exec_cap - r->off);
@@ -1308,5 +1304,63 @@ void lxp_netfs_proc_exit(lxp_proc_t *p)
 			p->fds[fd].kind = 0; /* FD_FREE */
 		}
 }
+
+#ifdef LXP_FUZZ
+/* ---- fuzz hooks (LXP_FUZZ only; NEVER defined in the production / oveRTOS build) ----
+ * The 9P client holds ~20 file-scope statics with no single wholesale-reset entry, so an
+ * in-process fuzzer would carry state across inputs. These two hooks let fuzz/harness_9p.c
+ * (a) return the module to a known state between inputs and (b) drive one untrusted
+ * R-message straight into the reply parser (handle_reply / parse_getattr — the Stage-3
+ * hardened spots) without standing up a live connection + transport. */
+void lxp_netfs_fuzz_reset(void)
+{
+	memset(g_fid_bm, 0, sizeof(g_fid_bm));
+	memset(g_open, 0, sizeof(g_open));
+	memset(g_req, 0, sizeof(g_req));
+	memset(g_clunk_fid, 0, sizeof(g_clunk_fid));
+	g_clunk_head = g_clunk_tail = 0;
+	g_req_seq = 0;
+	g_inflight = -1;
+	g_generation = 1;
+	g_msize = NETFS_MSIZE;
+	g_conn = 0;
+	g_reconnect_at_us = 0;
+	g_txlen = g_txoff = g_rxlen = 0;
+	memset(&g_mnt, 0, sizeof(g_mnt));
+#if LXP_ENABLE_NETFS_EXEC
+	g_exec_buf = 0;
+	g_exec_cap = g_exec_size = 0;
+#endif
+}
+
+/* Feed one untrusted R-message (type, body[blen]) into the reply parser as if it completed
+ * an in-flight request of (op, step). @owner + @ubuf/@ulen model the parked guest the parser
+ * marshals results into (caller-owned storage). */
+void lxp_netfs_fuzz_feed(lxp_proc_t *owner, uintptr_t ubuf, size_t ulen, unsigned op,
+			 unsigned step, int is64, int statkind, uint8_t type, const uint8_t *body,
+			 size_t blen)
+{
+	struct netfs_req r;
+	memset(&r, 0, sizeof(r));
+	r.state = REQ_INFLIGHT;
+	r.op = (uint8_t)op;
+	r.step = (uint8_t)step;
+	r.owner = owner;
+	r.oi = 0;
+	r.fid = 1;
+	r.ubuf = ubuf;
+	r.ulen = ulen;
+	r.is64 = is64;
+	r.statkind = statkind;
+	r.path[0] = '/'; /* a plausible remote path for an Rwalk step's path_split */
+	r.path[1] = 'a';
+	r.path[2] = '\0';
+	/* OPEN/READ/GETDENTS steps consult g_open[oi]; mark it live so open_slot() resolves. */
+	g_open[0].used = 1;
+	g_open[0].fid = 1;
+	g_inflight = 0;
+	handle_reply(&r, type, body, blen);
+}
+#endif /* LXP_FUZZ */
 
 #endif /* LXP_ENABLE_NETFS */
