@@ -416,6 +416,20 @@ static void flatten_vec(char *buf, const char **ptrs, char *const *src, int coun
 	ptrs[count] = NULL;
 }
 
+/* Lowest-numbered pending signal for @p p that is not currently blocked (SIGKILL/SIGSTOP are
+ * never blocked), or 0 if none is deliverable. Does NOT clear it — the caller clears the bit
+ * (pending_sigs &= ~lxp_sig_bit(sig)) once it commits to delivering. A blocked pending signal
+ * is left set so it is delivered later, once the proc unblocks it. */
+static int pending_deliverable(const lxp_proc_t *p)
+{
+	if (!p->pending_sigs)
+		return 0;
+	for (int sig = 1; sig < LXP_NSIG; sig++)
+		if ((p->pending_sigs & lxp_sig_bit(sig)) && !lxp_sig_blocked(p, sig))
+			return sig;
+	return 0;
+}
+
 /* ---- the syscall dispatch body --------------------------------------------- */
 void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 {
@@ -462,7 +476,7 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 				continue;
 			if (target > 0 && tp->pid != target)
 				continue;
-			tp->pending_sig = sig;
+			tp->pending_sigs |= lxp_sig_bit(sig);
 			f->r[0] = 0;
 		}
 		/* Wake the coordinator NOW so it delivers the signal at once (the LinuxThreads
@@ -524,16 +538,16 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	 * proc has blocked it (rt_sigprocmask) — a blocked signal stays latched and is delivered
 	 * at a later boundary once unblocked. (The parked-thread and console-^C paths do not yet
 	 * consult the mask; blocking those is uncommon.) */
-	if (proc->pending_sig && !lxp_sig_blocked(proc, proc->pending_sig)) {
-		int sig = proc->pending_sig;
-		proc->pending_sig = 0;
-		deliver_signal(f, proc, sig, r);
+	int psig = pending_deliverable(proc);
+	if (psig) {
+		proc->pending_sigs &= ~lxp_sig_bit(psig);
+		deliver_signal(f, proc, psig, r);
 		return;
 	}
 	/* A console ^C latched a signal during this syscall (e.g. a read): deliver
 	 * it now, resuming the syscall with its result (-EINTR) — the Linux
-	 * at-the-boundary async-delivery model. */
-	if (g_pending_sig) {
+	 * at-the-boundary async-delivery model. Deferred while the proc blocks it. */
+	if (g_pending_sig && !lxp_sig_blocked(proc, g_pending_sig)) {
 		int sig = g_pending_sig;
 		g_pending_sig = 0;
 		deliver_signal(f, proc, sig, r);
@@ -719,8 +733,7 @@ static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int stat
 			par->child_status[par->child_count] = status;
 			par->child_count++;
 		}
-		if (!par->pending_sig)
-			par->pending_sig = LXP_SIGCHLD;
+		par->pending_sigs |= lxp_sig_bit(LXP_SIGCHLD);
 	}
 }
 
@@ -1063,7 +1076,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			ch->sel_active = 0;
 			ch->pty_wait = 0;
 			ch->console_wait = 0;
-			ch->pending_sig = 0;
+			ch->pending_sigs = 0;
 			ch->futex_wait = ch->futex_woken = 0;
 			ch->futex_uaddr = 0;
 			ch->alarm_deadline_us = 0; /* itimers are not inherited across fork */
@@ -1344,8 +1357,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * the coordinator's idle sleep to the (possibly new) deadline. */
 			if (p->alarm_deadline_us && !g_lxp_used[s]) {
 				if (now >= p->alarm_deadline_us) {
-					if (!p->pending_sig)
-						p->pending_sig = LXP_SIGALRM;
+					p->pending_sigs |= lxp_sig_bit(LXP_SIGALRM);
 					p->alarm_deadline_us =
 						p->alarm_interval_us ? now + p->alarm_interval_us : 0;
 				}
@@ -1353,69 +1365,76 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					next_sleep = p->alarm_deadline_us;
 			}
 			/* Cross-process signal (D3) to a parked, blocked proc: the dispatch can't
-			 * deliver (no live thread), so the coordinator does. SIG_IGN is dropped;
-			 * otherwise terminate (default action — a custom handler on a blocked proc
-			 * is approximated as terminate). EV_EXIT reaps it next pass. */
-			if (p->pending_sig && !g_lxp_used[s] && p->sigsuspend_pending) {
+			 * deliver (no live thread), so the coordinator does. pending_deliverable skips
+			 * a signal the proc has blocked (it stays pending until the proc unblocks it),
+			 * so the mask is honored at the parked sites too, not only at the running
+			 * boundary. Each branch clears the taken bit; SIG_IGN is dropped; a default
+			 * action terminates (a custom handler on a blocked proc is approximated as
+			 * terminate). EV_EXIT reaps it next pass. */
+			int psig = (!g_lxp_used[s]) ? pending_deliverable(p) : 0;
+			if (psig && p->sigsuspend_pending) {
 				/* rt_sigsuspend-parked thread woken by a delivered signal (the
 				 * LinuxThreads restart): run the handler, then resume the syscall
 				 * returning -EINTR. Unlike a sleep/wait/pipe block (terminated by a
 				 * default-action signal), sigsuspend EXPECTS the signal and continues. */
-				int sig = p->pending_sig;
-				p->pending_sig = 0;
+				p->pending_sigs &= ~lxp_sig_bit(psig);
 				p->sigsuspend_pending = 0;
-				deliver_signal_parked(eng, s, p, sig, -LXP_EINTR);
+				deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
 				progress = 1;
-			} else if (p->pending_sig && !g_lxp_used[s] &&
-				   (p->sleeping || p->wait_pending || p->pipe_wait)) {
-				int sig = p->pending_sig;
-				p->pending_sig = 0;
-				if (sig == LXP_SIGCHLD) {
+			} else if (psig && (p->sleeping || p->wait_pending || p->pipe_wait)) {
+				p->pending_sigs &= ~lxp_sig_bit(psig);
+				if (psig == LXP_SIGCHLD) {
 					/* A child of a proc blocked in sleep/wait/pipe exited. SIGCHLD
 					 * never terminates: run a handler (the op then returns -EINTR),
 					 * else swallow it and stay parked (default action = ignore). */
-					if (!sig_swallowed(p, sig)) {
+					if (!sig_swallowed(p, psig)) {
 						p->sleeping = p->wait_pending = p->pipe_wait = 0;
-						deliver_signal_parked(eng, s, p, sig, -LXP_EINTR);
+						deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
 						progress = 1;
 					}
-				} else if (p->sig_handler[sig] != LXP_SIG_IGN) {
+				} else if (p->sig_handler[psig] != LXP_SIG_IGN) {
 					p->exited = 1;
-					p->exit_status = 128 + sig;
+					p->exit_status = 128 + psig;
 					p->sleeping = p->wait_pending = p->pipe_wait = 0;
 					progress = 1;
 				}
-			} else if (p->pending_sig && !g_lxp_used[s] && p->sock_wait) {
+			} else if (psig && p->sock_wait) {
 				/* Signal to a proc parked in a socket op (connect/recv/accept/
 				 * poll): run a handler then the op returns -EINTR — busybox ping's
 				 * SIGALRM timer drives its next send this way, and a server's
 				 * blocked accept takes SIGTERM/SIGCHLD. SIG_DFL terminates; SIG_IGN
 				 * (and SIGCHLD's default-ignore) is swallowed, leaving the proc
 				 * parked (the retry re-attempts). */
-				int sig = p->pending_sig;
-				p->pending_sig = 0;
-				if (!sig_swallowed(p, sig)) {
+				p->pending_sigs &= ~lxp_sig_bit(psig);
+				if (!sig_swallowed(p, psig)) {
 					p->sock_wait = 0;
-					deliver_signal_parked(eng, s, p, sig, -LXP_EINTR);
+					deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
+					progress = 1;
+				}
+			} else if (psig && p->futex_wait) {
+				/* Signal to a thread parked in FUTEX_WAIT: the futex returns -EINTR
+				 * (SIG_DFL terminates), so a blocked worker stays killable rather than
+				 * wedging until an unrelated FUTEX_WAKE arrives. */
+				p->pending_sigs &= ~lxp_sig_bit(psig);
+				if (!sig_swallowed(p, psig)) {
+					p->futex_wait = p->futex_woken = 0;
+					deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
 					progress = 1;
 				}
 #if LXP_ENABLE_PTY
-			} else if (p->pending_sig && !g_lxp_used[s] && p->pty_wait) {
+			} else if (psig && p->pty_wait) {
 				/* Signal to a proc parked in a pty read/write: ^C (SIGINT) from the line
 				 * discipline lands here — the shell's handler runs and its slave read
 				 * returns -EINTR (re-prompt); a foreground child takes it by default
 				 * action. SIG_IGN (and SIGCHLD's default-ignore) leaves it parked. */
-				int sig = p->pending_sig;
-				p->pending_sig = 0;
-				if (!sig_swallowed(p, sig)) {
+				p->pending_sigs &= ~lxp_sig_bit(psig);
+				if (!sig_swallowed(p, psig)) {
 					p->pty_wait = 0;
-					deliver_signal_parked(eng, s, p, sig, -LXP_EINTR);
+					deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
 					progress = 1;
 				}
-			}
-#else
-			}
 #endif
+			}
 			if (p->sleeping) {
 				any_busy = 1;
 				if (now >= p->sleep_until_us) {

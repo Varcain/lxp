@@ -132,7 +132,7 @@ static void pty_signal_slaves(int idx, int sig)
 		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
 			if (tab[s].fds[fd].kind == LXP_FD_PTY &&
 			    tab[s].fds[fd].file_idx == idx && tab[s].fds[fd].rw == 0) {
-				tab[s].pending_sig = sig;
+				tab[s].pending_sigs |= lxp_sig_bit(sig);
 				break; /* one delivery per proc */
 			}
 	}

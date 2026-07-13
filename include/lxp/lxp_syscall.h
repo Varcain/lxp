@@ -566,10 +566,12 @@ typedef struct lxp_proc {
 	int console_wait;      /**< 1 = blocked reading the console; the coordinator polls it. */
 	uintptr_t console_buf; /**< User buffer for the parked console read. */
 	size_t console_len;    /**< Requested length for the parked console read. */
-	/* Cross-process signal (Phase D3): kill(pid,sig) from another proc latches the
-	 * signal here; it is delivered at this proc's next syscall boundary (if running)
-	 * or by the coordinator (if parked in sleep/wait/pipe). 0 = none. */
-	int pending_sig;
+	/* Cross-process signals (Phase D3): kill(pid,sig) from another proc, or a coordinator-
+	 * raised SIGCHLD/SIGALRM, latches here as a bitmask (bit sig-1); delivered lowest-first at
+	 * this proc's next syscall boundary (if running) or by the coordinator (if parked). A set
+	 * rather than a single slot so a signal blocked by sig_blocked can stay pending without a
+	 * later signal overwriting it. 0 = none. */
+	uint64_t pending_sigs;
 	/* Blocking device I/O (P0 device layer): a read/write/ioctl on a /dev node that
 	 * would block parks the proc; the coordinator retries via lxp_dev_retry (the
 	 * same park/retry as pipe_wait) and resumes it on completion. */

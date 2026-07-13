@@ -155,7 +155,7 @@ static void test_reap_specific_pid_not_woken(void **state)
 	assert_int_equal(g_lxp_proc[0].child_count, 1);
 	assert_int_equal(g_lxp_proc[0].child_pid[0], 7);
 	assert_int_equal(g_lxp_proc[0].live_children, 1);
-	assert_int_equal(g_lxp_proc[0].pending_sig, LXP_SIGCHLD);
+	assert_true((g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) != 0);
 }
 
 /* ---- reap_to_parent: parent not waiting → zombie queued + SIGCHLD ----------- */
@@ -174,7 +174,7 @@ static void test_reap_queues_zombie(void **state)
 	assert_int_equal(g_lxp_proc[0].child_pid[0], 7);
 	assert_int_equal(g_lxp_proc[0].child_status[0], 3); /* raw code; wait4 encodes on reap */
 	assert_int_equal(g_lxp_proc[0].live_children, 0);
-	assert_int_equal(g_lxp_proc[0].pending_sig, LXP_SIGCHLD);
+	assert_true((g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) != 0);
 }
 
 /* The zombie queue is bounded (LXP_MAX_CHILD): an overflow is dropped, not overrun. */
@@ -295,10 +295,36 @@ static void test_futex_wake_marks_waiters(void **state)
 	assert_int_equal(g_lxp_proc[3].futex_woken, 0);
 }
 
+/* pending_deliverable returns the lowest-numbered UNBLOCKED pending signal and leaves blocked
+ * ones set — so the mask is honored (a blocked signal is deferred, #4) and no pending signal is
+ * lost to a single slot when another arrives (#5). SIGKILL/SIGSTOP are never blocked. */
+static void test_pending_deliverable(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->sig_blocked = lxp_sig_bit(LXP_SIGTERM); /* SIGTERM blocked, SIGINT not */
+	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM) | lxp_sig_bit(LXP_SIGINT);
+	assert_int_equal(pending_deliverable(p), LXP_SIGINT); /* skips the blocked SIGTERM */
+
+	p->pending_sigs &= ~lxp_sig_bit(LXP_SIGINT);	 /* consume SIGINT */
+	assert_int_equal(pending_deliverable(p), 0);	 /* SIGTERM still blocked -> nothing */
+	assert_true(p->pending_sigs & lxp_sig_bit(LXP_SIGTERM)); /* ...but not lost */
+	p->sig_blocked = 0;
+	assert_int_equal(pending_deliverable(p), LXP_SIGTERM); /* unblocked -> now deliverable */
+
+	p->sig_blocked = (uint64_t)-1; /* even a full mask cannot block SIGKILL */
+	p->pending_sigs = lxp_sig_bit(LXP_SIGKILL);
+	assert_int_equal(pending_deliverable(p), LXP_SIGKILL);
+
+	p->pending_sigs = 0;
+	assert_int_equal(pending_deliverable(p), 0); /* empty set */
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_encode_wstatus, reset_state),
+		cmocka_unit_test_setup(test_pending_deliverable, reset_state),
 		cmocka_unit_test_setup(test_futex_has_corunner, reset_state),
 		cmocka_unit_test_setup(test_futex_wake_marks_waiters, reset_state),
 		cmocka_unit_test_setup(test_reap_wakes_blocking_parent, reset_state),

@@ -3382,7 +3382,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		 * the restart kill() and resumes us. sigsuspend always "returns" -EINTR. The mask arg
 		 * is honoured loosely: any delivered signal wakes us, matching the restart protocol
 		 * (the restart signal is the only one sent to a suspended thread). */
-		if (!proc->pending_sig)
+		if (!proc->pending_sigs)
 			proc->sigsuspend_pending = 1;
 		return -LXP_EINTR;
 	}
