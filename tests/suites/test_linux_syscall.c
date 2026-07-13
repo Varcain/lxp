@@ -694,9 +694,63 @@ static void test_lnx_user_strnlen(void **state)
 	assert_int_equal(user_strnlen(&p, rgn, 10), -LXP_EFAULT);
 }
 
+/* rt_sigprocmask maintains a real per-proc blocked mask: block/unblock/setmask, the old
+ * mask reported through oldset, and SIGKILL/SIGSTOP that can never be blocked. */
+static void test_lnx_sigprocmask(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+
+	/* Block SIGTERM (15) + SIGINT (2); the previous mask was empty. */
+	uint32_t set[2] = {(1u << (15 - 1)) | (1u << (2 - 1)), 0};
+	uint32_t old[2] = {0xdead, 0xbeef};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_rt_sigprocmask, LXP_SIG_BLOCK,
+					 (long)(uintptr_t)set, (long)(uintptr_t)old, 8, 0, 0),
+			 0);
+	assert_int_equal(old[0], 0);
+	assert_int_equal(old[1], 0);
+	assert_true(lxp_sig_blocked(&p, LXP_SIGTERM));
+	assert_true(lxp_sig_blocked(&p, LXP_SIGINT));
+	assert_false(lxp_sig_blocked(&p, LXP_SIGCHLD));
+
+	/* A NULL set just reports the current mask through oldset. */
+	memset(old, 0, sizeof(old));
+	assert_int_equal(lxp_syscall(&p, LXP_NR_rt_sigprocmask, LXP_SIG_SETMASK, 0,
+					 (long)(uintptr_t)old, 8, 0, 0),
+			 0);
+	assert_int_equal(old[0], (1u << (15 - 1)) | (1u << (2 - 1)));
+
+	/* Unblock SIGINT only. */
+	uint32_t clr[2] = {(1u << (2 - 1)), 0};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_rt_sigprocmask, LXP_SIG_UNBLOCK,
+					 (long)(uintptr_t)clr, 0, 8, 0, 0),
+			 0);
+	assert_true(lxp_sig_blocked(&p, LXP_SIGTERM));
+	assert_false(lxp_sig_blocked(&p, LXP_SIGINT));
+
+	/* SIG_SETMASK to "block everything" still cannot block SIGKILL/SIGSTOP. */
+	uint32_t all[2] = {0xffffffffu, 0xffffffffu};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_rt_sigprocmask, LXP_SIG_SETMASK,
+					 (long)(uintptr_t)all, 0, 8, 0, 0),
+			 0);
+	assert_false(lxp_sig_blocked(&p, LXP_SIGKILL));
+	assert_false(lxp_sig_blocked(&p, LXP_SIGSTOP));
+	assert_true(lxp_sig_blocked(&p, LXP_SIGTERM));
+
+	/* Bad `how` and an oversized sigsetsize are both -EINVAL. */
+	assert_int_equal(
+		lxp_syscall(&p, LXP_NR_rt_sigprocmask, 99, (long)(uintptr_t)all, 0, 8, 0, 0),
+		-LXP_EINVAL);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_rt_sigprocmask, LXP_SIG_SETMASK, 0, 0, 16, 0, 0),
+			 -LXP_EINVAL);
+}
+
 int test_linux_syscall_run(void)
 {
 	const struct CMUnitTest tests[] = {
+		cmocka_unit_test(test_lnx_sigprocmask),
 		cmocka_unit_test(test_lnx_write),
 		cmocka_unit_test(test_lnx_writev),
 		cmocka_unit_test(test_lnx_brk),

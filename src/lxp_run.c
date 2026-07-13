@@ -432,8 +432,11 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		return;
 	}
 	/* Cross-process signal (Phase D3): another proc's kill() latched a signal on us;
-	 * deliver it at this syscall boundary (Linux at-the-boundary async delivery). */
-	if (proc->pending_sig) {
+	 * deliver it at this syscall boundary (Linux at-the-boundary async delivery) unless the
+	 * proc has blocked it (rt_sigprocmask) — a blocked signal stays latched and is delivered
+	 * at a later boundary once unblocked. (The parked-thread and console-^C paths do not yet
+	 * consult the mask; blocking those is uncommon.) */
+	if (proc->pending_sig && !lxp_sig_blocked(proc, proc->pending_sig)) {
 		int sig = proc->pending_sig;
 		proc->pending_sig = 0;
 		deliver_signal(f, proc, sig, r);
@@ -659,6 +662,8 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 	sv->lr = g_ctx[slot].lr;
 	sv->pc = g_ctx[slot].pc; /* the rt_sigsuspend resume point */
 	sv->xpsr = (1u << 24);	 /* Thumb */
+	sv->saved_mask = proc->sig_blocked;	  /* restored at rt_sigreturn */
+	proc->sig_blocked |= lxp_sig_bit(sig); /* block this signal for its own handler */
 	sv->active = 1;
 	/* Reuse the slot ctx as the handler-entry frame; sp + r4-r11 stay = the thread's, except r9
 	 * (the handler's own GOT for FDPIC — resolve_handler derefs the {entry,GOT} funcdescs; the

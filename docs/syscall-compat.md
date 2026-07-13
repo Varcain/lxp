@@ -8,7 +8,7 @@ Every syscall the lxp personality answers, cross-checked against the ARM EABI re
 Numbers come from `include/lxp/lxp_syscall.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/lxp_run.c` by the coverage guard.
 
-Surface: 136 LXP_NR_* — 93 implemented, 34 benign-stub, 1 refused-eopnotsupp, 8 run-loop-handled, 0 deliberately-enosys.
+Surface: 136 LXP_NR_* — 94 implemented, 33 benign-stub, 1 refused-eopnotsupp, 8 run-loop-handled, 0 deliberately-enosys.
 
 | Number | Name | Disposition | Notes |
 |---:|---|---|---|
@@ -68,7 +68,7 @@ Surface: 136 LXP_NR_* — 93 implemented, 34 benign-stub, 1 refused-eopnotsupp, 
 | 172 | prctl | benign-stub | accepted (inert) |
 | 173 | rt_sigreturn | run-loop-handled | restores the pre-signal frame |
 | 174 | rt_sigaction | implemented | records the per-signal disposition |
-| 175 | rt_sigprocmask | benign-stub | returns 0 |
+| 175 | rt_sigprocmask | implemented | maintains the per-proc blocked mask; honored at delivery |
 | 179 | rt_sigsuspend | implemented | LinuxThreads suspend(): parks, returns -EINTR |
 | 180 | pread64 | implemented |  |
 | 181 | pwrite64 | implemented |  |

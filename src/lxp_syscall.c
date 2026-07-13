@@ -3384,8 +3384,48 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			proc->sigsuspend_pending = 1;
 		return -LXP_EINTR;
 	}
-	case LXP_NR_rt_sigprocmask:
+	case LXP_NR_rt_sigprocmask: { /* (how, set, oldset, sigsetsize) */
+		int how = (int)a0;
+		const uint32_t *uset = (const uint32_t *)(uintptr_t)a1;
+		uint32_t *uold = (uint32_t *)(uintptr_t)a2;
+		size_t sz = (size_t)a3; /* bytes of the guest sigset_t (8 for the 64-bit mask) */
+		if (sz > 8)
+			return -LXP_EINVAL;
+		if (uset && !user_ok(proc, uset, sz, 0))
+			return -LXP_EFAULT;
+		if (uold && !user_ok(proc, uold, sz, 1))
+			return -LXP_EFAULT;
+		uint64_t old = proc->sig_blocked;
+		if (uold) { /* report the previous mask, low word then high, within sigsetsize */
+			if (sz >= 4)
+				uold[0] = (uint32_t)old;
+			if (sz >= 8)
+				uold[1] = (uint32_t)(old >> 32);
+		}
+		if (uset) {
+			uint64_t nv = 0;
+			if (sz >= 4)
+				nv |= (uint64_t)uset[0];
+			if (sz >= 8)
+				nv |= (uint64_t)uset[1] << 32;
+			switch (how) {
+			case LXP_SIG_BLOCK:
+				proc->sig_blocked |= nv;
+				break;
+			case LXP_SIG_UNBLOCK:
+				proc->sig_blocked &= ~nv;
+				break;
+			case LXP_SIG_SETMASK:
+				proc->sig_blocked = nv;
+				break;
+			default:
+				return -LXP_EINVAL;
+			}
+			/* SIGKILL and SIGSTOP can never be blocked. */
+			proc->sig_blocked &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP));
+		}
 		return 0;
+	}
 	case LXP_NR_set_tid_address:
 		return 1; /* our single thread's tid */
 	case LXP_NR_set_robust_list:

@@ -20,6 +20,7 @@
  * a program (via clone) may run several threads, each needing its own saved frame. */
 struct sig_save_s {
 	uint32_t r0, r1, r2, r3, r9, r12, lr, pc, xpsr;
+	uint64_t saved_mask; /* proc->sig_blocked to restore at rt_sigreturn (handler self-block) */
 	int active;
 };
 extern struct sig_save_s g_sig_save[LXP_NSLOT];
@@ -33,6 +34,6 @@ void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t
 		     uintptr_t *restorer);
 int sig_swallowed(const lxp_proc_t *proc, int sig);
 void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret);
-void sig_restore(struct lxp_frame *f, const lxp_proc_t *proc);
+void sig_restore(struct lxp_frame *f, lxp_proc_t *proc);
 
 #endif /* LXP_RUN_INTERNAL_H */

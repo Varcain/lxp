@@ -266,6 +266,11 @@ extern "C" {
 #define LXP_SIGALRM 14
 #define LXP_SIGTERM 15
 #define LXP_SIGCHLD 17 /* child stop/exit; default action = IGNORE (never terminates) */
+#define LXP_SIGSTOP 19 /* like SIGKILL, can never be caught or blocked */
+/* rt_sigprocmask(2) `how` values. */
+#define LXP_SIG_BLOCK 0
+#define LXP_SIG_UNBLOCK 1
+#define LXP_SIG_SETMASK 2
 #define LXP_ITIMER_REAL 0 /* setitimer(): real-time countdown -> SIGALRM */
 /* fcntl commands: F_DUPFD duplicates an fd (the shell dups stdin for its
  * interactive fd); the rest are benign get/set probes. */
@@ -487,6 +492,10 @@ typedef struct lxp_proc {
 	 * — which saves ~3K of .bss across the slot table. */
 	uintptr_t sig_handler[LXP_NSIG];
 	uintptr_t sig_restorer;
+	/* Blocked-signal mask (rt_sigprocmask): signals 1..64 map to bits 0..63. A pending
+	 * signal whose bit is set is deferred at delivery until unblocked; a handler blocks
+	 * its own signal for its duration (restored at rt_sigreturn). SIGKILL/SIGSTOP never. */
+	uint64_t sig_blocked;
 	/* execve request: the engine seam relaunches the thread on this rootfs
 	 * program with the captured argument vector (image replacement). */
 	int exec_pending;			 /**< Set when execve() should relaunch. */
@@ -598,6 +607,21 @@ typedef struct lxp_proc {
 		size_t netfs_len;    /**< Requested length / buffer capacity. */
 		uint64_t netfs_deadline_us; /**< Absolute-µs per-request timeout (UINT64_MAX = infinite). */
 } lxp_proc_t;
+
+/** Bit for signal @p sig (1..64) in a @c sig_blocked mask; 0 for out-of-range. */
+static inline uint64_t lxp_sig_bit(int sig)
+{
+	return (sig >= 1 && sig <= 64) ? ((uint64_t)1 << (sig - 1)) : 0;
+}
+
+/** Whether signal @p sig is currently blocked for @p proc. SIGKILL and SIGSTOP can
+ * never be blocked (POSIX), so they always report deliverable. */
+static inline int lxp_sig_blocked(const lxp_proc_t *proc, int sig)
+{
+	if (sig == LXP_SIGKILL || sig == LXP_SIGSTOP)
+		return 0;
+	return (proc->sig_blocked & lxp_sig_bit(sig)) != 0;
+}
 
 /** @brief Proc-table accessors (defined in the run loop) so the pipe layer can scan
  * all live procs' fds to count a pipe's open read/write ends (for EOF / EPIPE). */

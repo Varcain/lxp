@@ -200,10 +200,41 @@ static void test_sig_restore_noop(void **st)
 	assert_int_equal(f.r[15], 0x5678);
 }
 
+/* A delivered handler blocks its own signal for its duration (no reentry), preserving any
+ * previously-blocked signals; rt_sigreturn restores the prior mask. SIGKILL/SIGSTOP always
+ * report deliverable, even if their mask bit is set. */
+static void test_deliver_masks_signal(void **st)
+{
+	(void)st;
+	lxp_proc_t p;
+	memset(&p, 0, sizeof(p));
+	p.is_fdpic = 0;
+	p.sig_handler[SIG_CUSTOM] = 0xdead0000;
+	p.sig_restorer = 0xbeef0000;
+	p.sig_blocked = lxp_sig_bit(LXP_SIGALRM); /* a pre-existing block to preserve */
+	struct lxp_frame f;
+	memset(&f, 0, sizeof(f));
+	g_sig_save[0].active = 0;
+
+	deliver_signal(&f, &p, SIG_CUSTOM, 0);
+	assert_true(lxp_sig_blocked(&p, SIG_CUSTOM));  /* self-blocked for the handler */
+	assert_true(lxp_sig_blocked(&p, LXP_SIGALRM)); /* the prior block is preserved */
+
+	sig_restore(&f, &p);
+	assert_false(lxp_sig_blocked(&p, SIG_CUSTOM));  /* handler self-block undone */
+	assert_true(lxp_sig_blocked(&p, LXP_SIGALRM));	/* prior mask restored */
+
+	p.sig_blocked = (uint64_t)-1; /* everything "blocked" */
+	assert_false(lxp_sig_blocked(&p, LXP_SIGKILL)); /* ...but these two never are */
+	assert_false(lxp_sig_blocked(&p, LXP_SIGSTOP));
+	assert_true(lxp_sig_blocked(&p, SIG_CUSTOM));
+}
+
 int test_signal_run(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_sig_swallowed),
+		cmocka_unit_test(test_deliver_masks_signal),
 		cmocka_unit_test(test_resolve_handler_nonfdpic),
 		cmocka_unit_test(test_resolve_handler_fdpic),
 		cmocka_unit_test(test_deliver_bad_signal),

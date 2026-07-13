@@ -83,6 +83,7 @@ setitimer	implemented	ITIMER_REAL -> SIGALRM
 getrandom	implemented
 reboot	implemented	HALT/POWEROFF/RESTART latch the run
 rt_sigaction	implemented	records the per-signal disposition
+rt_sigprocmask	implemented	maintains the per-proc blocked mask; honored at delivery
 rt_sigsuspend	implemented	LinuxThreads suspend(): parks, returns -EINTR
 wait4	implemented	reaps / blocks via the run loop
 execve	implemented	captured; the run loop loads the image
@@ -136,7 +137,6 @@ geteuid32	benign-stub	returns 0 (root)
 getgid32	benign-stub	returns 0 (root)
 getegid32	benign-stub	returns 0 (root)
 prlimit64	benign-stub	reports finite limits; new accepted (inert)
-rt_sigprocmask	benign-stub	returns 0
 set_robust_list	benign-stub	returns 0
 set_tid_address	benign-stub	returns a fixed tid
 futex	benign-stub	WAIT-family -> -EAGAIN, WAKE etc. -> 0

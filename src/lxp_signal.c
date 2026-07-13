@@ -79,6 +79,8 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	sv->lr = f->r[14];
 	sv->pc = f->r[15];
 	sv->xpsr = f->xpsr;
+	sv->saved_mask = proc->sig_blocked;	  /* restored at rt_sigreturn */
+	proc->sig_blocked |= lxp_sig_bit(sig); /* block this signal for its own handler (no reentry) */
 	sv->active = 1;
 	uintptr_t entry, restorer;
 	uint32_t got;
@@ -92,11 +94,12 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 }
 
 /* rt_sigreturn: restore the context saved at delivery. */
-void sig_restore(struct lxp_frame *f, const lxp_proc_t *proc)
+void sig_restore(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	struct sig_save_s *sv = &g_sig_save[slot_of(proc)];
 	if (!sv->active)
 		return;
+	proc->sig_blocked = sv->saved_mask; /* undo the handler self-block (+ any handler-local mask) */
 	f->r[0] = sv->r0;
 	f->r[1] = sv->r1;
 	f->r[2] = sv->r2;
