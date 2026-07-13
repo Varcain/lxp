@@ -340,9 +340,13 @@ void lxp_park_loop(void)
  * single-threaded behaviour byte-identical to the old stub). */
 static int futex_has_corunner(const lxp_proc_t *proc)
 {
+	/* A suspended vfork parent shares our region but is frozen until we exec/exit, so it can
+	 * never FUTEX_WAKE us — exclude it (proc->vfork_parent_slot), or a vfork child's libc
+	 * futex would park forever where the old stub returned -EAGAIN and made progress. */
+	int vp = proc->vfork_parent_slot;
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		const lxp_proc_t *q = &g_lxp_proc[s];
-		if (q != proc && q->alive && q->region == proc->region)
+		if (q != proc && q->alive && q->region == proc->region && s != vp)
 			return 1;
 	}
 	return 0;
@@ -1176,6 +1180,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			/* fds + cwd survive execve: preserve across the relaunch (launch re-inits). */
 			lxp_fd_t saved_fds[LXP_MAX_FDS];
 			char saved_cwd[LXP_PATH_MAX];
+			uint64_t saved_mask = p->sig_blocked; /* the signal mask survives execve (POSIX) */
 			memcpy(saved_fds, p->fds, sizeof(saved_fds));
 			memcpy(saved_cwd, p->cwd, sizeof(saved_cwd));
 			if (p->region_owner &&
@@ -1206,6 +1211,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			}
 			memcpy(g_lxp_proc[es].fds, saved_fds, sizeof(saved_fds));
 			memcpy(g_lxp_proc[es].cwd, saved_cwd, sizeof(saved_cwd));
+			g_lxp_proc[es].sig_blocked = saved_mask;
 			g_lxp_proc[es].exec_file_idx = idx; /* remember the running image so a
 								   later execv("/proc/self/exe") re-runs it */
 			idle = 0;

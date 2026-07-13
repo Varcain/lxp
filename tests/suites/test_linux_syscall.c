@@ -739,6 +739,20 @@ static void test_lnx_sigprocmask(void **state)
 	assert_false(lxp_sig_blocked(&p, LXP_SIGSTOP));
 	assert_true(lxp_sig_blocked(&p, LXP_SIGTERM));
 
+	/* set and oldset may alias — the legal sigprocmask(SIG_SETMASK, &m, &m) swap. The new
+	 * mask must be read before the old is written into the shared buffer. */
+	uint32_t m[2] = {(1u << (15 - 1)), 0}; /* start blocked on SIGTERM */
+	assert_int_equal(
+		lxp_syscall(&p, LXP_NR_rt_sigprocmask, LXP_SIG_SETMASK, (long)(uintptr_t)m, 0, 8, 0, 0),
+		0);
+	m[0] = (1u << (2 - 1)); /* swap to SIGINT, with oldset aliasing set */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_rt_sigprocmask, LXP_SIG_SETMASK, (long)(uintptr_t)m,
+					 (long)(uintptr_t)m, 8, 0, 0),
+			 0);
+	assert_true(lxp_sig_blocked(&p, LXP_SIGINT));	/* the new mask took effect (not clobbered) */
+	assert_false(lxp_sig_blocked(&p, LXP_SIGTERM));	/* replaced, not merged */
+	assert_int_equal(m[0], (1u << (15 - 1)));	/* oldset reports the prior {SIGTERM} */
+
 	/* Bad `how` and an oversized sigsetsize are both -EINVAL. */
 	assert_int_equal(
 		lxp_syscall(&p, LXP_NR_rt_sigprocmask, 99, (long)(uintptr_t)all, 0, 8, 0, 0),

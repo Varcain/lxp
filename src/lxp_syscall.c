@@ -3397,6 +3397,18 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			return -LXP_EFAULT;
 		if (uold && !user_ok(proc, uold, sz, 1))
 			return -LXP_EFAULT;
+		/* Read the new set BEFORE writing oldset — the guest may alias them, the legal
+		 * sigprocmask(SIG_SETMASK, &m, &m) swap — and validate `how` up front so an invalid
+		 * value has no side effects. */
+		uint64_t nv = 0;
+		if (uset) {
+			if (how != LXP_SIG_BLOCK && how != LXP_SIG_UNBLOCK && how != LXP_SIG_SETMASK)
+				return -LXP_EINVAL;
+			if (sz >= 4)
+				nv |= (uint64_t)uset[0];
+			if (sz >= 8)
+				nv |= (uint64_t)uset[1] << 32;
+		}
 		uint64_t old = proc->sig_blocked;
 		if (uold) { /* report the previous mask, low word then high, within sigsetsize */
 			if (sz >= 4)
@@ -3405,24 +3417,9 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 				uold[1] = (uint32_t)(old >> 32);
 		}
 		if (uset) {
-			uint64_t nv = 0;
-			if (sz >= 4)
-				nv |= (uint64_t)uset[0];
-			if (sz >= 8)
-				nv |= (uint64_t)uset[1] << 32;
-			switch (how) {
-			case LXP_SIG_BLOCK:
-				proc->sig_blocked |= nv;
-				break;
-			case LXP_SIG_UNBLOCK:
-				proc->sig_blocked &= ~nv;
-				break;
-			case LXP_SIG_SETMASK:
-				proc->sig_blocked = nv;
-				break;
-			default:
-				return -LXP_EINVAL;
-			}
+			proc->sig_blocked = how == LXP_SIG_BLOCK	? old | nv
+					    : how == LXP_SIG_UNBLOCK ? old & ~nv
+								     : nv; /* LXP_SIG_SETMASK */
 			/* SIGKILL and SIGSTOP can never be blocked. */
 			proc->sig_blocked &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP));
 		}
