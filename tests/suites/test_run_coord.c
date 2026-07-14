@@ -320,10 +320,44 @@ static void test_pending_deliverable(void **state)
 	assert_int_equal(pending_deliverable(p), 0); /* empty set */
 }
 
+/* lxp_dispatch used to read TCSETS' arg before lxp_syscall reached the console handler. Because
+ * dispatch runs privileged, a guest could point it at host memory or MMIO and fault the RTOS even
+ * if the handler itself performed access_ok. Keep this at the trap-dispatch level, not merely in
+ * the direct-syscall conformance suite. */
+static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
+{
+	(void)state;
+	uint8_t arena_mem[256] __attribute__((aligned(16)));
+	lxp_arena_t arena;
+	lxp_proc_t proc;
+	assert_int_equal(lxp_arena_init(&arena, arena_mem, sizeof(arena_mem)), LXP_OK);
+	assert_int_equal(lxp_proc_init(&proc, &arena, 0), LXP_OK);
+	proc.region_lo = 0x1000u;
+	proc.region_hi = 0x2000u;
+	proc.pool_lo = proc.pool_hi = 0;
+
+	const uint32_t cmds[] = {LXP_TCSETS, LXP_TCSETSW, LXP_TCSETSF};
+	for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+		struct lxp_frame f;
+		memset(&f, 0, sizeof(f));
+		f.r[0] = 0; /* stdin is a console fd */
+		f.r[1] = cmds[i];
+		f.r[2] = 0x20000000u; /* mapped host SRAM on target; outside this guest */
+		f.r[7] = LXP_NR_ioctl;
+		g_tty_isig = 1;
+
+		lxp_dispatch(&f, &proc);
+
+		assert_int_equal((int32_t)f.r[0], -LXP_EFAULT);
+		assert_int_equal(g_tty_isig, 1); /* invalid input cannot alter console state */
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_encode_wstatus, reset_state),
+		cmocka_unit_test_setup(test_dispatch_rejects_bad_tcsets_pointer, reset_state),
 		cmocka_unit_test_setup(test_pending_deliverable, reset_state),
 		cmocka_unit_test_setup(test_futex_has_corunner, reset_state),
 		cmocka_unit_test_setup(test_futex_wake_marks_waiters, reset_state),

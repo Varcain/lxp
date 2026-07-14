@@ -22,6 +22,8 @@
 #include "../framework/lxp_test.h"
 #include "../framework/lxp_proc_fixture.h"
 
+#include "lxp/lxp_dev.h" /* user_ok: assert the host canary is outside the guest ranges */
+
 #include <stdint.h>
 #include <string.h>
 
@@ -611,6 +613,39 @@ static void test_conf_variants(void **state)
 	lxp_winsize *ws = lxp_conf_alloc(fx, sizeof(lxp_winsize));
 	assert_int_equal(SC(&p, LXP_NR_ioctl, 1, LXP_TIOCGWINSZ, (long)(uintptr_t)ws, 0, 0, 0), 0);
 	assert_int_equal(ws->ws_col, 80);
+
+	/* Console ioctl handlers run privileged: an out-of-region pointer must be rejected before
+	 * either reading or writing it. Use an accessible host canary (rather than the fixture's guard
+	 * page) so a regression proves that privileged host memory was not modified. */
+	uint8_t host_canary[sizeof(lxp_termios)];
+	uint8_t canary_expected[sizeof(host_canary)];
+	memset(host_canary, 0xa5, sizeof(host_canary));
+	memset(canary_expected, 0xa5, sizeof(canary_expected));
+	assert_false(user_ok(&p, host_canary, sizeof(host_canary), 1));
+	assert_int_equal(SC(&p, LXP_NR_ioctl, 0, LXP_TCGETS, (long)(uintptr_t)host_canary, 0, 0, 0),
+			 -LXP_EFAULT);
+	assert_memory_equal(host_canary, canary_expected, sizeof(host_canary));
+	assert_int_equal(SC(&p, LXP_NR_ioctl, 0, LXP_TCSETS, (long)(uintptr_t)host_canary, 0, 0, 0),
+			 -LXP_EFAULT);
+	assert_int_equal(SC(&p, LXP_NR_ioctl, 1, LXP_TIOCGWINSZ, (long)(uintptr_t)host_canary, 0, 0, 0),
+			 -LXP_EFAULT);
+	assert_memory_equal(host_canary, canary_expected, sizeof(host_canary));
+	assert_int_equal(SC(&p, LXP_NR_ioctl, 0, LXP_TIOCSPGRP, (long)(uintptr_t)host_canary, 0, 0, 0),
+			 -LXP_EFAULT);
+	assert_int_equal(SC(&p, LXP_NR_ioctl, 0, LXP_TIOCGPGRP, (long)(uintptr_t)host_canary, 0, 0, 0),
+			 -LXP_EFAULT);
+	assert_memory_equal(host_canary, canary_expected, sizeof(host_canary));
+
+	/* Linux permits byte-aligned user buffers. Copying through an aligned local keeps the
+	 * privileged handler free of C alignment UB; UBSan makes a typed dereference regress here. */
+	uint8_t *unaligned = lxp_conf_alloc(fx, sizeof(lxp_termios) + 1);
+	assert_non_null(unaligned);
+	unaligned++;
+	assert_int_equal(SC(&p, LXP_NR_ioctl, 0, LXP_TCGETS, (long)(uintptr_t)unaligned, 0, 0, 0), 0);
+	lxp_termios aligned_tio;
+	memcpy(&aligned_tio, unaligned, sizeof(aligned_tio));
+	assert_int_equal(aligned_tio.c_lflag & (LXP_ICANON | LXP_ECHO | LXP_ISIG),
+			 LXP_ICANON | LXP_ECHO | LXP_ISIG);
 
 	/* ppoll_time64: timeout is a timespec* (NULL = block); the console reports readable. */
 	lxp_pollfd *pf = lxp_conf_alloc(fx, sizeof(lxp_pollfd));

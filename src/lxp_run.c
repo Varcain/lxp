@@ -465,11 +465,16 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	/* Track the tty ISIG mode so a console ^C knows whether to raise SIGINT
 	 * (canonical) or pass ^C through (the shell's raw line editor). */
 	if (nr == LXP_NR_ioctl) {
+		int fd = (int32_t)f->r[0];
 		unsigned long cmd = f->r[1];
-		if (cmd == LXP_TCSETS || cmd == LXP_TCSETSW || cmd == LXP_TCSETSF) {
-			const lxp_termios *t = (const lxp_termios *)(uintptr_t)f->r[2];
-			if (t)
-				g_tty_isig = (t->c_lflag & LXP_ISIG) ? 1 : 0;
+		if (fd >= 0 && fd < LXP_MAX_FDS && proc->fds[fd].kind == LXP_FD_CONSOLE &&
+		    (cmd == LXP_TCSETS || cmd == LXP_TCSETSW || cmd == LXP_TCSETSF)) {
+			const void *ut = (const void *)(uintptr_t)f->r[2];
+			if (user_ok(proc, ut, sizeof(lxp_termios), 0)) {
+				lxp_termios t;
+				memcpy(&t, ut, sizeof(t));
+				g_tty_isig = (t.c_lflag & LXP_ISIG) ? 1 : 0;
+			}
 		}
 	}
 	if (nr == LXP_NR_kill || nr == LXP_NR_tkill || nr == LXP_NR_tgkill) {

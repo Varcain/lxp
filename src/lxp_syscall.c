@@ -982,44 +982,48 @@ static long fop_ioctl_console(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, uns
 	/* Make the console fds look like a tty so the shell goes interactive
 	 * (isatty → prompt + line editing). */
 	(void)s;
+	void *ua = (void *)(uintptr_t)arg;
 	switch (cmd) {
 	case LXP_TCGETS: {
-		lxp_termios *t = (lxp_termios *)(uintptr_t)arg;
-		if (!t)
+		if (!user_ok(p, ua, sizeof(lxp_termios), 1))
 			return -LXP_EFAULT;
-		memset(t, 0, sizeof(*t));
-		t->c_iflag = LXP_ICRNL;
-		t->c_oflag = LXP_OPOST | LXP_ONLCR;
-		t->c_cflag = LXP_CS8 | LXP_CREAD;
-		t->c_lflag = LXP_ICANON | LXP_ECHO | LXP_ISIG;
-		t->c_cc[LXP_VINTR] = 3;	    /* ^C */
-		t->c_cc[LXP_VERASE] = 0x7f; /* DEL */
-		t->c_cc[LXP_VEOF] = 4;	    /* ^D */
-		t->c_cc[LXP_VMIN] = 1;
+		lxp_termios t = {0};
+		t.c_iflag = LXP_ICRNL;
+		t.c_oflag = LXP_OPOST | LXP_ONLCR;
+		t.c_cflag = LXP_CS8 | LXP_CREAD;
+		t.c_lflag = LXP_ICANON | LXP_ECHO | LXP_ISIG;
+		t.c_cc[LXP_VINTR] = 3;     /* ^C */
+		t.c_cc[LXP_VERASE] = 0x7f; /* DEL */
+		t.c_cc[LXP_VEOF] = 4;      /* ^D */
+		t.c_cc[LXP_VMIN] = 1;
+		memcpy(ua, &t, sizeof(t));
 		return 0;
 	}
 	case LXP_TCSETS:
 	case LXP_TCSETSW:
 	case LXP_TCSETSF:
+		if (!user_ok(p, ua, sizeof(lxp_termios), 0))
+			return -LXP_EFAULT;
 		return 0; /* accept mode changes; the console echo is the engine's job */
 	case LXP_TIOCGWINSZ: {
-		lxp_winsize *w = (lxp_winsize *)(uintptr_t)arg;
-		if (!w)
+		if (!user_ok(p, ua, sizeof(lxp_winsize), 1))
 			return -LXP_EFAULT;
-		w->ws_row = 24;
-		w->ws_col = 80;
-		w->ws_xpixel = 0;
-		w->ws_ypixel = 0;
+		const lxp_winsize w = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0};
+		memcpy(ua, &w, sizeof(w));
 		return 0;
 	}
 	case LXP_TIOCSCTTY: /* getty/login: become/drop/set the tty session */
 	case LXP_TIOCNOTTY:
+		return 0;
 	case LXP_TIOCSPGRP:
+		if (!user_ok(p, ua, sizeof(int), 0))
+			return -LXP_EFAULT;
 		return 0;
 	case LXP_TIOCGPGRP: {
-		int *pgrp = (int *)(uintptr_t)arg;
-		if (pgrp)
-			*pgrp = p->pid;
+		if (!user_ok(p, ua, sizeof(int), 1))
+			return -LXP_EFAULT;
+		int pgrp = p->pid;
+		memcpy(ua, &pgrp, sizeof(pgrp));
 		return 0;
 	}
 	default:
