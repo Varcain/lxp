@@ -5,6 +5,7 @@
 #   M=1 bash run.sh   (default)  -> /hello                 -> "lxp-m1-ok"
 #   M=2 bash run.sh              -> /init execs /child     -> "lxp-m2-ok"
 #   M=3 bash run.sh              -> /bin/busybox echo ...  -> "lxp-m3-ok"
+#   M=7 bash run.sh              -> hard-float /fpcheck     -> "lxp-m7-ok"
 #
 # M1/M2 embed a small cpio in flash (pinned guest/rootfs.cpio; CI needs only
 # arm-none-eabi-gcc + qemu). M3 XIPs a big dynamic-FDPIC busybox cpio from PSRAM
@@ -32,7 +33,8 @@ case "$M" in
     4) MARK="lxp-m4-ok" ;;
     5) MARK="lxp-m5-ok" ;;
     6) MARK="lxp-m6-ok" ;;
-    *) echo "unknown milestone M=$M (use 1..6)"; exit 2 ;;
+    7) MARK="lxp-m7-ok" ;;
+    *) echo "unknown milestone M=$M (use 1..7)"; exit 2 ;;
 esac
 
 mkdir -p build
@@ -40,9 +42,20 @@ LOG="$HERE/build/m$M.log"
 
 # The dynamic busybox milestones (M3, M6) XIP the cpio from PSRAM; the rest embed it in flash.
 if [ "$M" != 3 ] && [ "$M" != 6 ]; then
-    # ---- flash-embedded fixture (M1/M2/M4/M5) ------------------------------
+    # ---- flash-embedded fixture (M1/M2/M4/M5/M7) ---------------------------
     GUESTS="hello init child syscheck spin futex"
-    if [ "${REGEN_GUEST:-0}" = 1 ]; then
+    CPIO_IMAGE="guest/rootfs.cpio"
+    if [ "$M" = 7 ]; then
+        [ -x "$FDCC" ] || { echo "M7 needs an FDPIC gcc: $FDCC"; exit 1; }
+        M7_ROOT="$HERE/build/m7-root"
+        rm -rf "$M7_ROOT"
+        mkdir -p "$M7_ROOT"
+        "$FDCC" -mfdpic -static -nostdlib -Os -ffreestanding -e _start -Iguest \
+            -mcpu=cortex-m7 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard \
+            -o "$M7_ROOT/fpcheck" guest/fpcheck.c
+        ( cd "$M7_ROOT" && printf '%s\n' fpcheck | cpio -o -H newc 2>/dev/null > ../m7-rootfs.cpio )
+        CPIO_IMAGE="$HERE/build/m7-rootfs.cpio"
+    elif [ "${REGEN_GUEST:-0}" = 1 ]; then
         [ -x "$FDCC" ] || { echo "REGEN_GUEST=1 but FDPIC gcc not found: $FDCC"; exit 1; }
         ( cd guest
           rm -rf root && mkdir root
@@ -53,12 +66,12 @@ if [ "$M" != 3 ] && [ "$M" != 6 ]; then
           cd root && printf '%s\n' $GUESTS | cpio -o -H newc 2>/dev/null > ../rootfs.cpio )
         echo "regenerated pinned fixture guest/rootfs.cpio ($GUESTS)"
     fi
-    [ -f guest/rootfs.cpio ] || { echo "missing pinned fixture guest/rootfs.cpio (run REGEN_GUEST=1)"; exit 1; }
+    [ -f "$CPIO_IMAGE" ] || { echo "missing pinned fixture $CPIO_IMAGE (run REGEN_GUEST=1)"; exit 1; }
 
     # Embed the cpio as a flash blob, aligned to >=4 so the XIP'd FDPIC ELF (Thumb text +
     # word literals) lands word-aligned — an unaligned blob -> misaligned Thumb -> fault.
-    { echo "/* generated from guest/rootfs.cpio — do not edit */"
-      xxd -i guest/rootfs.cpio | sed 's/unsigned char guest_rootfs_cpio\[\]/const unsigned char rootfs_cpio[] __attribute__((aligned(16)))/; s/unsigned int guest_rootfs_cpio_len/const unsigned int rootfs_cpio_len/'
+    { echo "/* generated from $CPIO_IMAGE — do not edit */"
+      xxd -i "$CPIO_IMAGE" | sed 's/unsigned char .*\[\]/const unsigned char rootfs_cpio[] __attribute__((aligned(16)))/; s/unsigned int .*_len/const unsigned int rootfs_cpio_len/'
     } > rootfs_cpio.h
 
     MILESTONE="$M" bash build.sh > build.log 2>&1 || { echo "BUILD FAILED"; grep -iE 'error|undefined|will not fit' build.log | head; exit 1; }

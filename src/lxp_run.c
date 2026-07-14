@@ -340,6 +340,12 @@ static void capture_ctx(int s, const struct lxp_frame *f)
 	g_ctx[s].r2 = f->r[2];
 	g_ctx[s].r3 = f->r[3];
 	g_ctx[s].xpsr = f->xpsr;
+#if LXP_ENABLE_FPU_CONTEXT
+	if (f->fp)
+		g_ctx[s].fp = *f->fp;
+	else
+		memset(&g_ctx[s].fp, 0, sizeof(g_ctx[s].fp));
+#endif
 }
 
 /* Snapshot a normal syscall and park its guest. A second request for the same
@@ -898,6 +904,9 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 	sv->lr = g_ctx[slot].lr;
 	sv->pc = g_ctx[slot].pc; /* the rt_sigsuspend resume point */
 	sv->xpsr = g_ctx[slot].xpsr | (1u << 24); /* preserve APSR flags + Thumb */
+#if LXP_ENABLE_FPU_CONTEXT
+	sv->fp = g_ctx[slot].fp;
+#endif
 	sig_block_for_handler(sv, proc, sig); /* self-block the signal; restored at rt_sigreturn */
 	sv->active = 1;
 	/* Reuse the slot ctx as the handler-entry frame; sp + r4-r11 stay = the thread's, except r9

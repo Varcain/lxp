@@ -151,6 +151,14 @@ static void test_deliver_and_restore(void **st)
 	p.sig_restorer = 0xbeef0000; /* sa_restorer */
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
+	struct lxp_fp_context fp;
+	memset(&fp, 0, sizeof(fp));
+	for (int i = 0; i < 32; i++)
+		fp.s[i] = 0x40000000u + (uint32_t)i;
+	fp.fpscr = 0x01800000u;
+	fp.active = 1;
+	f.fp = &fp;
+	struct lxp_fp_context interrupted_fp = fp;
 	f.r[1] = 0x11;
 	f.r[2] = 0x22;
 	f.r[3] = 0x33;
@@ -172,6 +180,9 @@ static void test_deliver_and_restore(void **st)
 	assert_int_equal(g_sig_save[0].r1, 0x11);
 	assert_int_equal(g_sig_save[0].r2, 0x22);
 	assert_int_equal(g_sig_save[0].r3, 0x33);
+	assert_memory_equal(&g_sig_save[0].fp, &interrupted_fp, sizeof(interrupted_fp));
+	/* Model arbitrary floating-point work by the handler. */
+	memset(&fp, 0xa5, sizeof(fp));
 
 	sig_restore(&f, &p);
 	assert_int_equal(f.r[15], 0x1000u & ~1u); /* interrupted pc restored */
@@ -180,6 +191,7 @@ static void test_deliver_and_restore(void **st)
 	assert_int_equal(f.r[2], 0x22);
 	assert_int_equal(f.r[3], 0x33);
 	assert_int_equal(f.r[12], 0xcc);
+	assert_memory_equal(&fp, &interrupted_fp, sizeof(interrupted_fp));
 	assert_int_equal(g_sig_save[0].active, 0);
 }
 

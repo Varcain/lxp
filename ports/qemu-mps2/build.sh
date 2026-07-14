@@ -19,10 +19,10 @@ INC="-I$LXP_ROOT/include -I$LXP_ROOT/src -I$HERE -I$HERE/board -I$FRT/include -I
 # the soft calling convention (link-compatible; guests are separate cpio ELFs) while
 # allowing the VFP asm. No firmware C code uses float, so FPCA stays 0 → the port's
 # conditional FPU-context save never actually runs (no lazy-stacking hazard).
-FLAGS="-mcpu=cortex-m7 -mthumb -mfloat-abi=softfp -mfpu=fpv5-d16 -ffreestanding -Os -g -Wall -ffunction-sections -fdata-sections"
+FLAGS="-mcpu=cortex-m7 -mthumb -mfloat-abi=softfp -mfpu=fpv5-sp-d16 -ffreestanding -Os -g -Wall -ffunction-sections -fdata-sections"
 # Which milestone this firmware runs (M1=/hello, M2=/init, M3=busybox from PSRAM).
 MILESTONE="${MILESTONE:-1}"
-FLAGS="$FLAGS -DLXP_MILESTONE=$MILESTONE"
+FLAGS="$FLAGS -DLXP_MILESTONE=$MILESTONE -DLXP_ENABLE_FPU_CONTEXT=1"
 # Warnings-as-errors for our code. The lxp module gets full strictness incl. -Wundef,
 # matching scripts/gate-build.sh (src/ includes no host headers, so it stays -Wundef-clean).
 # The port TUs (engine.c/boot.c) include vendored FreeRTOS headers that are not -Wundef-clean,

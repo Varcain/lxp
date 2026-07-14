@@ -25,6 +25,7 @@ dependency on any OS, so `scripts/check-decoupled.sh` still passes.
 | `guest/child.c` | the M2 exec'd child (writes a byte to the inherited pipe end, exits with a code) |
 | `guest/syscheck.c` | the M4 conformance guest (resume-register ABI, 32-bit r0, statx via svc6, fork/kill/wait4) |
 | `guest/spin.c` | the M4 helper — blocks forever so the parent can kill a live process |
+| `guest/fpcheck.c` | the M7 hard-float guest (all VFP registers + FPSCR across deferred/blocking syscalls) |
 | `guest/rootfs.cpio` | **M1/M2 pinned fixture** — the built hand-written guests (embedded in flash) |
 | `guest/mkrootfs_m3.sh` | rebuilds the minimal busybox rootfs from a Buildroot FDPIC target tree |
 | `guest/rootfs_m3.cpio` | **M3 pinned fixture** — minimal dynamic-FDPIC busybox (busybox + ld.so + libc, ~620 KiB) |
@@ -46,6 +47,7 @@ M=1 bash run.sh             # M1: /hello             -> asserts "lxp-m1-ok"  (de
 M=2 bash run.sh             # M2: /init execs /child -> asserts "lxp-m2-ok"
 M=3 bash run.sh             # M3: /bin/busybox echo  -> asserts "lxp-m3-ok"  (busybox from PSRAM)
 M=4 bash run.sh             # M4: /syscheck          -> asserts "lxp-m4-ok"  (syscall conformance)
+M=7 bash run.sh             # M7: hard-float /fpcheck -> asserts "lxp-m7-ok" (needs FDPIC gcc)
 REGEN_GUEST=1 bash run.sh   # rebuild guest/rootfs.cpio from guest/*.c first (needs FDPIC gcc)
 ```
 
@@ -70,7 +72,10 @@ rootfs (~11 MiB) instead of the minimal fixture.
   marshalling (`statx`), and the run-loop-intercepted `fork`/`kill`/`wait4` (execs `/spin`,
   signals it with SIGTERM, reaps a WIFSIGNALED child). The host suite owns value/errno/struct
   correctness under ASan/UBSan; M4 owns the execution-fidelity residual. **Done.**
-  **Done.**
+- **M7** — hard-float FDPIC execution. `/fpcheck` verifies VFP argument codegen, all
+  `s0-s31` registers and FPSCR across both the deferred coordinator and a blocking
+  task-recreation path. It is generated on demand because the normal pinned fixture
+  deliberately remains soft-float. **Done.**
 
 ## Gotchas (learned the hard way)
 
@@ -87,8 +92,8 @@ rootfs (~11 MiB) instead of the minimal fixture.
 - **CM4_MPU + softfp, not CM3_MPU.** A dynamic M3 guest needs 4 per-task MPU regions
   (program + dyn_pool + two cpio windows); CM3_MPU exposes only 3, so the port is
   ARM_CM4_MPU. Its context switch has VFP save/restore asm, so the firmware is built
-  `-mfloat-abi=softfp` (link-compatible with the soft-float guests; no firmware C uses
-  float, so FPCA stays 0 and the FPU save never runs).
+  `-mfloat-abi=softfp` (link-compatible with soft-float guests). Those guests leave
+  FPCA clear; M7 deliberately activates it and exercises LXP's optional VFP context path.
 - **Syscall resume preserves r1-r3.** The Linux syscall ABI preserves r1-r14 (only r0
   is the return). A parking syscall that resumes must restore r1-r3, or a guest that
   reuses an arg register after the call reads garbage (this manifested as `wait4`

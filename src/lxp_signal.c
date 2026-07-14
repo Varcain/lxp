@@ -79,6 +79,12 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	sv->lr = f->r[14];
 	sv->pc = f->r[15];
 	sv->xpsr = f->xpsr;
+#if LXP_ENABLE_FPU_CONTEXT
+	if (f->fp)
+		sv->fp = *f->fp;
+	else
+		sv->fp.active = 0;
+#endif
 	sig_block_for_handler(sv, proc, sig); /* self-block the signal; restored at rt_sigreturn */
 	sv->active = 1;
 	uintptr_t entry, restorer;
@@ -108,5 +114,9 @@ void sig_restore(struct lxp_frame *f, lxp_proc_t *proc)
 	f->r[14] = sv->lr;
 	f->r[15] = sv->pc & ~1u;
 	f->xpsr = sv->xpsr;
+#if LXP_ENABLE_FPU_CONTEXT
+	if (f->fp)
+		*f->fp = sv->fp;
+#endif
 	sv->active = 0;
 }

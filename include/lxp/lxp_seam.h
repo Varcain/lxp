@@ -33,12 +33,29 @@
  * lxp_config.h (host-overridable; the oveRTOS build maps them per engine). */
 
 
+/* Complete Cortex-M single-precision floating-point state. `active` records
+ * whether the interrupted task owned an extended FP exception frame. The seam
+ * is responsible for forcing any lazy stack operation before populating this
+ * object and for applying changes before exception return/task recreation. */
+#if LXP_ENABLE_FPU_CONTEXT
+struct lxp_fp_context {
+	uint32_t s[32];
+	uint32_t fpscr;
+	uint32_t active;
+};
+#endif
+
 /* A uniform Cortex-M register frame the dispatch reads/writes. The seam populates
  * it from its native exception frame and writes the modified HW registers back.
  * r[0..15] = r0..r15 (r[13]=sp = the program's pre-svc SP, r[14]=lr, r[15]=pc). */
 struct lxp_frame {
 	uint32_t r[16];
 	uint32_t xpsr;
+#if LXP_ENABLE_FPU_CONTEXT
+	/* Mutable seam-owned storage; NULL means that this execution context cannot
+	 * capture/restore VFP state and therefore must not run a VFP guest. */
+	struct lxp_fp_context *fp;
+#endif
 };
 
 /* Parent context captured at a vfork svc, replayed to resume the parent + child.
@@ -62,6 +79,11 @@ struct lxp_resume_ctx {
 	 * task instead of exception-returning, so its resume trampoline must restore
 	 * NZCVQ just as the hardware exception return would. */
 	uint32_t xpsr;
+#if LXP_ENABLE_FPU_CONTEXT
+	/* Appended to retain all legacy core-register offsets used by assembly
+	 * trampolines. A port enabling this feature must restore it on spawn_resume. */
+	struct lxp_fp_context fp;
+#endif
 };
 
 /* The per-engine operations the shared run loop drives are the public port vtable

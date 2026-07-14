@@ -34,6 +34,7 @@ static struct {
 	int resume_sidx;
 	long resume_r0;
 	uint32_t resume_xpsr;
+	struct lxp_fp_context resume_fp;
 	int resume_order[LXP_NSLOT];
 	long resume_results[LXP_NSLOT];
 	int abort_calls;
@@ -54,6 +55,7 @@ static void mock_spawn_resume(int sidx, int ridx, const struct lxp_resume_ctx *c
 	g_mock.resume_sidx = sidx;
 	g_mock.resume_r0 = r0;
 	g_mock.resume_xpsr = c->xpsr;
+	g_mock.resume_fp = c->fp;
 	if (g_mock.resume_calls <= LXP_NSLOT) {
 		g_mock.resume_order[g_mock.resume_calls - 1] = sidx;
 		g_mock.resume_results[g_mock.resume_calls - 1] = r0;
@@ -85,6 +87,8 @@ static int reset_state(void **state)
 	memset(g_lxp_used, 0, sizeof(g_lxp_used));
 	memset(g_deferred, 0, sizeof(g_deferred));
 	memset(g_slot_generation, 0, sizeof(g_slot_generation));
+	memset(g_ctx, 0, sizeof(g_ctx));
+	memset(g_sig_save, 0, sizeof(g_sig_save));
 	memset(&g_mock, 0, sizeof(g_mock));
 	g_eng = &g_mock_eng;
 	g_cfg = NULL;
@@ -401,6 +405,13 @@ static void test_dispatch_class_defaults_deferred(void **state)
 	memset(&f, 0, sizeof(f));
 	f.r[7] = 999;
 	f.xpsr = 0xa8000000u | (1u << 24); /* NZCV + Thumb survive task recreation */
+	struct lxp_fp_context fp;
+	memset(&fp, 0, sizeof(fp));
+	for (int i = 0; i < 32; i++)
+		fp.s[i] = 0x3f000000u + (uint32_t)i;
+	fp.fpscr = 0x01c00000u;
+	fp.active = 1;
+	f.fp = &fp;
 	g_lxp_used[0] = 1;
 	lxp_dispatch(&f, p);
 	assert_int_equal(deferred_state_load(0), DEFER_READY);
@@ -408,6 +419,7 @@ static void test_dispatch_class_defaults_deferred(void **state)
 	execute_deferred(&g_mock_eng, 0);
 	assert_int_equal(g_mock.resume_r0, -LXP_ENOSYS);
 	assert_int_equal(g_mock.resume_xpsr, f.xpsr);
+	assert_memory_equal(&g_mock.resume_fp, &fp, sizeof(fp));
 }
 
 /* Distinct slots have distinct fixed mailboxes. Both may queue while neither

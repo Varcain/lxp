@@ -22,6 +22,11 @@ struct sig_save_s {
 	uint32_t r0, r1, r2, r3, r9, r12, lr, pc, xpsr;
 	uint64_t saved_mask; /* proc->sig_blocked to restore at rt_sigreturn (handler self-block) */
 	int active;
+#if LXP_ENABLE_FPU_CONTEXT
+	/* A signal handler may freely use VFP registers. Preserve the interrupted
+	 * state separately so rt_sigreturn can restore it exactly. */
+	struct lxp_fp_context fp;
+#endif
 };
 extern struct sig_save_s g_sig_save[LXP_NSLOT];
 

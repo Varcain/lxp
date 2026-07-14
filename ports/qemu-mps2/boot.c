@@ -145,7 +145,13 @@ static void coordinator_task(void *arg)
 	/* The initial program + argv, selected at build time per milestone:
 	 *   M1 = /hello           M2 = /init (execs /child)
 	 *   M3 = /bin/busybox echo lxp-m3-ok  (dynamic-FDPIC: ld.so + libc.so + busybox) */
-#if LXP_MILESTONE == 6
+#if LXP_MILESTONE == 7
+	/* M7 = hard-float FDPIC VFP-state regression across deferred and blocking
+	 * syscalls (including the task-recreation resume trampoline). */
+	const char *entry = "/fpcheck";
+	const char *const argv[] = {"fpcheck", NULL};
+	int argc = 1;
+#elif LXP_MILESTONE == 6
 	/* M6 = a real busybox /bin/sh script (dynamic FDPIC: ld.so + libc + busybox). Proves an
 	 * unmodified shell runs and that the port-supplied environment reaches it ($TERM/$HOME/
 	 * $PATH) — the payoff of the env plumbing. Uses only shell builtins so the check is
