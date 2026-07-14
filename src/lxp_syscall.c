@@ -502,7 +502,7 @@ static long sys_sendmsg(lxp_proc_t *p, int oi, const lxp_msghdr *umsg, int flags
 	if (!user_ok(p, umsg, sizeof(*umsg), 0))
 		return -LXP_EFAULT;
 	lxp_msghdr m = *umsg;
-	if (m.msg_iovlen > 1024) /* IOV_MAX; bound before iovlen*sizeof(iovec) overflows */
+	if (m.msg_iovlen > LXP_SYSCALL_MAX_IOV) /* bound before iovlen*sizeof(iovec) overflows */
 		return -LXP_EINVAL;
 	const lxp_iovec *iov = m.msg_iov;
 	if (m.msg_iovlen && !user_ok(p, iov, m.msg_iovlen * sizeof(*iov), 0))
@@ -516,13 +516,17 @@ static long sys_sendmsg(lxp_proc_t *p, int oi, const lxp_msghdr *umsg, int flags
 		return lxp_sock_sendmsg(p, oi, iov, (int)m.msg_iovlen, flags, dest, m.msg_namelen);
 
 	long total = 0;
+	size_t budget = LXP_SYSCALL_QUANTUM_BYTES;
 	for (size_t i = 0; i < m.msg_iovlen; i++) {
 		if (iov[i].iov_len == 0)
 			continue;
-		long r = lxp_sock_send(p, oi, iov[i].iov_base, iov[i].iov_len, flags, dest,
+		size_t len = iov[i].iov_len < budget ? iov[i].iov_len : budget;
+		long r = lxp_sock_send(p, oi, iov[i].iov_base, len, flags, dest,
 				       m.msg_namelen);
 		if (r < 0)
 			return total ? total : r;
+		if ((size_t)r > len)
+			return total ? total : -LXP_EIO; /* host backend violated the write contract */
 		if (p->sock_wait) {	 /* this segment parked */
 			if (total > 0) { /* earlier segments already sent: short send, do not park */
 				p->sock_wait = 0;
@@ -531,7 +535,8 @@ static long sys_sendmsg(lxp_proc_t *p, int oi, const lxp_msghdr *umsg, int flags
 			return 0; /* first segment: let the coordinator retry complete it */
 		}
 		total += r;
-		if ((size_t)r < iov[i].iov_len)
+		budget -= (size_t)r;
+		if ((size_t)r < len || len < iov[i].iov_len || budget == 0)
 			break; /* short send */
 	}
 	return total;
@@ -547,7 +552,7 @@ static long sys_recvmsg(lxp_proc_t *p, int oi, lxp_msghdr *umsg, int flags)
 	if (!user_ok(p, umsg, sizeof(*umsg), 1)) /* msg_controllen / msg_flags are written back */
 		return -LXP_EFAULT;
 	lxp_msghdr m = *umsg;
-	if (m.msg_iovlen > 1024)
+	if (m.msg_iovlen > LXP_SYSCALL_MAX_IOV)
 		return -LXP_EINVAL;
 	const lxp_iovec *iov = m.msg_iov;
 	if (m.msg_iovlen && !user_ok(p, iov, m.msg_iovlen * sizeof(*iov), 0))
@@ -566,7 +571,10 @@ static long sys_recvmsg(lxp_proc_t *p, int oi, lxp_msghdr *umsg, int flags)
 	for (size_t i = 0; i < m.msg_iovlen; i++) {
 		if (iov[i].iov_len == 0)
 			continue;
-		return lxp_sock_recv(p, oi, iov[i].iov_base, iov[i].iov_len, flags, src, srclen);
+		size_t len = iov[i].iov_len;
+		if (len > LXP_SYSCALL_QUANTUM_BYTES)
+			len = LXP_SYSCALL_QUANTUM_BYTES;
+		return lxp_sock_recv(p, oi, iov[i].iov_base, len, flags, src, srclen);
 	}
 	return 0; /* no buffer space in the iov: nothing received */
 }
@@ -604,10 +612,10 @@ static long fop_read_console(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 	}
 	if (!p->read_fn)
 		return 0; /* EOF */
-	/* Park until a key is ready (probed via console_poll) so the SVC handler
-	 * returns and the coordinator's background tasks — notably the Ethernet RX
-	 * poll — run, instead of read_fn busy-waiting in handler mode (which starves
-	 * a backgrounded server). Without a poll hook, fall back to a blocking read. */
+	/* Park until a key is ready (probed via console_poll) so the syscall bottom
+	 * half returns to its coordinator loop instead of pinning it in read_fn. This
+	 * lets other slots and background work progress. Without a poll hook, retain
+	 * the legacy blocking-read fallback for host integrations that need it. */
 	if (p->console_poll && p->console_poll(p->io_ctx) == 0) {
 		p->console_wait = 1;
 		p->console_buf = (uintptr_t)buf;
@@ -1188,20 +1196,34 @@ static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
 	/* Any fd sys_write accepts: console, socket (uClibc stdio flushes a socket via
 	 * writev — this is how wget sends its HTTP request), device, file. sys_write
 	 * validates the fd (EBADF) and routes by kind. */
-	if (iovcnt < 0 || iovcnt > 1024) /* IOV_MAX; bound before iovcnt*sizeof(iovec) overflows */
+	if (iovcnt < 0 || iovcnt > LXP_SYSCALL_MAX_IOV)
 		return -LXP_EINVAL;
 	if (iovcnt && !user_ok(p, iov, (size_t)iovcnt * sizeof(*iov), 0))
 		return -LXP_EFAULT; /* the iov array itself; each iov_base is checked in sys_write */
+	lxp_fd_t *slot = fd_slot(p, fd);
+	if (!slot)
+		return -LXP_EBADF;
+	/* The retry records describe one buffer, not an iovec cursor. Stop after one
+	 * segment for fd kinds that may park; the legal short write lets libc retry
+	 * the tail without losing an earlier byte count or orphaning backend state. */
+	int single_segment = slot->kind == LXP_FD_PIPE || slot->kind == LXP_FD_DEV ||
+			     slot->kind == LXP_FD_SOCKET || slot->kind == LXP_FD_PTY ||
+			     slot->kind == LXP_FD_NET;
 
 	long total = 0;
+	size_t budget = LXP_SYSCALL_QUANTUM_BYTES;
 	for (int i = 0; i < iovcnt; i++) {
 		if (iov[i].iov_len == 0)
 			continue;
-		long r = sys_write(p, fd, iov[i].iov_base, iov[i].iov_len);
+		size_t len = iov[i].iov_len < budget ? iov[i].iov_len : budget;
+		long r = sys_write(p, fd, iov[i].iov_base, len);
 		if (r < 0)
 			return total ? total : r;
+		if ((size_t)r > len)
+			return total ? total : -LXP_EIO; /* host backend violated the write contract */
 		total += r;
-		if ((size_t)r < iov[i].iov_len)
+		budget -= (size_t)r;
+		if (single_segment || (size_t)r < len || len < iov[i].iov_len || budget == 0)
 			break; /* short write */
 	}
 	return total;
@@ -2478,74 +2500,122 @@ long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t 
  * the thread — because that is engine-specific. We never truly return: on
  * success the old image is gone; on failure we report a negated errno.
  */
-/* Append one NUL-terminated arg to the pending-exec argv; ignore on overflow. */
-/* Append one NUL-terminated string to a bounded pending-exec vector (argv or envp), storing
- * the copy in @p buf and its pointer in @p vec[]; ignore silently on element/byte overflow. */
-static void exec_push(char **vec, char *buf, size_t bufsz, int max, int *n, size_t *off,
-		      const char *str)
+/* Snapshot an untrusted guest argv/envp into coordinator-owned storage. The guest is parked,
+ * but another CLONE_VM thread can still mutate its memory, so each pointer is loaded once and no
+ * raw vector is revisited after this copy. */
+static long exec_copy_vec(lxp_proc_t *p, char *const uvec[], char **vec, char *buf,
+			  size_t bufsz, int max, int *count, size_t *used)
 {
-	if (*n >= max)
-		return;
-	size_t len = strlen(str) + 1;
-	if (*off + len > bufsz)
-		return;
-	memcpy(buf + *off, str, len);
-	vec[*n] = buf + *off;
-	*off += len;
-	(*n)++;
+	*count = 0;
+	if (used)
+		*used = 0;
+	if (!uvec)
+		return 0;
+	size_t off = 0;
+	for (int j = 0; j <= max; j++) {
+		if (!user_ok(p, &uvec[j], sizeof(uvec[j]), 0))
+			return -LXP_EFAULT;
+		const char *us = ((char *const volatile *)uvec)[j]; /* load guest pointer once */
+		if (!us)
+			return 0;
+		if (j == max || off == bufsz)
+			return -LXP_E2BIG;
+		uintptr_t a = (uintptr_t)us;
+		uintptr_t hi = user_range_hi(p, a, 0);
+		if (!hi)
+			return -LXP_EFAULT;
+		size_t room = bufsz - off;
+		size_t readable = (size_t)(hi - a);
+		size_t limit = readable < room ? readable : room;
+		/* Copy each byte once and decide termination from the copied value. A
+		 * co-running CLONE_VM thread may mutate the source: a separate strnlen +
+		 * memcpy could observe a NUL during the scan and then copy a non-terminated
+		 * string, making the later trusted-buffer strlen walk out of bounds. */
+		size_t len = 0;
+		for (; len < limit; len++) {
+			unsigned char c = ((const volatile unsigned char *)us)[len];
+			buf[off + len] = (char)c;
+			if (c == 0)
+				break;
+		}
+		if (len == limit)
+			return readable < room ? -LXP_EFAULT : -LXP_E2BIG;
+		vec[j] = buf + off;
+		off += len + 1;
+		*count = j + 1;
+		if (used)
+			*used = off;
+	}
+	return -LXP_E2BIG;
 }
 
-static void exec_push_arg(lxp_proc_t *p, int *argc, size_t *off, const char *str)
+/* Rewrite an already-snapshotted script argv in place. Keeping the snapshot in the process
+ * object avoids a second 256-byte argument buffer on the coordinator task's embedded stack. */
+static long exec_rewrite_script_argv(lxp_proc_t *p, int old_argc, size_t old_bytes,
+				     const char *interp, const char *iarg, int have_iarg,
+				     const char *script, int *new_argc)
 {
-	exec_push(p->exec_argv, p->exec_argv_buf, sizeof(p->exec_argv_buf), LXP_EXEC_MAXARGS, argc,
-		  off, str);
-}
+	const int prefix_count = have_iarg ? 3 : 2;
+	const int tail_count = old_argc > 1 ? old_argc - 1 : 0;
+	if (prefix_count + tail_count > LXP_EXEC_MAXARGS)
+		return -LXP_E2BIG;
 
-/* Append one NUL-terminated env string to the pending-exec environment; ignore on overflow. */
-static void exec_push_env(lxp_proc_t *p, int *envc, size_t *off, const char *str)
-{
-	exec_push(p->exec_env, p->exec_env_buf, sizeof(p->exec_env_buf), LXP_EXEC_MAXENVS, envc,
-		  off, str);
+	size_t tail_off = old_bytes;
+	if (tail_count)
+		tail_off = (size_t)(p->exec_argv[1] - p->exec_argv_buf);
+	if (tail_off > old_bytes)
+		return -LXP_EFAULT; /* internal snapshot invariant */
+	size_t tail_bytes = old_bytes - tail_off;
+
+	const char *prefix[3] = {interp, script, NULL};
+	if (have_iarg) {
+		prefix[1] = iarg;
+		prefix[2] = script;
+	}
+	size_t prefix_bytes = 0;
+	for (int j = 0; j < prefix_count; j++) {
+		size_t len = strlen(prefix[j]) + 1;
+		if (prefix_bytes > sizeof(p->exec_argv_buf) ||
+		    len > sizeof(p->exec_argv_buf) - prefix_bytes)
+			return -LXP_E2BIG;
+		prefix_bytes += len;
+	}
+	if (tail_bytes > sizeof(p->exec_argv_buf) - prefix_bytes)
+		return -LXP_E2BIG;
+
+	memmove(p->exec_argv_buf + prefix_bytes, p->exec_argv_buf + tail_off, tail_bytes);
+	size_t off = 0;
+	for (int j = 0; j < prefix_count; j++) {
+		size_t len = strlen(prefix[j]) + 1;
+		p->exec_argv[j] = p->exec_argv_buf + off;
+		memcpy(p->exec_argv_buf + off, prefix[j], len);
+		off += len;
+	}
+	for (int j = 0; j < tail_count; j++) {
+		p->exec_argv[prefix_count + j] = p->exec_argv_buf + off;
+		off += strlen(p->exec_argv_buf + off) + 1;
+	}
+	*new_argc = prefix_count + tail_count;
+	return 0;
 }
 
 static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char *const envp[])
 {
 	if (!path)
 		return -LXP_EFAULT;
-	/* Validate the whole argv vector before the walk below reads it: a malicious argv could point at
-	 * kernel memory or never NUL-terminate. Each element must be readable and each string in-bounds;
-	 * cap the count so a non-terminated array can't spin. */
-	if (argv) {
-		for (int j = 0;; j++) {
-			if (j > 256)
-				return -LXP_EINVAL;
-			if (!user_ok(p, &argv[j], sizeof(argv[j]), 0))
-				return -LXP_EFAULT;
-			if (!argv[j])
-				break;
-			if (user_strnlen(p, argv[j], (size_t)-1) < 0)
-				return -LXP_EFAULT;
-		}
-	}
-	/* Validate the envp vector the same way, then capture it now: the environment is
-	 * independent of any #!/interpreter rewriting below, and a partially-written
-	 * exec_env_buf is never read unless exec_pending is set (past every error check). A
-	 * NULL envp keeps no environment (the new image starts empty). */
-	int envc = 0;
-	size_t eoff = 0;
-	if (envp) {
-		for (int j = 0;; j++) {
-			if (j > 256)
-				return -LXP_EINVAL;
-			if (!user_ok(p, &envp[j], sizeof(envp[j]), 0))
-				return -LXP_EFAULT;
-			if (!envp[j])
-				break;
-			if (user_strnlen(p, envp[j], (size_t)-1) < 0)
-				return -LXP_EFAULT;
-			exec_push_env(p, &envc, &eoff, envp[j]);
-		}
-	}
+	/* Snapshot both vectors before path resolution. This bounds work to the actual storage the
+	 * relaunch can preserve instead of scanning and silently dropping hundreds of strings. */
+	int raw_argc = 0, envc = 0;
+	size_t raw_argbytes = 0;
+	long vr = exec_copy_vec(p, argv, p->exec_argv, p->exec_argv_buf,
+				sizeof(p->exec_argv_buf), LXP_EXEC_MAXARGS, &raw_argc,
+				&raw_argbytes);
+	if (vr < 0)
+		return vr;
+	vr = exec_copy_vec(p, envp, p->exec_env, p->exec_env_buf, sizeof(p->exec_env_buf),
+			   LXP_EXEC_MAXENVS, &envc, NULL);
+	if (vr < 0)
+		return vr;
 	p->exec_envc = envc;
 	char execabs[LXP_PATH_MAX];
 	long rr = resolve_path(p, path, execabs, sizeof(execabs));
@@ -2556,14 +2626,10 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	 * fds, then park the ELF fetch. The netfs retry sets exec_pending + a SENTINEL exec_file_idx
 	 * on completion, and the run loop's EV_EXEC launches it from the RAM staging buffer. */
 	if (lxp_netfs_lookup(execabs) >= 0) {
-		int nargc = 0;
-		size_t noff = 0;
-		for (int j = 0; argv && argv[j]; j++)
-			exec_push_arg(p, &nargc, &noff, argv[j]);
 		for (int cfd = 0; cfd < LXP_MAX_FDS; cfd++)
 			if (p->fds[cfd].kind != LXP_FD_FREE && p->fds[cfd].cloexec)
 				sys_close(p, cfd);
-		p->exec_argc = nargc;
+		p->exec_argc = raw_argc;
 		return lxp_netfs_exec_fetch(p, execabs); /* parks, or a negative errno inline */
 	}
 #endif
@@ -2618,19 +2684,13 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 			return -LXP_ENOENT;
 	}
 
-	int argc = 0;
-	size_t off = 0;
+	int argc = raw_argc;
 	if (interp_idx >= 0) {
-		exec_push_arg(p, &argc, &off, interp);
-		if (have_iarg)
-			exec_push_arg(p, &argc, &off, iarg);
-		exec_push_arg(p, &argc, &off, execabs); /* the script pathname */
-		for (int j = 1; argv && argv[j]; j++)
-			exec_push_arg(p, &argc, &off, argv[j]);
+		long ar = exec_rewrite_script_argv(p, raw_argc, raw_argbytes, interp, iarg,
+						   have_iarg, execabs, &argc);
+		if (ar < 0)
+			return ar;
 		idx = interp_idx;
-	} else {
-		for (int j = 0; argv && argv[j]; j++)
-			exec_push_arg(p, &argc, &off, argv[j]);
 	}
 	/* close-on-exec: the fd table survives execve (the run loop preserves it), so drop the
 	 * FD_CLOEXEC fds here — the exec is committed past every error check. dropbear confirms
@@ -2910,9 +2970,37 @@ static long sys_ioctl(lxp_proc_t *proc, long a0, long a1, long a2)
 long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, long a4,
 		     long a5)
 {
-	(void)a5;
 	if (!proc)
 		return -LXP_EINVAL;
+
+	/* A guest controls these byte counts. Normalise them before any pointer-range
+	 * validation or host callback: each interface permits a short result, and the
+	 * finite quantum keeps one deferred request preemptible and bounded. Cast via
+	 * uint32_t because this is the 32-bit ARM syscall ABI even in host tests. */
+	switch (nr) {
+	case LXP_NR_read:
+	case LXP_NR_write:
+	case LXP_NR_getdents:
+	case LXP_NR_getdents64:
+	case LXP_NR_send:
+	case LXP_NR_sendto:
+	case LXP_NR_recv:
+	case LXP_NR_recvfrom:
+		if ((uint32_t)a2 > LXP_SYSCALL_QUANTUM_BYTES)
+			a2 = LXP_SYSCALL_QUANTUM_BYTES;
+		break;
+	case LXP_NR_pread64:
+	case LXP_NR_pwrite64:
+		if ((uint32_t)a2 > LXP_SYSCALL_FILE_QUANTUM_BYTES)
+			a2 = LXP_SYSCALL_FILE_QUANTUM_BYTES;
+		break;
+	case LXP_NR_getrandom:
+		if ((uint32_t)a1 > LXP_SYSCALL_QUANTUM_BYTES)
+			a1 = LXP_SYSCALL_QUANTUM_BYTES;
+		break;
+	default:
+		break;
+	}
 
 	switch (nr) {
 	case LXP_NR_read:

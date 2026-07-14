@@ -43,11 +43,17 @@ extern "C" {
 typedef struct lxp_run_config {
 	const lxp_file_t *rootfs; /**< Parsed (read-only) rootfs table. */
 	int rootfs_count;	      /**< Entry count in @p rootfs. */
-	lxp_write_fn write_fn;    /**< Console sink (fd 1/2). */
-	lxp_read_fn read_fn;      /**< Console source (fd 0); see the tty helpers. */
+	/** Console sink (fd 1/2), called from the privileged coordinator task. It must
+	 * return within a host-defined finite interval; byte count is bounded by
+	 * LXP_SYSCALL_QUANTUM_BYTES but the module cannot bound an external callback. */
+	lxp_write_fn write_fn;
+	/** Console source (fd 0), called from the privileged coordinator task; see the
+	 * tty helpers. Pair a potentially blocking source with console_poll so the
+	 * coordinator can park the guest instead of entering read_fn before data exists. */
+	lxp_read_fn read_fn;
 	void *io_ctx;		      /**< Opaque, passed to @p write_fn / @p read_fn. */
 	void (*on_enosys)(long nr);   /**< Optional: notified of an unimplemented syscall. */
-	/** Optional: non-blocking "is a console keystroke available right now?" (1/0).
+	/** Optional: strictly non-blocking "is a console keystroke available right now?" (1/0).
 	 * Enables a true poll(2) on the console fd (e.g. interactive `top`'s 'q' quit):
 	 * without it the console transport is blocking-only and poll falls back to a
 	 * heuristic. Backed by a UART RX-ready check when the host uses a UART console. */

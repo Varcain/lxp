@@ -256,6 +256,43 @@ void lxp_netfs_kick(void)
  * time, so one ctx per slot suffices; a vfork child resumes from its PARENT's ctx. */
 static struct lxp_resume_ctx g_ctx[LXP_NSLOT];
 
+/* One fixed deferred-syscall mailbox per process slot. The SVC top half owns
+ * IDLE->FILLING->READY; the coordinator owns READY->RUNNING->IDLE. Only r0 is
+ * stored here because capture_ctx() already snapshots r1-r5 and r7 (the syscall
+ * number). A generation rejects a stale mailbox after exit/exec/slot reuse. */
+enum deferred_state {
+	DEFER_IDLE,
+	DEFER_FILLING,
+	DEFER_READY,
+	DEFER_RUNNING,
+};
+struct deferred_req {
+	uint32_t a0;
+	uint32_t generation;
+	uint8_t state;
+	uint8_t _pad[3];
+};
+static struct deferred_req g_deferred[LXP_NSLOT];
+static uint32_t g_slot_generation[LXP_NSLOT];
+
+static uint8_t deferred_state_load(int slot)
+{
+	return __atomic_load_n(&g_deferred[slot].state, __ATOMIC_ACQUIRE);
+}
+
+static void deferred_state_store(int slot, uint8_t state)
+{
+	__atomic_store_n(&g_deferred[slot].state, state, __ATOMIC_RELEASE);
+}
+
+static void deferred_slot_reassign(int slot)
+{
+	deferred_state_store(slot, DEFER_IDLE);
+	uint32_t next = __atomic_add_fetch(&g_slot_generation[slot], 1u, __ATOMIC_RELAXED);
+	if (next == 0) /* reserve zero for the static, never-assigned state */
+		(void)__atomic_add_fetch(&g_slot_generation[slot], 1u, __ATOMIC_RELAXED);
+}
+
 /* Per-slot FDPIC runtime load addresses, exported (non-static) for SOURCE-LEVEL GDB DEBUGGING of
  * the userspace program. An FDPIC exec is loaded at runtime addresses (the loadmap relocates each
  * segment independently), so the on-disk ELF's link addresses don't match memory. A GDB helper
@@ -274,7 +311,11 @@ struct lxp_dbg_s g_lxp_dbg[LXP_NSLOT];
 
 int slot_of(const lxp_proc_t *p)
 {
-	return (int)(p - g_lxp_proc);
+	uintptr_t a = (uintptr_t)p, lo = (uintptr_t)&g_lxp_proc[0],
+		  hi = (uintptr_t)&g_lxp_proc[LXP_NSLOT];
+	if (a < lo || a >= hi || (a - lo) % sizeof(g_lxp_proc[0]) != 0)
+		return -1;
+	return (int)((a - lo) / sizeof(g_lxp_proc[0]));
 }
 
 /* Capture the post-svc context of frame f into slot s's resume ctx. */
@@ -292,13 +333,35 @@ static void capture_ctx(int s, const struct lxp_frame *f)
 	g_ctx[s].r1 = f->r[1];
 	g_ctx[s].r2 = f->r[2];
 	g_ctx[s].r3 = f->r[3];
+	g_ctx[s].xpsr = f->xpsr;
+}
+
+/* Snapshot a normal syscall and park its guest. A second request for the same
+ * slot is impossible while the first task is parked, but the CAS makes that
+ * invariant fail closed instead of overwriting an in-flight mailbox. */
+static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
+{
+	int slot = slot_of(proc);
+	uint8_t expected = DEFER_IDLE;
+	if (slot < 0 || slot >= LXP_NSLOT ||
+	    !__atomic_compare_exchange_n(&g_deferred[slot].state, &expected, DEFER_FILLING, 0,
+					 __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+		f->r[0] = (uint32_t)-LXP_EAGAIN;
+		return;
+	}
+	g_deferred[slot].a0 = f->r[0];
+	g_deferred[slot].generation =
+		__atomic_load_n(&g_slot_generation[slot], __ATOMIC_RELAXED);
+	capture_ctx(slot, f);
+	deferred_state_store(slot, DEFER_READY);
+	park_frame(f);
 }
 
 /* Park the program frame at the spin loop until the coordinator reaps the event,
  * and wake the coordinator (it blocks in event_wait rather than busy-polling). */
 void park_frame(struct lxp_frame *f)
 {
-	f->r[15] = ((uint32_t)&lxp_park_loop) & ~1u;
+	f->r[15] = (uint32_t)((uintptr_t)&lxp_park_loop & ~(uintptr_t)1u);
 	f->xpsr |= (1u << 24);
 	if (g_eng && g_eng->event_post)
 		g_eng->event_post();
@@ -324,7 +387,8 @@ int lxp_tty_isig(void)
 
 void lxp_post_signal(int sig)
 {
-	g_pending_sig = sig;
+	if (sig > 0 && sig < LXP_NSIG)
+		g_pending_sig = sig;
 }
 
 void lxp_park_loop(void)
@@ -457,26 +521,53 @@ static int pending_deliverable(const lxp_proc_t *p)
 	return 0;
 }
 
+/* Only constant-time, pointer-free operations may execute in the SVC top half.
+ * The default is deliberately deferred: a newly added syscall cannot silently
+ * inherit handler-mode execution merely because its number was added elsewhere. */
+static int syscall_is_fast(long nr)
+{
+	switch (nr) {
+	case LXP_NR_exit:
+	case LXP_NR_exit_group:
+	case LXP_NR_getpid:
+	case LXP_NR_getppid:
+	case LXP_NR_getuid32:
+	case LXP_NR_getgid32:
+	case LXP_NR_geteuid32:
+	case LXP_NR_getegid32:
+	case LXP_NR_gettid:
+	case LXP_NR_umask:
+	case LXP_NR_prctl:
+	case LXP_NR_sched_yield:
+	case LXP_NR_setpgid:
+	case LXP_NR_getpgrp:
+	case LXP_NR_setsid:
+	case LXP_NR_sync:
+	case LXP_NR_fsync:
+	case LXP_NR_fdatasync:
+	case LXP_NR_fchmod:
+	case LXP_NR_fchown32:
+	case LXP_NR_setgroups32:
+	case LXP_NR_setuid32:
+	case LXP_NR_setgid32:
+	case LXP_NR_setreuid32:
+	case LXP_NR_setregid32:
+	case LXP_NR_setresuid32:
+	case LXP_NR_setresgid32:
+	case LXP_NR_set_tid_address:
+	case LXP_NR_set_robust_list:
+	case LXP_NR_mprotect: /* currently a pointer-free NOMMU no-op */
+	case LXP_NR_reboot:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 /* ---- the syscall dispatch body --------------------------------------------- */
 void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	long nr = (long)(int32_t)f->r[7];
-
-	/* Track the tty ISIG mode so a console ^C knows whether to raise SIGINT
-	 * (canonical) or pass ^C through (the shell's raw line editor). */
-	if (nr == LXP_NR_ioctl) {
-		int fd = (int32_t)f->r[0];
-		unsigned long cmd = f->r[1];
-		if (fd >= 0 && fd < LXP_MAX_FDS && proc->fds[fd].kind == LXP_FD_CONSOLE &&
-		    (cmd == LXP_TCSETS || cmd == LXP_TCSETSW || cmd == LXP_TCSETSF)) {
-			const void *ut = (const void *)(uintptr_t)f->r[2];
-			if (user_ok(proc, ut, sizeof(lxp_termios), 0)) {
-				lxp_termios t;
-				memcpy(&t, ut, sizeof(t));
-				g_tty_isig = (t.c_lflag & LXP_ISIG) ? 1 : 0;
-			}
-		}
-	}
 	if (nr == LXP_NR_kill || nr == LXP_NR_tkill || nr == LXP_NR_tgkill) {
 		int sig = (nr == LXP_NR_tgkill) ? (int)f->r[2] : (int)f->r[1];
 		int target = (int)f->r[0];
@@ -542,6 +633,10 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	 * table + event_post, so it is coordinator-handled, not a plain dispatch case). */
 	if (nr == LXP_NR_futex || nr == LXP_NR_futex_time64) {
 		lxp_futex(f, proc, nr == LXP_NR_futex_time64);
+		return;
+	}
+	if (!syscall_is_fast(nr)) {
+		defer_syscall(f, proc);
 		return;
 	}
 
@@ -789,12 +884,14 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 	}
 	struct sig_save_s *sv = &g_sig_save[slot];
 	sv->r0 = (uint32_t)ret;
-	sv->r1 = sv->r2 = sv->r3 = 0; /* r0-r3 not captured; the sigsuspend caller reloads them */
+	sv->r1 = g_ctx[slot].r1;
+	sv->r2 = g_ctx[slot].r2;
+	sv->r3 = g_ctx[slot].r3;
 	sv->r9 = g_ctx[slot].r4_11[5]; /* FDPIC GOT of the parked code — clobbered below (r4_11[5]=r9) */
 	sv->r12 = g_ctx[slot].r12;
 	sv->lr = g_ctx[slot].lr;
 	sv->pc = g_ctx[slot].pc; /* the rt_sigsuspend resume point */
-	sv->xpsr = (1u << 24);	 /* Thumb */
+	sv->xpsr = g_ctx[slot].xpsr | (1u << 24); /* preserve APSR flags + Thumb */
 	sig_block_for_handler(sv, proc, sig); /* self-block the signal; restored at rt_sigreturn */
 	sv->active = 1;
 	/* Reuse the slot ctx as the handler-entry frame; sp + r4-r11 stay = the thread's, except r9
@@ -808,6 +905,104 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 	g_ctx[slot].lr = restorer | 1u;		    /* return -> sa_restorer entry -> sigreturn */
 	g_ctx[slot].pc = entry | 1u;		    /* enter the handler (Thumb) */
 	eng->spawn_resume(slot, proc->region, &g_ctx[slot], sig); /* r0 = signo */
+}
+
+/* Track the tty ISIG mode from the coordinator, never from SVC handler mode.
+ * The guest is parked and the termios payload is copied before use. */
+static void deferred_track_tty(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
+{
+	if (nr != LXP_NR_ioctl)
+		return;
+	int fd = (int)a0;
+	unsigned long cmd = (unsigned long)a1;
+	if (fd < 0 || fd >= LXP_MAX_FDS || proc->fds[fd].kind != LXP_FD_CONSOLE ||
+	    (cmd != LXP_TCSETS && cmd != LXP_TCSETSW && cmd != LXP_TCSETSF))
+		return;
+	const void *ut = (const void *)(uintptr_t)(uint32_t)a2;
+	if (user_ok(proc, ut, sizeof(lxp_termios), 0)) {
+		lxp_termios t;
+		memcpy(&t, ut, sizeof(t));
+		g_tty_isig = (t.c_lflag & LXP_ISIG) ? 1 : 0;
+	}
+}
+
+/* Execute one READY mailbox in privileged task context. The lower-priority guest
+ * remains parked while the coordinator runs. Immediate completion deletes and
+ * recreates it at the captured context; a blocking syscall leaves it parked so
+ * the established wait event can observe g_lxp_used and perform the handoff.
+ * Host RT tasks above the coordinator can preempt all work performed here. */
+static void execute_deferred(const lxp_os_ops_t *eng, int slot)
+{
+	uint8_t expected = DEFER_READY;
+	if (!__atomic_compare_exchange_n(&g_deferred[slot].state, &expected, DEFER_RUNNING, 0,
+					 __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+		return;
+	struct deferred_req *req = &g_deferred[slot];
+	lxp_proc_t *proc = &g_lxp_proc[slot];
+	uint32_t generation = __atomic_load_n(&g_slot_generation[slot], __ATOMIC_RELAXED);
+	if (!proc->alive || req->generation != generation) {
+		deferred_state_store(slot, DEFER_IDLE);
+		return;
+	}
+
+	/* A signal that won the race with coordinator service cancels the request
+	 * before it acquires resources. Ignored/default-SIGCHLD signals are consumed
+	 * and the syscall proceeds. */
+	int psig = pending_deliverable(proc);
+	if (psig) {
+		proc->pending_sigs &= ~lxp_sig_bit(psig);
+		if (!sig_swallowed(proc, psig)) {
+			deferred_state_store(slot, DEFER_IDLE);
+			eng->abort_slot(slot);
+			deliver_signal_parked(eng, slot, proc, psig, -LXP_EINTR);
+			return;
+		}
+	}
+	if (g_pending_sig && !lxp_sig_blocked(proc, g_pending_sig)) {
+		int sig = g_pending_sig;
+		g_pending_sig = 0;
+		if (!sig_swallowed(proc, sig)) {
+			deferred_state_store(slot, DEFER_IDLE);
+			eng->abort_slot(slot);
+			deliver_signal_parked(eng, slot, proc, sig, -LXP_EINTR);
+			return;
+		}
+	}
+
+	long nr = (long)(int32_t)g_ctx[slot].r4_11[3]; /* captured r7 */
+	long a0 = (long)(int32_t)req->a0;
+	long a1 = (long)(int32_t)g_ctx[slot].r1;
+	long a2 = (long)(int32_t)g_ctx[slot].r2;
+	long a3 = (long)(int32_t)g_ctx[slot].r3;
+	long a4 = (long)(int32_t)g_ctx[slot].r4_11[0];
+	long a5 = (long)(int32_t)g_ctx[slot].r4_11[1];
+	deferred_track_tty(proc, nr, a0, a1, a2);
+	long r = lxp_syscall(proc, nr, a0, a1, a2, a3, a4, a5);
+	if (r == -LXP_ENOSYS && g_cfg && g_cfg->on_enosys && nr != 141 && nr != 281)
+		g_cfg->on_enosys(nr);
+	deferred_state_store(slot, DEFER_IDLE);
+
+	/* Existing retry state owns completion from here and expects the spin task to
+	 * remain present; exec/exit are likewise consumed by higher-level events. */
+	if (proc->sleep_pending || proc->wait_pending || proc->pipe_wait || proc->dev_wait ||
+	    proc->sock_wait || proc->netfs_wait || proc->pty_wait || proc->sigsuspend_pending ||
+	    proc->console_wait || proc->exited || proc->exec_pending)
+		return;
+
+	eng->abort_slot(slot);
+	psig = pending_deliverable(proc);
+	if (psig) {
+		proc->pending_sigs &= ~lxp_sig_bit(psig);
+		deliver_signal_parked(eng, slot, proc, psig, r);
+		return;
+	}
+	if (g_pending_sig && !lxp_sig_blocked(proc, g_pending_sig)) {
+		int sig = g_pending_sig;
+		g_pending_sig = 0;
+		deliver_signal_parked(eng, slot, proc, sig, r);
+		return;
+	}
+	eng->spawn_resume(slot, proc->region, &g_ctx[slot], r);
 }
 
 /* ---- vfork data isolation (NOMMU) ------------------------------------------ */
@@ -917,6 +1112,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	for (int i = 0; i < LXP_NSLOT; i++) {
 		g_lxp_used[i] = 0;
 		g_lxp_proc[i].alive = 0;
+		deferred_slot_reassign(i);
 	}
 	g_pending_sig = 0;
 	g_tty_isig = 1;
@@ -964,6 +1160,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	int rc = LXP_RUN_ETIMEOUT;
 	int next_pid = 2;
 	int idle = 0;
+	unsigned event_cursor = 0;
 	uint64_t last_refresh_us = 0;
 	for (;;) {
 		if (g_lxp_halt) { /* reboot(2)/poweroff: stop the whole system */
@@ -979,6 +1176,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			EV_EXIT = 1,
 			EV_EXEC,
 			EV_FORK,
+			EV_DEFER,
 			EV_SLEEP,
 			EV_FUTEXWAIT,
 			EV_WAITPARK,
@@ -991,7 +1189,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			EV_CONSOLEWAIT
 		};
 		eng->crit_enter();
-		for (int s = 0; s < LXP_NSLOT; s++) {
+		for (int i = 0; i < LXP_NSLOT; i++) {
+			int s = (int)((event_cursor + (unsigned)i) % LXP_NSLOT);
 			lxp_proc_t *p = &g_lxp_proc[s];
 			if (!p->alive)
 				continue;
@@ -1009,6 +1208,11 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				p->fork_pending = 0;
 				es = s;
 				et = EV_FORK;
+				break;
+			}
+			if (deferred_state_load(s) == DEFER_READY) {
+				es = s;
+				et = EV_DEFER;
 				break;
 			}
 			if (p->sleep_pending) {
@@ -1067,7 +1271,15 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				break;
 			}
 		}
+		if (es >= 0)
+			event_cursor = ((unsigned)es + 1u) % LXP_NSLOT;
 		eng->crit_exit();
+
+		if (et == EV_DEFER) {
+			execute_deferred(eng, es);
+			idle = 0;
+			continue;
+		}
 
 		if (et ==
 		    EV_FORK) { /* spawn a child sharing the parent's region; suspend the parent. */
@@ -1085,6 +1297,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				continue;
 			}
 			lxp_proc_t *ch = &g_lxp_proc[c];
+			deferred_slot_reassign(c);
 			*ch = *par; /* vfork shares the image + region */
 #if LXP_ENABLE_DEV
 			lxp_dev_fork_inherit(ch); /* the child shares the parent's device opens */
@@ -1178,6 +1391,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		if (et ==
 		    EV_EXEC) { /* the child gets its own region → resume any vfork parent NOW. */
 			lxp_proc_t *p = &g_lxp_proc[es];
+			deferred_slot_reassign(es); /* invalidate the old image's completed request token */
 			int idx = p->exec_file_idx, eargc = p->exec_argc, eenvc = p->exec_envc;
 			/* Copy argv AND envp out of the proc into static buffers before launch()
 			 * re-inits the slot (which clears exec_argv_buf / exec_env_buf). */
@@ -1266,6 +1480,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		if (et ==
 		    EV_EXIT) { /* reap: abort thread, free region, wake parent/queue zombie. */
 			lxp_proc_t *p = &g_lxp_proc[es];
+			deferred_slot_reassign(es); /* cancel anything tied to the dying slot identity */
 			int cpid = p->pid, status = p->exit_status, vp = p->vfork_parent_slot,
 			    ppid = p->ppid;
 #if LXP_ENABLE_DEV
@@ -1651,6 +1866,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	for (int i = 0; i < LXP_NSLOT; i++)
 		if (g_lxp_used[i])
 			eng->abort_slot(i);
+	for (int i = 0; i < LXP_NSLOT; i++)
+		deferred_slot_reassign(i);
 	g_lxp_active = 0;
 	return rc;
 }

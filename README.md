@@ -46,6 +46,16 @@ space:
 - **Software-checked user pointers.** With no hardware user/kernel split, every syscall
   validates guest pointers against the program's region bounds; on target the Cortex-M MPU
   adds per-task W^X isolation, so guests still run unprivileged.
+- **Bounded syscall top halves.** The SVC handler executes only an explicit set of
+  constant-time ordinary calls plus the bounded trap-control paths that must edit the exception
+  frame. Every other (including every newly added) syscall snapshots its register metadata into
+  one fixed mailbox per process slot, parks that guest, and runs from the preemptible coordinator
+  task. Distinct slots can queue independently; generation tokens discard stale work after
+  `exec`, exit, or slot reuse. Guest-controlled byte I/O returns legal short results at
+  `LXP_SYSCALL_QUANTUM_BYTES`, bounding external I/O, while task-preemptible in-memory file copies
+  use `LXP_SYSCALL_FILE_QUANTUM_BYTES` for FDPIC-loader compatibility. Host callbacks must also
+  return in a host-defined finite interval; a callback that blocks forever stalls all deferred
+  guest syscalls, though higher-priority host RT tasks remain preemptive.
 - **Even signals swap the GOT.** A handler is itself a `{entry, GOT}` descriptor that may live
   in a different module (say libpthread) than the interrupted code, so delivery dereferences
   it and swaps r9 to the handler's GOT, restoring it at `sigreturn` — and the signal frame is

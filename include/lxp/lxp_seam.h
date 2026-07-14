@@ -58,6 +58,10 @@ struct lxp_resume_ctx {
 	uint32_t r1;
 	uint32_t r2;
 	uint32_t r3;
+	/** APSR condition flags captured at the SVC. A deferred syscall recreates the
+	 * task instead of exception-returning, so its resume trampoline must restore
+	 * NZCVQ just as the hardware exception return would. */
+	uint32_t xpsr;
 };
 
 /* The per-engine operations the shared run loop drives are the public port vtable

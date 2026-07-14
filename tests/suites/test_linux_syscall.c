@@ -316,12 +316,14 @@ struct test_kstat64 {
 
 static const uint8_t k_motd[] = "Welcome to oveRTOS\n"; /* 19 bytes + NUL */
 static const uint8_t k_elf[] = {0x7f, 'E', 'L', 'F'};
+static const uint8_t k_script[] = "#!/bin/sh -e\necho script\n";
 static const lxp_file_t k_rootfs[] = {
 	{"/", NULL, 0, LXP_S_IFDIR},
 	{"/etc", NULL, 0, LXP_S_IFDIR},
 	{"/etc/motd", k_motd, sizeof(k_motd) - 1, 0},
 	{"/bin", NULL, 0, LXP_S_IFDIR},
 	{"/bin/sh", k_elf, sizeof(k_elf), 0},
+	{"/bin/script", k_script, sizeof(k_script) - 1, 0},
 };
 #define K_ROOTFS_N ((int)(sizeof(k_rootfs) / sizeof(k_rootfs[0])))
 
@@ -520,6 +522,16 @@ static void test_lnx_execve(void **state)
 	assert_int_equal(p.exec_argc, 2);
 	assert_string_equal(p.exec_argv[0], "prog");
 	assert_string_equal(p.exec_argv[1], "x");
+
+	/* A script rewrites the bounded snapshot in place without revisiting guest argv. */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/bin/script",
+					 (long)(uintptr_t)argv, 0, 0, 0, 0),
+			 0);
+	assert_int_equal(p.exec_argc, 4);
+	assert_string_equal(p.exec_argv[0], "/bin/sh");
+	assert_string_equal(p.exec_argv[1], "-e");
+	assert_string_equal(p.exec_argv[2], "/bin/script");
+	assert_string_equal(p.exec_argv[3], "x");
 
 	/* execve also captures the environment (a2 = envp) for the relaunch to re-emit. */
 	char *const envp[] = {"PATH=/bin:/sbin", "TERM=vt100", NULL};

@@ -20,6 +20,19 @@
 #include <string.h>
 
 static uint8_t g_pool[8192] __attribute__((aligned(16)));
+static size_t g_write_calls;
+static size_t g_write_len[4];
+
+static long bounded_sink(void *ctx, int fd, const void *buf, size_t len)
+{
+	(void)ctx;
+	(void)fd;
+	(void)buf;
+	if (g_write_calls < sizeof(g_write_len) / sizeof(g_write_len[0]))
+		g_write_len[g_write_calls] = len;
+	g_write_calls++;
+	return (long)len;
+}
 
 static void setup_proc(lxp_proc_t *p, lxp_arena_t *arena)
 {
@@ -44,7 +57,7 @@ static void test_poll_nfds_bound(void **st)
 	assert_int_equal(r, -LXP_EINVAL);
 }
 
-/* 2b: writev caps iovcnt at IOV_MAX before the iovcnt*sizeof(iovec) multiply. */
+/* writev caps iovcnt before the iovcnt*sizeof(iovec) multiply. */
 static void test_writev_iovcnt_bound(void **st)
 {
 	(void)st;
@@ -55,6 +68,103 @@ static void test_writev_iovcnt_bound(void **st)
 	memset(iov, 0, sizeof(iov));
 	long r = lxp_syscall(&p, LXP_NR_writev, 1, (long)(uintptr_t)iov, 2000, 0, 0, 0);
 	assert_int_equal(r, -LXP_EINVAL);
+}
+
+/* Guest-controlled byte counts return a legal short result at the configured
+ * quantum, including a vector that crosses the budget between segments. */
+static void test_syscall_payload_quantum(void **st)
+{
+	(void)st;
+	lxp_arena_t a;
+	lxp_proc_t p;
+	setup_proc(&p, &a);
+	p.write_fn = bounded_sink;
+	static uint8_t payload[LXP_SYSCALL_QUANTUM_BYTES + 1u];
+	g_write_calls = 0;
+	memset(g_write_len, 0, sizeof(g_write_len));
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, 1, (long)(uintptr_t)payload,
+				     sizeof(payload), 0, 0, 0),
+			 LXP_SYSCALL_QUANTUM_BYTES);
+	assert_int_equal(g_write_calls, 1);
+	assert_int_equal(g_write_len[0], LXP_SYSCALL_QUANTUM_BYTES);
+
+	const size_t first = LXP_SYSCALL_QUANTUM_BYTES > 1u
+				     ? LXP_SYSCALL_QUANTUM_BYTES / 2u
+				     : 1u;
+	lxp_iovec iov[2] = {
+		{.iov_base = payload, .iov_len = first},
+		{.iov_base = payload, .iov_len = LXP_SYSCALL_QUANTUM_BYTES},
+	};
+	g_write_calls = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_writev, 1, (long)(uintptr_t)iov, 2, 0, 0, 0),
+			 LXP_SYSCALL_QUANTUM_BYTES);
+	assert_int_equal(g_write_calls, LXP_SYSCALL_QUANTUM_BYTES > 1u ? 2 : 1);
+	assert_int_equal(g_write_len[0], first);
+	if (LXP_SYSCALL_QUANTUM_BYTES > 1u)
+		assert_int_equal(g_write_len[1], LXP_SYSCALL_QUANTUM_BYTES - first);
+
+	/* A potentially blocking fd stops at one segment: its retry state can hold
+	 * only one buffer, so returning a short write preserves the remaining iovec. */
+	p.fds[1].kind = LXP_FD_SOCKET; /* retain the test console ops, change park capability */
+	g_write_calls = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_writev, 1, (long)(uintptr_t)iov, 2, 0, 0, 0),
+			 first);
+	assert_int_equal(g_write_calls, 1);
+	p.fds[1].kind = LXP_FD_CONSOLE;
+
+	payload[LXP_SYSCALL_QUANTUM_BYTES] = 0xa5;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getrandom, (long)(uintptr_t)payload,
+				     sizeof(payload), 0, 0, 0, 0),
+			 LXP_SYSCALL_QUANTUM_BYTES);
+	assert_int_equal(payload[LXP_SYSCALL_QUANTUM_BYTES], 0xa5); /* byte beyond quantum untouched */
+}
+
+/* In-memory file copies have a larger but still finite quantum. The separate
+ * bound lets the FDPIC loader complete its 22 KiB pread without expanding the
+ * external console/socket callback budget. */
+static void test_file_payload_quantum(void **st)
+{
+	(void)st;
+	lxp_arena_t a;
+	lxp_proc_t p;
+	setup_proc(&p, &a);
+	static uint8_t file_data[LXP_SYSCALL_FILE_QUANTUM_BYTES + 1u];
+	static uint8_t dst[LXP_SYSCALL_FILE_QUANTUM_BYTES + 1u];
+	const lxp_file_t fs[] = {{"/big", file_data, sizeof(file_data), 0}};
+	lxp_proc_set_rootfs(&p, fs, 1);
+	long fd = lxp_syscall(&p, LXP_NR_open, (long)(uintptr_t)"/big", LXP_O_RDONLY, 0, 0, 0,
+			      0);
+	assert_true(fd >= 0);
+	dst[LXP_SYSCALL_FILE_QUANTUM_BYTES] = 0xa5;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_pread64, fd, (long)(uintptr_t)dst, sizeof(dst), 0,
+				     0, 0),
+			 LXP_SYSCALL_FILE_QUANTUM_BYTES);
+	assert_int_equal(dst[LXP_SYSCALL_FILE_QUANTUM_BYTES], 0xa5);
+}
+
+/* execve rejects vectors and strings larger than the storage the eventual
+ * relaunch can preserve; it no longer scans 256 entries and silently truncates. */
+static void test_exec_vector_bounds(void **st)
+{
+	(void)st;
+	lxp_arena_t a;
+	lxp_proc_t p;
+	setup_proc(&p, &a);
+	char *too_many[LXP_EXEC_MAXARGS + 2];
+	for (int i = 0; i < LXP_EXEC_MAXARGS + 1; i++)
+		too_many[i] = (char *)"x";
+	too_many[LXP_EXEC_MAXARGS + 1] = NULL;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)"/bin/x",
+				     (long)(uintptr_t)too_many, 0, 0, 0, 0),
+			 -LXP_E2BIG);
+
+	static char too_long[LXP_EXEC_ARGBUF + 1];
+	memset(too_long, 'x', sizeof(too_long));
+	too_long[sizeof(too_long) - 1] = '\0';
+	char *long_argv[] = {too_long, NULL};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)"/bin/x",
+				     (long)(uintptr_t)long_argv, 0, 0, 0, 0),
+			 -LXP_E2BIG);
 }
 
 /* 2g: dup(2)/dup2 clear FD_CLOEXEC on the new fd (Linux ABI). */
@@ -105,6 +215,9 @@ int test_overflow_run(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_poll_nfds_bound),
 		cmocka_unit_test(test_writev_iovcnt_bound),
+		cmocka_unit_test(test_syscall_payload_quantum),
+		cmocka_unit_test(test_file_payload_quantum),
+		cmocka_unit_test(test_exec_vector_bounds),
 		cmocka_unit_test(test_dup_clears_cloexec),
 		cmocka_unit_test(test_dup3_same_fd_einval),
 		cmocka_unit_test(test_symlink_target_fault),

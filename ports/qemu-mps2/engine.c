@@ -200,15 +200,15 @@ __attribute__((naked)) void BusFault_Handler(void)
 /* ---- thread entry: in-region descriptor + unified trampoline --------------- */
 struct resume_desc {
 	uint32_t r0;
-	struct lxp_resume_ctx ctx; /* r4_11[8], r12, lr, sp, pc */
+	struct lxp_resume_ctx ctx;
 };
 
 __attribute__((naked)) static void prog_tramp(void *desc __attribute__((unused)))
 {
 	/* desc in r0. Restore r4..r11 (r7/r8/r9 = FDPIC exec/interp loadmap + GOT), r12, lr,
-	 * then r1..r3 (the syscall arg regs the Linux ABI preserves), r0 = desc->r0, switch SP,
-	 * and branch to ctx.pc. Every register ends up holding its final value, so ctx.pc is
-	 * staged on the guest stack (push/pop) rather than kept in a scratch register. */
+	 * then r1..r3 and APSR.NZCVQ (state preserved by a hardware exception return), r0 =
+	 * desc->r0, switch SP, and branch to ctx.pc. Every register ends up holding its final
+	 * value, so ctx.pc is staged on the guest stack rather than kept in a scratch register. */
 	__asm__ volatile("add   r3, r0, #4     \n" /* r3 -> ctx */
 			 "ldmia r3!, {r4-r11} \n" /* r4..r11;  r3 -> ctx.r12 */
 			 "ldr   r12, [r3], #4 \n" /* r12;      r3 -> ctx.lr */
@@ -216,6 +216,8 @@ __attribute__((naked)) static void prog_tramp(void *desc __attribute__((unused))
 			 "ldr   r1,  [r3], #4 \n" /* r1 = ctx.sp (temp);  r3 -> ctx.pc */
 			 "ldr   r2,  [r3], #4 \n" /* r2 = ctx.pc (temp);  r3 -> ctx.r1 */
 			 "mov   sp,  r1       \n" /* sp = ctx.sp */
+			 "ldr   r1,  [r3, #12]\n" /* ctx.xpsr (temp; NZCVQ only below) */
+			 "msr   APSR_nzcvq, r1\n"
 			 "push  {r2}          \n" /* stage ctx.pc on the guest stack */
 			 "ldr   r1,  [r3]     \n" /* r1 = ctx.r1 (final) */
 			 "ldr   r2,  [r3, #4] \n" /* r2 = ctx.r2 (final) */

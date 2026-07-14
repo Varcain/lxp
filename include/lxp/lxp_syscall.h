@@ -297,6 +297,7 @@ extern "C" {
 #define LXP_ESRCH 3
 #define LXP_EINTR 4
 #define LXP_EIO 5
+#define LXP_E2BIG 7
 #define LXP_ENOEXEC 8
 #define LXP_EBADF 9
 #define LXP_ECHILD 10

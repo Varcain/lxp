@@ -33,8 +33,12 @@ static struct {
 	int resume_calls;
 	int resume_sidx;
 	long resume_r0;
+	uint32_t resume_xpsr;
+	int resume_order[LXP_NSLOT];
+	long resume_results[LXP_NSLOT];
 	int abort_calls;
 	int abort_sidx;
+	int event_posts;
 } g_mock;
 
 static uint8_t *mock_region(int ridx)
@@ -49,17 +53,29 @@ static void mock_spawn_resume(int sidx, int ridx, const struct lxp_resume_ctx *c
 	g_mock.resume_calls++;
 	g_mock.resume_sidx = sidx;
 	g_mock.resume_r0 = r0;
+	g_mock.resume_xpsr = c->xpsr;
+	if (g_mock.resume_calls <= LXP_NSLOT) {
+		g_mock.resume_order[g_mock.resume_calls - 1] = sidx;
+		g_mock.resume_results[g_mock.resume_calls - 1] = r0;
+	}
+	g_lxp_used[sidx] = 1;
 }
 static void mock_abort_slot(int sidx)
 {
 	g_mock.abort_calls++;
 	g_mock.abort_sidx = sidx;
+	g_lxp_used[sidx] = 0;
+}
+static void mock_event_post(void)
+{
+	g_mock.event_posts++;
 }
 
 static const lxp_os_ops_t g_mock_eng = {
 	.region = mock_region,
 	.spawn_resume = mock_spawn_resume,
 	.abort_slot = mock_abort_slot,
+	.event_post = mock_event_post,
 };
 
 static int reset_state(void **state)
@@ -67,7 +83,13 @@ static int reset_state(void **state)
 	(void)state;
 	memset(g_lxp_proc, 0, sizeof(g_lxp_proc));
 	memset(g_lxp_used, 0, sizeof(g_lxp_used));
+	memset(g_deferred, 0, sizeof(g_deferred));
+	memset(g_slot_generation, 0, sizeof(g_slot_generation));
 	memset(&g_mock, 0, sizeof(g_mock));
+	g_eng = &g_mock_eng;
+	g_cfg = NULL;
+	g_pending_sig = 0;
+	g_tty_isig = 1;
 	return 0;
 }
 
@@ -329,12 +351,14 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 	(void)state;
 	uint8_t arena_mem[256] __attribute__((aligned(16)));
 	lxp_arena_t arena;
-	lxp_proc_t proc;
 	assert_int_equal(lxp_arena_init(&arena, arena_mem, sizeof(arena_mem)), LXP_OK);
-	assert_int_equal(lxp_proc_init(&proc, &arena, 0), LXP_OK);
-	proc.region_lo = 0x1000u;
-	proc.region_hi = 0x2000u;
-	proc.pool_lo = proc.pool_hi = 0;
+	lxp_proc_t *proc = &g_lxp_proc[0];
+	assert_int_equal(lxp_proc_init(proc, &arena, 0), LXP_OK);
+	proc->alive = 1;
+	proc->region_lo = 0x1000u;
+	proc->region_hi = 0x2000u;
+	proc->pool_lo = proc->pool_hi = 0;
+	deferred_slot_reassign(0);
 
 	const uint32_t cmds[] = {LXP_TCSETS, LXP_TCSETSW, LXP_TCSETSF};
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
@@ -345,12 +369,177 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 		f.r[2] = 0x20000000u; /* mapped host SRAM on target; outside this guest */
 		f.r[7] = LXP_NR_ioctl;
 		g_tty_isig = 1;
+		g_lxp_used[0] = 1;
 
-		lxp_dispatch(&f, &proc);
+		lxp_dispatch(&f, proc);
 
-		assert_int_equal((int32_t)f.r[0], -LXP_EFAULT);
+		assert_int_equal(deferred_state_load(0), DEFER_READY);
+		assert_int_equal(g_mock.event_posts, (int)i + 1);
+		execute_deferred(&g_mock_eng, 0);
+		assert_int_equal(g_mock.resume_r0, -LXP_EFAULT);
 		assert_int_equal(g_tty_isig, 1); /* invalid input cannot alter console state */
 	}
+}
+
+/* Pointer-free identity calls stay in the bounded top half; unknown/new calls
+ * default to the deferred mailbox and therefore cannot accidentally run in SVC. */
+static void test_dispatch_class_defaults_deferred(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	p->pid = 42;
+	deferred_slot_reassign(0);
+	struct lxp_frame f;
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_getpid;
+	lxp_dispatch(&f, p);
+	assert_int_equal(f.r[0], 42);
+	assert_int_equal(g_mock.event_posts, 0);
+	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
+
+	memset(&f, 0, sizeof(f));
+	f.r[7] = 999;
+	f.xpsr = 0xa8000000u | (1u << 24); /* NZCV + Thumb survive task recreation */
+	g_lxp_used[0] = 1;
+	lxp_dispatch(&f, p);
+	assert_int_equal(deferred_state_load(0), DEFER_READY);
+	assert_int_equal(g_mock.event_posts, 1);
+	execute_deferred(&g_mock_eng, 0);
+	assert_int_equal(g_mock.resume_r0, -LXP_ENOSYS);
+	assert_int_equal(g_mock.resume_xpsr, f.xpsr);
+}
+
+/* Distinct slots have distinct fixed mailboxes. Both may queue while neither
+ * bottom half has completed; servicing one cannot overwrite or lose the other. */
+static void test_deferred_requests_are_per_slot(void **state)
+{
+	(void)state;
+	for (int s = 0; s < 2; s++) {
+		g_lxp_proc[s].alive = 1;
+		g_lxp_proc[s].pid = s + 1;
+		deferred_slot_reassign(s);
+		g_lxp_used[s] = 1;
+		struct lxp_frame f;
+		memset(&f, 0, sizeof(f));
+		f.r[7] = 900u + (uint32_t)s;
+		lxp_dispatch(&f, &g_lxp_proc[s]);
+	}
+	assert_int_equal(g_mock.event_posts, 2);
+	assert_int_equal(deferred_state_load(0), DEFER_READY);
+	assert_int_equal(deferred_state_load(1), DEFER_READY);
+
+	execute_deferred(&g_mock_eng, 1);
+	assert_int_equal(deferred_state_load(0), DEFER_READY);
+	assert_int_equal(deferred_state_load(1), DEFER_IDLE);
+	execute_deferred(&g_mock_eng, 0);
+	assert_int_equal(g_mock.resume_calls, 2);
+	assert_int_equal(g_mock.resume_order[0], 1);
+	assert_int_equal(g_mock.resume_order[1], 0);
+}
+
+/* A stale event from an old slot generation is discarded without aborting or
+ * resuming the new occupant of that slot. */
+static void test_deferred_generation_rejects_stale_work(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	deferred_slot_reassign(0);
+	struct lxp_frame f;
+	memset(&f, 0, sizeof(f));
+	f.r[7] = 999;
+	lxp_dispatch(&f, p);
+	uint32_t old_generation = g_deferred[0].generation;
+	deferred_slot_reassign(0);
+	g_deferred[0].generation = old_generation;
+	deferred_state_store(0, DEFER_READY); /* delayed event from the prior occupant */
+	g_lxp_used[0] = 1;
+
+	execute_deferred(&g_mock_eng, 0);
+
+	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
+	assert_int_equal(g_mock.abort_calls, 0);
+	assert_int_equal(g_mock.resume_calls, 0);
+	assert_int_equal(g_lxp_used[0], 1); /* the replacement task was untouched */
+}
+
+/* One slot cannot overwrite its outstanding request, even if a broken seam
+ * attempts to dispatch that slot again before the bottom half claims it. */
+static void test_deferred_same_slot_rejects_overwrite(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	deferred_slot_reassign(0);
+	struct lxp_frame first, second;
+	memset(&first, 0, sizeof(first));
+	memset(&second, 0, sizeof(second));
+	first.r[7] = 998;
+	second.r[7] = 999;
+	lxp_dispatch(&first, p);
+	lxp_dispatch(&second, p);
+	assert_int_equal((int32_t)second.r[0], -LXP_EAGAIN);
+	assert_int_equal(g_mock.event_posts, 1);
+	assert_int_equal((int32_t)g_ctx[0].r4_11[3], 998);
+}
+
+/* A deliverable signal queued before resource acquisition cancels deferred work.
+ * Default SIGTERM kills the guest without ever executing or resuming its syscall. */
+static void test_deferred_signal_cancels_before_execute(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	deferred_slot_reassign(0);
+	struct lxp_frame f;
+	memset(&f, 0, sizeof(f));
+	f.r[7] = 999;
+	g_lxp_used[0] = 1;
+	lxp_dispatch(&f, p);
+	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
+
+	execute_deferred(&g_mock_eng, 0);
+
+	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
+	assert_int_equal(g_mock.abort_calls, 1);
+	assert_int_equal(g_mock.resume_calls, 0);
+	assert_int_equal(p->exited, 1);
+	assert_int_equal(p->exit_status, 128 + LXP_SIGTERM);
+}
+
+static int console_not_ready(void *ctx)
+{
+	(void)ctx;
+	return 0;
+}
+
+/* Blocking handlers hand ownership to the existing wait state machine. The
+ * parked task must remain present until that event claims and aborts it; deleting
+ * it in the generic bottom half makes the wait predicate permanently false. */
+static void test_deferred_blocking_handoff_keeps_parked_task(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	p->console_poll = console_not_ready;
+	deferred_slot_reassign(0);
+	g_lxp_used[0] = 1;
+
+	struct lxp_frame f;
+	memset(&f, 0, sizeof(f));
+	f.r[0] = 0; /* no pollfd array: this is a pure timeout sleep */
+	f.r[1] = 0;
+	f.r[2] = 1000;
+	f.r[7] = LXP_NR_poll;
+	lxp_dispatch(&f, p);
+	execute_deferred(&g_mock_eng, 0);
+
+	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
+	assert_int_equal(p->sleep_pending, 1);
+	assert_int_equal(g_lxp_used[0], 1);
+	assert_int_equal(g_mock.abort_calls, 0);
+	assert_int_equal(g_mock.resume_calls, 0);
 }
 
 int main(void)
@@ -358,6 +547,13 @@ int main(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_encode_wstatus, reset_state),
 		cmocka_unit_test_setup(test_dispatch_rejects_bad_tcsets_pointer, reset_state),
+		cmocka_unit_test_setup(test_dispatch_class_defaults_deferred, reset_state),
+		cmocka_unit_test_setup(test_deferred_requests_are_per_slot, reset_state),
+		cmocka_unit_test_setup(test_deferred_generation_rejects_stale_work, reset_state),
+		cmocka_unit_test_setup(test_deferred_same_slot_rejects_overwrite, reset_state),
+		cmocka_unit_test_setup(test_deferred_signal_cancels_before_execute, reset_state),
+		cmocka_unit_test_setup(test_deferred_blocking_handoff_keeps_parked_task,
+				       reset_state),
 		cmocka_unit_test_setup(test_pending_deliverable, reset_state),
 		cmocka_unit_test_setup(test_futex_has_corunner, reset_state),
 		cmocka_unit_test_setup(test_futex_wake_marks_waiters, reset_state),

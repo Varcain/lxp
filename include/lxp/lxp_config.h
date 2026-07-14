@@ -90,6 +90,34 @@
 #ifndef LXP_ARENA_MAX_MAPPINGS
 #define LXP_ARENA_MAX_MAPPINGS 32
 #endif
+/* Maximum guest-controlled payload handled by one syscall dispatch quantum.
+ * Byte-stream interfaces may legally return a short read/write; libc retries
+ * the remainder. Keeping this finite prevents one hostile request from
+ * monopolising the privileged deferred-syscall coordinator. */
+#ifndef LXP_SYSCALL_QUANTUM_BYTES
+#define LXP_SYSCALL_QUANTUM_BYTES 4096u
+#endif
+/* In-memory rootfs/tmpfs pread/pwrite operations are task-preemptible memcpy
+ * paths rather than external callbacks. uClibc's FDPIC loader requires one
+ * 22 KiB pread to complete in full, so give file copies a separate finite
+ * quantum without expanding UART/socket callback work. */
+#ifndef LXP_SYSCALL_FILE_QUANTUM_BYTES
+#define LXP_SYSCALL_FILE_QUANTUM_BYTES 65536u
+#endif
+/* Fixed writev/sendmsg vector fan-out bound. Consumers may lower this when a
+ * smaller metadata-walk budget is preferable to Linux's usual IOV_MAX. */
+#ifndef LXP_SYSCALL_MAX_IOV
+#define LXP_SYSCALL_MAX_IOV 1024
+#endif
+#if LXP_SYSCALL_QUANTUM_BYTES < 1
+#error "LXP_SYSCALL_QUANTUM_BYTES must be positive"
+#endif
+#if LXP_SYSCALL_FILE_QUANTUM_BYTES < 1
+#error "LXP_SYSCALL_FILE_QUANTUM_BYTES must be positive"
+#endif
+#if LXP_SYSCALL_MAX_IOV < 1 || LXP_SYSCALL_MAX_IOV > 1024
+#error "LXP_SYSCALL_MAX_IOV must be in [1, 1024]"
+#endif
 /* Max program images live at once (init + login shell + concurrent jobs). */
 #ifndef LXP_NREG
 #define LXP_NREG 8
