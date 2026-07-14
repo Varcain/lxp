@@ -508,6 +508,7 @@ static void test_conf_identity(void **state)
 
 	/* getrandom fills the buffer and returns the count. */
 	uint8_t *rb = lxp_conf_alloc(fx, 16);
+	g_lxp_test_random_result = LXP_OK;
 	assert_int_equal(SC(&p, LXP_NR_getrandom, (long)(uintptr_t)rb, 16, 0, 0, 0, 0), 16);
 
 	/* execve captures a valid program; a missing one is -ENOENT. */

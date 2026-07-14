@@ -139,7 +139,7 @@ Surface: 136 LXP_NR_* — 94 implemented, 31 benign-stub, 1 refused-eopnotsupp, 
 | 366 | accept4 | implemented | NET-gated |
 | 369 | prlimit64 | benign-stub | reports finite limits; new accepted (inert) |
 | 382 | renameat2 | implemented | flags ignored |
-| 384 | getrandom | implemented |  |
+| 384 | getrandom | implemented | host `random_fill`; bounded; fails closed when unavailable |
 | 397 | statx | implemented | mask arg ignored |
 | 403 | clock_gettime64 | implemented | 64-bit time_t |
 | 407 | clock_nanosleep_time64 | implemented | parks via the run loop |

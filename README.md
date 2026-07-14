@@ -56,6 +56,11 @@ space:
   use `LXP_SYSCALL_FILE_QUANTUM_BYTES` for FDPIC-loader compatibility. Host callbacks must also
   return in a host-defined finite interval; a callback that blocks forever stalls all deferred
   guest syscalls, though higher-priority host RT tasks remain preemptive.
+- **Entropy is a host trust boundary.** `getrandom`, `/dev/random`, `/dev/urandom`, and each
+  process's `AT_RANDOM` stack-canary seed use the host's `random_fill` operation. The core has
+  no time-seeded fallback: a port without a trustworthy provider returns an error and cannot
+  launch a guest with a predictable canary. Production providers must bound their own runtime;
+  the bundled deterministic QEMU provider is explicitly development-only.
 - **Even signals swap the GOT.** A handler is itself a `{entry, GOT}` descriptor that may live
   in a different module (say libpthread) than the interrupted code, so delivery dereferences
   it and swaps r9 to the handler's GOT, restoring it at `sigreturn` — and the signal frame is
@@ -67,7 +72,7 @@ Guest-facing structs use fixed-width types, so the 32-bit-target ABI is byte-ide
 ## Using it
 
 A host implements the port interface in `include/lxp/lxp_port.h` — OS ops (program-memory
-placement, task spawn, run-loop event wait/post, monotonic time) plus optional net and
+placement, task spawn, run-loop event wait/post, monotonic time, trustworthy entropy) plus optional net and
 display ops — and calls:
 
 ```c

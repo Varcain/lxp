@@ -113,10 +113,70 @@ static void test_syscall_payload_quantum(void **st)
 	p.fds[1].kind = LXP_FD_CONSOLE;
 
 	payload[LXP_SYSCALL_QUANTUM_BYTES] = 0xa5;
+	g_lxp_test_random_result = LXP_OK;
+	g_lxp_test_random_calls = 0;
 	assert_int_equal(lxp_syscall(&p, LXP_NR_getrandom, (long)(uintptr_t)payload,
 				     sizeof(payload), 0, 0, 0, 0),
 			 LXP_SYSCALL_QUANTUM_BYTES);
+	assert_int_equal(g_lxp_test_random_calls, 1);
+	assert_int_equal(g_lxp_test_random_len, LXP_SYSCALL_QUANTUM_BYTES);
 	assert_int_equal(payload[LXP_SYSCALL_QUANTUM_BYTES], 0xa5); /* byte beyond quantum untouched */
+}
+
+/* Entropy is host-supplied and fails closed. getrandom reports a missing
+ * provider as ENOSYS, while an already-open random device reports EIO. Linux
+ * flag validation happens before the provider is called. */
+static void test_entropy_provider_contract(void **st)
+{
+	(void)st;
+	lxp_arena_t a;
+	lxp_proc_t p;
+	setup_proc(&p, &a);
+	uint8_t out[32];
+
+	g_lxp_test_random_result = LXP_OK;
+	g_lxp_test_random_calls = 0;
+	memset(out, 0, sizeof(out));
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getrandom, (long)(uintptr_t)out,
+				     sizeof(out), LXP_GRND_NONBLOCK, 0, 0, 0),
+			 sizeof(out));
+	assert_int_equal(g_lxp_test_random_calls, 1);
+	assert_int_equal(g_lxp_test_random_len, sizeof(out));
+	for (size_t i = 0; i < sizeof(out); i++)
+		assert_int_equal(out[i], (uint8_t)(0xa5u ^ (uint8_t)i));
+
+	/* A zero-byte request succeeds without dereferencing NULL or consulting the source. */
+	g_lxp_test_random_calls = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getrandom, 0, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(g_lxp_test_random_calls, 0);
+
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getrandom, (long)(uintptr_t)out, 1,
+				     0x80000000u, 0, 0, 0),
+			 -LXP_EINVAL);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getrandom, (long)(uintptr_t)out, 1,
+				     LXP_GRND_RANDOM | LXP_GRND_INSECURE, 0, 0, 0),
+			 -LXP_EINVAL);
+	assert_int_equal(g_lxp_test_random_calls, 0);
+
+	g_lxp_test_random_result = LXP_ERR_NOT_SUPPORTED;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getrandom, (long)(uintptr_t)out, 1, 0, 0, 0,
+				     0),
+			 -LXP_ENOSYS);
+	long fd = lxp_syscall(&p, LXP_NR_open, (long)(uintptr_t)"/dev/urandom",
+			      LXP_O_RDONLY, 0, 0, 0, 0);
+	assert_true(fd >= 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, fd, (long)(uintptr_t)out, 1, 0, 0, 0),
+			 -LXP_EIO);
+
+	g_lxp_test_random_result = LXP_ERR_WOULD_BLOCK;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getrandom, (long)(uintptr_t)out, 1, 0, 0, 0,
+				     0),
+			 -LXP_EAGAIN);
+	g_lxp_test_random_result = LXP_ERR_TIMEOUT;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getrandom, (long)(uintptr_t)out, 1, 0, 0, 0,
+				     0),
+			 -LXP_EIO);
+	g_lxp_test_random_result = LXP_OK;
 }
 
 /* In-memory file copies have a larger but still finite quantum. The separate
@@ -216,6 +276,7 @@ int test_overflow_run(void)
 		cmocka_unit_test(test_poll_nfds_bound),
 		cmocka_unit_test(test_writev_iovcnt_bound),
 		cmocka_unit_test(test_syscall_payload_quantum),
+		cmocka_unit_test(test_entropy_provider_contract),
 		cmocka_unit_test(test_file_payload_quantum),
 		cmocka_unit_test(test_exec_vector_bounds),
 		cmocka_unit_test(test_dup_clears_cloexec),

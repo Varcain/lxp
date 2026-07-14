@@ -273,6 +273,8 @@ static void test_lnx_setup_stack(void **state)
 	assert_int_equal(aux[1], 4096);
 	assert_int_equal(aux[2], LXP_AT_RANDOM);
 	assert_non_null((void *)aux[3]); /* AT_RANDOM points into the stack */
+	for (int i = 0; i < 16; i++)
+		assert_int_equal(((const uint8_t *)aux[3])[i], (uint8_t)(0xa5u ^ (uint8_t)i));
 	assert_int_equal(aux[4], LXP_AT_NULL);
 
 	/* FDPIC inline layout: sp -> argc, argv[] inline, NULL, envp[] inline, NULL, auxv.
@@ -297,6 +299,11 @@ static void test_lnx_setup_stack(void **state)
 	assert_null((void *)av2[1]); /* argv terminator */
 	char *const *ev2 = (char *const *)sp2[2];
 	assert_null((void *)ev2[0]); /* empty envp */
+
+	/* Process creation fails closed rather than installing a predictable canary. */
+	g_lxp_test_random_result = LXP_ERR_NOT_SUPPORTED;
+	assert_null(lxp_setup_stack(stk, sizeof(stk), 1, argv, NULL, 0, 0, 0, 0, 0));
+	g_lxp_test_random_result = LXP_OK;
 }
 
 /* Mirrors the kernel struct stat64 prefix through st_size (offset 48). */

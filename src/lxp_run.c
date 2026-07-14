@@ -169,6 +169,12 @@ int lxp_time_ns(uint64_t *out)
 	*out = 0;
 	return LXP_ERR_NOT_SUPPORTED;
 }
+int lxp_random_fill(void *buf, size_t len)
+{
+	if ((!buf && len != 0u) || !g_eng || !g_eng->random_fill)
+		return (!buf && len != 0u) ? LXP_ERR_INVALID_PARAM : LXP_ERR_NOT_SUPPORTED;
+	return g_eng->random_fill(buf, len);
+}
 void lxp_cache_clean(const void *base, size_t len)
 {
 	if (g_eng && g_eng->cache_clean)

@@ -725,6 +725,8 @@ void lxp_guest_invalidate(const void *base, size_t len);
  * still using the weak-symbol form during the extraction). */
 int lxp_time_us(uint64_t *out);
 int lxp_time_ns(uint64_t *out);
+/** Fill @p len bytes from the active host entropy provider. Returns an lxp_err_t. */
+int lxp_random_fill(void *buf, size_t len);
 void lxp_cache_clean(const void *base, size_t len);
 void lxp_cache_invalidate(const void *base, size_t len);
 struct lxp_thread_info;
@@ -763,6 +765,11 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes);
 #define LXP_AT_ENTRY 9
 #define LXP_AT_RANDOM 25
 
+/* getrandom(2) flags from Linux UAPI <linux/random.h>. */
+#define LXP_GRND_NONBLOCK 0x0001u
+#define LXP_GRND_RANDOM 0x0002u
+#define LXP_GRND_INSECURE 0x0004u
+
 /**
  * @brief Build a uClinux/FDPIC process stack for a loaded program's crt0.
  *
@@ -786,8 +793,10 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes);
  * @param[in] phdr       FDPIC only: runtime program-header address (AT_PHDR).
  * @param[in] phnum      FDPIC only: number of program headers (AT_PHNUM).
  * @param[in] entry      FDPIC only: program entry point (AT_ENTRY).
- * @return The initial stack pointer, or NULL on bad arguments / insufficient room.
- * @note Requires @c LXP_ENABLE_LINUX.
+ * @return The initial stack pointer, or NULL on bad arguments, insufficient room,
+ *         or an unavailable/failing host entropy provider for @c AT_RANDOM.
+ * @note Requires @c LXP_ENABLE_LINUX and an active @c lxp_os_ops_t::random_fill
+ *       provider. Process creation deliberately fails closed without one.
  */
 void *lxp_setup_stack(void *stack, size_t stack_size, int argc, const char *const argv[],
 			  const char *const envp[], int fdpic, uintptr_t phdr, int phnum,

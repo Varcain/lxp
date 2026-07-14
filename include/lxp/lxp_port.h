@@ -133,6 +133,14 @@ typedef struct lxp_os_ops {
 	 * run (lxp_run returns LXP_RUN_ELAUNCH); teardown() runs after the loop exits. */
 	int (*prepare)(void);
 	void (*teardown)(void);
+
+	/* Fill every byte in [buf, buf+len) from a host entropy source. The callback
+	 * runs on the privileged coordinator task, must have a finite host-defined
+	 * deadline, and returns LXP_OK only when the entire buffer is valid. A port
+	 * without trustworthy entropy leaves this NULL; the guest then fails closed
+	 * instead of receiving a predictable in-core fallback. Kept at the end so
+	 * extending the source-level vtable does not move existing members. */
+	int (*random_fill)(void *buf, size_t len);
 } lxp_os_ops_t;
 
 /* ─────────────────────────────────────────────────────────────────────────

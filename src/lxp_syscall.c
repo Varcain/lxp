@@ -61,8 +61,9 @@ LXP_STATIC_ASSERT(sizeof(struct lxp_pollfd) == 8, "pollfd ABI size drifted");
 
 /* fd-slot kinds (lxp_fd.kind) are now in lxp_syscall.h (shared with the subsystem TUs). */
 
-/* PRNG fill (defined with sys_getrandom); /dev/urandom reads use it before that point. */
-static void prng_fill(uint8_t *b, size_t count);
+/* Host entropy adapter (defined with sys_getrandom); random-device reads use it
+ * before that point. */
+static long random_fill(void *buf, size_t count, int unavailable_errno);
 
 /* fd-kind → file-operation vtable resolver (defined with the fops below); used by
  * proc_init to seed the std streams before the fops block appears in the file. */
@@ -390,13 +391,15 @@ void *lxp_setup_stack(void *stack, size_t stack_size, int argc, const char *cons
 		argp[i] = (uintptr_t)sp;
 	}
 
-	/* 16 bytes for AT_RANDOM (stack-canary seed; not cryptographic here). */
+	/* 16 bytes for AT_RANDOM (stack-canary seed). Do not launch a process when
+	 * the host has no trustworthy entropy: a fixed or time-derived fallback
+	 * would silently give every guest a predictable canary. */
 	if (sp - 16 < floor)
 		return NULL;
 	sp -= 16;
 	uint8_t *rnd = sp;
-	for (int i = 0; i < 16; i++)
-		rnd[i] = (uint8_t)(0xa5u ^ (unsigned)i);
+	if (lxp_random_fill(rnd, 16u) != LXP_OK)
+		return NULL;
 
 	/* FDPIC programs use the STANDARD ELF inline stack (the crt reads argc at sp,
 	 * argv[] inline at sp+4, then computes envp = &argv[argc+1]): argc, argv[0..],
@@ -606,10 +609,8 @@ static long fop_read_console(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 		return -LXP_EBADF;
 	if (s->file_idx == 3) /* /dev/null */
 		return 0;     /* EOF */
-	if (s->file_idx == 4) { /* /dev/urandom + /dev/random: PRNG bytes */
-		prng_fill((uint8_t *)buf, len);
-		return (long)len;
-	}
+	if (s->file_idx == 4) /* /dev/urandom + /dev/random: host entropy */
+		return random_fill(buf, len, LXP_EIO);
 	if (!p->read_fn)
 		return 0; /* EOF */
 	/* Park until a key is ready (probed via console_poll) so the syscall bottom
@@ -1567,7 +1568,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 	if (proc_is(path)) /* synthetic /proc shadows everything */
 		return proc_open(p, path);
 	/* The synthetic console/null/random nodes all open as an FD_CONSOLE; file_idx selects
-	 * the behaviour (2 = r/w console, 3 = /dev/null → EOF/discard, 4 = /dev/urandom PRNG).
+	 * the behaviour (2 = r/w console, 3 = /dev/null → EOF/discard, 4 = host entropy).
 	 * A small name→idx table instead of a strcmp chain (smaller .text). getty opens
 	 * /dev/console + dups it to fds 0/1/2; dropbear/mbedTLS open /dev/urandom for entropy. */
 	static const struct {
@@ -2085,34 +2086,41 @@ static long sys_utimensat(lxp_proc_t *p, const char *path)
 	return -LXP_ENOENT;
 }
 
-/* A non-cryptographic xorshift PRNG seeded from uptime (no hardware RNG on this tier).
- * Backs both getrandom(2) and /dev/urandom. NOTE: this is WEAK entropy — enough for
- * mktemp suffixes, and it lets mbedTLS/dropbear run, but SSH host keys / session keys
- * derived from it are not cryptographically strong (acceptable for a LAN test target;
- * a real deployment would wire the STM32 hardware RNG here). */
-static void prng_fill(uint8_t *b, size_t count)
+/* Fill a guest buffer through the active host entropy provider. The port contract
+ * is all-or-error: it returns LXP_OK only after writing every requested byte.
+ * Missing entropy is ENOSYS for getrandom(2), but an already-open random device
+ * reports EIO. A transient non-blocking provider maps to EAGAIN. */
+static long random_fill(void *buf, size_t count, int unavailable_errno)
 {
-	static uint32_t s;
-	if (!s) {
-		uint64_t ns = 0;
-		lxp_time_ns(&ns);
-		s = (uint32_t)ns | 1u;
+	if (count == 0u)
+		return 0;
+	int r = lxp_random_fill(buf, count);
+	if (r == LXP_OK) {
+		/* A Cortex-M host may write through a privileged uncached view while the
+		 * guest maps the same RAM cacheable. Drop stale guest lines before resume. */
+		lxp_cache_invalidate(buf, count);
+		return (long)count;
 	}
-	for (size_t i = 0; i < count; i++) {
-		s ^= s << 13;
-		s ^= s >> 17;
-		s ^= s << 5;
-		b[i] = (uint8_t)(s >> 24);
-	}
+	if (r == LXP_ERR_WOULD_BLOCK)
+		return -LXP_EAGAIN;
+	if (r == LXP_ERR_NOT_SUPPORTED || r == LXP_ERR_NOT_REGISTERED)
+		return -unavailable_errno;
+	return -LXP_EIO;
 }
 
-/* getrandom: fill the user buffer from the PRNG. */
-static long sys_getrandom(lxp_proc_t *p, void *buf, size_t count)
+/* getrandom: validate Linux flags and fill from the host entropy provider. */
+static long sys_getrandom(lxp_proc_t *p, void *buf, size_t count, unsigned flags)
 {
+	const unsigned valid = LXP_GRND_NONBLOCK | LXP_GRND_RANDOM | LXP_GRND_INSECURE;
+	if ((flags & ~valid) != 0u ||
+	    (flags & (LXP_GRND_RANDOM | LXP_GRND_INSECURE)) ==
+		    (LXP_GRND_RANDOM | LXP_GRND_INSECURE))
+		return -LXP_EINVAL;
+	if (count == 0u)
+		return 0;
 	if (!user_ok(p, buf, count, 1))
 		return -LXP_EFAULT;
-	prng_fill(buf, count);
-	return (long)count;
+	return random_fill(buf, count, LXP_ENOSYS);
 }
 
 /* statfs64: synthetic filesystem stats (no real block device backs the rootfs). */
@@ -3120,7 +3128,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_fstatfs64: /* (fd, sz, buf) */
 		return sys_statfs(proc, (void *)(uintptr_t)a2);
 	case LXP_NR_getrandom: /* (buf, count, flags) */
-		return sys_getrandom(proc, (void *)(uintptr_t)a0, (size_t)a1);
+		return sys_getrandom(proc, (void *)(uintptr_t)a0, (size_t)a1, (unsigned)a2);
 	case LXP_NR_eventfd2: { /* (initval, flags) — curl's threaded-resolver wakeup */
 		long ei = efd_new((unsigned)a0, (int)a1);
 		if (ei < 0)

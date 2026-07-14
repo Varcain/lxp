@@ -13,7 +13,24 @@
 #include "lxp/lxp_syscall.h"
 
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
+
+int g_lxp_test_random_result = LXP_OK;
+size_t g_lxp_test_random_calls;
+size_t g_lxp_test_random_len;
+
+int lxp_random_fill(void *buf, size_t len)
+{
+	g_lxp_test_random_calls++;
+	g_lxp_test_random_len = len;
+	if (g_lxp_test_random_result != LXP_OK)
+		return g_lxp_test_random_result;
+	uint8_t *out = buf;
+	for (size_t i = 0; i < len; i++)
+		out[i] = (uint8_t)(0xa5u ^ (uint8_t)i);
+	return LXP_OK;
+}
 
 int lxp_time_us(uint64_t *out)
 {

@@ -23,6 +23,11 @@
 #define OVE_OK LXP_OK
 #endif
 
+/* Controls for tests/stub_lnx_run.c's deterministic entropy provider. */
+extern int g_lxp_test_random_result;
+extern size_t g_lxp_test_random_calls;
+extern size_t g_lxp_test_random_len;
+
 /* Suite entry points — one per tests/suites/test_<name>.c. */
 int test_arena_run(void);
 int test_loader_run(void);
