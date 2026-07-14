@@ -84,6 +84,12 @@
 #ifndef LXP_DYN_POOL_SIZE
 #define LXP_DYN_POOL_SIZE 0x80000u /* 512K */
 #endif
+/* Maximum simultaneously-live arena-backed mmap extents per arena.  The table
+ * lives in the privileged arena control block (not in guest-writable arena
+ * memory), so munmap can require an exact live address/length pair. */
+#ifndef LXP_ARENA_MAX_MAPPINGS
+#define LXP_ARENA_MAX_MAPPINGS 32
+#endif
 /* Max program images live at once (init + login shell + concurrent jobs). */
 #ifndef LXP_NREG
 #define LXP_NREG 8

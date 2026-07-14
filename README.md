@@ -37,11 +37,12 @@ space:
   regions) — no heap, no buddy allocator. A spawn claims a free slot and region in bounded
   time; it never fragments and never fails partway for want of a contiguous block. Process
   count and RAM footprint are fixed at compile time.
-- **Anonymous `mmap` + `brk` over a bounded arena.** No page cache, no file-backed or
-  demand-paged mappings — allocations come from a fixed region with no libc heap beneath, and
-  a full arena returns `ENOMEM` synchronously (no overcommit, no OOM killer). The stack is a
-  fixed slice of that region: W^X stops a stray *execute*, but a stack that grows into the
-  heap corrupts rather than page-faults.
+- **`mmap` + `brk` over a bounded arena.** There is no page cache or demand paging: writable
+  mappings are copied eagerly into a fixed region, while read-only rootfs text can execute
+  in place. A full arena returns `ENOMEM` synchronously (no overcommit, no OOM killer). The
+  stack is a fixed slice of that region: W^X stops a stray *execute*, but a stack that grows
+  into the heap corrupts rather than page-faults. Arena block links are never guest-controlled,
+  and `munmap` reclaims memory only for an exact live extent recorded in privileged metadata.
 - **Software-checked user pointers.** With no hardware user/kernel split, every syscall
   validates guest pointers against the program's region bounds; on target the Cortex-M MPU
   adds per-task W^X isolation, so guests still run unprivileged.

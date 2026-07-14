@@ -127,13 +127,25 @@ static void test_lnx_mmap(void **state)
 	mem[0] = 0xab; /* and it is writable */
 	assert_int_equal(mem[0], 0xab);
 
-	/* munmap succeeds (wholesale reclaim at teardown). */
+	/* Only the exact live mmap extent can be reclaimed. Interior pointers,
+	 * mismatched lengths and the untracked brk reservation fail closed. */
+	size_t mapped_used = lxp_arena_used(&arena);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, m + 16, 240, 0, 0, 0, 0),
+			 -LXP_EINVAL);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, m, 255, 0, 0, 0, 0), -LXP_EINVAL);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, (long)p.brk_base, 4096, 0, 0, 0, 0),
+			 -LXP_EINVAL);
+	assert_int_equal(lxp_arena_used(&arena), mapped_used);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, m, 256, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, m, 256, 0, 0, 0, 0), -LXP_EINVAL);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, m, 0, 0, 0, 0, 0), -LXP_EINVAL);
 
 	/* A file-backed mapping reads the fd's bytes into the block (ld.so loads .so segments
-	 * this way on NOMMU); an unopened fd is rejected. */
+	 * this way on NOMMU); an unopened fd is rejected without leaking its provisional block. */
+	size_t before_failed_map = lxp_arena_used(&arena);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_mmap2, 0, 256, 0x3, 0, 3, 0),
 			 -LXP_EBADF);
+	assert_int_equal(lxp_arena_used(&arena), before_failed_map);
 
 	/* Exhausting the arena yields -ENOMEM rather than a crash. */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_mmap2, 0, 1 << 20, 0x3,

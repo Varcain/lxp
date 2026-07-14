@@ -16,7 +16,8 @@
  * @brief Bounded, backend-independent region allocator.
  *
  * An arena manages a single caller-supplied, fixed-size buffer and hands out
- * aligned blocks from it via a first-fit free list with boundary coalescing.
+ * aligned blocks from it via a first-fit physical block walk with boundary
+ * coalescing.
  * The total footprint is decided at build time (the buffer the caller passes
  * to @c lxp_arena_init), so an arena never grows the system heap — making it
  * suitable for zero-heap deployments and for carving a private, fault-bounded
@@ -38,6 +39,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "lxp/lxp_config.h"
 #include "lxp/lxp_types.h"
 
 #ifdef __cplusplus
@@ -47,20 +49,32 @@ extern "C" {
 /** Alignment (bytes) of every block handed out by the arena. */
 #define LXP_ARENA_ALIGN 16u
 
+#if LXP_ARENA_MAX_MAPPINGS < 1
+#error "LXP_ARENA_MAX_MAPPINGS must be at least 1"
+#endif
+
+/** Privileged record of an arena allocation exposed through mmap(2). */
+typedef struct lxp_arena_mapping {
+	uintptr_t addr;
+	size_t len;
+} lxp_arena_mapping_t;
+
 /**
  * @brief Arena control block.
  *
- * Allocate one per managed buffer. The fields are exposed so the control
- * block can live in static storage (zero-heap), but they are an
- * implementation detail — use the accessor functions rather than reading
- * them directly.
+ * Allocate one per managed buffer, outside any memory writable by an
+ * untrusted user. The fields are exposed so the control block can live in
+ * static storage (zero-heap), but they are an implementation detail — use
+ * the accessor functions rather than reading them directly.
  */
 typedef struct lxp_arena {
 	uint8_t *base;	   /**< Aligned start of the managed region. */
 	size_t size;	   /**< Usable bytes of the managed region. */
 	size_t used;	   /**< Footprint (header + payload) currently allocated. */
 	size_t high_water; /**< Peak @c used observed since init. */
-	void *first;	   /**< Head of the address-ordered block list. */
+	void *first;	   /**< First physical block (always at @c base). */
+	lxp_arena_mapping_t mappings[LXP_ARENA_MAX_MAPPINGS];
+	/**< Exact live arena-backed mmap extents; privileged metadata. */
 } lxp_arena_t;
 
 /**
@@ -90,6 +104,22 @@ void *lxp_arena_alloc(lxp_arena_t *arena, size_t size);
  * @brief Allocate a zero-filled block (see @c lxp_arena_alloc).
  */
 void *lxp_arena_calloc(lxp_arena_t *arena, size_t size);
+
+/**
+ * @brief Allocate a block and register its exact externally-visible extent.
+ *
+ * This is intended for arena-backed mmap(2). Registration is kept outside the
+ * managed buffer, so untrusted code that can write the buffer cannot forge a
+ * live mapping. The original (unrounded) @p size is recorded.
+ */
+void *lxp_arena_alloc_tracked(lxp_arena_t *arena, size_t size);
+
+/**
+ * @brief Release an exact allocation made by @c lxp_arena_alloc_tracked.
+ * @return true only when both @p ptr and @p size match a live record and the
+ *         arena layout is intact; false otherwise. No state changes on false.
+ */
+bool lxp_arena_free_tracked(lxp_arena_t *arena, void *ptr, size_t size);
 
 /**
  * @brief Release a block previously returned by this arena.

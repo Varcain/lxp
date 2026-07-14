@@ -33,8 +33,8 @@ ioctl	implemented
 ftruncate64	implemented
 eventfd2	implemented	curl threaded-resolver wakeup
 brk	implemented
-mmap2	implemented	anonymous mappings only (arena-backed)
-munmap	implemented
+mmap2	implemented	arena-backed anonymous/copied-file maps; read-only rootfs zero-copy; device hook
+munmap	implemented	exact arena-backed live extents; zero-copy/device maps are no-op
 fstat64	implemented
 stat64	implemented
 lstat64	implemented

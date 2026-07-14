@@ -1372,7 +1372,7 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 	}
 #endif
 
-	void *m = lxp_arena_alloc(p->arena, len);
+	void *m = lxp_arena_alloc_tracked(p->arena, len);
 	if (!m)
 		return -LXP_ENOMEM;
 	memset(m, 0, len); /* anon reads as zero; also zero-fills a file map's bss tail */
@@ -1381,28 +1381,28 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 		 * text) this way on NOMMU — read the file's bytes at the page offset into the
 		 * freshly-allocated block. (Anonymous maps ignore the fd.) */
 		long r = sys_pread(p, fd, m, len, pgoff * 4096u);
-		if (r < 0)
+		if (r < 0) {
+			(void)lxp_arena_free_tracked(p->arena, m, len);
 			return r;
+		}
 	}
 	return (long)(uintptr_t)m;
 }
 
 /*
- * munmap is a no-op for now: the bump/free-list arena is reclaimed wholesale at
- * process teardown, and a partial unmap of an arena chunk could corrupt the
- * free list. Tracking mmap extents for precise release is a later step.
+ * Arena-backed mappings are reclaimed only when both address and original
+ * length match a privileged live-extent record.  Guest-writable arena headers
+ * are not mapping authority: interior, stale, partial, brk and double unmaps
+ * fail without changing allocator state.  Rootfs zero-copy and device mappings
+ * live outside the arena and remain successful no-ops on this NOMMU target.
  */
 static long sys_munmap(lxp_proc_t *p, uintptr_t addr, size_t len)
 {
-	(void)len;
-	/* Reclaim the mapping. uClibc's malloc (MALLOC=y) grows its heap with anonymous
-	 * mmap and munmaps freed blocks; without this the process arena grows monotonically
-	 * across malloc/free churn (getaddrinfo + stdio + wget headers) and exhausts —
-	 * "wget: out of memory". In-place file/device maps are not arena-owned, so
-	 * lxp_arena_free ignores them (its lxp_arena_owns bounds-check). */
-	if (p && p->arena)
-		lxp_arena_free(p->arena, (void *)addr);
-	return 0;
+	if (!p || !p->arena || len == 0)
+		return -LXP_EINVAL;
+	if (!lxp_arena_owns(p->arena, (void *)addr))
+		return 0;
+	return lxp_arena_free_tracked(p->arena, (void *)addr, len) ? 0 : -LXP_EINVAL;
 }
 
 /* open a rootfs file read-only; the fs is immutable, so writes are refused. */

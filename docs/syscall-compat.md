@@ -48,7 +48,7 @@ Surface: 136 LXP_NR_* — 94 implemented, 31 benign-stub, 1 refused-eopnotsupp, 
 | 83 | symlink | implemented |  |
 | 85 | readlink | implemented |  |
 | 88 | reboot | implemented | HALT/POWEROFF/RESTART latch the run |
-| 91 | munmap | implemented |  |
+| 91 | munmap | implemented | exact arena-backed live extents; zero-copy/device maps are no-op |
 | 94 | fchmod | benign-stub | modes not tracked |
 | 104 | setitimer | implemented | ITIMER_REAL -> SIGALRM |
 | 114 | wait4 | implemented | reaps / blocks via the run loop |
@@ -74,7 +74,7 @@ Surface: 136 LXP_NR_* — 94 implemented, 31 benign-stub, 1 refused-eopnotsupp, 
 | 181 | pwrite64 | implemented |  |
 | 183 | getcwd | implemented |  |
 | 190 | vfork | run-loop-handled | parent parks until the child execs/exits |
-| 192 | mmap2 | implemented | anonymous mappings only (arena-backed) |
+| 192 | mmap2 | implemented | arena-backed anonymous/copied-file maps; read-only rootfs zero-copy; device hook |
 | 194 | ftruncate64 | implemented |  |
 | 195 | stat64 | implemented |  |
 | 196 | lstat64 | implemented |  |
