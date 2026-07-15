@@ -844,7 +844,7 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 /* A child (cpid, status) exited: hand it to its parent (ppid). Wake a parent blocked
  * in wait4 (resume returning cpid + write *status), else queue the zombie for a later
  * wait4. Decrements the parent's live-children count either way. */
-static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int status)
+static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int status, int sigchld)
 {
 	int pslot = -1;
 	for (int t = 0; t < LXP_NSLOT; t++)
@@ -880,7 +880,12 @@ static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int stat
 			par->child_status[par->child_count] = status;
 			par->child_count++;
 		}
-		par->pending_sigs |= lxp_sig_bit(LXP_SIGCHLD);
+		/* A vfork parent was just resumed (vfork returned the child pid) and will wait4() the
+		 * queued zombie immediately; raising SIGCHLD here would interrupt that wait4 (-EINTR)
+		 * before it reaps, so the shell prints "waitpid: Interrupted" and loses the exit code.
+		 * Only signal a parent that is NOT synchronously reaping (a daemon in select/poll). */
+		if (sigchld)
+			par->pending_sigs |= lxp_sig_bit(LXP_SIGCHLD);
 	}
 }
 
@@ -1446,7 +1451,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				if (vp >= 0)
 					eng->spawn_resume(vp, g_lxp_proc[vp].region, &g_ctx[vp],
 							  pid);
-				reap_to_parent(eng, ppid, pid, 139);
+				reap_to_parent(eng, ppid, pid, 139, /*sigchld=*/vp < 0);
 				idle = 0;
 				continue;
 			}
@@ -1488,7 +1493,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				rowner[nr] = -1;
 				g_lxp_proc[es].alive = 0;
 				g_lxp_used[es] = 0;
-				reap_to_parent(eng, ppid, pid, 127);
+				reap_to_parent(eng, ppid, pid, 127, /*sigchld=*/vp < 0);
 				idle = 0;
 				continue;
 			}
@@ -1534,7 +1539,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			if (vp >=
 			    0) /* fork-without-exec: the suspended parent resumes (vfork returns) */
 				eng->spawn_resume(vp, g_lxp_proc[vp].region, &g_ctx[vp], cpid);
-			reap_to_parent(eng, ppid, cpid, status);
+			reap_to_parent(eng, ppid, cpid, status, /*sigchld=*/vp < 0);
 			idle = 0;
 			continue;
 		}
