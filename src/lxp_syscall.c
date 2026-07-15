@@ -3513,6 +3513,33 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			proc->sigsuspend_pending = 1;
 		return -LXP_EINTR;
 	}
+	case LXP_NR_rt_sigtimedwait_time64: { /* (set, info, timeout, sigsetsize) */
+		/* Poll variant: return a pending signal that is in `set` (dequeuing it), else report
+		 * a timeout. Blocking for the timeout is not modeled — this is enough for libc/shell
+		 * startup, which drains pending signals with sigtimedwait and must see -EAGAIN (not
+		 * -ENOSYS) to finish and continue to the interactive read. */
+		const uint32_t *uset = (const uint32_t *)(uintptr_t)a0;
+		size_t sz = (size_t)a3;
+		if (sz > 8)
+			return -LXP_EINVAL;
+		uint64_t set = 0;
+		if (uset) {
+			if (!user_ok(proc, uset, sz, 0))
+				return -LXP_EFAULT;
+			if (sz >= 4)
+				set |= (uint64_t)uset[0];
+			if (sz >= 8)
+				set |= (uint64_t)uset[1] << 32;
+		}
+		uint64_t ready = proc->pending_sigs & set;
+		if (ready) {
+			int sig = __builtin_ctzll(ready) + 1; /* lowest pending signal in the set */
+			proc->pending_sigs &= ~lxp_sig_bit(sig);
+			(void)a1; /* siginfo output omitted; the return value carries the signo */
+			return sig;
+		}
+		return -LXP_EAGAIN;
+	}
 	case LXP_NR_rt_sigprocmask: { /* (how, set, oldset, sigsetsize) */
 		int how = (int)a0;
 		const uint32_t *uset = (const uint32_t *)(uintptr_t)a1;

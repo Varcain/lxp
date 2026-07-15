@@ -103,6 +103,7 @@ extern "C" {
 #define LXP_NR_set_robust_list 338
 #define LXP_NR_futex 240
 #define LXP_NR_futex_time64 422
+#define LXP_NR_rt_sigtimedwait_time64 421
 #define LXP_NR_statx 397
 /* path-based metadata: stat/lstat/readlink/access families. */
 #define LXP_NR_access 33
@@ -457,8 +458,8 @@ typedef struct lxp_fd {
  * like the argv store above: a board environment is a handful of short strings (the QEMU
  * port's is ~90 bytes), and this backing store is replicated per slot, so it is kept small.
  * A larger environment is truncated at capture (degrade capacity, never correctness). */
-#define LXP_EXEC_MAXENVS 8
-#define LXP_EXEC_ENVBUF 256
+#define LXP_EXEC_MAXENVS 24
+#define LXP_EXEC_ENVBUF 512
 
 /**
  * @brief A Linux process context — the state syscalls act on.
