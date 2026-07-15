@@ -22,6 +22,9 @@
  * bounds/overflow logic can be unit-tested here directly (access_ok / user_strnlen). */
 int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 long user_strnlen(const lxp_proc_t *p, const char *s, size_t max);
+extern size_t g_lxp_test_cache_clean_calls;
+extern const void *g_lxp_test_cache_clean_base;
+extern size_t g_lxp_test_cache_clean_len;
 
 /* Captures fd 1/2 output so writes can be asserted by value. */
 static char g_cap[256];
@@ -52,6 +55,9 @@ static void setup_proc(lxp_proc_t *p, lxp_arena_t *arena)
 	p->pool_lo = p->pool_hi = 0;
 	p->write_fn = cap_write;
 	g_cap_len = 0;
+	g_lxp_test_cache_clean_calls = 0;
+	g_lxp_test_cache_clean_base = NULL;
+	g_lxp_test_cache_clean_len = 0;
 }
 
 static void test_lnx_write(void **state)
@@ -65,6 +71,9 @@ static void test_lnx_write(void **state)
 	assert_int_equal(r, 5);
 	assert_int_equal((int)g_cap_len, 5);
 	assert_memory_equal(g_cap, "hello", 5);
+	assert_int_equal(g_lxp_test_cache_clean_calls, 1);
+	assert_ptr_equal(g_lxp_test_cache_clean_base, "hello");
+	assert_int_equal(g_lxp_test_cache_clean_len, 5);
 
 	/* A bad fd is rejected. */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_write, 7, (long)(uintptr_t) "x", 1, 0, 0,
@@ -87,6 +96,10 @@ static void test_lnx_writev(void **state)
 	assert_int_equal(r, 7);
 	assert_int_equal((int)g_cap_len, 7);
 	assert_memory_equal(g_cap, "foobar!", 7);
+	/* One clean publishes the iovec descriptors; sys_write() publishes both payloads. */
+	assert_int_equal(g_lxp_test_cache_clean_calls, 3);
+	assert_ptr_equal(g_lxp_test_cache_clean_base, "bar!");
+	assert_int_equal(g_lxp_test_cache_clean_len, 4);
 }
 
 static void test_lnx_brk(void **state)

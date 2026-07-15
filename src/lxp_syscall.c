@@ -1187,6 +1187,12 @@ static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 		return -LXP_EBADF;
 	if (!user_ok(p, buf, len, 0)) /* the kernel READS buf → reject a bad source pointer */
 		return -LXP_EFAULT;
+	/* A guest may write this buffer through a cacheable MPU view while the privileged host reads
+	 * the same SDRAM through an uncached background view.  Publish dirty guest lines before any
+	 * console/filesystem/device backend dereferences the payload.  Socket sends use the same hook
+	 * internally; the duplicate clean is harmless and keeps this boundary correct for every fd. */
+	if (len)
+		lxp_cache_clean(buf, len);
 	if (s->ops && s->ops->write)
 		return s->ops->write(p, s, buf, len);
 	return -LXP_EBADF; /* read-only kind (rootfs/proc) or wrong-direction console */
@@ -1201,6 +1207,10 @@ static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
 		return -LXP_EINVAL;
 	if (iovcnt && !user_ok(p, iov, (size_t)iovcnt * sizeof(*iov), 0))
 		return -LXP_EFAULT; /* the iov array itself; each iov_base is checked in sys_write */
+	/* Publish the descriptors before the host reads their bases and lengths.  sys_write() below
+	 * publishes each referenced payload independently. */
+	if (iovcnt)
+		lxp_cache_clean(iov, (size_t)iovcnt * sizeof(*iov));
 	lxp_fd_t *slot = fd_slot(p, fd);
 	if (!slot)
 		return -LXP_EBADF;

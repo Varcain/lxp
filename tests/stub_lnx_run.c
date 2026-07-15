@@ -19,6 +19,9 @@
 int g_lxp_test_random_result = LXP_OK;
 size_t g_lxp_test_random_calls;
 size_t g_lxp_test_random_len;
+size_t g_lxp_test_cache_clean_calls;
+const void *g_lxp_test_cache_clean_base;
+size_t g_lxp_test_cache_clean_len;
 
 int lxp_random_fill(void *buf, size_t len)
 {
@@ -58,8 +61,9 @@ void lxp_guest_invalidate(const void *base, size_t len)
 }
 void lxp_cache_clean(const void *base, size_t len)
 {
-	(void)base;
-	(void)len;
+	g_lxp_test_cache_clean_calls++;
+	g_lxp_test_cache_clean_base = base;
+	g_lxp_test_cache_clean_len = len;
 }
 void lxp_cache_invalidate(const void *base, size_t len)
 {
