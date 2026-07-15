@@ -127,7 +127,7 @@ static void test_reap_wakes_blocking_parent(void **state)
 	g_lxp_proc[0].wait_pid = -1; /* any child */
 	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
 
-	reap_to_parent(&g_mock_eng, /*ppid*/ 1, /*cpid*/ 7, /*status*/ 42);
+	reap_to_parent(&g_mock_eng, /*ppid*/ 1, /*cpid*/ 7, /*status*/ 42, /*sigchld=*/1);
 
 	/* Resumed once, returning the reaped pid; *status = WIFEXITED(42); child accounted. */
 	assert_int_equal(g_mock.resume_calls, 1);
@@ -153,7 +153,7 @@ static void test_reap_signaled_child_status(void **state)
 	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
 	g_lxp_used[0] = 1; /* a parked-waiter spin thread must be aborted before resume */
 
-	reap_to_parent(&g_mock_eng, 1, 7, 128 + 15 /* SIGTERM */);
+	reap_to_parent(&g_mock_eng, 1, 7, 128 + 15 /* SIGTERM */, /*sigchld=*/1);
 
 	assert_int_equal(status, 15); /* low 7 bits = the signal */
 	assert_int_equal(g_mock.abort_calls, 1);
@@ -173,7 +173,7 @@ static void test_reap_specific_pid_not_woken(void **state)
 	g_lxp_proc[0].wait_pid = 9; /* waiting specifically for pid 9 */
 	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
 
-	reap_to_parent(&g_mock_eng, 1, 7, 0); /* pid 7 exits, not 9 */
+	reap_to_parent(&g_mock_eng, 1, 7, 0, /*sigchld=*/1); /* pid 7 exits, not 9 */
 
 	/* Not resumed; the zombie is queued and SIGCHLD raised; still one live child left. */
 	assert_int_equal(g_mock.resume_calls, 0);
@@ -193,7 +193,7 @@ static void test_reap_queues_zombie(void **state)
 	g_lxp_proc[0].live_children = 1;
 	/* wait_pending == 0: the parent is off in select()/poll(), not blocking in wait4. */
 
-	reap_to_parent(&g_mock_eng, 1, 7, 3);
+	reap_to_parent(&g_mock_eng, 1, 7, 3, /*sigchld=*/1);
 
 	assert_int_equal(g_mock.resume_calls, 0);
 	assert_int_equal(g_lxp_proc[0].child_count, 1);
@@ -201,6 +201,30 @@ static void test_reap_queues_zombie(void **state)
 	assert_int_equal(g_lxp_proc[0].child_status[0], 3); /* raw code; wait4 encodes on reap */
 	assert_int_equal(g_lxp_proc[0].live_children, 0);
 	assert_true((g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) != 0);
+}
+
+/* ---- reap_to_parent: a vfork parent (already resumed) reaps WITHOUT SIGCHLD --- */
+/* Regression: a vfork parent resumed at its child's exit is not yet wait_pending, so the
+ * zombie takes the else branch — but the parent will wait4() it immediately. Raising
+ * SIGCHLD (sigchld != 0) here would -EINTR that wait4 before it reaps (the shell then
+ * prints "waitpid: Interrupted" and loses the 127 exit code), so the vfork callers pass
+ * sigchld=0: queue the zombie, do NOT signal. */
+static void test_reap_vfork_parent_suppresses_sigchld(void **state)
+{
+	(void)state;
+	g_lxp_proc[0].alive = 1;
+	g_lxp_proc[0].pid = 1;
+	g_lxp_proc[0].live_children = 1;
+	/* wait_pending == 0: just resumed from vfork, about to wait4() the child. */
+
+	reap_to_parent(&g_mock_eng, 1, 7, 127, /*sigchld=*/0);
+
+	assert_int_equal(g_mock.resume_calls, 0);
+	assert_int_equal(g_lxp_proc[0].child_count, 1);	   /* queued for the imminent wait4 */
+	assert_int_equal(g_lxp_proc[0].child_pid[0], 7);
+	assert_int_equal(g_lxp_proc[0].child_status[0], 127); /* exit code preserved */
+	assert_int_equal(g_lxp_proc[0].live_children, 0);
+	assert_true((g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) == 0); /* NOT signalled */
 }
 
 /* The zombie queue is bounded (LXP_MAX_CHILD): an overflow is dropped, not overrun. */
@@ -212,7 +236,7 @@ static void test_reap_zombie_queue_full(void **state)
 	g_lxp_proc[0].live_children = LXP_MAX_CHILD + 1;
 	g_lxp_proc[0].child_count = LXP_MAX_CHILD; /* already full */
 
-	reap_to_parent(&g_mock_eng, 1, 99, 0);
+	reap_to_parent(&g_mock_eng, 1, 99, 0, /*sigchld=*/1);
 
 	assert_int_equal(g_lxp_proc[0].child_count, LXP_MAX_CHILD); /* clamped, no overrun */
 	assert_int_equal(g_lxp_proc[0].live_children, LXP_MAX_CHILD); /* still decremented */
@@ -225,7 +249,7 @@ static void test_reap_unknown_parent(void **state)
 	g_lxp_proc[0].alive = 1;
 	g_lxp_proc[0].pid = 1;
 
-	reap_to_parent(&g_mock_eng, /*ppid*/ 42, 7, 0); /* no proc has pid 42 */
+	reap_to_parent(&g_mock_eng, /*ppid*/ 42, 7, 0, /*sigchld=*/1); /* no proc has pid 42 */
 
 	assert_int_equal(g_mock.resume_calls, 0);
 	assert_int_equal(g_mock.abort_calls, 0);
@@ -573,6 +597,7 @@ int main(void)
 		cmocka_unit_test_setup(test_reap_signaled_child_status, reset_state),
 		cmocka_unit_test_setup(test_reap_specific_pid_not_woken, reset_state),
 		cmocka_unit_test_setup(test_reap_queues_zombie, reset_state),
+		cmocka_unit_test_setup(test_reap_vfork_parent_suppresses_sigchld, reset_state),
 		cmocka_unit_test_setup(test_reap_zombie_queue_full, reset_state),
 		cmocka_unit_test_setup(test_reap_unknown_parent, reset_state),
 		cmocka_unit_test_setup(test_region_free, reset_state),

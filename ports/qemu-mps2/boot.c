@@ -145,7 +145,13 @@ static void coordinator_task(void *arg)
 	/* The initial program + argv, selected at build time per milestone:
 	 *   M1 = /hello           M2 = /init (execs /child)
 	 *   M3 = /bin/busybox echo lxp-m3-ok  (dynamic-FDPIC: ld.so + libc.so + busybox) */
-#if LXP_MILESTONE == 7
+#if LXP_MILESTONE == 8
+	/* M8 = vfork + FAILED exec + wait4: the command-not-found path. The parent must reap
+	 * the child's 127 without faulting or losing the code to the child's-death SIGCHLD. */
+	const char *entry = "/vforkx";
+	const char *const argv[] = {"vforkx", NULL};
+	int argc = 1;
+#elif LXP_MILESTONE == 7
 	/* M7 = hard-float FDPIC VFP-state regression across deferred and blocking
 	 * syscalls (including the task-recreation resume trampoline). */
 	const char *entry = "/fpcheck";

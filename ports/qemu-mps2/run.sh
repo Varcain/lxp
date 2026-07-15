@@ -34,7 +34,8 @@ case "$M" in
     5) MARK="lxp-m5-ok" ;;
     6) MARK="lxp-m6-ok" ;;
     7) MARK="lxp-m7-ok" ;;
-    *) echo "unknown milestone M=$M (use 1..7)"; exit 2 ;;
+    8) MARK="lxp-m8-ok" ;;
+    *) echo "unknown milestone M=$M (use 1..8)"; exit 2 ;;
 esac
 
 mkdir -p build
@@ -55,6 +56,16 @@ if [ "$M" != 3 ] && [ "$M" != 6 ]; then
             -o "$M7_ROOT/fpcheck" guest/fpcheck.c
         ( cd "$M7_ROOT" && printf '%s\n' fpcheck | cpio -o -H newc 2>/dev/null > ../m7-rootfs.cpio )
         CPIO_IMAGE="$HERE/build/m7-rootfs.cpio"
+    elif [ "$M" = 8 ]; then
+        # vfork + failed-exec regression: built standalone at run time (soft-float, like the
+        # pinned fixture guests) so CI needs only the FDPIC gcc, no fixture regeneration.
+        [ -x "$FDCC" ] || { echo "M8 needs an FDPIC gcc: $FDCC"; exit 1; }
+        M8_ROOT="$HERE/build/m8-root"
+        rm -rf "$M8_ROOT"; mkdir -p "$M8_ROOT"
+        "$FDCC" -mfdpic -static -nostdlib -Os -ffreestanding -e _start -Iguest \
+            -mcpu=cortex-m7 -mthumb -o "$M8_ROOT/vforkx" guest/vforkx.c
+        ( cd "$M8_ROOT" && printf '%s\n' vforkx | cpio -o -H newc 2>/dev/null > ../m8-rootfs.cpio )
+        CPIO_IMAGE="$HERE/build/m8-rootfs.cpio"
     elif [ "${REGEN_GUEST:-0}" = 1 ]; then
         [ -x "$FDCC" ] || { echo "REGEN_GUEST=1 but FDPIC gcc not found: $FDCC"; exit 1; }
         ( cd guest
