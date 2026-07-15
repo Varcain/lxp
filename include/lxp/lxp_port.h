@@ -121,6 +121,14 @@ typedef struct lxp_os_ops {
 	/* Guest-memory cache maintenance (NULL => no-op; a coherent host needs none). */
 	void (*cache_clean)(const void *base, size_t len);
 	void (*cache_invalidate)(const void *base, size_t len);
+	/* Give the coordinator a coherent (cacheable) view of guest region `ridx`
+	 * (its program region + dyn_pool) before it services that guest's DEFERRED
+	 * syscalls / parked-op retries, so the coordinator's reads and writes of the
+	 * guest's buffers are coherent with the guest's own cached view (no per-call
+	 * clean/invalidate needed). Only the single active region need be mapped; the
+	 * coordinator services one slot at a time. On a host whose coordinator already
+	 * shares the guest's cacheable mapping this is a no-op (NULL). */
+	void (*coord_map)(int ridx);
 	/* Tell the engine where the (XIP) rootfs image lives, for PC discrimination. */
 	void (*rootfs_window)(const void *base, size_t len);
 	/* Staging buffer for fetching a remote exec image. NULL => no remote exec. */

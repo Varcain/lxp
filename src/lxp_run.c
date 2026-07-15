@@ -185,6 +185,14 @@ void lxp_cache_invalidate(const void *base, size_t len)
 	if (g_eng && g_eng->cache_invalidate)
 		g_eng->cache_invalidate(base, len);
 }
+/* Map guest region `ridx` cacheable into the coordinator before it services that
+ * slot's deferred syscall / parked-op retry (see lxp_os_ops_t.coord_map). Only the
+ * run loop's coordinator-context paths call it, so it stays file-local. */
+static void lxp_coord_map(int ridx)
+{
+	if (g_eng && g_eng->coord_map && ridx >= 0)
+		g_eng->coord_map(ridx);
+}
 int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actual_count)
 {
 	if (g_eng && g_eng->thread_list)
@@ -1291,6 +1299,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		eng->crit_exit();
 
 		if (et == EV_DEFER) {
+			lxp_coord_map(g_lxp_proc[es].region); /* coherent coordinator view of es's guest buffers */
 			execute_deferred(eng, es);
 			idle = 0;
 			continue;
@@ -1600,6 +1609,11 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			if (!p->alive)
 				continue;
 			any_alive = 1;
+			/* Before any parked-op retry below writes this slot's guest buffers from
+			 * the coordinator, give the coordinator a coherent (cacheable) view of
+			 * the slot's region (no-op on a coherent host). */
+			if (!g_lxp_used[s])
+				lxp_coord_map(p->region);
 			if (g_lxp_used[s])
 				any_busy = 1;
 			if (p->pipe_wait)
