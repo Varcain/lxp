@@ -2104,6 +2104,11 @@ static long random_fill(void *buf, size_t count, int unavailable_errno)
 {
 	if (count == 0u)
 		return 0;
+	/* The host can write through an uncached alias while the first/last cache
+	 * line contains unrelated dirty guest bytes.  Publish those complete lines
+	 * before the write so the post-write invalidate cannot discard adjacent
+	 * guest data. */
+	lxp_cache_clean(buf, count);
 	int r = lxp_random_fill(buf, count);
 	if (r == LXP_OK) {
 		/* A Cortex-M host may write through a privileged uncached view while the

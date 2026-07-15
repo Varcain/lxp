@@ -19,6 +19,14 @@
 #include <stdint.h>
 #include <string.h>
 
+extern size_t g_lxp_test_random_clean_calls_on_entry;
+extern size_t g_lxp_test_cache_clean_calls;
+extern const void *g_lxp_test_cache_clean_base;
+extern size_t g_lxp_test_cache_clean_len;
+extern size_t g_lxp_test_cache_invalidate_calls;
+extern const void *g_lxp_test_cache_invalidate_base;
+extern size_t g_lxp_test_cache_invalidate_len;
+
 static uint8_t g_pool[8192] __attribute__((aligned(16)));
 static size_t g_write_calls;
 static size_t g_write_len[4];
@@ -136,12 +144,21 @@ static void test_entropy_provider_contract(void **st)
 
 	g_lxp_test_random_result = LXP_OK;
 	g_lxp_test_random_calls = 0;
+	g_lxp_test_cache_clean_calls = 0;
+	g_lxp_test_cache_invalidate_calls = 0;
 	memset(out, 0, sizeof(out));
 	assert_int_equal(lxp_syscall(&p, LXP_NR_getrandom, (long)(uintptr_t)out,
 				     sizeof(out), LXP_GRND_NONBLOCK, 0, 0, 0),
 			 sizeof(out));
 	assert_int_equal(g_lxp_test_random_calls, 1);
 	assert_int_equal(g_lxp_test_random_len, sizeof(out));
+	assert_int_equal(g_lxp_test_random_clean_calls_on_entry, 1);
+	assert_int_equal(g_lxp_test_cache_clean_calls, 1);
+	assert_ptr_equal(g_lxp_test_cache_clean_base, out);
+	assert_int_equal(g_lxp_test_cache_clean_len, sizeof(out));
+	assert_int_equal(g_lxp_test_cache_invalidate_calls, 1);
+	assert_ptr_equal(g_lxp_test_cache_invalidate_base, out);
+	assert_int_equal(g_lxp_test_cache_invalidate_len, sizeof(out));
 	for (size_t i = 0; i < sizeof(out); i++)
 		assert_int_equal(out[i], (uint8_t)(0xa5u ^ (uint8_t)i));
 

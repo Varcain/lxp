@@ -19,14 +19,19 @@
 int g_lxp_test_random_result = LXP_OK;
 size_t g_lxp_test_random_calls;
 size_t g_lxp_test_random_len;
+size_t g_lxp_test_random_clean_calls_on_entry;
 size_t g_lxp_test_cache_clean_calls;
 const void *g_lxp_test_cache_clean_base;
 size_t g_lxp_test_cache_clean_len;
+size_t g_lxp_test_cache_invalidate_calls;
+const void *g_lxp_test_cache_invalidate_base;
+size_t g_lxp_test_cache_invalidate_len;
 
 int lxp_random_fill(void *buf, size_t len)
 {
 	g_lxp_test_random_calls++;
 	g_lxp_test_random_len = len;
+	g_lxp_test_random_clean_calls_on_entry = g_lxp_test_cache_clean_calls;
 	if (g_lxp_test_random_result != LXP_OK)
 		return g_lxp_test_random_result;
 	uint8_t *out = buf;
@@ -67,8 +72,9 @@ void lxp_cache_clean(const void *base, size_t len)
 }
 void lxp_cache_invalidate(const void *base, size_t len)
 {
-	(void)base;
-	(void)len;
+	g_lxp_test_cache_invalidate_calls++;
+	g_lxp_test_cache_invalidate_base = base;
+	g_lxp_test_cache_invalidate_len = len;
 }
 
 #if LXP_ENABLE_DEV_FB
