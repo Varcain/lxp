@@ -13,6 +13,9 @@ static __attribute__((noinline)) float hard_add(float a, float b)
 static int check_context(long nr, long a0_in, long a1_in, long a2_in, uint32_t seed,
 			 long expected_ret)
 {
+	uint32_t saved_fpscr;
+	__asm__ volatile("vmrs %0, fpscr" : "=r"(saved_fpscr));
+
 	uint32_t expected[32] __attribute__((aligned(8)));
 	uint32_t observed[32] __attribute__((aligned(8)));
 	for (unsigned i = 0; i < 32; i++) {
@@ -38,7 +41,12 @@ static int check_context(long nr, long a0_in, long a1_in, long a2_in, uint32_t s
 			 : "+r"(a0), "+r"(a1), "+r"(a2), "+r"(src), "+r"(dst),
 			   "+r"(fpscr), "+r"(syscall_nr)
 			 :
-			 : "cc", "memory");
+			 : "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+			   "s8", "s9", "s10", "s11", "s12", "s13", "s14", "s15",
+			   "s16", "s17", "s18", "s19", "s20", "s21", "s22", "s23",
+			   "s24", "s25", "s26", "s27", "s28", "s29", "s30", "s31",
+			   "cc", "memory");
+	__asm__ volatile("vmsr fpscr, %0" : : "r"(saved_fpscr) : "memory");
 
 	if (a0 != expected_ret || fpscr != 0x00400000u)
 		return 0;
