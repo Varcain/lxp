@@ -100,6 +100,8 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	if (h == LXP_SIG_DFL) {
 		proc->exited = 1;
 		proc->exit_status = 128 + sig;
+		proc->exit_reason = LXP_EXIT_REASON_SIGNAL;
+		proc->exit_signal = (uint8_t)sig;
 		park_frame(f); /* the coordinator reaps it */
 		return;
 	}
@@ -110,6 +112,8 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		 * leave the host/coordinator operational. */
 		proc->exited = 1;
 		proc->exit_status = 128 + LXP_SIGSEGV;
+		proc->exit_reason = LXP_EXIT_REASON_SIGNAL_DEPTH;
+		proc->exit_signal = LXP_SIGSEGV;
 		park_frame(f);
 		return;
 	}

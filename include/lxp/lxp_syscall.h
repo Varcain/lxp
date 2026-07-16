@@ -268,6 +268,18 @@ extern "C" {
 #define LXP_SIGTERM 15
 #define LXP_SIGCHLD 17 /* child stop/exit; default action = IGNORE (never terminates) */
 #define LXP_SIGSTOP 19 /* like SIGKILL, can never be caught or blocked */
+
+/* Host-side attribution for a guest process termination. The Linux-visible wait
+ * status remains unchanged; these values explain how the personality arrived at
+ * that status without making every containment path look like an ordinary
+ * guest-raised SIGSEGV. */
+#define LXP_EXIT_REASON_NONE 0
+#define LXP_EXIT_REASON_NORMAL 1
+#define LXP_EXIT_REASON_SIGNAL 2
+#define LXP_EXIT_REASON_SIGNAL_DEPTH 3
+#define LXP_EXIT_REASON_MEMORY_FAULT 4
+#define LXP_EXIT_REASON_EXEC_RESOURCE 5
+#define LXP_EXIT_REASON_EXEC_LOAD 6
 /* rt_sigprocmask(2) `how` values. */
 #define LXP_SIG_BLOCK 0
 #define LXP_SIG_UNBLOCK 1
@@ -487,6 +499,11 @@ typedef struct lxp_proc {
 	char cwd[LXP_PATH_MAX];	   /**< Current working directory (absolute, normalized). */
 	int exited;			   /**< Set once @c exit / @c exit_group is called. */
 	int exit_status;		   /**< Low 8 bits of the exit code. */
+	uint8_t exit_reason; /**< @c LXP_EXIT_REASON_* host-side termination attribution. */
+	uint8_t exit_signal; /**< Signal number for SIGNAL / SIGNAL_DEPTH / MEMORY_FAULT. */
+	uint16_t _exit_pad;
+	uint32_t exit_detail;	/**< Port-defined fault status (0 for core-originated exits). */
+	uintptr_t exit_address; /**< Port-defined fault address, when one is valid. */
 	/* Queue of exited (zombie) children awaiting wait4, FIFO. A pipeline forks
 	 * more than one child, so a single slot is not enough. */
 	int child_pid[LXP_MAX_CHILD];    /**< pids of exited children. */

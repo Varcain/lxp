@@ -889,6 +889,35 @@ static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int stat
 	}
 }
 
+/* Report a stable snapshot before EV_EXIT clears/reuses the process slot. The
+ * callback is deliberately outside exception context; an embedded host may log
+ * it, increment retained counters, or leave it unset for zero runtime cost. */
+static void notify_guest_exit(int slot, const lxp_proc_t *proc)
+{
+	if (!g_cfg || !g_cfg->on_guest_exit)
+		return;
+	const lxp_guest_exit_info_t info = {
+		.slot = slot,
+		.pid = proc->pid,
+		.ppid = proc->ppid,
+		.status = proc->exit_status,
+		.comm = proc->comm,
+		.reason = proc->exit_reason,
+		.signal = proc->exit_signal,
+		.detail = proc->exit_detail,
+		.address = proc->exit_address,
+	};
+	g_cfg->on_guest_exit(&info);
+}
+
+/* A parent's live children and queued zombies share one bounded accounting
+ * budget. This prevents a later child status from being silently dropped. */
+static int fork_capacity_available(const lxp_proc_t *proc)
+{
+	return proc->child_count >= 0 && proc->child_count < LXP_MAX_CHILD &&
+	       proc->live_children >= 0 && proc->live_children < LXP_MAX_CHILD - proc->child_count;
+}
+
 /* Deliver `sig` to a proc PARKED in rt_sigsuspend (the LinuxThreads restart). There is no live
  * frame — the interrupted context is the captured g_ctx[slot]. Save that as the slot's sigreturn
  * frame (to resume with `ret` = -EINTR), then resume the proc INTO its handler; the handler's
@@ -905,6 +934,8 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 	if (h == LXP_SIG_DFL) {
 		proc->exited = 1;
 		proc->exit_status = 128 + sig;
+		proc->exit_reason = LXP_EXIT_REASON_SIGNAL;
+		proc->exit_signal = (uint8_t)sig;
 		return;
 	}
 	struct sig_save_s *sv = sig_save_push(proc, sig);
@@ -913,6 +944,8 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 		 * context: terminate only this already-parked guest. */
 		proc->exited = 1;
 		proc->exit_status = 128 + LXP_SIGSEGV;
+		proc->exit_reason = LXP_EXIT_REASON_SIGNAL_DEPTH;
+		proc->exit_signal = LXP_SIGSEGV;
 		return;
 	}
 	sv->r0 = (uint32_t)ret;
@@ -1086,12 +1119,21 @@ static int vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, int child_sl
 	/* The coordinator reads guest SDRAM through its UNCACHED view; clean the parent's dirty cache
 	 * lines to SDRAM first so the snapshot captures its live data (not stale SDRAM). */
 	lxp_cache_clean(pr, dlen);
-	memcpy(eng->region(rsnap), pr, dlen);
+	uint8_t *sr = eng->region(rsnap);
+	memcpy(sr, pr, dlen);
+	/* The coordinator port may currently map rsnap cacheably (notably when a
+	 * recently exited child used this same region). Publish the completed
+	 * snapshot before a later coord_map() removes that mapping. Otherwise the
+	 * restore and the next exec read stale SDRAM, and a delayed dirty-line clean
+	 * can overwrite the freshly loaded child image. A coherent host is a no-op. */
+	lxp_cache_clean(sr, dlen);
 	if (par->is_dynamic && eng->dyn_pool) {
 		size_t ds = 0;
 		uint8_t *pdp = eng->dyn_pool(par->region, &ds);
 		lxp_cache_clean(pdp, ds);
-		memcpy(eng->dyn_pool(rsnap, NULL), pdp, ds);
+		uint8_t *sdp = eng->dyn_pool(rsnap, NULL);
+		memcpy(sdp, pdp, ds);
+		lxp_cache_clean(sdp, ds);
 	}
 	g_snap_arena[child_slot] = g_arenas[par->region]; /* allocator metadata (coordinator memory) */
 	rowner[rsnap] = child_slot;			  /* reserve it (also the child's exec region) */
@@ -1318,15 +1360,25 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		if (et ==
 		    EV_FORK) { /* spawn a child sharing the parent's region; suspend the parent. */
 			lxp_proc_t *par = &g_lxp_proc[es];
+			/* The zombie queue is bounded. Include both running children and
+			 * already-queued zombies so a parent that does not reap cannot make a
+			 * later exit status disappear. EAGAIN is Linux's process-table pressure
+			 * result and becomes retryable as soon as wait4 drains one entry. */
+			if (!fork_capacity_available(par)) {
+				eng->abort_slot(es);
+				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_EAGAIN);
+				idle = 0;
+				continue;
+			}
 			int c = -1;
 			for (int s = 0; s < LXP_NSLOT; s++)
 				if (!g_lxp_proc[s].alive) {
 					c = s;
 					break;
 				}
-			if (c < 0) { /* no free slot: fail the fork (parent gets -ENOMEM). */
+			if (c < 0) { /* no free slot: Linux reports retryable process pressure. */
 				eng->abort_slot(es);
-				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_ENOMEM);
+				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_EAGAIN);
 				idle = 0;
 				continue;
 			}
@@ -1455,12 +1507,16 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				eng->abort_slot(es);
 				if (p->region_owner && rowner[p->region] == es)
 					rowner[p->region] = -1;
+				p->exit_status = 127;
+				p->exit_reason = LXP_EXIT_REASON_EXEC_RESOURCE;
+				p->exit_signal = 0;
+				notify_guest_exit(es, p);
 				p->alive = 0;
 				g_lxp_used[es] = 0;
 				if (vp >= 0)
 					eng->spawn_resume(vp, g_lxp_proc[vp].region, &g_ctx[vp],
 							  pid);
-				reap_to_parent(eng, ppid, pid, 139, /*sigchld=*/vp < 0);
+				reap_to_parent(eng, ppid, pid, 127, /*sigchld=*/vp < 0);
 				idle = 0;
 				continue;
 			}
@@ -1500,6 +1556,10 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			    launch(eng, es, nr, img_data, img_size, pid, ppid, eargc, ptrs, eptrs,
 				   rexec) != 0) {
 				rowner[nr] = -1;
+				g_lxp_proc[es].exit_status = 127;
+				g_lxp_proc[es].exit_reason = LXP_EXIT_REASON_EXEC_LOAD;
+				g_lxp_proc[es].exit_signal = 0;
+				notify_guest_exit(es, &g_lxp_proc[es]);
 				g_lxp_proc[es].alive = 0;
 				g_lxp_used[es] = 0;
 				reap_to_parent(eng, ppid, pid, 127, /*sigchld=*/vp < 0);
@@ -1532,6 +1592,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 #endif
 			eng->abort_slot(es);
 			g_sig_save[es].depth = 0;
+			notify_guest_exit(es, p);
 			if (p->region_owner && rowner[p->region] == es)
 				rowner[p->region] = -1;
 			p->alive = 0;
@@ -1687,6 +1748,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				} else if (p->sig_handler[psig] != LXP_SIG_IGN) {
 					p->exited = 1;
 					p->exit_status = 128 + psig;
+					p->exit_reason = LXP_EXIT_REASON_SIGNAL;
+					p->exit_signal = (uint8_t)psig;
 					p->sleeping = p->wait_pending = p->pipe_wait = 0;
 					progress = 1;
 				}
@@ -1769,6 +1832,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 						 * writer; the EV_EXIT pass reaps it (no live thread). */
 						p->exited = 1;
 						p->exit_status = 128 + LXP_SIGPIPE;
+						p->exit_reason = LXP_EXIT_REASON_SIGNAL;
+						p->exit_signal = LXP_SIGPIPE;
 					} else {
 						eng->spawn_resume(s, p->region, &g_ctx[s], r);
 					}

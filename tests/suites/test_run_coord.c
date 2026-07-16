@@ -40,12 +40,33 @@ static struct {
 	int abort_calls;
 	int abort_sidx;
 	int event_posts;
+	int cache_clean_calls;
+	const void *cache_clean_base[4];
+	size_t cache_clean_len[4];
+	int exit_notify_calls;
+	lxp_guest_exit_info_t exit_info;
 } g_mock;
+
+static uint8_t g_mock_regions[LXP_NREG][256];
+static uint8_t g_mock_dyn_pools[LXP_NREG][64];
 
 static uint8_t *mock_region(int ridx)
 {
-	(void)ridx;
-	return NULL;
+	return g_mock_regions[ridx];
+}
+static uint8_t *mock_dyn_pool(int ridx, size_t *size)
+{
+	if (size)
+		*size = sizeof(g_mock_dyn_pools[ridx]);
+	return g_mock_dyn_pools[ridx];
+}
+static void mock_cache_clean(const void *base, size_t len)
+{
+	int i = g_mock.cache_clean_calls++;
+	if (i < 4) {
+		g_mock.cache_clean_base[i] = base;
+		g_mock.cache_clean_len[i] = len;
+	}
 }
 static void mock_spawn_resume(int sidx, int ridx, const struct lxp_resume_ctx *c, long r0)
 {
@@ -75,9 +96,21 @@ static void mock_event_post(void)
 
 static const lxp_os_ops_t g_mock_eng = {
 	.region = mock_region,
+	.dyn_pool = mock_dyn_pool,
 	.spawn_resume = mock_spawn_resume,
 	.abort_slot = mock_abort_slot,
 	.event_post = mock_event_post,
+	.cache_clean = mock_cache_clean,
+};
+
+static void mock_on_guest_exit(const lxp_guest_exit_info_t *info)
+{
+	g_mock.exit_notify_calls++;
+	g_mock.exit_info = *info;
+}
+
+static const lxp_run_config_t g_mock_cfg = {
+	.on_guest_exit = mock_on_guest_exit,
 };
 
 static int reset_state(void **state)
@@ -89,6 +122,8 @@ static int reset_state(void **state)
 	memset(g_slot_generation, 0, sizeof(g_slot_generation));
 	memset(g_ctx, 0, sizeof(g_ctx));
 	memset(g_sig_save, 0, sizeof(g_sig_save));
+	memset(g_mock_regions, 0, sizeof(g_mock_regions));
+	memset(g_mock_dyn_pools, 0, sizeof(g_mock_dyn_pools));
 	memset(&g_mock, 0, sizeof(g_mock));
 	g_eng = &g_mock_eng;
 	g_cfg = NULL;
@@ -254,6 +289,83 @@ static void test_reap_unknown_parent(void **state)
 	assert_int_equal(g_mock.resume_calls, 0);
 	assert_int_equal(g_mock.abort_calls, 0);
 	assert_int_equal(g_lxp_proc[0].child_count, 0);
+}
+
+static void test_notify_guest_exit_preserves_attribution(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[3];
+	p->pid = 27;
+	p->ppid = 7;
+	p->exit_status = 139;
+	p->exit_reason = LXP_EXIT_REASON_MEMORY_FAULT;
+	p->exit_signal = LXP_SIGSEGV;
+	p->exit_detail = 0x92;
+	p->exit_address = 0x4c;
+	memcpy(p->comm, "sigctx", 7);
+	g_cfg = &g_mock_cfg;
+
+	notify_guest_exit(3, p);
+
+	assert_int_equal(g_mock.exit_notify_calls, 1);
+	assert_int_equal(g_mock.exit_info.slot, 3);
+	assert_int_equal(g_mock.exit_info.pid, 27);
+	assert_int_equal(g_mock.exit_info.ppid, 7);
+	assert_int_equal(g_mock.exit_info.status, 139);
+	assert_int_equal(g_mock.exit_info.reason, LXP_EXIT_REASON_MEMORY_FAULT);
+	assert_int_equal(g_mock.exit_info.signal, LXP_SIGSEGV);
+	assert_int_equal(g_mock.exit_info.detail, 0x92);
+	assert_int_equal(g_mock.exit_info.address, 0x4c);
+	assert_string_equal(g_mock.exit_info.comm, "sigctx");
+}
+
+static void test_fork_capacity_accounts_live_and_zombie_children(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	memset(&p, 0, sizeof(p));
+	assert_true(fork_capacity_available(&p));
+	p.child_count = LXP_MAX_CHILD - 1;
+	assert_true(fork_capacity_available(&p));
+	p.live_children = 1;
+	assert_false(fork_capacity_available(&p));
+	p.child_count = 0;
+	p.live_children = LXP_MAX_CHILD;
+	assert_false(fork_capacity_available(&p));
+	p.live_children = -1;
+	assert_false(fork_capacity_available(&p));
+}
+
+static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	p->region = 0;
+	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	p->is_dynamic = 1;
+	for (size_t i = 0; i < 128u; i++)
+		g_mock_regions[0][i] = (uint8_t)(i ^ 0x5au);
+	for (size_t i = 0; i < sizeof(g_mock_dyn_pools[0]); i++)
+		g_mock_dyn_pools[0][i] = (uint8_t)(i ^ 0xa5u);
+	int rowner[LXP_NREG];
+	for (int i = 0; i < LXP_NREG; i++)
+		rowner[i] = -1;
+	rowner[0] = 0;
+
+	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, rowner), 1);
+	assert_memory_equal(g_mock_regions[1], g_mock_regions[0], 128u);
+	assert_memory_equal(g_mock_dyn_pools[1], g_mock_dyn_pools[0],
+			    sizeof(g_mock_dyn_pools[0]));
+	assert_int_equal(g_mock.cache_clean_calls, 4);
+	assert_ptr_equal(g_mock.cache_clean_base[0], g_mock_regions[0]);
+	assert_ptr_equal(g_mock.cache_clean_base[1], g_mock_regions[1]);
+	assert_ptr_equal(g_mock.cache_clean_base[2], g_mock_dyn_pools[0]);
+	assert_ptr_equal(g_mock.cache_clean_base[3], g_mock_dyn_pools[1]);
+	assert_int_equal(g_mock.cache_clean_len[0], 128u);
+	assert_int_equal(g_mock.cache_clean_len[1], 128u);
+	assert_int_equal(g_mock.cache_clean_len[2], sizeof(g_mock_dyn_pools[0]));
+	assert_int_equal(g_mock.cache_clean_len[3], sizeof(g_mock_dyn_pools[1]));
 }
 
 /* ---- region_free: owner table AND liveness both gate reuse ------------------ */
@@ -600,6 +712,11 @@ int main(void)
 		cmocka_unit_test_setup(test_reap_vfork_parent_suppresses_sigchld, reset_state),
 		cmocka_unit_test_setup(test_reap_zombie_queue_full, reset_state),
 		cmocka_unit_test_setup(test_reap_unknown_parent, reset_state),
+		cmocka_unit_test_setup(test_notify_guest_exit_preserves_attribution, reset_state),
+		cmocka_unit_test_setup(test_fork_capacity_accounts_live_and_zombie_children,
+				       reset_state),
+		cmocka_unit_test_setup(test_vfork_snapshot_publishes_cacheable_destination,
+				       reset_state),
 		cmocka_unit_test_setup(test_region_free, reset_state),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

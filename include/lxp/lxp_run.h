@@ -16,6 +16,22 @@
 extern "C" {
 #endif
 
+/** Immutable termination record passed to @c lxp_run_config.on_guest_exit in
+ * coordinator task context. @c comm points into the process slot and is valid
+ * only for the duration of the callback. */
+typedef struct lxp_guest_exit_info {
+	int slot;
+	int pid;
+	int ppid;
+	int status;
+	const char *comm;
+	uint8_t reason; /**< @c LXP_EXIT_REASON_* */
+	uint8_t signal;
+	uint16_t _pad;
+	uint32_t detail;   /**< Port-defined status, e.g. Cortex-M CFSR. */
+	uintptr_t address; /**< Port-defined fault address, or 0 when unavailable. */
+} lxp_guest_exit_info_t;
+
 /**
  * @file
  * @defgroup lxp_run Linux personality runner
@@ -63,6 +79,10 @@ typedef struct lxp_run_config {
 	 * startup stack; a guest's @c execve(2) replaces the environment for the new image,
 	 * and a @c fork inherits it. Bounded by @c LXP_EXEC_MAXENVS / @c LXP_EXEC_ENVBUF. */
 	const char *const *env;
+	/** Optional process-exit diagnostic. Called once per terminated guest from the
+	 * privileged coordinator task, after all fault/exit metadata is stable and
+	 * before the slot is reused. It must return within a host-defined finite bound. */
+	void (*on_guest_exit)(const lxp_guest_exit_info_t *info);
 } lxp_run_config_t;
 
 /** @ref lxp_run outcomes (negative; a non-negative result is the init

@@ -764,6 +764,8 @@ static long fop_write_pipe(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t l
 	    p->sig_handler[LXP_SIGPIPE] != LXP_SIG_IGN) {
 		p->exited = 1;
 		p->exit_status = 128 + LXP_SIGPIPE;
+		p->exit_reason = LXP_EXIT_REASON_SIGNAL;
+		p->exit_signal = LXP_SIGPIPE;
 	}
 	return r; /* bytes written, or -EPIPE (no readers; writer exits unless it ignores it) */
 }
@@ -1359,6 +1361,10 @@ static long sys_exit(lxp_proc_t *p, int status)
 {
 	p->exited = 1;
 	p->exit_status = status & 0xff;
+	p->exit_reason = LXP_EXIT_REASON_NORMAL;
+	p->exit_signal = 0;
+	p->exit_detail = 0;
+	p->exit_address = 0;
 	return 0;
 }
 
@@ -3347,6 +3353,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			g_lxp_halt = 1;
 			proc->exited = 1;
 			proc->exit_status = 0;
+			proc->exit_reason = LXP_EXIT_REASON_NORMAL;
 		}
 		return 0;
 	}
