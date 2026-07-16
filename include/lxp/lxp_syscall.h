@@ -502,6 +502,15 @@ typedef struct lxp_proc {
 	 * signal whose bit is set is deferred at delivery until unblocked; a handler blocks
 	 * its own signal for its duration (restored at rt_sigreturn). SIGKILL/SIGSTOP never. */
 	uint64_t sig_blocked;
+	/* rt_sigsuspend installs its own mask for the duration of the wait (POSIX: atomically set the
+	 * mask, suspend, restore the prior mask when a caught signal's handler returns). saved_mask holds
+	 * the pre-suspend sig_blocked; sig_restore restores it after the handler. WITHOUT this the mask
+	 * arg was ignored, so a signal the caller had blocked (the LinuxThreads restart, which sigsuspend
+	 * is meant to UNBLOCK while waiting) stayed blocked -> the coordinator's pending_deliverable
+	 * skipped it -> a thread parked in sigsuspend/sigwait was never woken (curl's threaded resolver
+	 * deadlocked: manager + main + a sigwait thread all stuck). */
+	uint64_t sigsuspend_saved_mask;
+	int sigsuspend_active; /**< An rt_sigsuspend mask is installed; restore saved_mask at sigreturn. */
 	/* execve request: the engine seam relaunches the thread on this rootfs
 	 * program with the captured argument vector (image replacement). */
 	int exec_pending;			 /**< Set when execve() should relaunch. */

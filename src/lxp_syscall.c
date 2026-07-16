@@ -3502,13 +3502,29 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return 0; /* run as root */
 	case LXP_NR_ioctl:
 		return sys_ioctl(proc, a0, a1, a2);
-	case LXP_NR_rt_sigsuspend: {
+	case LXP_NR_rt_sigsuspend: { /* (unewset, sigsetsize) */
 		/* LinuxThreads suspend(): block until a signal (the restart) is delivered. If one is
 		 * already pending (a restart that beat us here), fall through so the dispatch delivers
 		 * it now; otherwise ask the run loop to park us — the coordinator runs the handler on
-		 * the restart kill() and resumes us. sigsuspend always "returns" -EINTR. The mask arg
-		 * is honoured loosely: any delivered signal wakes us, matching the restart protocol
-		 * (the restart signal is the only one sent to a suspended thread). */
+		 * the restart kill() and resumes us. sigsuspend always "returns" -EINTR.
+		 *
+		 * INSTALL the mask arg (POSIX: atomically set the signal mask for the wait): the whole
+		 * point of the restart protocol is that the caller BLOCKS the restart signal normally and
+		 * sigsuspend UNBLOCKS it only while waiting. If we ignore the mask, the restart stays
+		 * blocked, the coordinator's pending_deliverable skips it, and the parked thread is never
+		 * woken (deadlock — curl's LinuxThreads resolver: manager, main, and a sigwait thread all
+		 * stuck). The prior mask is restored when the delivered handler returns (sig_restore). */
+		const uint32_t *uset = (const uint32_t *)(uintptr_t)a0;
+		size_t sz = (size_t)a1;
+		if (uset && sz && sz <= 8 && user_ok(proc, uset, sz, 0)) {
+			uint64_t m = uset[0];
+			if (sz >= 8)
+				m |= (uint64_t)uset[1] << 32;
+			m &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP)); /* never blockable */
+			proc->sigsuspend_saved_mask = proc->sig_blocked;
+			proc->sig_blocked = m;
+			proc->sigsuspend_active = 1;
+		}
 		if (!proc->pending_sigs)
 			proc->sigsuspend_pending = 1;
 		return -LXP_EINTR;

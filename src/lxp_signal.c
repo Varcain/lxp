@@ -105,6 +105,12 @@ void sig_restore(struct lxp_frame *f, lxp_proc_t *proc)
 	if (!sv->active)
 		return;
 	proc->sig_blocked = sv->saved_mask; /* undo the handler self-block (+ any handler-local mask) */
+	if (proc->sigsuspend_active) {
+		/* This handler was delivered to a thread parked in rt_sigsuspend; POSIX restores the mask
+		 * that was in effect BEFORE sigsuspend installed its wait-mask. */
+		proc->sig_blocked = proc->sigsuspend_saved_mask;
+		proc->sigsuspend_active = 0;
+	}
 	f->r[0] = sv->r0;
 	f->r[1] = sv->r1;
 	f->r[2] = sv->r2;
