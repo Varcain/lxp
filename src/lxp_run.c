@@ -1093,18 +1093,41 @@ static int region_free(int r, const int *rowner)
 	return 1;
 }
 
+/* Copy into storage that may retain cache lines from an earlier tenant. The
+ * explicit pre-invalidate prevents a later clean from writing that tenant back
+ * over an uncached copy; the final clean publishes cacheable coordinator writes. */
+static void snapshot_copy_span(void *dst, const void *src, size_t len)
+{
+	lxp_cache_clean(src, len);
+	lxp_cache_invalidate(dst, len);
+	memcpy(dst, src, len);
+	lxp_cache_clean(dst, len);
+}
+
+/* Restore into a region that the vfork child has modified. Preserve the copy
+ * across both cacheable and uncached coordinator MPU views, then discard the
+ * coordinator's view so the resumed parent refills the restored bytes. */
+static void restore_copy_span(void *dst, const void *src, size_t len)
+{
+	lxp_cache_invalidate(dst, len);
+	memcpy(dst, src, len);
+	lxp_cache_clean(dst, len);
+	lxp_cache_invalidate(dst, len);
+}
+
 /* NOMMU has no copy-on-write, so a vfork child SHARES the parent's region + dyn_pool. Correct vfork
  * usage restricts the child to exec/_exit, but real programs write shared data before exec (e.g.
  * dropbear's session child resets SIGCHLD to SIG_DFL, which uClibc-LinuxThreads records in a table in
  * the shared libc data) — corrupting the suspended parent. So we snapshot the parent's writable data
  * into a SPARE region at fork and restore it before the parent resumes. Storage is free: the spare
  * region's own region+dyn_pool exactly mirror the parent's (both LXP_PROG_*), and the child needs
- * that region for its eventual exec anyway. Only the writable image data [region, stack_lo) and the
- * dyn_pool are copied (the stack is skipped — the child uses frames below the shared sp, and the
- * parent's frames above are untouched); g_arenas[] allocator metadata is saved separately.
- * Returns the reserved scratch region index, or -1 if none is free (→ share, as before). */
+ * that region for its eventual exec anyway. The writable image data [region, stack_lo), active
+ * stack [captured_sp, region_hi), and dyn_pool are copied; g_arenas[] allocator metadata is saved
+ * separately. Copying only the active stack bounds the work to live state rather than the full
+ * reserved stack, while preserving NOMMU shell re-exec paths that modify vfork caller frames.
+ * Returns the reserved scratch region index, or -1 if the parent cannot be isolated. */
 static int vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, int child_slot,
-			  int *rowner)
+			  int *rowner, uintptr_t sp)
 {
 	int rsnap = -1;
 	for (int r = 0; r < LXP_NREG; r++)
@@ -1116,30 +1139,17 @@ static int vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, int child_sl
 		return -1; /* no spare region: fall back to sharing (the pre-isolation behavior) */
 	uint8_t *pr = eng->region(par->region);
 	size_t dlen = par->stack_lo - (uintptr_t)pr; /* in-region writable data, below the stack */
-	/* The coordinator reads guest SDRAM through its UNCACHED view; clean the parent's dirty cache
-	 * lines to SDRAM first so the snapshot captures its live data (not stale SDRAM). */
-	lxp_cache_clean(pr, dlen);
 	uint8_t *sr = eng->region(rsnap);
-	/* A recycled region can still have dirty lines from its previous guest even
-	 * when the coordinator currently reaches it through an uncached MPU view.
-	 * Remove those lines before the uncached copy; otherwise the publication clean
-	 * below can write the previous image back over the new snapshot. */
-	lxp_cache_invalidate(sr, dlen);
-	memcpy(sr, pr, dlen);
-	/* The coordinator port may currently map rsnap cacheably (notably when a
-	 * recently exited child used this same region). Publish the completed
-	 * snapshot before a later coord_map() removes that mapping. Otherwise the
-	 * restore and the next exec read stale SDRAM, and a delayed dirty-line clean
-	 * can overwrite the freshly loaded child image. A coherent host is a no-op. */
-	lxp_cache_clean(sr, dlen);
+	if (sp < par->stack_lo || sp > par->region_hi)
+		return -1; /* corrupt/unavailable capture: do not resume an unisolated parent */
+	snapshot_copy_span(sr, pr, dlen);
+	size_t slen = par->region_hi - sp;
+	snapshot_copy_span(sr + (sp - (uintptr_t)pr), (const void *)sp, slen);
 	if (par->is_dynamic && eng->dyn_pool) {
 		size_t ds = 0;
 		uint8_t *pdp = eng->dyn_pool(par->region, &ds);
-		lxp_cache_clean(pdp, ds);
 		uint8_t *sdp = eng->dyn_pool(rsnap, NULL);
-		lxp_cache_invalidate(sdp, ds);
-		memcpy(sdp, pdp, ds);
-		lxp_cache_clean(sdp, ds);
+		snapshot_copy_span(sdp, pdp, ds);
 	}
 	g_snap_arena[child_slot] = g_arenas[par->region]; /* allocator metadata (coordinator memory) */
 	rowner[rsnap] = child_slot;			  /* reserve it (also the child's exec region) */
@@ -1149,29 +1159,20 @@ static int vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, int child_sl
 /* Undo a vfork child's writes to the shared region before the parent resumes: copy the snapshot back
  * over the parent's region + dyn_pool and restore its arena metadata. */
 static void vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *par, int rsnap,
-			  int child_slot)
+			  int child_slot, uintptr_t sp)
 {
 	uint8_t *pr = eng->region(par->region);
 	size_t dlen = par->stack_lo - (uintptr_t)pr;
-	/* Invalidate the parent's cache lines BEFORE the coordinator's uncached write, so the child's
-	 * dirty lines are DISCARDED (not evicted) — otherwise an async eviction between the write and a
-	 * post-write invalidate could clobber the fresh SDRAM restore (a non-deterministic corruption).
-	 * The parent's own lines were already clean (vfork_snapshot flushed them), so only the child's
-	 * writes are dropped. A second invalidate after the write drains the Device write buffer (DSB)
-	 * and guarantees the parent refills from the restored SDRAM on resume. The coordinator may,
-	 * however, currently map this parent cacheably; publish the memcpy before that final invalidate
-	 * so it cannot discard the restored bytes as dirty cache lines. */
-	lxp_cache_invalidate(pr, dlen);
-	memcpy(pr, eng->region(rsnap), dlen);
-	lxp_cache_clean(pr, dlen);
-	lxp_cache_invalidate(pr, dlen);
+	uint8_t *sr = eng->region(rsnap);
+	restore_copy_span(pr, sr, dlen);
+	if (sp >= par->stack_lo && sp <= par->region_hi) {
+		size_t slen = par->region_hi - sp;
+		restore_copy_span((void *)sp, sr + (sp - (uintptr_t)pr), slen);
+	}
 	if (par->is_dynamic && eng->dyn_pool) {
 		size_t ds = 0;
 		uint8_t *pdp = eng->dyn_pool(par->region, &ds);
-		lxp_cache_invalidate(pdp, ds);
-		memcpy(pdp, eng->dyn_pool(rsnap, NULL), ds);
-		lxp_cache_clean(pdp, ds);
-		lxp_cache_invalidate(pdp, ds);
+		restore_copy_span(pdp, eng->dyn_pool(rsnap, NULL), ds);
 	}
 	g_arenas[par->region] = g_snap_arena[child_slot];
 }
@@ -1456,7 +1457,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				es; /* resume the parent when this child execs/exits */
 			/* NOMMU vfork isolation: snapshot the parent's writable data so the child's
 			 * pre-exec writes to the SHARED region can't corrupt the suspended parent. */
-			ch->snap_region = vfork_snapshot(eng, par, c, rowner);
+			ch->snap_region = vfork_snapshot(eng, par, c, rowner, g_ctx[es].sp);
 			if (ch->snap_region < 0) {
 				/* No spare region to isolate the child's pre-exec writes from the
 				 * suspended parent (deep vfork nesting — e.g. a pipeline over an SSH
@@ -1536,7 +1537,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				 * parent runs again (the args were already copied out into `args` above, so
 				 * restoring over them is safe). */
 				if (p->snap_region >= 0)
-					vfork_restore(eng, &g_lxp_proc[vp], p->snap_region, es);
+					vfork_restore(eng, &g_lxp_proc[vp], p->snap_region, es,
+						      g_ctx[vp].sp);
 				p->vfork_parent_slot = -1;
 				eng->spawn_resume(vp, g_lxp_proc[vp].region, &g_ctx[vp], pid);
 			}
@@ -1614,7 +1616,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			if (vp >= 0 && p->snap_region >= 0) {
 				/* a vfork child died before exec (e.g. a failed exec) → undo its writes to
 				 * the shared region so the parent is not corrupted, and free the scratch. */
-				vfork_restore(eng, &g_lxp_proc[vp], p->snap_region, es);
+				vfork_restore(eng, &g_lxp_proc[vp], p->snap_region, es,
+					      g_ctx[vp].sp);
 				rowner[p->snap_region] = -1;
 			}
 			if (vp >=

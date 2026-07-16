@@ -41,11 +41,11 @@ static struct {
 	int abort_sidx;
 	int event_posts;
 	int cache_clean_calls;
-	const void *cache_clean_base[4];
-	size_t cache_clean_len[4];
+	const void *cache_clean_base[8];
+	size_t cache_clean_len[8];
 	int cache_invalidate_calls;
-	const void *cache_invalidate_base[4];
-	size_t cache_invalidate_len[4];
+	const void *cache_invalidate_base[8];
+	size_t cache_invalidate_len[8];
 	int exit_notify_calls;
 	lxp_guest_exit_info_t exit_info;
 } g_mock;
@@ -66,7 +66,7 @@ static uint8_t *mock_dyn_pool(int ridx, size_t *size)
 static void mock_cache_clean(const void *base, size_t len)
 {
 	int i = g_mock.cache_clean_calls++;
-	if (i < 4) {
+	if (i < 8) {
 		g_mock.cache_clean_base[i] = base;
 		g_mock.cache_clean_len[i] = len;
 	}
@@ -74,7 +74,7 @@ static void mock_cache_clean(const void *base, size_t len)
 static void mock_cache_invalidate(const void *base, size_t len)
 {
 	int i = g_mock.cache_invalidate_calls++;
-	if (i < 4) {
+	if (i < 8) {
 		g_mock.cache_invalidate_base[i] = base;
 		g_mock.cache_invalidate_len[i] = len;
 	}
@@ -355,9 +355,14 @@ static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
 	p->alive = 1;
 	p->region = 0;
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	p->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
 	p->is_dynamic = 1;
+	uintptr_t sp = (uintptr_t)g_mock_regions[0] + 192u;
 	for (size_t i = 0; i < 128u; i++)
 		g_mock_regions[0][i] = (uint8_t)(i ^ 0x5au);
+	memset(&g_mock_regions[0][128], 0xee, 64u); /* unused stack reservation: not copied */
+	for (size_t i = 192u; i < sizeof(g_mock_regions[0]); i++)
+		g_mock_regions[0][i] = (uint8_t)(i ^ 0x3cu);
 	for (size_t i = 0; i < sizeof(g_mock_dyn_pools[0]); i++)
 		g_mock_dyn_pools[0][i] = (uint8_t)(i ^ 0xa5u);
 	int rowner[LXP_NREG];
@@ -365,24 +370,33 @@ static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
 		rowner[i] = -1;
 	rowner[0] = 0;
 
-	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, rowner), 1);
+	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, rowner, sp), 1);
 	assert_memory_equal(g_mock_regions[1], g_mock_regions[0], 128u);
+	assert_memory_equal(&g_mock_regions[1][192], &g_mock_regions[0][192], 64u);
+	for (size_t i = 128u; i < 192u; i++)
+		assert_int_equal(g_mock_regions[1][i], 0); /* inactive stack was not copied */
 	assert_memory_equal(g_mock_dyn_pools[1], g_mock_dyn_pools[0],
 			    sizeof(g_mock_dyn_pools[0]));
-	assert_int_equal(g_mock.cache_clean_calls, 4);
+	assert_int_equal(g_mock.cache_clean_calls, 6);
 	assert_ptr_equal(g_mock.cache_clean_base[0], g_mock_regions[0]);
 	assert_ptr_equal(g_mock.cache_clean_base[1], g_mock_regions[1]);
-	assert_ptr_equal(g_mock.cache_clean_base[2], g_mock_dyn_pools[0]);
-	assert_ptr_equal(g_mock.cache_clean_base[3], g_mock_dyn_pools[1]);
+	assert_ptr_equal(g_mock.cache_clean_base[2], &g_mock_regions[0][192]);
+	assert_ptr_equal(g_mock.cache_clean_base[3], &g_mock_regions[1][192]);
+	assert_ptr_equal(g_mock.cache_clean_base[4], g_mock_dyn_pools[0]);
+	assert_ptr_equal(g_mock.cache_clean_base[5], g_mock_dyn_pools[1]);
 	assert_int_equal(g_mock.cache_clean_len[0], 128u);
 	assert_int_equal(g_mock.cache_clean_len[1], 128u);
-	assert_int_equal(g_mock.cache_clean_len[2], sizeof(g_mock_dyn_pools[0]));
-	assert_int_equal(g_mock.cache_clean_len[3], sizeof(g_mock_dyn_pools[1]));
-	assert_int_equal(g_mock.cache_invalidate_calls, 2);
+	assert_int_equal(g_mock.cache_clean_len[2], 64u);
+	assert_int_equal(g_mock.cache_clean_len[3], 64u);
+	assert_int_equal(g_mock.cache_clean_len[4], sizeof(g_mock_dyn_pools[0]));
+	assert_int_equal(g_mock.cache_clean_len[5], sizeof(g_mock_dyn_pools[1]));
+	assert_int_equal(g_mock.cache_invalidate_calls, 3);
 	assert_ptr_equal(g_mock.cache_invalidate_base[0], g_mock_regions[1]);
-	assert_ptr_equal(g_mock.cache_invalidate_base[1], g_mock_dyn_pools[1]);
+	assert_ptr_equal(g_mock.cache_invalidate_base[1], &g_mock_regions[1][192]);
+	assert_ptr_equal(g_mock.cache_invalidate_base[2], g_mock_dyn_pools[1]);
 	assert_int_equal(g_mock.cache_invalidate_len[0], 128u);
-	assert_int_equal(g_mock.cache_invalidate_len[1], sizeof(g_mock_dyn_pools[1]));
+	assert_int_equal(g_mock.cache_invalidate_len[1], 64u);
+	assert_int_equal(g_mock.cache_invalidate_len[2], sizeof(g_mock_dyn_pools[1]));
 }
 
 static void test_vfork_restore_publishes_cacheable_parent(void **state)
@@ -392,27 +406,36 @@ static void test_vfork_restore_publishes_cacheable_parent(void **state)
 	p->alive = 1;
 	p->region = 0;
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	p->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
 	p->is_dynamic = 1;
+	uintptr_t sp = (uintptr_t)g_mock_regions[0] + 192u;
 	for (size_t i = 0; i < 128u; i++)
 		g_mock_regions[1][i] = (uint8_t)(i ^ 0x5au);
+	for (size_t i = 192u; i < sizeof(g_mock_regions[1]); i++)
+		g_mock_regions[1][i] = (uint8_t)(i ^ 0x3cu);
 	for (size_t i = 0; i < sizeof(g_mock_dyn_pools[1]); i++)
 		g_mock_dyn_pools[1][i] = (uint8_t)(i ^ 0xa5u);
 	memset(g_mock_regions[0], 0xcc, 128u);
+	memset(&g_mock_regions[0][192], 0xbb, 64u);
 	memset(g_mock_dyn_pools[0], 0xdd, sizeof(g_mock_dyn_pools[0]));
 
-	vfork_restore(&g_mock_eng, p, 1, 1);
+	vfork_restore(&g_mock_eng, p, 1, 1, sp);
 
 	assert_memory_equal(g_mock_regions[0], g_mock_regions[1], 128u);
+	assert_memory_equal(&g_mock_regions[0][192], &g_mock_regions[1][192], 64u);
 	assert_memory_equal(g_mock_dyn_pools[0], g_mock_dyn_pools[1],
 			    sizeof(g_mock_dyn_pools[0]));
-	assert_int_equal(g_mock.cache_clean_calls, 2);
+	assert_int_equal(g_mock.cache_clean_calls, 3);
 	assert_ptr_equal(g_mock.cache_clean_base[0], g_mock_regions[0]);
-	assert_ptr_equal(g_mock.cache_clean_base[1], g_mock_dyn_pools[0]);
-	assert_int_equal(g_mock.cache_invalidate_calls, 4);
+	assert_ptr_equal(g_mock.cache_clean_base[1], &g_mock_regions[0][192]);
+	assert_ptr_equal(g_mock.cache_clean_base[2], g_mock_dyn_pools[0]);
+	assert_int_equal(g_mock.cache_invalidate_calls, 6);
 	assert_ptr_equal(g_mock.cache_invalidate_base[0], g_mock_regions[0]);
 	assert_ptr_equal(g_mock.cache_invalidate_base[1], g_mock_regions[0]);
-	assert_ptr_equal(g_mock.cache_invalidate_base[2], g_mock_dyn_pools[0]);
-	assert_ptr_equal(g_mock.cache_invalidate_base[3], g_mock_dyn_pools[0]);
+	assert_ptr_equal(g_mock.cache_invalidate_base[2], &g_mock_regions[0][192]);
+	assert_ptr_equal(g_mock.cache_invalidate_base[3], &g_mock_regions[0][192]);
+	assert_ptr_equal(g_mock.cache_invalidate_base[4], g_mock_dyn_pools[0]);
+	assert_ptr_equal(g_mock.cache_invalidate_base[5], g_mock_dyn_pools[0]);
 }
 
 /* ---- region_free: owner table AND liveness both gate reuse ------------------ */
