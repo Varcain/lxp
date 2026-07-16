@@ -1120,6 +1120,11 @@ static int vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, int child_sl
 	 * lines to SDRAM first so the snapshot captures its live data (not stale SDRAM). */
 	lxp_cache_clean(pr, dlen);
 	uint8_t *sr = eng->region(rsnap);
+	/* A recycled region can still have dirty lines from its previous guest even
+	 * when the coordinator currently reaches it through an uncached MPU view.
+	 * Remove those lines before the uncached copy; otherwise the publication clean
+	 * below can write the previous image back over the new snapshot. */
+	lxp_cache_invalidate(sr, dlen);
 	memcpy(sr, pr, dlen);
 	/* The coordinator port may currently map rsnap cacheably (notably when a
 	 * recently exited child used this same region). Publish the completed
@@ -1132,6 +1137,7 @@ static int vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, int child_sl
 		uint8_t *pdp = eng->dyn_pool(par->region, &ds);
 		lxp_cache_clean(pdp, ds);
 		uint8_t *sdp = eng->dyn_pool(rsnap, NULL);
+		lxp_cache_invalidate(sdp, ds);
 		memcpy(sdp, pdp, ds);
 		lxp_cache_clean(sdp, ds);
 	}

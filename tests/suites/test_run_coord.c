@@ -378,6 +378,11 @@ static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
 	assert_int_equal(g_mock.cache_clean_len[1], 128u);
 	assert_int_equal(g_mock.cache_clean_len[2], sizeof(g_mock_dyn_pools[0]));
 	assert_int_equal(g_mock.cache_clean_len[3], sizeof(g_mock_dyn_pools[1]));
+	assert_int_equal(g_mock.cache_invalidate_calls, 2);
+	assert_ptr_equal(g_mock.cache_invalidate_base[0], g_mock_regions[1]);
+	assert_ptr_equal(g_mock.cache_invalidate_base[1], g_mock_dyn_pools[1]);
+	assert_int_equal(g_mock.cache_invalidate_len[0], 128u);
+	assert_int_equal(g_mock.cache_invalidate_len[1], sizeof(g_mock_dyn_pools[1]));
 }
 
 static void test_vfork_restore_publishes_cacheable_parent(void **state)
