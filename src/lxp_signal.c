@@ -50,12 +50,46 @@ int sig_swallowed(const lxp_proc_t *proc, int sig)
 	return 0;
 }
 
+/* Reserve the next host-owned signal frame and install the handler mask. For a
+ * signal that wakes rt_sigsuspend, the frame must restore the mask from before
+ * the suspend, not the temporary wait mask. Consume that association here so a
+ * signal nested inside the handler restores only its own entry mask. */
+struct sig_save_s *sig_save_push(lxp_proc_t *proc, int sig)
+{
+	int slot = slot_of(proc);
+	if (slot < 0 || slot >= LXP_NSLOT)
+		return NULL;
+	struct sig_save_stack_s *stack = &g_sig_save[slot];
+	if (stack->depth >= LXP_SIGNAL_NEST_MAX)
+		return NULL;
+
+	struct sig_save_s *sv = &stack->frame[stack->depth++];
+	if (proc->sigsuspend_active) {
+		sv->saved_mask = proc->sigsuspend_saved_mask;
+		proc->sigsuspend_active = 0;
+	} else {
+		sv->saved_mask = proc->sig_blocked;
+	}
+	/* POSIX blocks the delivered signal while its handler runs. Other
+	 * unblocked signals remain eligible and therefore may occupy the next frame. */
+	proc->sig_blocked |= lxp_sig_bit(sig);
+	return sv;
+}
+
 /* Deliver signal `sig` to `proc`; `ret` is the interrupted syscall's result
  * (0 for a kill/tkill, -EINTR for a console-interrupted read). */
 void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 {
 	if (sig < 1 || sig >= LXP_NSIG) {
 		f->r[0] = (uint32_t)-LXP_EINVAL;
+		return;
+	}
+	/* A handler automatically blocks its own signal unless userspace requested
+	 * re-entry. The personality does not model SA_NODEFER, so a self-kill from
+	 * inside that handler must remain pending rather than recursively deliver. */
+	if (lxp_sig_blocked(proc, sig)) {
+		proc->pending_sigs |= lxp_sig_bit(sig);
+		f->r[0] = (uint32_t)ret;
 		return;
 	}
 	uintptr_t h = proc->sig_handler[sig];
@@ -69,7 +103,16 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		park_frame(f); /* the coordinator reaps it */
 		return;
 	}
-	struct sig_save_s *sv = &g_sig_save[slot_of(proc)];
+	struct sig_save_s *sv = sig_save_push(proc, sig);
+	if (!sv) {
+		/* The bounded host stack must never wrap or overwrite an older context.
+		 * Match guest stack exhaustion: terminate this process with SIGSEGV and
+		 * leave the host/coordinator operational. */
+		proc->exited = 1;
+		proc->exit_status = 128 + LXP_SIGSEGV;
+		park_frame(f);
+		return;
+	}
 	sv->r0 = (uint32_t)ret;
 	sv->r1 = f->r[1];
 	sv->r2 = f->r[2];
@@ -85,8 +128,6 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	else
 		sv->fp.active = 0;
 #endif
-	sig_block_for_handler(sv, proc, sig); /* self-block the signal; restored at rt_sigreturn */
-	sv->active = 1;
 	uintptr_t entry, restorer;
 	uint32_t got;
 	resolve_handler(proc, sig, &entry, &got, &restorer);
@@ -101,16 +142,14 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 /* rt_sigreturn: restore the context saved at delivery. */
 void sig_restore(struct lxp_frame *f, lxp_proc_t *proc)
 {
-	struct sig_save_s *sv = &g_sig_save[slot_of(proc)];
-	if (!sv->active)
+	int slot = slot_of(proc);
+	if (slot < 0 || slot >= LXP_NSLOT)
 		return;
+	struct sig_save_stack_s *stack = &g_sig_save[slot];
+	if (stack->depth == 0)
+		return;
+	struct sig_save_s *sv = &stack->frame[stack->depth - 1u];
 	proc->sig_blocked = sv->saved_mask; /* undo the handler self-block (+ any handler-local mask) */
-	if (proc->sigsuspend_active) {
-		/* This handler was delivered to a thread parked in rt_sigsuspend; POSIX restores the mask
-		 * that was in effect BEFORE sigsuspend installed its wait-mask. */
-		proc->sig_blocked = proc->sigsuspend_saved_mask;
-		proc->sigsuspend_active = 0;
-	}
 	f->r[0] = sv->r0;
 	f->r[1] = sv->r1;
 	f->r[2] = sv->r2;
@@ -124,5 +163,5 @@ void sig_restore(struct lxp_frame *f, lxp_proc_t *proc)
 	if (f->fp)
 		*f->fp = sv->fp;
 #endif
-	sv->active = 0;
+	stack->depth--;
 }

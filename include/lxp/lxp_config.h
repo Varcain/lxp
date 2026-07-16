@@ -81,6 +81,22 @@
 #error "LXP_ENABLE_FPU_CONTEXT must be 0 or 1"
 #endif
 
+/* Host-owned signal contexts retained per guest thread. Different signals may
+ * interrupt an active handler, so one save area is not sufficient. Keep the
+ * default at two levels: it covers one nested handler while adding about 2.2K
+ * across the STM32F746 build's twelve slots when full VFP state is enabled.
+ * A target with more deterministic RAM may raise this bound. Exceeding it
+ * terminates only the affected guest instead of overwriting an older frame. */
+#ifndef LXP_SIGNAL_NEST_MAX
+#define LXP_SIGNAL_NEST_MAX 2
+#endif
+#if LXP_SIGNAL_NEST_MAX < 1
+#error "LXP_SIGNAL_NEST_MAX must be at least 1"
+#endif
+#if LXP_SIGNAL_NEST_MAX > 255
+#error "LXP_SIGNAL_NEST_MAX must fit the signal-stack depth field"
+#endif
+
 /* ---- sizing / placement knobs (were the CONFIG_OVE_RTOS_* #if blocks) ------ */
 /* Per-process program region: a dynamic FDPIC proc XIPs its text from the rootfs,
  * so the region holds only the main exec's RW + ld.so RW + stack. 256K is the

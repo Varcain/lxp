@@ -15,11 +15,11 @@
  */
 #include "lxp/lxp_seam.h"
 #include "lxp/lxp_syscall.h"
-#include "lxp_run_internal.h" /* struct sig_save_s + LXP_NSLOT */
+#include "lxp_run_internal.h" /* signal-save stack + LXP_NSLOT */
 
 #include <stdint.h>
 
-struct sig_save_s g_sig_save[LXP_NSLOT];
+struct sig_save_stack_s g_sig_save[LXP_NSLOT];
 
 int slot_of(const lxp_proc_t *p)
 {

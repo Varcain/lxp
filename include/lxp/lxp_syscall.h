@@ -510,7 +510,7 @@ typedef struct lxp_proc {
 	 * skipped it -> a thread parked in sigsuspend/sigwait was never woken (curl's threaded resolver
 	 * deadlocked: manager + main + a sigwait thread all stuck). */
 	uint64_t sigsuspend_saved_mask;
-	int sigsuspend_active; /**< An rt_sigsuspend mask is installed; restore saved_mask at sigreturn. */
+	int sigsuspend_active; /**< Wait mask installed; next caught signal frame consumes saved_mask. */
 	/* execve request: the engine seam relaunches the thread on this rootfs
 	 * program with the captured argument vector (image replacement). */
 	int exec_pending;			 /**< Set when execve() should relaunch. */

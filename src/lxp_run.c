@@ -387,15 +387,12 @@ void park_frame(struct lxp_frame *f)
 		g_eng->event_post();
 }
 
-/* Saved interrupted context for an in-flight signal handler. r4-r11 are NOT
- * saved (a C handler preserves them, so they are already correct at sigreturn).
- * No nesting (one handler at a time). */
-/* Per-slot, NOT a single global: pthreads (LinuxThreads) deliver restart signals to
- * several threads concurrently — each slot's handler frame must save/restore its own
- * interrupted context, or one thread's sigreturn clobbers another's. */
-/* struct sig_save_s is in lxp_run_internal.h; delivery/restore ops live in
- * src/lxp_signal.c. g_sig_save is owned here (the coordinator clears it on run start). */
-struct sig_save_s g_sig_save[LXP_NSLOT];
+/* Bounded per-slot stacks of interrupted signal contexts. LinuxThreads can
+ * deliver restart/timer signals to several slots concurrently, and a different
+ * signal may interrupt an active handler within one slot. r4-r8/r10-r11 are not
+ * stored because a C handler preserves them; r9 is explicit because FDPIC uses
+ * it as the module GOT. Delivery/restore operations live in lxp_signal.c. */
+struct sig_save_stack_s g_sig_save[LXP_NSLOT];
 
 static volatile int g_tty_isig = 1;
 static volatile int g_pending_sig;
@@ -783,6 +780,9 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	}
 	lxp_arena_init(&g_arenas[ridx], arena_mem, arena_sz);
 	lxp_proc_init(&g_lxp_proc[sidx], &g_arenas[ridx], 0x8000);
+	/* A fresh image has no handler return chain from the previous slot owner.
+	 * execve likewise discards the old image's in-flight signal contexts. */
+	g_sig_save[sidx].depth = 0;
 	g_lxp_proc[sidx].write_fn = g_cfg->write_fn;
 	g_lxp_proc[sidx].read_fn = g_cfg->read_fn;
 	g_lxp_proc[sidx].console_poll = g_cfg->console_poll;
@@ -907,7 +907,14 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 		proc->exit_status = 128 + sig;
 		return;
 	}
-	struct sig_save_s *sv = &g_sig_save[slot];
+	struct sig_save_s *sv = sig_save_push(proc, sig);
+	if (!sv) {
+		/* Bounded signal state is exhausted. Never overwrite an older return
+		 * context: terminate only this already-parked guest. */
+		proc->exited = 1;
+		proc->exit_status = 128 + LXP_SIGSEGV;
+		return;
+	}
 	sv->r0 = (uint32_t)ret;
 	sv->r1 = g_ctx[slot].r1;
 	sv->r2 = g_ctx[slot].r2;
@@ -920,8 +927,6 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 #if LXP_ENABLE_FPU_CONTEXT
 	sv->fp = g_ctx[slot].fp;
 #endif
-	sig_block_for_handler(sv, proc, sig); /* self-block the signal; restored at rt_sigreturn */
-	sv->active = 1;
 	/* Reuse the slot ctx as the handler-entry frame; sp + r4-r11 stay = the thread's, except r9
 	 * (the handler's own GOT for FDPIC — resolve_handler derefs the {entry,GOT} funcdescs; the
 	 * restart handler lives in libpthread, a different module than the interrupted libc). */
@@ -1146,7 +1151,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	g_tty_isig = 1;
 	lxp_stats_reset();
 	for (int i = 0; i < LXP_NSLOT; i++)
-		g_sig_save[i].active = 0;
+		g_sig_save[i].depth = 0;
 #if LXP_ENABLE_DEV
 	/* Register the Kconfig-enabled /dev class drivers (fb, input, ...) on this
 	 * coordinator thread, where blocking HAL init (ove_fb_init, ove_i2c_create) is legal. */
@@ -1328,6 +1333,10 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			lxp_proc_t *ch = &g_lxp_proc[c];
 			deferred_slot_reassign(c);
 			*ch = *par; /* vfork shares the image + region */
+			/* fork/clone resumes from the same instruction stream. If it was called
+			 * inside a handler, both parent and child may reach the restorer and each
+			 * therefore needs an independent copy of the active return chain. */
+			g_sig_save[c] = g_sig_save[es];
 #if LXP_ENABLE_DEV
 			lxp_dev_fork_inherit(ch); /* the child shares the parent's device opens */
 #endif
@@ -1522,6 +1531,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			lxp_netfs_proc_exit(p); /* release the exiting process's remote-fs opens */
 #endif
 			eng->abort_slot(es);
+			g_sig_save[es].depth = 0;
 			if (p->region_owner && rowner[p->region] == es)
 				rowner[p->region] = -1;
 			p->alive = 0;
