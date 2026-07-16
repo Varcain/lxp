@@ -1152,15 +1152,19 @@ static void vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *par, int rsnap,
 	 * post-write invalidate could clobber the fresh SDRAM restore (a non-deterministic corruption).
 	 * The parent's own lines were already clean (vfork_snapshot flushed them), so only the child's
 	 * writes are dropped. A second invalidate after the write drains the Device write buffer (DSB)
-	 * and guarantees the parent refills from the restored SDRAM on resume. */
+	 * and guarantees the parent refills from the restored SDRAM on resume. The coordinator may,
+	 * however, currently map this parent cacheably; publish the memcpy before that final invalidate
+	 * so it cannot discard the restored bytes as dirty cache lines. */
 	lxp_cache_invalidate(pr, dlen);
 	memcpy(pr, eng->region(rsnap), dlen);
+	lxp_cache_clean(pr, dlen);
 	lxp_cache_invalidate(pr, dlen);
 	if (par->is_dynamic && eng->dyn_pool) {
 		size_t ds = 0;
 		uint8_t *pdp = eng->dyn_pool(par->region, &ds);
 		lxp_cache_invalidate(pdp, ds);
 		memcpy(pdp, eng->dyn_pool(rsnap, NULL), ds);
+		lxp_cache_clean(pdp, ds);
 		lxp_cache_invalidate(pdp, ds);
 	}
 	g_arenas[par->region] = g_snap_arena[child_slot];

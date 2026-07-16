@@ -43,6 +43,9 @@ static struct {
 	int cache_clean_calls;
 	const void *cache_clean_base[4];
 	size_t cache_clean_len[4];
+	int cache_invalidate_calls;
+	const void *cache_invalidate_base[4];
+	size_t cache_invalidate_len[4];
 	int exit_notify_calls;
 	lxp_guest_exit_info_t exit_info;
 } g_mock;
@@ -66,6 +69,14 @@ static void mock_cache_clean(const void *base, size_t len)
 	if (i < 4) {
 		g_mock.cache_clean_base[i] = base;
 		g_mock.cache_clean_len[i] = len;
+	}
+}
+static void mock_cache_invalidate(const void *base, size_t len)
+{
+	int i = g_mock.cache_invalidate_calls++;
+	if (i < 4) {
+		g_mock.cache_invalidate_base[i] = base;
+		g_mock.cache_invalidate_len[i] = len;
 	}
 }
 static void mock_spawn_resume(int sidx, int ridx, const struct lxp_resume_ctx *c, long r0)
@@ -101,6 +112,7 @@ static const lxp_os_ops_t g_mock_eng = {
 	.abort_slot = mock_abort_slot,
 	.event_post = mock_event_post,
 	.cache_clean = mock_cache_clean,
+	.cache_invalidate = mock_cache_invalidate,
 };
 
 static void mock_on_guest_exit(const lxp_guest_exit_info_t *info)
@@ -366,6 +378,36 @@ static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
 	assert_int_equal(g_mock.cache_clean_len[1], 128u);
 	assert_int_equal(g_mock.cache_clean_len[2], sizeof(g_mock_dyn_pools[0]));
 	assert_int_equal(g_mock.cache_clean_len[3], sizeof(g_mock_dyn_pools[1]));
+}
+
+static void test_vfork_restore_publishes_cacheable_parent(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	p->region = 0;
+	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	p->is_dynamic = 1;
+	for (size_t i = 0; i < 128u; i++)
+		g_mock_regions[1][i] = (uint8_t)(i ^ 0x5au);
+	for (size_t i = 0; i < sizeof(g_mock_dyn_pools[1]); i++)
+		g_mock_dyn_pools[1][i] = (uint8_t)(i ^ 0xa5u);
+	memset(g_mock_regions[0], 0xcc, 128u);
+	memset(g_mock_dyn_pools[0], 0xdd, sizeof(g_mock_dyn_pools[0]));
+
+	vfork_restore(&g_mock_eng, p, 1, 1);
+
+	assert_memory_equal(g_mock_regions[0], g_mock_regions[1], 128u);
+	assert_memory_equal(g_mock_dyn_pools[0], g_mock_dyn_pools[1],
+			    sizeof(g_mock_dyn_pools[0]));
+	assert_int_equal(g_mock.cache_clean_calls, 2);
+	assert_ptr_equal(g_mock.cache_clean_base[0], g_mock_regions[0]);
+	assert_ptr_equal(g_mock.cache_clean_base[1], g_mock_dyn_pools[0]);
+	assert_int_equal(g_mock.cache_invalidate_calls, 4);
+	assert_ptr_equal(g_mock.cache_invalidate_base[0], g_mock_regions[0]);
+	assert_ptr_equal(g_mock.cache_invalidate_base[1], g_mock_regions[0]);
+	assert_ptr_equal(g_mock.cache_invalidate_base[2], g_mock_dyn_pools[0]);
+	assert_ptr_equal(g_mock.cache_invalidate_base[3], g_mock_dyn_pools[0]);
 }
 
 /* ---- region_free: owner table AND liveness both gate reuse ------------------ */
@@ -716,6 +758,8 @@ int main(void)
 		cmocka_unit_test_setup(test_fork_capacity_accounts_live_and_zombie_children,
 				       reset_state),
 		cmocka_unit_test_setup(test_vfork_snapshot_publishes_cacheable_destination,
+				       reset_state),
+		cmocka_unit_test_setup(test_vfork_restore_publishes_cacheable_parent,
 				       reset_state),
 		cmocka_unit_test_setup(test_region_free, reset_state),
 	};
