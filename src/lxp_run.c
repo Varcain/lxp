@@ -25,6 +25,7 @@
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_seam.h"
+#include "lxp/lxp_latency.h"
 #include "lxp/lxp_stats.h"
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h" /* device-layer park/retry + autoreg + tick + kick */
@@ -285,6 +286,13 @@ struct deferred_req {
 	uint32_t generation;
 	uint8_t state;
 	uint8_t _pad[3];
+#if LXP_ENABLE_LATENCY
+	/* Stamped where the guest publishes, read where the coordinator claims:
+	 * the gap is how long a flood from one guest delays another's event. Lives
+	 * in the mailbox, not lxp_proc_t, so it shares the entry's lifetime and a
+	 * recycled slot cannot present a stale publish time as a fresh wait. */
+	uint64_t pub_ns;
+#endif
 };
 static struct deferred_req g_deferred[LXP_NSLOT];
 static uint32_t g_slot_generation[LXP_NSLOT];
@@ -372,6 +380,13 @@ static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 	g_deferred[slot].a0 = f->r[0];
 	g_deferred[slot].generation =
 		__atomic_load_n(&g_slot_generation[slot], __ATOMIC_RELAXED);
+#if LXP_ENABLE_LATENCY
+	{ /* the only timer call on the svc top half, and only when instrumented */
+		uint64_t t = 0;
+		lxp_time_ns(&t);
+		g_deferred[slot].pub_ns = t;
+	}
+#endif
 	capture_ctx(slot, f);
 	deferred_state_store(slot, DEFER_READY);
 	park_frame(f);
@@ -893,7 +908,7 @@ static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int stat
 	}
 }
 
-/* Report a stable snapshot before EV_EXIT clears/reuses the process slot. The
+/* Report a stable snapshot before LXP_EV_EXIT clears/reuses the process slot. The
  * callback is deliberately outside exception context; an embedded host may log
  * it, increment retained counters, or leave it unset for zero runtime cost. */
 static void notify_guest_exit(int slot, const lxp_proc_t *proc)
@@ -926,7 +941,7 @@ static int fork_capacity_available(const lxp_proc_t *proc)
  * frame — the interrupted context is the captured g_ctx[slot]. Save that as the slot's sigreturn
  * frame (to resume with `ret` = -EINTR), then resume the proc INTO its handler; the handler's
  * sa_restorer -> rt_sigreturn restores the saved frame and the syscall returns -EINTR. SIG_IGN
- * just resumes with `ret`; SIG_DFL terminates (the EV_EXIT pass reaps it). */
+ * just resumes with `ret`; SIG_DFL terminates (the LXP_EV_EXIT pass reaps it). */
 static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 				  lxp_proc_t *proc, int sig, long ret)
 {
@@ -1014,6 +1029,15 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 		deferred_state_store(slot, DEFER_IDLE);
 		return;
 	}
+#if LXP_ENABLE_LATENCY
+	{ /* publish -> claim. Recorded only for a live, generation-matched entry:
+	   * a discarded one never waited on the coordinator. */
+		uint64_t now = 0;
+		lxp_time_ns(&now);
+		if (now > req->pub_ns)
+			lxp_lat_wake(slot, now - req->pub_ns);
+	}
+#endif
 
 	/* A signal that won the race with coordinator service cancels the request
 	 * before it acquires resources. Ignored/default-SIGCHLD signals are consumed
@@ -1252,7 +1276,23 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	int idle = 0;
 	unsigned event_cursor = 0;
 	uint64_t last_refresh_us = 0;
+#if LXP_ENABLE_LATENCY
+	/* The dispatch below leaves via `continue` from many arms, so the service
+	 * time is closed here, at the top of the following iteration, rather than
+	 * bracketing each arm and missing whichever one is added next. */
+	uint64_t lat_t0 = 0;
+	int lat_cls = 0;
+#endif
 	for (;;) {
+#if LXP_ENABLE_LATENCY
+		if (lat_cls) {
+			uint64_t t = 0;
+			lxp_time_ns(&t);
+			if (t > lat_t0)
+				lxp_lat_service(lat_cls, t - lat_t0);
+			lat_cls = 0;
+		}
+#endif
 		if (g_lxp_halt) { /* reboot(2)/poweroff: stop the whole system */
 			rc = 0;
 			break;
@@ -1261,23 +1301,10 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		/* Claim ONE pending event under the crit (flags are atomic ints; the brief
 		 * masked window keeps a preempting program svc from racing the read/clear).
 		 * Act on it OUTSIDE the crit — abort/spawn/launch may yield. */
-		int es = -1, et = 0;
-		enum {
-			EV_EXIT = 1,
-			EV_EXEC,
-			EV_FORK,
-			EV_DEFER,
-			EV_SLEEP,
-			EV_FUTEXWAIT,
-			EV_WAITPARK,
-			EV_PIPE,
-			EV_DEVWAIT,
-			EV_SOCKWAIT,
-			EV_NETFSWAIT,
-			EV_PTYWAIT,
-			EV_SIGSUSPEND,
-			EV_CONSOLEWAIT
-		};
+		/* Event classes: enum lxp_ev_class, expanded from LXP_LAT_CLASS_LIST in
+		 * lxp_latency.h so the dispatch, the stats array and the names a port
+		 * prints cannot fall out of step. LXP_EV_NONE (0) means "nothing claimed". */
+		int es = -1, et = LXP_EV_NONE;
 		eng->crit_enter();
 		for (int i = 0; i < LXP_NSLOT; i++) {
 			int s = (int)((event_cursor + (unsigned)i) % LXP_NSLOT);
@@ -1286,86 +1313,92 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				continue;
 			if (p->exited) {
 				es = s;
-				et = EV_EXIT;
+				et = LXP_EV_EXIT;
 				break;
 			}
 			if (p->exec_pending) {
 				es = s;
-				et = EV_EXEC;
+				et = LXP_EV_EXEC;
 				break;
 			}
 			if (p->fork_pending) {
 				p->fork_pending = 0;
 				es = s;
-				et = EV_FORK;
+				et = LXP_EV_FORK;
 				break;
 			}
 			if (deferred_state_load(s) == DEFER_READY) {
 				es = s;
-				et = EV_DEFER;
+				et = LXP_EV_DEFER;
 				break;
 			}
 			if (p->sleep_pending) {
 				p->sleep_pending = 0;
 				es = s;
-				et = EV_SLEEP;
+				et = LXP_EV_SLEEP;
 				break;
 			}
 			if (p->futex_wait && g_lxp_used[s]) {
 				es = s;
-				et = EV_FUTEXWAIT;
+				et = LXP_EV_FUTEXWAIT;
 				break;
 			}
 			if (p->wait_pending && g_lxp_used[s]) {
 				es = s;
-				et = EV_WAITPARK;
+				et = LXP_EV_WAITPARK;
 				break;
 			}
 			if (p->pipe_wait && g_lxp_used[s]) {
 				es = s;
-				et = EV_PIPE;
+				et = LXP_EV_PIPE;
 				break;
 			}
 			if (p->dev_wait && g_lxp_used[s]) {
 				es = s;
-				et = EV_DEVWAIT;
+				et = LXP_EV_DEVWAIT;
 				break;
 			}
 			if (p->sock_wait && g_lxp_used[s]) {
 				es = s;
-				et = EV_SOCKWAIT;
+				et = LXP_EV_SOCKWAIT;
 				break;
 			}
 #if LXP_ENABLE_NETFS
 			if (p->netfs_wait && g_lxp_used[s]) {
 				es = s;
-				et = EV_NETFSWAIT;
+				et = LXP_EV_NETFSWAIT;
 				break;
 			}
 #endif
 #if LXP_ENABLE_PTY
 			if (p->pty_wait && g_lxp_used[s]) {
 				es = s;
-				et = EV_PTYWAIT;
+				et = LXP_EV_PTYWAIT;
 				break;
 			}
 #endif
 			if (p->sigsuspend_pending && g_lxp_used[s]) {
 				es = s;
-				et = EV_SIGSUSPEND;
+				et = LXP_EV_SIGSUSPEND;
 				break;
 			}
 			if (p->console_wait && g_lxp_used[s]) {
 				es = s;
-				et = EV_CONSOLEWAIT;
+				et = LXP_EV_CONSOLEWAIT;
 				break;
 			}
 		}
 		if (es >= 0)
 			event_cursor = ((unsigned)es + 1u) % LXP_NSLOT;
 		eng->crit_exit();
+#if LXP_ENABLE_LATENCY
+		if (es >= 0 && et) { /* dispatch starts here; closed at the loop top */
+			lxp_time_ns(&lat_t0);
+			lat_cls = et;
+		}
+#endif
 
-		if (et == EV_DEFER) {
+		if (et == LXP_EV_DEFER) {
 			lxp_coord_map(g_lxp_proc[es].region); /* coherent coordinator view of es's guest buffers */
 			execute_deferred(eng, es);
 			idle = 0;
@@ -1373,7 +1406,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		}
 
 		if (et ==
-		    EV_FORK) { /* spawn a child sharing the parent's region; suspend the parent. */
+		    LXP_EV_FORK) { /* spawn a child sharing the parent's region; suspend the parent. */
 			lxp_proc_t *par = &g_lxp_proc[es];
 			/* The zombie queue is bounded. Include both running children and
 			 * already-queued zombies so a parent that does not reap cannot make a
@@ -1494,7 +1527,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		}
 
 		if (et ==
-		    EV_EXEC) { /* the child gets its own region → resume any vfork parent NOW. */
+		    LXP_EV_EXEC) { /* the child gets its own region → resume any vfork parent NOW. */
 			lxp_proc_t *p = &g_lxp_proc[es];
 			deferred_slot_reassign(es); /* invalidate the old image's completed request token */
 			int idx = p->exec_file_idx, eargc = p->exec_argc, eenvc = p->exec_envc;
@@ -1592,7 +1625,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		}
 
 		if (et ==
-		    EV_EXIT) { /* reap: abort thread, free region, wake parent/queue zombie. */
+		    LXP_EV_EXIT) { /* reap: abort thread, free region, wake parent/queue zombie. */
 			lxp_proc_t *p = &g_lxp_proc[es];
 			deferred_slot_reassign(es); /* cancel anything tied to the dying slot identity */
 			int cpid = p->pid, status = p->exit_status, vp = p->vfork_parent_slot,
@@ -1633,58 +1666,58 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		}
 
 		if (et ==
-		    EV_SLEEP) { /* park the slot for the nanosleep duration (deadline below). */
+		    LXP_EV_SLEEP) { /* park the slot for the nanosleep duration (deadline below). */
 			eng->abort_slot(es);
 			g_lxp_proc[es].sleeping = 1;
 			idle = 0;
 			continue;
 		}
-		if (et == EV_FUTEXWAIT) { /* free the waiter's spin thread until a peer's FUTEX_WAKE. */
+		if (et == LXP_EV_FUTEXWAIT) { /* free the waiter's spin thread until a peer's FUTEX_WAKE. */
 			eng->abort_slot(es);
 			idle = 0;
 			continue;
 		}
 		if (et ==
-		    EV_WAITPARK) { /* free the blocked waiter's spin thread until a child exits. */
+		    LXP_EV_WAITPARK) { /* free the blocked waiter's spin thread until a child exits. */
 			eng->abort_slot(es);
 			idle = 0;
 			continue;
 		}
-		if (et == EV_PIPE) { /* free the spin thread; the retry below resumes it. */
+		if (et == LXP_EV_PIPE) { /* free the spin thread; the retry below resumes it. */
 			eng->abort_slot(es);
 			idle = 0;
 			continue;
 		}
-		if (et == EV_DEVWAIT) { /* free the spin thread; the device retry below resumes it. */
+		if (et == LXP_EV_DEVWAIT) { /* free the spin thread; the device retry below resumes it. */
 			eng->abort_slot(es);
 			idle = 0;
 			continue;
 		}
-		if (et == EV_SOCKWAIT) { /* free the spin thread; the socket retry below resumes it. */
+		if (et == LXP_EV_SOCKWAIT) { /* free the spin thread; the socket retry below resumes it. */
 			eng->abort_slot(es);
 			idle = 0;
 			continue;
 		}
 #if LXP_ENABLE_NETFS
-		if (et == EV_NETFSWAIT) { /* free the spin thread; the netfs retry below resumes it. */
+		if (et == LXP_EV_NETFSWAIT) { /* free the spin thread; the netfs retry below resumes it. */
 			eng->abort_slot(es);
 			idle = 0;
 			continue;
 		}
 #endif
 #if LXP_ENABLE_PTY
-		if (et == EV_PTYWAIT) { /* free the spin thread; the pty retry below resumes it. */
+		if (et == LXP_EV_PTYWAIT) { /* free the spin thread; the pty retry below resumes it. */
 			eng->abort_slot(es);
 			idle = 0;
 			continue;
 		}
 #endif
-		if (et == EV_SIGSUSPEND) { /* free the spin thread; pending_sig below wakes it. */
+		if (et == LXP_EV_SIGSUSPEND) { /* free the spin thread; pending_sig below wakes it. */
 			eng->abort_slot(es);
 			idle = 0;
 			continue;
 		}
-		if (et == EV_CONSOLEWAIT) { /* free the spin thread; the console retry below resumes it. */
+		if (et == LXP_EV_CONSOLEWAIT) { /* free the spin thread; the console retry below resumes it. */
 			eng->abort_slot(es);
 			idle = 0;
 			continue;
@@ -1740,7 +1773,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * so the mask is honored at the parked sites too, not only at the running
 			 * boundary. Each branch clears the taken bit; SIG_IGN is dropped; a default
 			 * action terminates (a custom handler on a blocked proc is approximated as
-			 * terminate). EV_EXIT reaps it next pass. */
+			 * terminate). LXP_EV_EXIT reaps it next pass. */
 			int psig = (!g_lxp_used[s]) ? pending_deliverable(p) : 0;
 			if (psig && p->sigsuspend_pending) {
 				/* rt_sigsuspend-parked thread woken by a delivered signal (the
@@ -1846,7 +1879,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					if (r == -LXP_EPIPE &&
 					    p->sig_handler[LXP_SIGPIPE] != LXP_SIG_IGN) {
 						/* broken pipe + default SIGPIPE → terminate the
-						 * writer; the EV_EXIT pass reaps it (no live thread). */
+						 * writer; the LXP_EV_EXIT pass reaps it (no live thread). */
 						p->exited = 1;
 						p->exit_status = 128 + LXP_SIGPIPE;
 						p->exit_reason = LXP_EXIT_REASON_SIGNAL;
@@ -1907,7 +1940,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				long r = lxp_netfs_retry(p);
 				if (r != -LXP_EAGAIN) {
 					p->netfs_wait = 0;
-					/* a completed exec-fetch sets exec_pending → EV_EXEC launches it
+					/* a completed exec-fetch sets exec_pending → LXP_EV_EXEC launches it
 					 * from the staging buffer; don't resume the parked execve. */
 					if (!p->exec_pending)
 						eng->spawn_resume(s, p->region, &g_ctx[s], r);
@@ -2007,6 +2040,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const lxp_run_config_t *run_config, const char *path, int argc,
 	    const char *const argv[])
 {
+	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
 	if (!os_ops)
 		return LXP_RUN_ELAUNCH;
 
