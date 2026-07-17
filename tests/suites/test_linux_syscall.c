@@ -370,6 +370,52 @@ static const lxp_file_t k_lnkfs[] = {
 };
 #define K_LNKFS_N ((int)(sizeof(k_lnkfs) / sizeof(k_lnkfs[0])))
 
+/* Two guests can be parked with an exec request pending at the same time — a
+ * pipeline forks several — so the capture is per-proc rather than one global
+ * staging buffer. Nothing pinned that: with a shared buffer both procs would
+ * still pass every single-proc test and only corrupt each other under
+ * concurrency, where it reads as a random wrong-program launch. */
+static void test_lnx_exec_capture_is_per_proc(void **state)
+{
+	(void)state;
+	lxp_arena_t arena_a, arena_b;
+	lxp_proc_t a, b;
+	setup_proc(&a, &arena_a);
+	setup_proc(&b, &arena_b);
+	lxp_proc_set_rootfs(&a, k_rootfs, K_ROOTFS_N);
+	lxp_proc_set_rootfs(&b, k_rootfs, K_ROOTFS_N);
+
+	char *const argv_a[] = {"aaa", "a1", NULL};
+	char *const envp_a[] = {"A=1", NULL};
+	char *const argv_b[] = {"bbb", "b1", "b2", NULL};
+	char *const envp_b[] = {"B=2", NULL};
+
+	/* Interleave: b's capture must not disturb a's already-pending one. */
+	assert_int_equal(lxp_syscall(&a, LXP_NR_execve, (long)(uintptr_t) "/bin/sh",
+				     (long)(uintptr_t)argv_a, (long)(uintptr_t)envp_a, 0, 0, 0),
+			 0);
+	assert_int_equal(lxp_syscall(&b, LXP_NR_execve, (long)(uintptr_t) "/bin/sh",
+				     (long)(uintptr_t)argv_b, (long)(uintptr_t)envp_b, 0, 0, 0),
+			 0);
+
+	assert_int_equal(a.exec_pending, 1);
+	assert_int_equal(b.exec_pending, 1);
+	assert_int_equal(a.exec_argc, 2);
+	assert_int_equal(b.exec_argc, 3);
+	assert_string_equal(EXEC_ARG(a, 0), "aaa");
+	assert_string_equal(EXEC_ARG(a, 1), "a1");
+	assert_string_equal(EXEC_ARG(b, 0), "bbb");
+	assert_string_equal(EXEC_ARG(b, 2), "b2");
+	assert_int_equal(a.exec_envc, 1);
+	assert_int_equal(b.exec_envc, 1);
+	assert_string_equal(EXEC_ENV(a, 0), "A=1");
+	assert_string_equal(EXEC_ENV(b, 0), "B=2");
+
+	/* The buffers are distinct storage, not two views of one staging area. */
+	assert_ptr_not_equal(a.exec_argv_buf, b.exec_argv_buf);
+	assert_ptr_not_equal(a.exec_env_buf, b.exec_env_buf);
+}
+
 /* Exec a #! script whose interpreter is a symlink — BusyBox init running
  * /etc/init.d/rcS, which fails on target with ENOENT. */
 static void test_lnx_exec_script_symlink_interp(void **state)
@@ -862,6 +908,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_setup_stack),
 		cmocka_unit_test(test_lnx_file),
 		cmocka_unit_test(test_lnx_exec_script_symlink_interp),
+		cmocka_unit_test(test_lnx_exec_capture_is_per_proc),
 		cmocka_unit_test(test_lnx_tmpfs),
 		cmocka_unit_test(test_lnx_getdents),
 		cmocka_unit_test(test_lnx_execve),
