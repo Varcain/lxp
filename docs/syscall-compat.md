@@ -8,7 +8,7 @@ Every syscall the lxp personality answers, cross-checked against the ARM EABI re
 Numbers come from `include/lxp/lxp_syscall.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/lxp_run.c` by the coverage guard.
 
-Surface: 136 LXP_NR_* — 94 implemented, 31 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
+Surface: 137 LXP_NR_* — 95 implemented, 31 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
 
 | Number | Name | Disposition | Notes |
 |---:|---|---|---|
@@ -146,5 +146,6 @@ Surface: 136 LXP_NR_* — 94 implemented, 31 benign-stub, 1 refused-eopnotsupp, 
 | 412 | utimensat_time64 | benign-stub | times not tracked |
 | 413 | pselect6_time64 | implemented | NET-gated |
 | 414 | ppoll_time64 | implemented |  |
+| 421 | rt_sigtimedwait_time64 | implemented | poll only: dequeues a pending signal in the set, else -EAGAIN; does not block for the timeout |
 | 422 | futex_time64 | run-loop-handled | same as futex |
 | 439 | faccessat2 | implemented |  |

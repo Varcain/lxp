@@ -80,11 +80,12 @@ uname	implemented	Linux/overtos/6.1.0/oveRTOS/armv7l/(none)
 sysinfo	implemented	uptime + canned ram totals
 times	implemented	uptime ticks; per-proc breakdown zeroed
 setitimer	implemented	ITIMER_REAL -> SIGALRM
-getrandom	implemented
+getrandom	implemented	host `random_fill`; bounded; fails closed when unavailable
 reboot	implemented	HALT/POWEROFF/RESTART latch the run
 rt_sigaction	implemented	records the per-signal disposition
 rt_sigprocmask	implemented	maintains the per-proc blocked mask; honored at delivery
 rt_sigsuspend	implemented	LinuxThreads suspend(): parks, returns -EINTR
+rt_sigtimedwait_time64	implemented	poll only: dequeues a pending signal in the set, else -EAGAIN; does not block for the timeout
 wait4	implemented	reaps / blocks via the run loop
 execve	implemented	captured; the run loop loads the image
 exit	implemented
