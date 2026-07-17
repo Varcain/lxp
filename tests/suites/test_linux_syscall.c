@@ -426,9 +426,25 @@ static void test_lnx_exec_script_symlink_interp(void **state)
 	setup_proc(&p, &arena);
 	lxp_proc_set_rootfs(&p, k_lnkfs, K_LNKFS_N);
 
-	char *const argv[] = {"/etc/init.d/rcS", NULL};
-	long rc = lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/etc/init.d/rcS",
-			      (long)(uintptr_t)argv, 0, 0, 0, 0);
+	/* setup_proc leaves an all-permitting access_ok range, and that is exactly
+	 * what hid this bug: on target the #! interpreter path is a kernel stack
+	 * buffer OUTSIDE the guest's region, so resolve_path()'s user-pointer guard
+	 * rejected it and every interpreter script died with ENOENT. A test with no
+	 * region bound can never see that. So give this proc a real one — argv and
+	 * the strings it points at laid out in one blob, the way a guest's are —
+	 * and nothing the kernel owns may be passed off as guest memory. */
+	static struct {
+		char *vec[2];
+		char path[32];
+	} gmem;
+	memcpy(gmem.path, "/etc/init.d/rcS", sizeof("/etc/init.d/rcS"));
+	gmem.vec[0] = gmem.path;
+	gmem.vec[1] = NULL;
+	p.region_lo = (uintptr_t)&gmem;
+	p.region_hi = p.region_lo + sizeof(gmem);
+
+	long rc = lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)gmem.path,
+			      (long)(uintptr_t)gmem.vec, 0, 0, 0, 0);
 	assert_int_equal(rc, 0);
 	/* Re-targeted at the interpreter's target, not the script. */
 	assert_int_equal(p.exec_pending, 1);

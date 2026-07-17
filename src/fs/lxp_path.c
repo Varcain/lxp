@@ -89,6 +89,18 @@ long resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen)
 	return normalize_abs(joined, out, outlen);
 }
 
+long resolve_path_trusted(const char *in, char *out, size_t outlen)
+{
+	/* No user_strnlen() here, and that is the point: `in` is a string the kernel
+	 * copied out of a file's own bytes, so it does not live in the guest's
+	 * region and resolve_path()'s pointer guard rejects it with -EFAULT — which
+	 * the #! path reported as ENOENT, making every interpreter script
+	 * unrunnable on target. There is no pointer to validate here, only content. */
+	if (!in || in[0] != '/')
+		return -LXP_EINVAL;
+	return normalize_abs(in, out, outlen);
+}
+
 /* Find the rootfs index for an absolute path in (fs,count), or -1. */
 static int fsx_lookup(const lxp_file_t *fs, int count, const char *abspath)
 {

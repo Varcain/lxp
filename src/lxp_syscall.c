@@ -2713,7 +2713,11 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 		if (k == 0)
 			return -LXP_ENOEXEC;
 		char interpabs[LXP_PATH_MAX];
-		if (resolve_path(p, interp, interpabs, sizeof(interpabs)) < 0)
+		/* _trusted, not resolve_path(): interp was copied out of the script's
+		 * own bytes into this stack buffer, so it is not a guest pointer and
+		 * resolve_path()'s user_strnlen guard rejects it -EFAULT. That made
+		 * every #! script unrunnable — BusyBox init's /etc/init.d/rcS included. */
+		if (resolve_path_trusted(interp, interpabs, sizeof(interpabs)) < 0)
 			return -LXP_ENOENT;
 		interp_idx = fs_follow(p, fs_lookup(p, interpabs));
 		if (interp_idx < 0)
