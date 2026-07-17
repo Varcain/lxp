@@ -352,6 +352,46 @@ static const lxp_file_t k_rootfs[] = {
 };
 #define K_ROOTFS_N ((int)(sizeof(k_rootfs) / sizeof(k_rootfs[0])))
 
+/* A rootfs shaped like the real Buildroot one, which k_rootfs above is not:
+ * there /bin/sh is a RELATIVE symlink to busybox rather than a regular file, and
+ * the script lives two directories down. Buildroot installs every applet that
+ * way, so an interpreter reached through a symlink is the normal case on target,
+ * not an exotic one — and nothing covered it. */
+static const uint8_t k_bb_elf[] = {0x7f, 'E', 'L', 'F'};
+static const uint8_t k_rcs[] = "#!/bin/sh\necho rcS\n";
+static const lxp_file_t k_lnkfs[] = {
+	{"/", NULL, 0, LXP_S_IFDIR},
+	{"/bin", NULL, 0, LXP_S_IFDIR},
+	{"/bin/busybox", k_bb_elf, sizeof(k_bb_elf), 0},
+	{"/bin/sh", (const uint8_t *)"busybox", 7, LXP_S_IFLNK},
+	{"/etc", NULL, 0, LXP_S_IFDIR},
+	{"/etc/init.d", NULL, 0, LXP_S_IFDIR},
+	{"/etc/init.d/rcS", k_rcs, sizeof(k_rcs) - 1, 0},
+};
+#define K_LNKFS_N ((int)(sizeof(k_lnkfs) / sizeof(k_lnkfs[0])))
+
+/* Exec a #! script whose interpreter is a symlink — BusyBox init running
+ * /etc/init.d/rcS, which fails on target with ENOENT. */
+static void test_lnx_exec_script_symlink_interp(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+	lxp_proc_set_rootfs(&p, k_lnkfs, K_LNKFS_N);
+
+	char *const argv[] = {"/etc/init.d/rcS", NULL};
+	long rc = lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/etc/init.d/rcS",
+			      (long)(uintptr_t)argv, 0, 0, 0, 0);
+	assert_int_equal(rc, 0);
+	/* Re-targeted at the interpreter's target, not the script. */
+	assert_int_equal(p.exec_pending, 1);
+	assert_string_equal(k_lnkfs[p.exec_file_idx].path, "/bin/busybox");
+	assert_int_equal(p.exec_argc, 2);
+	assert_string_equal(EXEC_ARG(p, 0), "/bin/sh");
+	assert_string_equal(EXEC_ARG(p, 1), "/etc/init.d/rcS");
+}
+
 static void test_lnx_file(void **state)
 {
 	(void)state;
@@ -821,6 +861,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_init_stubs),
 		cmocka_unit_test(test_lnx_setup_stack),
 		cmocka_unit_test(test_lnx_file),
+		cmocka_unit_test(test_lnx_exec_script_symlink_interp),
 		cmocka_unit_test(test_lnx_tmpfs),
 		cmocka_unit_test(test_lnx_getdents),
 		cmocka_unit_test(test_lnx_execve),
