@@ -56,6 +56,16 @@ space:
   use `LXP_SYSCALL_FILE_QUANTUM_BYTES` for FDPIC-loader compatibility. Host callbacks must also
   return in a host-defined finite interval; a callback that blocks forever stalls all deferred
   guest syscalls, though higher-priority host RT tasks remain preemptive.
+- **A long coordinator hold, a short host stall.** Those two are separate bounds, and only the
+  second is a real-time claim. One event is one dispatch, and dispatches are not equal: on a
+  216 MHz STM32F746, `getpid` is microseconds while `fork` is ~105 ms — it copies the parent's
+  writable data instead of sharing it copy-on-write, through a mapping the coordinator sees
+  uncached. That hold is accepted, because it is not what the host waits on: the run loop takes
+  its one critical section only to claim an event (a bounded scan of the slot flags) and does
+  the work outside it, so a top-priority host task still wakes within ~14 µs of its deadline
+  (~284 µs worst over seven runs). The cost lands on guests instead — the coordinator serves one
+  event at a time, so a syscall published while a `fork` is in flight waits behind it. Build with
+  `LXP_ENABLE_LATENCY=1` to measure both; see `include/lxp/lxp_latency.h`.
 - **Entropy is a host trust boundary.** `getrandom`, `/dev/random`, `/dev/urandom`, and each
   process's `AT_RANDOM` stack-canary seed use the host's `random_fill` operation. The core has
   no time-seeded fallback: a port without a trustworthy provider returns an error and cannot
