@@ -8,7 +8,7 @@ Every syscall the lxp personality answers, cross-checked against the ARM EABI re
 Numbers come from `include/lxp/lxp_syscall.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/lxp_run.c` by the coverage guard.
 
-Surface: 137 LXP_NR_* — 95 implemented, 31 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
+Surface: 138 LXP_NR_* — 95 implemented, 32 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
 
 | Number | Name | Disposition | Notes |
 |---:|---|---|---|
@@ -91,6 +91,7 @@ Surface: 137 LXP_NR_* — 95 implemented, 31 benign-stub, 1 refused-eopnotsupp, 
 | 209 | getresuid32 | benign-stub | all root (0) |
 | 210 | setresgid32 | benign-stub | privilege drop accepted (inert) |
 | 211 | getresgid32 | benign-stub | all root (0) |
+| 212 | chown32 | benign-stub | ownership not enforced (dropbear chowns the pty) |
 | 213 | setuid32 | benign-stub | uid/gid not enforced (inert) |
 | 214 | setgid32 | benign-stub | uid/gid not enforced (inert) |
 | 217 | getdents64 | implemented |  |

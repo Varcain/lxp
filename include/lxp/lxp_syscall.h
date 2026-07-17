@@ -162,6 +162,7 @@ extern "C" {
 #define LXP_CLONE_VM 0x00000100u
 #define LXP_NR_setgroups32 206
 #define LXP_NR_fchown32 207
+#define LXP_NR_chown32 212
 #define LXP_NR_setuid32 213
 #define LXP_NR_setgid32 214
 /* setres/setre privilege-drop family (dropbear drops privileges after auth and aborts if it

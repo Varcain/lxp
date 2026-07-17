@@ -124,6 +124,7 @@ setsid	benign-stub	returns pid; no session machinery
 getpgrp	benign-stub	returns pid; process group == pid
 fchmod	benign-stub	modes not tracked
 fchown32	benign-stub	ownership not enforced
+chown32	benign-stub	ownership not enforced (dropbear chowns the pty)
 setgroups32	benign-stub	uid/gid not enforced (inert)
 setuid32	benign-stub	uid/gid not enforced (inert)
 setgid32	benign-stub	uid/gid not enforced (inert)
