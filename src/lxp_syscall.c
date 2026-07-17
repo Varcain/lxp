@@ -2532,12 +2532,15 @@ long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t 
 /* Snapshot an untrusted guest argv/envp into coordinator-owned storage. The guest is parked,
  * but another CLONE_VM thread can still mutate its memory, so each pointer is loaded once and no
  * raw vector is revisited after this copy. */
-static long exec_copy_vec(lxp_proc_t *p, char *const uvec[], char **vec, char *buf,
+static long exec_copy_vec(lxp_proc_t *p, char *const uvec[], uint16_t *vec, char *buf,
 			  size_t bufsz, int max, int *count, size_t *used)
 {
 	*count = 0;
 	if (used)
 		*used = 0;
+	/* Leave no plausible offset behind from the image this slot ran before. */
+	for (int j = 0; j < max; j++)
+		vec[j] = LXP_EXEC_OFF_NONE;
 	if (!uvec)
 		return 0;
 	size_t off = 0;
@@ -2569,7 +2572,7 @@ static long exec_copy_vec(lxp_proc_t *p, char *const uvec[], char **vec, char *b
 		}
 		if (len == limit)
 			return readable < room ? -LXP_EFAULT : -LXP_E2BIG;
-		vec[j] = buf + off;
+		vec[j] = (uint16_t)off;
 		off += len + 1;
 		*count = j + 1;
 		if (used)
@@ -2591,7 +2594,7 @@ static long exec_rewrite_script_argv(lxp_proc_t *p, int old_argc, size_t old_byt
 
 	size_t tail_off = old_bytes;
 	if (tail_count)
-		tail_off = (size_t)(p->exec_argv[1] - p->exec_argv_buf);
+		tail_off = p->exec_argv[1];
 	if (tail_off > old_bytes)
 		return -LXP_EFAULT; /* internal snapshot invariant */
 	size_t tail_bytes = old_bytes - tail_off;
@@ -2616,14 +2619,18 @@ static long exec_rewrite_script_argv(lxp_proc_t *p, int old_argc, size_t old_byt
 	size_t off = 0;
 	for (int j = 0; j < prefix_count; j++) {
 		size_t len = strlen(prefix[j]) + 1;
-		p->exec_argv[j] = p->exec_argv_buf + off;
+		p->exec_argv[j] = (uint16_t)off;
 		memcpy(p->exec_argv_buf + off, prefix[j], len);
 		off += len;
 	}
 	for (int j = 0; j < tail_count; j++) {
-		p->exec_argv[prefix_count + j] = p->exec_argv_buf + off;
+		p->exec_argv[prefix_count + j] = (uint16_t)off;
 		off += strlen(p->exec_argv_buf + off) + 1;
 	}
+	/* The rewrite shortens the vector when the script took no arguments; leave
+	 * nothing from the pre-rewrite capture readable as a valid offset. */
+	for (int j = prefix_count + tail_count; j < LXP_EXEC_MAXARGS; j++)
+		p->exec_argv[j] = LXP_EXEC_OFF_NONE;
 	*new_argc = prefix_count + tail_count;
 	return 0;
 }

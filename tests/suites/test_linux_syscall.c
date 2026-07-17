@@ -26,6 +26,11 @@ extern size_t g_lxp_test_cache_clean_calls;
 extern const void *g_lxp_test_cache_clean_base;
 extern size_t g_lxp_test_cache_clean_len;
 
+/* The exec capture stores uint16_t offsets into its own backing buffer rather
+ * than pointers, so resolve one to compare its text. */
+#define EXEC_ARG(p, j) ((p).exec_argv_buf + (p).exec_argv[j])
+#define EXEC_ENV(p, j) ((p).exec_env_buf + (p).exec_env[j])
+
 /* Captures fd 1/2 output so writes can be asserted by value. */
 static char g_cap[256];
 static size_t g_cap_len;
@@ -540,18 +545,18 @@ static void test_lnx_execve(void **state)
 	assert_int_equal(p.exec_pending, 1);
 	assert_string_equal(k_rootfs[p.exec_file_idx].path, "/bin/sh");
 	assert_int_equal(p.exec_argc, 2);
-	assert_string_equal(p.exec_argv[0], "prog");
-	assert_string_equal(p.exec_argv[1], "x");
+	assert_string_equal(EXEC_ARG(p, 0), "prog");
+	assert_string_equal(EXEC_ARG(p, 1), "x");
 
 	/* A script rewrites the bounded snapshot in place without revisiting guest argv. */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/bin/script",
 					 (long)(uintptr_t)argv, 0, 0, 0, 0),
 			 0);
 	assert_int_equal(p.exec_argc, 4);
-	assert_string_equal(p.exec_argv[0], "/bin/sh");
-	assert_string_equal(p.exec_argv[1], "-e");
-	assert_string_equal(p.exec_argv[2], "/bin/script");
-	assert_string_equal(p.exec_argv[3], "x");
+	assert_string_equal(EXEC_ARG(p, 0), "/bin/sh");
+	assert_string_equal(EXEC_ARG(p, 1), "-e");
+	assert_string_equal(EXEC_ARG(p, 2), "/bin/script");
+	assert_string_equal(EXEC_ARG(p, 3), "x");
 
 	/* execve also captures the environment (a2 = envp) for the relaunch to re-emit. */
 	char *const envp[] = {"PATH=/bin:/sbin", "TERM=vt100", NULL};
@@ -559,8 +564,8 @@ static void test_lnx_execve(void **state)
 					 (long)(uintptr_t)argv, (long)(uintptr_t)envp, 0, 0, 0),
 			 0);
 	assert_int_equal(p.exec_envc, 2);
-	assert_string_equal(p.exec_env[0], "PATH=/bin:/sbin");
-	assert_string_equal(p.exec_env[1], "TERM=vt100");
+	assert_string_equal(EXEC_ENV(p, 0), "PATH=/bin:/sbin");
+	assert_string_equal(EXEC_ENV(p, 1), "TERM=vt100");
 
 	/* A NULL envp captures an empty environment (the new image starts with none). */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/bin/sh",

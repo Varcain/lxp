@@ -511,13 +511,17 @@ static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 
 /* Copy a captured argv/envp vector out of the proc into a static staging buffer (needed
  * because launch() re-inits the slot, clearing exec_argv_buf/exec_env_buf), writing the
- * NUL-terminated pointers into ptrs[0..count] with a trailing NULL. */
-static void flatten_vec(char *buf, const char **ptrs, char *const *src, int count)
+ * NUL-terminated pointers into ptrs[0..count] with a trailing NULL. The capture stores
+ * offsets into @p src_buf, so the trusted pointer vector is rebuilt only here, for the
+ * launch that consumes it. */
+static void flatten_vec(char *buf, const char **ptrs, const char *src_buf, const uint16_t *off_vec,
+			int count)
 {
 	size_t off = 0;
 	for (int j = 0; j < count; j++) {
-		size_t n = strlen(src[j]) + 1;
-		memcpy(buf + off, src[j], n);
+		const char *s = src_buf + off_vec[j];
+		size_t n = strlen(s) + 1;
+		memcpy(buf + off, s, n);
 		ptrs[j] = buf + off;
 		off += n;
 	}
@@ -1500,8 +1504,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			static const char *ptrs[LXP_EXEC_MAXARGS + 1];
 			static char envs[LXP_EXEC_ENVBUF];
 			static const char *eptrs[LXP_EXEC_MAXENVS + 1];
-			flatten_vec(args, ptrs, p->exec_argv, eargc);
-			flatten_vec(envs, eptrs, p->exec_env, eenvc);
+			flatten_vec(args, ptrs, p->exec_argv_buf, p->exec_argv, eargc);
+			flatten_vec(envs, eptrs, p->exec_env_buf, p->exec_env, eenvc);
 			/* Reuse the reserved snapshot region as the exec image region — it's free once we
 			 * restore the parent from it below, and reserving it at fork is why exec always has
 			 * a region. No snapshot (region-pressure fallback) → find a free region as before. */

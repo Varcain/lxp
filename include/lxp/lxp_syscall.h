@@ -466,12 +466,30 @@ typedef struct lxp_fd {
 /** Bounds for an execve() argument vector captured for the engine to relaunch. */
 #define LXP_EXEC_MAXARGS 8
 #define LXP_EXEC_ARGBUF 256
+/** Marks an exec vector entry the capture never wrote. Offset 0 is a legitimate
+ * entry (the first captured string sits at the start of its buffer), so this is
+ * not a terminator — @c exec_argc / @c exec_envc bound the vectors. It exists so
+ * a stale entry from a previous image reads as obviously invalid rather than as
+ * a plausible offset. */
+#define LXP_EXEC_OFF_NONE ((uint16_t)0xffffu)
 /** Bounds for an execve() environment vector captured for the engine to relaunch. Sized
  * like the argv store above: a board environment is a handful of short strings (the QEMU
  * port's is ~90 bytes), and this backing store is replicated per slot, so it is kept small.
  * A larger environment is truncated at capture (degrade capacity, never correctness). */
 #define LXP_EXEC_MAXENVS 24
 #define LXP_EXEC_ENVBUF 512
+
+/* The vectors hold uint16_t offsets into their buffers, so every byte of a
+ * buffer must be addressable by one and still leave LXP_EXEC_OFF_NONE outside
+ * the valid range. Raising a buffer past 64K needs a wider offset type, not a
+ * bigger number here. */
+_Static_assert(LXP_EXEC_ARGBUF < LXP_EXEC_OFF_NONE, "LXP_EXEC_ARGBUF exceeds uint16_t offsets");
+_Static_assert(LXP_EXEC_ENVBUF < LXP_EXEC_OFF_NONE, "LXP_EXEC_ENVBUF exceeds uint16_t offsets");
+/* A vector entry costs one offset; a captured string costs at least a NUL. A
+ * count that cannot fit in its buffer is a configuration mistake, not a runtime
+ * E2BIG. */
+_Static_assert(LXP_EXEC_MAXARGS <= LXP_EXEC_ARGBUF, "more argv entries than argv buffer bytes");
+_Static_assert(LXP_EXEC_MAXENVS <= LXP_EXEC_ENVBUF, "more envp entries than envp buffer bytes");
 
 /**
  * @brief A Linux process context — the state syscalls act on.
@@ -530,14 +548,19 @@ typedef struct lxp_proc {
 	int sigsuspend_active; /**< Wait mask installed; next caught signal frame consumes saved_mask. */
 	/* execve request: the engine seam relaunches the thread on this rootfs
 	 * program with the captured argument vector (image replacement). */
-	int exec_pending;			 /**< Set when execve() should relaunch. */
-	int exec_file_idx;			 /**< Rootfs index of the program to run. */
-	int exec_argc;				 /**< Captured argument count. */
-	char *exec_argv[LXP_EXEC_MAXARGS];	 /**< Captured argv (into exec_argv_buf). */
-	char exec_argv_buf[LXP_EXEC_ARGBUF]; /**< Backing store for exec_argv. */
-	int exec_envc;				 /**< Captured environment count. */
-	char *exec_env[LXP_EXEC_MAXENVS];	 /**< Captured envp (into exec_env_buf). */
-	char exec_env_buf[LXP_EXEC_ENVBUF];	 /**< Backing store for exec_env. */
+	int exec_pending;	   /**< Set when execve() should relaunch. */
+	int exec_file_idx;	   /**< Rootfs index of the program to run. */
+	int exec_argc;		   /**< Captured argument count. */
+	/* Offsets, not pointers: this capture is replicated across every slot, so a
+	 * pointer costs 4 bytes per entry on the target to address a buffer only
+	 * LXP_EXEC_ARGBUF bytes wide. uint16_t halves that and buys argument
+	 * capacity for free. Offset 0 is a valid entry — @c exec_argc bounds the
+	 * vector; LXP_EXEC_OFF_NONE only marks entries the capture never wrote. */
+	uint16_t exec_argv[LXP_EXEC_MAXARGS]; /**< Captured argv: offsets into exec_argv_buf. */
+	char exec_argv_buf[LXP_EXEC_ARGBUF];  /**< Backing store for exec_argv. */
+	int exec_envc;			      /**< Captured environment count. */
+	uint16_t exec_env[LXP_EXEC_MAXENVS];  /**< Captured envp: offsets into exec_env_buf. */
+	char exec_env_buf[LXP_EXEC_ENVBUF];   /**< Backing store for exec_env. */
 	/* nanosleep request: the dispatch parks the program and the run loop delays
 	 * to the deadline (so RTOS idle/kernel threads run + time advances). */
 	int sleep_pending;	 /**< Set when nanosleep() should park + delay. */
