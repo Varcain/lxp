@@ -244,6 +244,69 @@ static void test_exec_vector_bounds(void **st)
 			 -LXP_E2BIG);
 }
 
+/* The boundary itself, from the accepting side. The vectors are snapshotted
+ * before the path is resolved, so a vector the capture accepts still fails on
+ * the missing program: ENOENT means "the vector fit", E2BIG would mean the limit
+ * is off by one. exec_argc is not asserted — sys_execve only commits it once the
+ * program resolves — so the capture is read through the offsets it wrote. */
+static void test_exec_vector_at_limit(void **st)
+{
+	(void)st;
+	lxp_arena_t a;
+	lxp_proc_t p;
+	setup_proc(&p, &a);
+
+	char *exact[LXP_EXEC_MAXARGS + 1];
+	for (int i = 0; i < LXP_EXEC_MAXARGS; i++)
+		exact[i] = (char *)"x";
+	exact[LXP_EXEC_MAXARGS] = NULL;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)"/bin/x",
+				     (long)(uintptr_t)exact, 0, 0, 0, 0),
+			 -LXP_ENOENT);
+	/* Every entry up to the limit was captured, the last one included. */
+	for (int i = 0; i < LXP_EXEC_MAXARGS; i++) {
+		assert_int_not_equal(p.exec_argv[i], LXP_EXEC_OFF_NONE);
+		assert_string_equal(p.exec_argv_buf + p.exec_argv[i], "x");
+	}
+
+	/* And the payload boundary: a string that exactly fills the buffer with its
+	 * NUL is the largest that can round-trip, so it must not be rejected. */
+	static char exact_buf[LXP_EXEC_ARGBUF];
+	memset(exact_buf, 'y', sizeof(exact_buf));
+	exact_buf[sizeof(exact_buf) - 1] = '\0';
+	char *full_argv[] = {exact_buf, NULL};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)"/bin/x",
+				     (long)(uintptr_t)full_argv, 0, 0, 0, 0),
+			 -LXP_ENOENT);
+	assert_int_equal(p.exec_argv[0], 0);
+	assert_string_equal(p.exec_argv_buf + p.exec_argv[0], exact_buf);
+}
+
+/* A slot outlives the image that captured into it. A shorter vector must not
+ * leave the previous one's entries readable as valid offsets, or a later reader
+ * trusting a stale count resurrects a dead image's arguments. */
+static void test_exec_vector_no_stale_offsets(void **st)
+{
+	(void)st;
+	lxp_arena_t a;
+	lxp_proc_t p;
+	setup_proc(&p, &a);
+
+	char *many[] = {(char *)"aaa", (char *)"bbb", (char *)"ccc", (char *)"ddd", NULL};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)"/bin/x",
+				     (long)(uintptr_t)many, 0, 0, 0, 0),
+			 -LXP_ENOENT);
+	assert_string_equal(p.exec_argv_buf + p.exec_argv[3], "ddd");
+
+	char *few[] = {(char *)"z", NULL};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)"/bin/x",
+				     (long)(uintptr_t)few, 0, 0, 0, 0),
+			 -LXP_ENOENT);
+	assert_string_equal(p.exec_argv_buf + p.exec_argv[0], "z");
+	for (int i = 1; i < LXP_EXEC_MAXARGS; i++)
+		assert_int_equal(p.exec_argv[i], LXP_EXEC_OFF_NONE);
+}
+
 /* 2g: dup(2)/dup2 clear FD_CLOEXEC on the new fd (Linux ABI). */
 static void test_dup_clears_cloexec(void **st)
 {
@@ -296,6 +359,8 @@ int test_overflow_run(void)
 		cmocka_unit_test(test_entropy_provider_contract),
 		cmocka_unit_test(test_file_payload_quantum),
 		cmocka_unit_test(test_exec_vector_bounds),
+		cmocka_unit_test(test_exec_vector_at_limit),
+		cmocka_unit_test(test_exec_vector_no_stale_offsets),
 		cmocka_unit_test(test_dup_clears_cloexec),
 		cmocka_unit_test(test_dup3_same_fd_einval),
 		cmocka_unit_test(test_symlink_target_fault),

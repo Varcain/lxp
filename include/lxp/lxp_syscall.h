@@ -463,9 +463,17 @@ typedef struct lxp_fd {
 #define LXP_PATH_MAX 256
 /** Max exited children queued for wait4 (a pipeline forks several). */
 #define LXP_MAX_CHILD 8
-/** Bounds for an execve() argument vector captured for the engine to relaunch. */
-#define LXP_EXEC_MAXARGS 8
+/** Bounds for an execve() argument vector captured for the engine to relaunch.
+ * Overridable by the consumer: entries cost 2 bytes each per slot, the payload
+ * buffer costs its full width per slot. 16 covers the compound hush commands
+ * BusyBox builds (`cmd a b c && cmd d e f`); the 256-byte payload is unchanged
+ * because argument *text* was never what overflowed. */
+#ifndef LXP_EXEC_MAXARGS
+#define LXP_EXEC_MAXARGS 16
+#endif
+#ifndef LXP_EXEC_ARGBUF
 #define LXP_EXEC_ARGBUF 256
+#endif
 /** Marks an exec vector entry the capture never wrote. Offset 0 is a legitimate
  * entry (the first captured string sits at the start of its buffer), so this is
  * not a terminator — @c exec_argc / @c exec_envc bound the vectors. It exists so
@@ -476,8 +484,12 @@ typedef struct lxp_fd {
  * like the argv store above: a board environment is a handful of short strings (the QEMU
  * port's is ~90 bytes), and this backing store is replicated per slot, so it is kept small.
  * A larger environment is truncated at capture (degrade capacity, never correctness). */
+#ifndef LXP_EXEC_MAXENVS
 #define LXP_EXEC_MAXENVS 24
+#endif
+#ifndef LXP_EXEC_ENVBUF
 #define LXP_EXEC_ENVBUF 512
+#endif
 
 /* The vectors hold uint16_t offsets into their buffers, so every byte of a
  * buffer must be addressable by one and still leave LXP_EXEC_OFF_NONE outside
@@ -485,11 +497,13 @@ typedef struct lxp_fd {
  * bigger number here. */
 _Static_assert(LXP_EXEC_ARGBUF < LXP_EXEC_OFF_NONE, "LXP_EXEC_ARGBUF exceeds uint16_t offsets");
 _Static_assert(LXP_EXEC_ENVBUF < LXP_EXEC_OFF_NONE, "LXP_EXEC_ENVBUF exceeds uint16_t offsets");
-/* A vector entry costs one offset; a captured string costs at least a NUL. A
- * count that cannot fit in its buffer is a configuration mistake, not a runtime
- * E2BIG. */
+/* Every entry needs at least a NUL in the payload, so a count that cannot fit
+ * its own buffer is a configuration mistake, not a runtime E2BIG. The script
+ * rewrite prepends up to 3 entries (interpreter, its argument, the script), so
+ * a vector shorter than that could never run one. */
 _Static_assert(LXP_EXEC_MAXARGS <= LXP_EXEC_ARGBUF, "more argv entries than argv buffer bytes");
 _Static_assert(LXP_EXEC_MAXENVS <= LXP_EXEC_ENVBUF, "more envp entries than envp buffer bytes");
+_Static_assert(LXP_EXEC_MAXARGS >= 4, "argv vector too short for a #! rewrite plus one argument");
 
 /**
  * @brief A Linux process context — the state syscalls act on.
