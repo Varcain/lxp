@@ -370,6 +370,35 @@ static const lxp_file_t k_lnkfs[] = {
 };
 #define K_LNKFS_N ((int)(sizeof(k_lnkfs) / sizeof(k_lnkfs[0])))
 
+/* fcntl(F_GETFL) must report a truthful access mode: uClibc's fdopen() checks the
+ * FILE* mode against it, so a writable fd answering O_RDONLY fails
+ * fdopen(fd, "w") with EINVAL. That is what broke dropbearkey's .pub write on
+ * target while the key itself generated fine. */
+static void test_lnx_fcntl_getfl_access_mode(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+	lxp_proc_set_rootfs(&p, k_rootfs, K_ROOTFS_N);
+
+	/* A writable tmpfs fd must not claim to be read-only. */
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t) "/tmp/k.pub",
+			      LXP_O_RDWR | LXP_O_CREAT, 0644, 0, 0);
+	assert_true(fd >= 0);
+	long fl = lxp_syscall(&p, LXP_NR_fcntl64, fd, LXP_F_GETFL, 0, 0, 0, 0);
+	assert_true(fl >= 0);
+	assert_int_not_equal(fl & LXP_O_ACCMODE, LXP_O_RDONLY);
+
+	/* A read-only rootfs fd may. */
+	long rfd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t) "/etc/motd",
+			       LXP_O_RDONLY, 0, 0, 0);
+	assert_true(rfd >= 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_fcntl64, rfd, LXP_F_GETFL, 0, 0, 0, 0) &
+				 LXP_O_ACCMODE,
+			 LXP_O_RDONLY);
+}
+
 /* Two guests can be parked with an exec request pending at the same time — a
  * pipeline forks several — so the capture is per-proc rather than one global
  * staging buffer. Nothing pinned that: with a shared buffer both procs would
@@ -925,6 +954,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_file),
 		cmocka_unit_test(test_lnx_exec_script_symlink_interp),
 		cmocka_unit_test(test_lnx_exec_capture_is_per_proc),
+		cmocka_unit_test(test_lnx_fcntl_getfl_access_mode),
 		cmocka_unit_test(test_lnx_tmpfs),
 		cmocka_unit_test(test_lnx_getdents),
 		cmocka_unit_test(test_lnx_execve),

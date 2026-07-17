@@ -2839,7 +2839,26 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 		}
 		if ((int)a1 == LXP_F_GETFD)
 			return s->cloexec ? LXP_FD_CLOEXEC : 0;
-		/* F_GETFL/SETFL on a stdio/other fd: benign. */
+		/* F_GETFL must report a truthful access mode. uClibc's fdopen() validates
+		 * the FILE* mode against it, so answering O_RDONLY (0) for a writable fd
+		 * fails fdopen(fd, "w") with EINVAL — which is how dropbearkey's .pub
+		 * write died while the key itself generated fine. The open flags are not
+		 * stored per fd, so report what the kind can actually do; that is enough
+		 * for fdopen, which only checks the access mode. */
+		if ((int)a1 == LXP_F_GETFL) {
+			int acc;
+			switch (s->kind) {
+			case LXP_FD_TMPFS:   /* the writable overlay */
+			case LXP_FD_CONSOLE: /* stdin/stdout/stderr */
+				acc = LXP_O_RDWR;
+				break;
+			default: /* read-only rootfs file, and anything not handled above */
+				acc = LXP_O_RDONLY;
+				break;
+			}
+			return acc | (s->nonblock ? LXP_O_NONBLOCK : 0);
+		}
+		/* F_SETFL on a stdio/other fd: benign. */
 		return 0;
 }
 
