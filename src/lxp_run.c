@@ -141,6 +141,11 @@ struct lxp_resume_ctx g_lxp_vfork;
 lxp_proc_t g_lxp_proc[LXP_NSLOT];
 int g_lxp_used[LXP_NSLOT];
 volatile int g_lxp_active;
+/* Coordinator heartbeat: bumped once per dispatch-loop iteration, read by a host
+ * watchdog through lxp_run_health(). Free-running; a stalled value while active
+ * is the wedge signal. volatile + aligned u32 => the cross-task read is atomic
+ * without a lock (the reader only needs to observe change, not a precise count). */
+static volatile uint32_t g_coord_iters;
 /* g_lxp_halt is defined in the syscall layer (reboot(2) sets it) so the
  * host syscall tests link without the run loop; the run loop only observes it. */
 
@@ -421,6 +426,14 @@ void lxp_post_signal(int sig)
 {
 	if (sig > 0 && sig < LXP_NSIG)
 		g_pending_sig = sig;
+}
+
+void lxp_run_health(lxp_run_health_t *out)
+{
+	if (!out)
+		return;
+	out->coord_iters = g_coord_iters;
+	out->active = g_lxp_active;
 }
 
 void lxp_park_loop(void)
@@ -1284,6 +1297,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	int lat_cls = 0;
 #endif
 	for (;;) {
+		g_coord_iters++; /* heartbeat: see lxp_run_health() */
 #if LXP_ENABLE_LATENCY
 		if (lat_cls) {
 			uint64_t t = 0;

@@ -133,6 +133,31 @@ int lxp_tty_isig(void);
  */
 void lxp_post_signal(int sig);
 
+/**
+ * A read-only snapshot of coordinator liveness, for a host watchdog.
+ *
+ * @c coord_iters counts iterations of the coordinator's dispatch loop. The loop
+ * blocks only in a bounded @c event_wait (≤ tens of ms) even when fully idle, so
+ * in a healthy system this advances continuously; the one thing that stops it is
+ * the loop itself wedging (a stuck dispatch, a privileged spin). A host feeder
+ * can therefore treat "advanced since last check" as "the personality is live"
+ * and withhold the feed otherwise — but only while @c active, since the loop is
+ * not running before/between @c lxp_run() calls (there @c coord_iters is frozen
+ * and means nothing). It is a free-running counter: compare successive samples
+ * for inequality, do not read absolute values, and expect wraparound.
+ *
+ * This measures host liveness only. Guest progress is deliberately absent: a
+ * guest must not be able to hold the watchdog open, nor a stuck guest force a
+ * reset — a faulting guest is contained, not fatal.
+ */
+typedef struct lxp_run_health {
+	uint32_t coord_iters; /**< coordinator dispatch-loop iterations (free-running) */
+	int active;	      /**< nonzero while lxp_run() is driving a guest */
+} lxp_run_health_t;
+
+/** Snapshot coordinator liveness into @p out (ignored if NULL). */
+void lxp_run_health(lxp_run_health_t *out);
+
 /** @} */
 
 #ifdef __cplusplus
