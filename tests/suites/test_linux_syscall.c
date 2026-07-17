@@ -941,9 +941,53 @@ static void test_lnx_sigprocmask(void **state)
 			 -LXP_EINVAL);
 }
 
+/* prlimit64 must report the TRUTH for RLIMIT_NOFILE (the fd table is LXP_MAX_FDS), not the old
+ * blanket 1024 that turned into a surprise EMFILE at the 32nd open. */
+static void test_lnx_prlimit_nofile(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+
+	uint64_t lim[2] = {0, 0};
+	/* getrlimit(RLIMIT_NOFILE) == prlimit64(pid=0, resource=7, new=NULL, old=&lim) */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_prlimit64, 0, 7, 0, (long)(uintptr_t)lim, 0, 0), 0);
+	assert_int_equal((int)lim[0], LXP_MAX_FDS); /* rlim_cur */
+	assert_int_equal((int)lim[1], LXP_MAX_FDS); /* rlim_max */
+
+	/* A non-NOFILE resource keeps the finite (never RLIM_INFINITY) default. */
+	lim[0] = lim[1] = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_prlimit64, 0, 3 /*RLIMIT_STACK*/, 0,
+				     (long)(uintptr_t)lim, 0, 0),
+			 0);
+	assert_int_equal((int)lim[0], 1024);
+}
+
+/* readlink("/proc/self/exe") returns the running program's path (exec_file_idx), not ENOENT. */
+static void test_lnx_readlink_self_exe(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+	lxp_proc_set_rootfs(&p, k_rootfs, K_ROOTFS_N);
+	p.exec_file_idx = 4; /* k_rootfs[4] = "/bin/sh" */
+
+	char buf[64];
+	long n = lxp_syscall(&p, LXP_NR_readlink, (long)(uintptr_t) "/proc/self/exe",
+			     (long)(uintptr_t)buf, sizeof(buf), 0, 0, 0);
+	assert_true(n > 0);
+	assert_int_equal((int)n, (int)strlen("/bin/sh"));
+	buf[n] = '\0';
+	assert_string_equal(buf, "/bin/sh");
+}
+
 int test_linux_syscall_run(void)
 {
 	const struct CMUnitTest tests[] = {
+		cmocka_unit_test(test_lnx_prlimit_nofile),
+		cmocka_unit_test(test_lnx_readlink_self_exe),
 		cmocka_unit_test(test_lnx_sigprocmask),
 		cmocka_unit_test(test_lnx_write),
 		cmocka_unit_test(test_lnx_writev),

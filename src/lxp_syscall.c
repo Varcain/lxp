@@ -1943,6 +1943,19 @@ static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufs
 		memcpy(buf, tmp, n);
 		return (long)n;
 	}
+	if (strcmp(abspath, "/proc/self/exe") == 0) { /* -> the running program's path */
+		/* Same running image execve re-runs for "/proc/self/exe" (exec_file_idx). Programs
+		 * readlink() this to learn where they were launched from; without it they got ENOENT. */
+		int ei = p->exec_file_idx;
+		if (ei < 0 || ei >= p->fs_count)
+			return -LXP_ENOENT;
+		const char *exe = p->fs[ei].path;
+		size_t n = strlen(exe);
+		if (n > bufsiz)
+			n = bufsiz;
+		memcpy(buf, exe, n);
+		return (long)n;
+	}
 	int wi = wfs_find(abspath); /* a writable symlink (ln -s) shadows the rootfs */
 	if (wi >= 0) {
 		lxp_wnode_t *w = wnode_at(wi);
@@ -3315,9 +3328,13 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		if (uold) {
 			if (!user_ok(proc, uold, 2 * sizeof(uint64_t), 1))
 				return -LXP_EFAULT;
+			/* Report the TRUTH for RLIMIT_NOFILE: the fd table is LXP_MAX_FDS, so
+			 * advertising more just hands a guest a lie that turns into a surprise
+			 * EMFILE at the (LXP_MAX_FDS)th open. Other resources keep a finite,
+			 * never-RLIM_INFINITY default (a close-all-fds loop would else spin to 2^64). */
+			uint64_t v = ((int)a1 == 7 /* RLIMIT_NOFILE */) ? LXP_MAX_FDS : 1024;
 			uint64_t *lim = (uint64_t *)uold; /* rlim_cur, rlim_max */
-			lim[0] = lim[1] = 1024; /* finite: never RLIM_INFINITY (a close-all-fds
-						 * loop would otherwise spin to 2^64) */
+			lim[0] = lim[1] = v;
 		}
 		return 0;
 	}
