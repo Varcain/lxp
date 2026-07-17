@@ -1799,22 +1799,18 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
 				progress = 1;
 			} else if (psig && (p->sleeping || p->wait_pending || p->pipe_wait)) {
+				/* Deliver per disposition, like the sock/futex cases below — not the
+				 * old blanket terminate. A CUSTOM handler runs and the op returns
+				 * -EINTR: an interactive shell parked in wait4 that takes ^C runs its
+				 * SIGINT handler and prompts again instead of being killed, which had
+				 * dropped the whole dropbear SSH session (the pty broadcasts ^C to the
+				 * shell too). SIG_DFL terminates; SIG_IGN and SIGCHLD-default are
+				 * swallowed, leaving the proc parked (a parent must not die because a
+				 * child exited). */
 				p->pending_sigs &= ~lxp_sig_bit(psig);
-				if (psig == LXP_SIGCHLD) {
-					/* A child of a proc blocked in sleep/wait/pipe exited. SIGCHLD
-					 * never terminates: run a handler (the op then returns -EINTR),
-					 * else swallow it and stay parked (default action = ignore). */
-					if (!sig_swallowed(p, psig)) {
-						p->sleeping = p->wait_pending = p->pipe_wait = 0;
-						deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
-						progress = 1;
-					}
-				} else if (p->sig_handler[psig] != LXP_SIG_IGN) {
-					p->exited = 1;
-					p->exit_status = 128 + psig;
-					p->exit_reason = LXP_EXIT_REASON_SIGNAL;
-					p->exit_signal = (uint8_t)psig;
+				if (!sig_swallowed(p, psig)) {
 					p->sleeping = p->wait_pending = p->pipe_wait = 0;
+					deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
 					progress = 1;
 				}
 			} else if (psig && p->sock_wait) {
