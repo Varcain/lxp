@@ -1837,6 +1837,22 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
 					progress = 1;
 				}
+#if LXP_ENABLE_NETFS
+			} else if (psig && p->netfs_wait) {
+				/* Signal to a proc parked in a 9P op (read/getdents/stat off the
+				 * remote mount): run a handler then the op returns -EINTR — else a
+				 * stalled/hostile server leaves the guest uninterruptible (unkillable).
+				 * SIG_DFL terminates; SIG_IGN / SIGCHLD-default is swallowed, leaving it
+				 * parked. Cancel the in-flight request so a late reply is not marshaled
+				 * into the resumed/dead guest's buffer. */
+				p->pending_sigs &= ~lxp_sig_bit(psig);
+				if (!sig_swallowed(p, psig)) {
+					p->netfs_wait = 0;
+					lxp_netfs_cancel(p);
+					deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
+					progress = 1;
+				}
+#endif
 #if LXP_ENABLE_PTY
 			} else if (psig && p->pty_wait) {
 				/* Signal to a proc parked in a pty read/write: ^C (SIGINT) from the line

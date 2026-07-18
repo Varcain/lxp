@@ -354,9 +354,14 @@ static void conn_drop(void)
 	g_sk = NULL;
 	g_conn = CONN_DOWN;
 	g_txlen = g_txoff = g_rxlen = 0;
-	/* Fail every outstanding request; opens become stale. */
+	/* Fail every outstanding request; opens become stale. A cancelled request (owner
+	 * detached) has no proc to retrieve its result, so reclaim it rather than leak the slot. */
 	for (int i = 0; i < NETFS_NREQ; i++)
 		if (g_req[i].state == REQ_QUEUED || g_req[i].state == REQ_INFLIGHT) {
+			if (!g_req[i].owner) {
+				g_req[i].state = REQ_FREE;
+				continue;
+			}
 			g_req[i].result = -LXP_EIO;
 			g_req[i].state = REQ_DONE;
 		}
@@ -678,6 +683,22 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 {
 	size_t o = 0;
 	(void)blen;
+
+	/* The guest that issued this op was signalled while parked (lxp_netfs_cancel detached
+	 * the owner). Never marshal the reply into its — now gone or reused — buffer: drop it,
+	 * release the working fid, and reclaim the slot. (An owner-less CLUNK is the internal
+	 * background clunk, handled by its own path below.) */
+	if (!r->owner && r->op != REQ_OP_CLUNK) {
+		if (r->fid > 0) {
+			clunk_enqueue(r->fid);
+			r->fid = -1;
+		}
+		if (r->op == LXP_NETFSW_OPEN && r->oi >= 0)
+			g_open[r->oi].used = 0;
+		r->state = REQ_FREE;
+		g_inflight = -1;
+		return;
+	}
 
 	if (type == P9_RLERROR) {
 		uint32_t ecode = (blen < 4) ? (uint32_t)LXP_EIO : get32(body, &o); /* truncated Rlerror */
@@ -1202,6 +1223,33 @@ void lxp_netfs_close(int oi)
 	else
 		fid_free(op->fid);
 	op->used = 0;
+}
+
+/* Abandon a proc's in-flight netfs op after it was signalled while parked (the run loop's
+ * parked-signal delivery calls this). The op's reply may still be on the wire, so we detach
+ * the owner + guest buffer instead of freeing blindly: a queued/finished request is reclaimed
+ * now, while an in-flight one is left for the pump — handle_reply drops an owner-less reply.
+ * A reserved-but-unfinished OPEN slot is released so it cannot leak. */
+void lxp_netfs_cancel(lxp_proc_t *p)
+{
+	int ri = p->netfs_req;
+	p->netfs_req = -1;
+	if (ri < 0 || ri >= NETFS_NREQ)
+		return;
+	struct netfs_req *r = &g_req[ri];
+	if (r->owner != p)
+		return; /* the slot was already reclaimed / reused for another proc */
+	r->owner = NULL; /* a late reply must not be marshaled into the gone/resumed guest */
+	r->ubuf = 0;
+	if (r->state != REQ_INFLIGHT) {
+		/* not on the wire (QUEUED or DONE): reclaim now, releasing any walked fid. */
+		if (r->fid > 0)
+			clunk_enqueue(r->fid);
+		if (r->op == LXP_NETFSW_OPEN && r->oi >= 0)
+			g_open[r->oi].used = 0;
+		r->fid = -1;
+		r->state = REQ_FREE;
+	}
 }
 
 #if LXP_ENABLE_NETFS_EXEC

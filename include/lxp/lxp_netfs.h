@@ -109,6 +109,11 @@ void lxp_netfs_close(int oi);
  *  in-flight request, and return the completed Linux-ABI result or -LXP_EAGAIN. */
 long lxp_netfs_retry(lxp_proc_t *p);
 
+/** Abandon @p p's in-flight netfs op after a signal interrupts the parked guest (called from
+ *  the run loop's parked-signal delivery). Detaches the owner + guest buffer so a late 9P
+ *  reply is dropped rather than marshaled into a gone/resumed process, and clears netfs_req. */
+void lxp_netfs_cancel(lxp_proc_t *p);
+
 /** fork: the child inherited the parent's FD_NET fds — add a reference to each. */
 void lxp_netfs_fork_inherit(lxp_proc_t *child);
 /** exit: release every FD_NET open the process still holds (enqueues clunks). */

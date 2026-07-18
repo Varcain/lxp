@@ -555,6 +555,37 @@ static void test_netfs_browse(void **state)
 	}
 #endif
 
+	/* A signal interrupting a parked 9P read must cancel the in-flight request so its reply is
+	 * never marshaled into the guest buffer (a stale write / use-after-free once the proc is
+	 * resumed or reaped — the run loop's parked-signal branch calls lxp_netfs_cancel). Contrast:
+	 * a completed read DOES fill the buffer (just proven above); a cancelled one must not. */
+	{
+		long cfd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				     (long)(uintptr_t) "/mnt/pi/hello.txt", LXP_O_RDONLY, 0, 0, 0);
+		assert_true(cfd >= 3);
+		char cb[32];
+		memset(cb, 0xCC, sizeof(cb));
+		/* submit the read but do NOT pump: it parks with the request still queued. */
+		long r = lxp_syscall(&p, LXP_NR_read, cfd, (long)(uintptr_t)cb, sizeof(cb), 0, 0, 0);
+		assert_int_equal(r, 0);
+		assert_true(p.netfs_wait != 0);
+		assert_true(p.netfs_req >= 0);
+
+		lxp_netfs_cancel(&p); /* what the coordinator does on a signal */
+		p.netfs_wait = 0;     /* the run loop clears this alongside the cancel */
+		assert_int_equal(p.netfs_req, -1);
+
+		/* pump the transport: the cancelled read must never write cb. */
+		for (int i = 0; i < 200; i++) {
+			lxp_netfs_tick((uint64_t)i * 1000);
+			struct timespec ts = {0, 200000};
+			nanosleep(&ts, NULL);
+		}
+		for (size_t i = 0; i < sizeof(cb); i++)
+			assert_int_equal((uint8_t)cb[i], 0xCC); /* untouched: no reply landed here */
+		lxp_syscall(&p, LXP_NR_close, cfd, 0, 0, 0, 0, 0);
+	}
+
 	/* drain any background clunks, then let the mock connection close. */
 	for (int i = 0; i < 50; i++) {
 		uint64_t now = (uint64_t)i * 1000;
