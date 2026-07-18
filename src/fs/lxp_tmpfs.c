@@ -19,7 +19,11 @@
 
 #include "lxp/lxp_arena.h"
 
+/* Size of the tmpfs (/tmp) byte pool. A consumer may override it via a compile
+ * definition (e.g. a RAM-tight target that keeps little in /tmp); default 64 KiB. */
+#ifndef LXP_WFS_POOL
 #define LXP_WFS_POOL (64u * 1024u)
+#endif
 
 static lxp_wnode_t g_wnodes[LXP_NWNODE];
 static uint8_t g_wfs_pool[LXP_WFS_POOL] __attribute__((aligned(LXP_ARENA_ALIGN)));
