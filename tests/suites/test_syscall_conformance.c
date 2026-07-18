@@ -417,6 +417,56 @@ static void test_conf_fsmutate(void **state)
 			 -LXP_EROFS);
 }
 
+/* A sparse write must read back as zero in the hole. A tmpfs node keeps its backing block
+ * (with its old contents) across a truncate-to-zero, so a subsequent write past the new EOF
+ * must zero the [size, offset) gap — else it leaks the stale bytes (across files, once the
+ * shared pool block is reused for a different node). Exercises both the write and pwrite
+ * paths; without the fix the hole reads back the sentinel. */
+static void test_conf_tmpfs_sparse_hole_zeroed(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+
+	uint8_t *sentinel = lxp_conf_alloc(fx, 256);
+	uint8_t *one = lxp_conf_alloc(fx, 1);
+	uint8_t *back = lxp_conf_alloc(fx, 256);
+	assert_non_null(sentinel);
+	assert_non_null(one);
+	assert_non_null(back);
+	memset(sentinel, 0xAB, 256);
+	one[0] = 'x';
+
+	char *path = lxp_conf_str(fx, "/tmp/hole");
+	long fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)path,
+		    LXP_O_RDWR | LXP_O_CREAT | LXP_O_TRUNC, 0644, 0, 0);
+	assert_true(fd >= 3);
+	/* fill 256 bytes with the sentinel, then truncate to 0 (the block + its bytes survive). */
+	assert_int_equal(SC(&p, LXP_NR_write, fd, (long)(uintptr_t)sentinel, 256, 0, 0, 0), 256);
+	assert_int_equal(SC(&p, LXP_NR_ftruncate64, fd, 0, 0, 0, 0, 0), 0);
+
+	/* write() path: seek to 128 (past EOF=0) and write 1 byte; the hole [0,128) must be zero. */
+	assert_int_equal(SC(&p, LXP_NR_lseek, fd, 128, LXP_SEEK_SET, 0, 0, 0), 128);
+	assert_int_equal(SC(&p, LXP_NR_write, fd, (long)(uintptr_t)one, 1, 0, 0, 0), 1);
+	assert_int_equal(SC(&p, LXP_NR_lseek, fd, 0, LXP_SEEK_SET, 0, 0, 0), 0);
+	memset(back, 0x55, 256);
+	assert_int_equal(SC(&p, LXP_NR_read, fd, (long)(uintptr_t)back, 129, 0, 0, 0), 129);
+	for (int i = 0; i < 128; i++)
+		assert_int_equal(back[i], 0); /* the hole, not the 0xAB sentinel */
+	assert_int_equal(back[128], 'x');
+
+	/* pwrite64() path: same file, truncate again, pwrite at 200; hole [0,200) must be zero. */
+	assert_int_equal(SC(&p, LXP_NR_ftruncate64, fd, 0, 0, 0, 0, 0), 0);
+	/* pwrite64(fd, buf, count, [pad a3], off_lo a4, off_hi a5) */
+	assert_int_equal(SC(&p, LXP_NR_pwrite64, fd, (long)(uintptr_t)one, 1, 0, 200, 0), 1);
+	memset(back, 0x55, 256);
+	assert_int_equal(SC(&p, LXP_NR_pread64, fd, (long)(uintptr_t)back, 200, 0, 0, 0), 200);
+	for (int i = 0; i < 200; i++)
+		assert_int_equal(back[i], 0);
+
+	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+}
+
 /* =============================== time ================================================= */
 
 static void test_conf_time(void **state)
@@ -797,6 +847,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_dirent),
 		cmocka_unit_test(test_conf_pathmeta),
 		cmocka_unit_test(test_conf_fsmutate),
+		cmocka_unit_test(test_conf_tmpfs_sparse_hole_zeroed),
 		cmocka_unit_test(test_conf_time),
 		cmocka_unit_test(test_conf_identity),
 		cmocka_unit_test(test_conf_signal),

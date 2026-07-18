@@ -779,6 +779,8 @@ static long fop_write_tmpfs(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t 
 		return -LXP_EBADF;
 	if (wfs_reserve(s->file_idx, s->offset + len) != 0)
 		return -LXP_EFBIG; /* writable-fs pool exhausted */
+	if (s->offset > t->size) /* zero the hole of a sparse write (else it leaks stale pool bytes) */
+		memset(t->data + t->size, 0, s->offset - t->size);
 	memcpy(t->data + s->offset, buf, len);
 	s->offset += len;
 	if (s->offset > t->size)
@@ -1328,6 +1330,8 @@ static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint3
 			return -LXP_EINVAL;
 		if (wfs_reserve(s->file_idx, (size_t)off + len) != 0)
 			return -LXP_EFBIG;
+		if ((size_t)off > t->size) /* zero the sparse hole (else it leaks stale pool bytes) */
+			memset(t->data + t->size, 0, (size_t)off - t->size);
 		memcpy(t->data + off, buf, len);
 		if ((size_t)off + len > t->size)
 			t->size = (size_t)off + len;
