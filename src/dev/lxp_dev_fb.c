@@ -68,8 +68,13 @@ static long fb_write(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 	if (n > len)
 		n = len;
 	fb_copy16(fb + o->pos, buf, n);
-	g_lxp_disp_ops->fb_flush(0, (int)(o->pos / g_fbinfo.stride_bytes), g_fbinfo.width,
-		     (int)((n + g_fbinfo.stride_bytes - 1) / g_fbinfo.stride_bytes));
+	/* Flush every row [pos, pos+n) touched. The row count must include the intra-row start
+	 * offset — ceil(n/stride) undercounts by a row when the write starts mid-row and crosses
+	 * a boundary, leaving that last row stale on a port that uploads only the given rect. */
+	uint32_t stride = g_fbinfo.stride_bytes;
+	int y0 = (int)(o->pos / stride);
+	int rows = (int)((o->pos % stride + n + stride - 1) / stride);
+	g_lxp_disp_ops->fb_flush(0, y0, g_fbinfo.width, rows);
 	o->pos += (uint32_t)n;
 	return (long)n;
 }

@@ -101,12 +101,16 @@ static void *mock_fb_get_buffer(void)
 {
 	return g_mock_fb;
 }
+/* Recorded args of the last fb_flush, so a suite can assert the driver's dirty-rect math. */
+int g_mock_fb_flush_x, g_mock_fb_flush_y, g_mock_fb_flush_w, g_mock_fb_flush_h;
+int g_mock_fb_flush_calls;
 static void mock_fb_flush(int x, int y, int w, int h)
 {
-	(void)x;
-	(void)y;
-	(void)w;
-	(void)h;
+	g_mock_fb_flush_x = x;
+	g_mock_fb_flush_y = y;
+	g_mock_fb_flush_w = w;
+	g_mock_fb_flush_h = h;
+	g_mock_fb_flush_calls++;
 }
 static void mock_fb_present(void)
 {

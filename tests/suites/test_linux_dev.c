@@ -27,6 +27,12 @@ int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
  * header (it is called from lxp_dev_autoreg_all on target). Declared here to test its ioctls. */
 void lxp_dev_autoreg_input(void);
 
+/* The framebuffer class registers /dev/fb0 over the stub's mock display. The stub records the
+ * last fb_flush(x,y,w,h) so a suite can assert the driver's dirty-rectangle math. */
+void lxp_dev_autoreg_fb(void);
+extern int g_mock_fb_flush_x, g_mock_fb_flush_y, g_mock_fb_flush_w, g_mock_fb_flush_h;
+extern int g_mock_fb_flush_calls;
+
 /* EVIOCGNAME(len) on ARM: _IOC(_IOC_READ, 'E', 0x06, len) — size in bits 16..29. */
 #define EVIOCGNAME_CMD(len) (0x80000000ul | ((unsigned long)(len) << 16) | 0x4506ul)
 
@@ -288,6 +294,35 @@ static void test_dev_input_eviocgname_size(void **state)
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
 
+/* fb_write's flush must cover every row the write touched. A write that starts mid-row and
+ * crosses a row boundary spans two rows; before the fix the height was ceil(n/stride), which
+ * dropped the second row (a stale scanline on a port whose fb_flush uploads only the rect). */
+static void test_dev_fb_flush_spans_crossed_rows(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+	lxp_dev_autoreg_fb(); /* /dev/fb0 over the stub's 64x64 RGB565 mock (stride 128) */
+
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t) "/dev/fb0",
+			      LXP_O_RDWR, 0, 0, 0);
+	assert_true(fd >= 3);
+
+	static uint8_t px[64];
+	memset(px, 0xa5, sizeof(px));
+	g_mock_fb_flush_calls = 0;
+	/* pwrite64(fd, buf, count=50, [pad a3], off_lo=100, off_hi=0): bytes [100,150) with
+	 * stride 128 touch row 0 ([0,128)) and row 1 ([128,256)). */
+	long w = lxp_syscall(&p, LXP_NR_pwrite64, fd, (long)(uintptr_t)px, 50, 0, 100, 0);
+	assert_int_equal(w, 50);
+	assert_int_equal(g_mock_fb_flush_calls, 1);
+	assert_int_equal(g_mock_fb_flush_y, 0); /* first touched row */
+	assert_int_equal(g_mock_fb_flush_h, 2); /* rows 0 and 1 (pre-fix: only 1) */
+
+	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+}
+
 /* mmap(2) of a device buffer (P3): sys_mmap2 routes a /dev fd with an .mmap op to it, which
  * PARKS on DEVW_MMAP — the run-loop coordinator (not present in this unit test) would then
  * install the MPU region + resume with r0 = the mapped address. Assert the deferral state the
@@ -477,6 +512,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_read_write),
 		cmocka_unit_test(test_dev_ioctl),
 		cmocka_unit_test(test_dev_input_eviocgname_size),
+		cmocka_unit_test(test_dev_fb_flush_spans_crossed_rows),
 		cmocka_unit_test(test_dev_mmap),
 		cmocka_unit_test(test_dev_stat_lseek_poll),
 		cmocka_unit_test(test_dev_deferred_block),
