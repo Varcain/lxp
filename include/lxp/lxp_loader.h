@@ -189,6 +189,16 @@ typedef struct lxp_flat {
 int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size, void *region,
 			  size_t region_size, int is_interp, int copy_text);
 
+/**
+ * @brief Report whether an ELF image's float ABI is incompatible with the soft-float guest.
+ *
+ * Returns non-zero for a hard-float ARM image (@c EF_ARM_ABI_FLOAT_HARD) — one the soft-float
+ * rootfs libc cannot link and that would fault at first VFP use. Returns 0 for a soft-float or
+ * non-ELF image. execve() uses this to refuse a wrong-ABI binary with a clean ENOEXEC before it
+ * commits, the way the ARM kernel's elf_check_arch does; the FDPIC loader enforces it as well.
+ */
+int lxp_loader_abi_incompatible(const void *image, size_t image_size);
+
 #ifdef __cplusplus
 }
 #endif

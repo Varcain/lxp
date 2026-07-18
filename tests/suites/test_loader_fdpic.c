@@ -275,6 +275,42 @@ static void test_fdpic_reject_relent_zero(void **st)
 	munmap(reg.base, reg.cap + (size_t)sysconf(_SC_PAGESIZE));
 }
 
+/* A hard-float image (EF_ARM_ABI_FLOAT_HARD in e_flags) cannot link the soft-float rootfs and would
+ * fault at first VFP use — the loader rejects it up front rather than launching it to crash. */
+static void test_fdpic_reject_hard_float(void **st)
+{
+	(void)st;
+	uint8_t img[IMG_SZ];
+	size_t sz = build_fdpic(img);
+	w32(img + 36, 0x00000400); /* e_flags: EF_ARM_ABI_FLOAT_HARD */
+	assert_int_equal(load(img, sz), LXP_ERR_NOT_SUPPORTED);
+}
+
+/* A soft-float image (or one with no float-ABI flag) still loads — only hard-float is refused. */
+static void test_fdpic_soft_float_loads(void **st)
+{
+	(void)st;
+	uint8_t img[IMG_SZ];
+	size_t sz = build_fdpic(img);
+	w32(img + 36, 0x00000200); /* e_flags: EF_ARM_ABI_FLOAT_SOFT */
+	assert_int_equal(load(img, sz), LXP_OK);
+}
+
+/* The predicate execve() consults before committing: 1 for hard-float, 0 for soft-float, non-ELF,
+ * or an image too short to hold e_flags. */
+static void test_abi_incompatible_predicate(void **st)
+{
+	(void)st;
+	uint8_t img[IMG_SZ];
+	build_fdpic(img);
+	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ), 0);
+	w32(img + 36, 0x00000400);
+	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ), 1);
+	assert_int_equal(lxp_loader_abi_incompatible(img, 39), 0); /* too small for e_flags */
+	uint8_t notelf[40] = {0};
+	assert_int_equal(lxp_loader_abi_incompatible(notelf, sizeof(notelf)), 0);
+}
+
 int test_loader_fdpic_run(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -286,6 +322,9 @@ int test_loader_fdpic_run(void)
 		cmocka_unit_test(test_fdpic_reject_filesz_gt_memsz),
 		cmocka_unit_test(test_fdpic_copytext_pool_bounds_region),
 		cmocka_unit_test(test_fdpic_reject_relent_zero),
+		cmocka_unit_test(test_fdpic_reject_hard_float),
+		cmocka_unit_test(test_fdpic_soft_float_loads),
+		cmocka_unit_test(test_abi_incompatible_predicate),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

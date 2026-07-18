@@ -7,6 +7,7 @@
  */
 
 #include "lxp/lxp_config.h"
+#include "lxp/lxp_loader.h" /* lxp_loader_abi_incompatible — refuse a wrong-ABI execve up front */
 
 #if LXP_ENABLE_LINUX
 
@@ -2749,6 +2750,12 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 			return ar;
 		idx = interp_idx;
 	}
+	/* Refuse a wrong-ABI (hard-float) image before committing, so the caller gets a clean ENOEXEC
+	 * and its shell keeps running — the loader would otherwise reject it only at launch, which
+	 * terminates the caller. idx is the image that actually runs (the interpreter for a #! script);
+	 * a remote-mount exec took the early netfs path above and is caught by the loader instead. */
+	if (lxp_loader_abi_incompatible(p->fs[idx].data, p->fs[idx].size))
+		return -LXP_ENOEXEC;
 	/* close-on-exec: the fd table survives execve (the run loop preserves it), so drop the
 	 * FD_CLOEXEC fds here — the exec is committed past every error check. dropbear confirms
 	 * the shell exec'd by its exec-status pipe (FD_CLOEXEC) closing this way. */

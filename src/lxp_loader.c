@@ -667,6 +667,7 @@ static uint32_t le32(const uint8_t *p)
 #define ELF_EM_ARM 40u
 #define ELF_OSABI_ARM_FDPIC 65u /* e_ident[EI_OSABI] for ARM uClinux FDPIC */
 #define ELF_EF_ARM_FDPIC 0x10000000u
+#define ELF_EF_ARM_ABI_FLOAT_HARD 0x00000400u /* e_flags bit: hard-float (VFP) calling convention */
 #define ELF_PT_LOAD 1u
 #define ELF_PT_DYNAMIC 2u
 #define ELF_PT_INTERP 3u
@@ -683,6 +684,24 @@ static uint32_t le32(const uint8_t *p)
 #define ELF_R_ARM_RELATIVE 23u
 #define ELF_R_ARM_FUNCDESC 163u
 #define ELF_R_ARM_FUNCDESC_VALUE 164u
+
+/* True if the ELF image's ARM float ABI is incompatible with the soft-float guest — i.e. it is a
+ * hard-float image (VFP calling convention, and VFP instructions). The rootfs libc/ld.so is
+ * soft-float and the guest runs with no guaranteed FPU, so a hard-float exec cannot link the
+ * soft-float libc and would fault (a NOCP UsageFault on an FPU-off part, or a mismatched call).
+ * execve() consults this to refuse the image with a clean ENOEXEC before committing — like the ARM
+ * kernel's elf_check_arch — instead of launching it to crash at first VFP use; lxp_loader_load_fdpic
+ * enforces it too, as the backstop for a path (e.g. a remote exec) that reaches the loader directly.
+ * A non-ELF image returns 0 (not "incompatible") so the normal path still reports it. */
+int lxp_loader_abi_incompatible(const void *image, size_t image_size)
+{
+	const uint8_t *img = (const uint8_t *)image;
+	if (!img || image_size < 40u) /* need e_ident[0..15] + e_flags at offset 36..39 */
+		return 0;
+	if (img[0] != 0x7f || img[1] != 'E' || img[2] != 'L' || img[3] != 'F')
+		return 0;
+	return (le32(img + 36) & ELF_EF_ARM_ABI_FLOAT_HARD) != 0u;
+}
 
 /* The runtime address of a link-time vaddr via the FDPIC loadmap, where each segment is
  * independently biased: the executable segment maps IN-PLACE from the image (the cpio — one
@@ -730,6 +749,8 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	 * some toolchains also set EF_ARM_FDPIC in e_flags. */
 	if (img[7] != ELF_OSABI_ARM_FDPIC && !(le32(img + 36) & ELF_EF_ARM_FDPIC))
 		return LXP_ERR_NOT_SUPPORTED; /* not an FDPIC image */
+	if (lxp_loader_abi_incompatible(image, image_size))
+		return LXP_ERR_NOT_SUPPORTED; /* hard-float image: the soft-float guest can't run it */
 
 	uint32_t e_entry = le32(img + 24);
 	uint32_t e_phoff = le32(img + 28);
