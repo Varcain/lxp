@@ -895,6 +895,13 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 		}
 	}
 
+	/* DT_RELENT is the stride of the reloc walk below. A REL entry is exactly 8 bytes on
+	 * ARM; reject a smaller (attacker-supplied) stride: rel_ent == 0 never advances the
+	 * cursor (an infinite loop, since o + 0 <= rel_sz stays true), and 0 < rel_ent < 8
+	 * reads each 8-byte entry past the declared table. */
+	if (rel_sz && rel_ent < 8)
+		return LXP_ERR_INVALID_PARAM;
+
 	/* Apply the .rel.dyn relocations ld.so would (the .rofixup is left to _start's
 	 * __self_reloc): R_ARM_RELATIVE/ABS32 rebase a word; R_ARM_FUNCDESC_VALUE fills a
 	 * {func, got} descriptor in place; R_ARM_FUNCDESC stores the address of a symbol's

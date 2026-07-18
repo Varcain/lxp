@@ -205,6 +205,76 @@ static void test_fdpic_copytext_pool_bounds_region(void **st)
 	munmap(reg.base, reg.cap + (size_t)sysconf(_SC_PAGESIZE));
 }
 
+/* Build a static FDPIC image whose dynamic table declares a relocation table with a
+ * resolvable DT_REL but DT_RELENT = 0 (@p relent lets a caller vary the stride). The RW
+ * segment holds the dynamic table (at 0x1000) followed by the rel table (at 0x1020). */
+#define RELENT_IMG_SZ 212u
+static size_t build_fdpic_relent(uint8_t *buf, uint32_t relent)
+{
+	memset(buf, 0, RELENT_IMG_SZ);
+	buf[0] = 0x7f;
+	buf[1] = 'E';
+	buf[2] = 'L';
+	buf[3] = 'F';
+	buf[4] = 1;  /* ELFCLASS32 */
+	buf[7] = 65; /* ELFOSABI_ARM_FDPIC */
+	w16(buf + 16, 3);  /* ET_DYN */
+	w16(buf + 18, 40); /* EM_ARM */
+	w32(buf + 28, 52); /* e_phoff */
+	w16(buf + 42, 32); /* e_phentsize */
+	w16(buf + 44, 3);  /* e_phnum: text, RW, dynamic */
+
+	uint8_t *pt = buf + 52; /* text: PT_LOAD, PF_X, filesz==memsz */
+	w32(pt + 0, 1);
+	w32(pt + 4, 196); /* p_offset */
+	w32(pt + 16, 16); /* p_filesz */
+	w32(pt + 20, 16); /* p_memsz */
+	w32(pt + 24, 1);  /* PF_X */
+
+	uint8_t *pr = buf + 84; /* RW: dynamic table + rel table */
+	w32(pr + 0, 1);
+	w32(pr + 4, 148);    /* p_offset (RW bytes at 148) */
+	w32(pr + 8, 0x1000); /* p_vaddr */
+	w32(pr + 16, 48);    /* p_filesz */
+	w32(pr + 20, 48);    /* p_memsz -> RW spans [0x1000,0x1030) */
+	w32(pr + 24, 6);     /* PF_R | PF_W */
+
+	uint8_t *pd = buf + 116;
+	w32(pd + 0, 2);      /* PT_DYNAMIC */
+	w32(pd + 8, 0x1000); /* dyn_off */
+	w32(pd + 20, 32);    /* dyn_sz */
+
+	uint8_t *dyn = buf + 148; /* dynamic table (vaddr 0x1000) */
+	w32(dyn + 0, 17);
+	w32(dyn + 4, 0x1020); /* DT_REL -> resolvable (inside the RW segment) */
+	w32(dyn + 8, 18);
+	w32(dyn + 12, 16); /* DT_RELSZ = 16 (two 8-byte entries) */
+	w32(dyn + 16, 19);
+	w32(dyn + 20, relent); /* DT_RELENT (the stride under test) */
+	w32(dyn + 24, 0);
+	w32(dyn + 28, 0); /* DT_NULL */
+	/* rel table at vaddr 0x1020 (image offset 180): two zeroed entries */
+	return RELENT_IMG_SZ;
+}
+
+/* Regression (src/lxp_loader.c reloc walk): DT_RELENT is the loop stride, so RELENT = 0
+ * makes the walk never advance while its bound (o + rel_ent <= rel_sz) stays true — an
+ * infinite loop parsing an untrusted binary. The loader must reject RELENT < 8 up front.
+ * BEFORE THE FIX this call never returns (the suite hangs); after it, INVALID_PARAM. */
+static void test_fdpic_reject_relent_zero(void **st)
+{
+	(void)st;
+	uint8_t img[RELENT_IMG_SZ];
+	size_t sz = build_fdpic_relent(img, 0);
+	fuzz_lowbuf_t reg = fuzz_lowbuf_map(1024);
+	assert_non_null(reg.base);
+	lxp_flat_t prog;
+	memset(&prog, 0, sizeof(prog));
+	assert_int_equal(lxp_loader_load_fdpic(&prog, img, sz, reg.base, 1024, 0, 0),
+			 LXP_ERR_INVALID_PARAM);
+	munmap(reg.base, reg.cap + (size_t)sysconf(_SC_PAGESIZE));
+}
+
 int test_loader_fdpic_run(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -215,6 +285,7 @@ int test_loader_fdpic_run(void)
 		cmocka_unit_test(test_fdpic_reject_phdr_table_oob),
 		cmocka_unit_test(test_fdpic_reject_filesz_gt_memsz),
 		cmocka_unit_test(test_fdpic_copytext_pool_bounds_region),
+		cmocka_unit_test(test_fdpic_reject_relent_zero),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
