@@ -112,6 +112,7 @@ struct lxp_input_absinfo {
 #define LXP_EVIOCGRAB 0x40044590ul	       /* _IOW('E',0x90,int) */
 #define LXP_EVIOC_TYPE(cmd) (((cmd) >> 8) & 0xff) /* 'E' == 0x45 for evdev */
 #define LXP_EVIOC_NR(cmd) ((cmd) & 0xff)
+#define LXP_EVIOC_SIZE(cmd) (((cmd) >> 16) & 0x3fffu) /* the caller's buffer length (_IOC_SIZE) */
 #define LXP_EVIOC_E 0x45
 #define LXP_EVIOCGNAME_NR 0x06
 #define LXP_EVIOCGABS_BASE 0x40 /* EVIOCGABS(abs) nr = 0x40 + abs */

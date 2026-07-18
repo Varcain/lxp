@@ -23,6 +23,13 @@
  * validate its user pointer (the confused-deputy guard). */
 int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 
+/* The evdev class registers /dev/input/event0 (LXP_ENABLE_DEV_INPUT); not in the public
+ * header (it is called from lxp_dev_autoreg_all on target). Declared here to test its ioctls. */
+void lxp_dev_autoreg_input(void);
+
+/* EVIOCGNAME(len) on ARM: _IOC(_IOC_READ, 'E', 0x06, len) — size in bits 16..29. */
+#define EVIOCGNAME_CMD(len) (0x80000000ul | ((unsigned long)(len) << 16) | 0x4506ul)
+
 /* ---- a mock character device ----------------------------------------------- */
 #define MOCK_IOC_GET 0x1001ul /* read g_mock_val into *arg */
 #define MOCK_IOC_SET 0x1002ul /* write *arg into g_mock_val */
@@ -249,6 +256,38 @@ static void test_dev_ioctl(void **state)
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
 
+/* EVIOCGNAME must honor the buffer length encoded in the ioctl command (_IOC_SIZE), copying
+ * at most that many bytes — like the real kernel's min(len, strlen+1). Before the fix it
+ * always copied the full 14-byte name, scribbling past a smaller caller buffer. */
+static void test_dev_input_eviocgname_size(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+	lxp_dev_autoreg_input(); /* registers /dev/input/event0 (idempotent) */
+
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+			      (long)(uintptr_t) "/dev/input/event0", LXP_O_RDONLY, 0, 0, 0);
+	assert_true(fd >= 3);
+
+	/* EVIOCGNAME(8): an 8-byte buffer — the handler must not write past byte 8. */
+	char nm[16];
+	memset(nm, 0x7f, sizeof(nm));
+	long r = lxp_syscall(&p, LXP_NR_ioctl, fd, (long)EVIOCGNAME_CMD(8), (long)(uintptr_t)nm, 0,
+			     0, 0);
+	assert_true(r >= 0 && r <= 8);
+	assert_int_equal((uint8_t)nm[8], 0x7f); /* untouched (pre-fix: 14 bytes copied -> clobbered) */
+
+	/* EVIOCGNAME(64): a large buffer receives the full NUL-terminated name. */
+	memset(nm, 0x7f, sizeof(nm));
+	r = lxp_syscall(&p, LXP_NR_ioctl, fd, (long)EVIOCGNAME_CMD(64), (long)(uintptr_t)nm, 0, 0, 0);
+	assert_true(r > 0);
+	assert_string_equal(nm, "overtos-touch");
+
+	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+}
+
 /* mmap(2) of a device buffer (P3): sys_mmap2 routes a /dev fd with an .mmap op to it, which
  * PARKS on DEVW_MMAP — the run-loop coordinator (not present in this unit test) would then
  * install the MPU region + resume with r0 = the mapped address. Assert the deferral state the
@@ -437,6 +476,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_open_close),
 		cmocka_unit_test(test_dev_read_write),
 		cmocka_unit_test(test_dev_ioctl),
+		cmocka_unit_test(test_dev_input_eviocgname_size),
 		cmocka_unit_test(test_dev_mmap),
 		cmocka_unit_test(test_dev_stat_lseek_poll),
 		cmocka_unit_test(test_dev_deferred_block),

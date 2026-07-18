@@ -155,10 +155,17 @@ static long in_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 		if (nr == LXP_EVIOCGNAME_NR) {
 			char *nm = (void *)arg;
 			static const char name[] = "overtos-touch";
-			if (!user_ok(p, nm, sizeof(name), 1))
+			/* Honor the caller's buffer length (the kernel copies min(len, strlen+1));
+			 * copying the fixed 14 bytes into a smaller buffer corrupts adjacent memory. */
+			size_t want = LXP_EVIOC_SIZE(cmd);
+			if (want > sizeof(name))
+				want = sizeof(name);
+			if (want == 0)
+				return 0;
+			if (!user_ok(p, nm, want, 1))
 				return -LXP_EFAULT;
-			memcpy(nm, name, sizeof(name));
-			return (long)sizeof(name);
+			memcpy(nm, name, want);
+			return (long)want;
 		}
 	}
 	return -LXP_ENOTTY;
