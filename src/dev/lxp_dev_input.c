@@ -79,25 +79,42 @@ static long in_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, vo
 	(void)p;
 	uint32_t tail = o->u.input.tail;
 	/* Overflow: the reader fell more than a ring behind → drop to the oldest kept
-	 * event and report SYN_DROPPED once. */
+	 * event and arm a SYN_DROPPED, emitted below so the client discards its state. */
 	if (g_in_head - tail > LXP_IN_RING) {
 		tail = g_in_head - LXP_IN_RING;
+		o->u.input.tail = tail;
 		o->u.input.overrun = 1;
 	}
-	if (tail == g_in_head)
+	if (!o->u.input.overrun && tail == g_in_head)
 		return -LXP_EAGAIN; /* empty → O_NONBLOCK returns EAGAIN, else park */
 
 	size_t nmax = len / sizeof(struct lxp_input_event);
 	if (nmax == 0)
 		return -LXP_EINVAL;
-	size_t avail = g_in_head - tail;
-	if (nmax > avail)
-		nmax = avail;
 	struct lxp_input_event *out = buf;
-	for (size_t i = 0; i < nmax; i++)
-		out[i] = g_in_ring[(tail + i) % LXP_IN_RING];
-	o->u.input.tail = tail + nmax;
-	return (long)(nmax * sizeof(struct lxp_input_event));
+	size_t n = 0; /* records written (a leading SYN_DROPPED plus events) */
+
+	/* A pending overrun emits exactly one SYN_DROPPED, ahead of the resumed stream, so an
+	 * evdev client (evtest/libevdev, LVGL press tracking) resyncs instead of acting on a
+	 * partial report (e.g. a lost BTN_TOUCH release → a stuck pointer). */
+	if (o->u.input.overrun) {
+		uint64_t us = 0;
+		lxp_time_us(&us);
+		out[0].sec = (uint32_t)(us / 1000000u);
+		out[0].usec = (uint32_t)(us % 1000000u);
+		out[0].type = LXP_EV_SYN;
+		out[0].code = LXP_SYN_DROPPED;
+		out[0].value = 0;
+		n = 1;
+		o->u.input.overrun = 0;
+	}
+
+	size_t avail = g_in_head - tail;
+	size_t nev = 0; /* events consumed from the ring (advances the tail cursor) */
+	while (n < nmax && nev < avail)
+		out[n++] = g_in_ring[(tail + nev++) % LXP_IN_RING];
+	o->u.input.tail = tail + nev;
+	return (long)(n * sizeof(struct lxp_input_event));
 }
 
 static unsigned in_poll(struct lxp_dev *d, struct lxp_dev_open *o)

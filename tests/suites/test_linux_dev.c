@@ -33,6 +33,9 @@ void lxp_dev_autoreg_fb(void);
 extern int g_mock_fb_flush_x, g_mock_fb_flush_y, g_mock_fb_flush_w, g_mock_fb_flush_h;
 extern int g_mock_fb_flush_calls;
 
+/* The evdev feeder: pushes one touch (4 events) into the shared input ring. */
+void lxp_input_report_touch(int x, int y, int pressed);
+
 /* EVIOCGNAME(len) on ARM: _IOC(_IOC_READ, 'E', 0x06, len) — size in bits 16..29. */
 #define EVIOCGNAME_CMD(len) (0x80000000ul | ((unsigned long)(len) << 16) | 0x4506ul)
 
@@ -294,6 +297,39 @@ static void test_dev_input_eviocgname_size(void **state)
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
 
+/* When the reader falls more than a ring behind, the dropped events must be flagged with a
+ * SYN_DROPPED record so an evdev client discards its stale state and resyncs. Before the fix
+ * the overrun set an internal flag that was never read — events vanished silently. */
+static void test_dev_input_syn_dropped_on_overrun(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+	lxp_dev_autoreg_input();
+
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+			      (long)(uintptr_t) "/dev/input/event0", LXP_O_RDONLY, 0, 0, 0);
+	assert_true(fd >= 3); /* opens at the live head, so only the pushes below count */
+
+	/* Overflow the 64-slot ring behind this reader: 17 touches = 68 events > 64. */
+	for (int i = 0; i < 17; i++)
+		lxp_input_report_touch(i, i, 1);
+
+	uint8_t evs[128];
+	memset(evs, 0xee, sizeof(evs));
+	long r = lxp_syscall(&p, LXP_NR_read, fd, (long)(uintptr_t)evs, sizeof(evs), 0, 0, 0);
+	assert_true(r >= 16); /* at least one 16-byte input_event */
+	/* input_event layout: sec[0..4] usec[4..8] type[8..10] code[10..12] value[12..16].
+	 * The first record must be SYN_DROPPED: type = EV_SYN(0), code = SYN_DROPPED(3). */
+	assert_int_equal(evs[8], 0);
+	assert_int_equal(evs[9], 0);
+	assert_int_equal(evs[10], 3);
+	assert_int_equal(evs[11], 0);
+
+	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+}
+
 /* fb_write's flush must cover every row the write touched. A write that starts mid-row and
  * crosses a row boundary spans two rows; before the fix the height was ceil(n/stride), which
  * dropped the second row (a stale scanline on a port whose fb_flush uploads only the rect). */
@@ -512,6 +548,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_read_write),
 		cmocka_unit_test(test_dev_ioctl),
 		cmocka_unit_test(test_dev_input_eviocgname_size),
+		cmocka_unit_test(test_dev_input_syn_dropped_on_overrun),
 		cmocka_unit_test(test_dev_fb_flush_spans_crossed_rows),
 		cmocka_unit_test(test_dev_mmap),
 		cmocka_unit_test(test_dev_stat_lseek_poll),
