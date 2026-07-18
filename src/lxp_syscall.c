@@ -610,6 +610,10 @@ static long fop_read_console(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 		return -LXP_EBADF;
 	if (s->file_idx == 3) /* /dev/null */
 		return 0;     /* EOF */
+	if (s->file_idx == 5) { /* /dev/zero: an all-zero fill */
+		memset(buf, 0, len);
+		return (long)len;
+	}
 	if (s->file_idx == 4) /* /dev/urandom + /dev/random: host entropy */
 		return random_fill(buf, len, LXP_EIO);
 	if (!p->read_fn)
@@ -739,8 +743,8 @@ static long fop_read_pty(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 /* ---- write fops ---- */
 static long fop_write_console(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
 {
-	if (s->file_idx == 3 || s->file_idx == 4)
-		return (long)len; /* /dev/null + /dev/urandom: discard writes */
+	if (s->file_idx == 3 || s->file_idx == 4 || s->file_idx == 5)
+		return (long)len; /* /dev/null + /dev/urandom + /dev/zero: discard writes */
 	if (s->file_idx == 0 || !p->write_fn) /* stdin is not writable; no sink → EBADF */
 		return -LXP_EBADF;
 	return p->write_fn(p->io_ctx, (int)(s - p->fds), buf, len);
@@ -1589,15 +1593,16 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 	if (proc_is(path)) /* synthetic /proc shadows everything */
 		return proc_open(p, path);
 	/* The synthetic console/null/random nodes all open as an FD_CONSOLE; file_idx selects
-	 * the behaviour (2 = r/w console, 3 = /dev/null → EOF/discard, 4 = host entropy).
-	 * A small name→idx table instead of a strcmp chain (smaller .text). getty opens
-	 * /dev/console + dups it to fds 0/1/2; dropbear/mbedTLS open /dev/urandom for entropy. */
+	 * the behaviour (2 = r/w console, 3 = /dev/null → EOF/discard, 4 = host entropy,
+	 * 5 = /dev/zero → zero-fill/discard). A small name→idx table instead of a strcmp chain
+	 * (smaller .text). getty opens /dev/console + dups it to fds 0/1/2; dropbear/mbedTLS open
+	 * /dev/urandom for entropy. */
 	static const struct {
 		const char *path;
 		uint8_t idx;
 	} console_dev[] = {
-		{"/dev/console", 2}, {"/dev/tty", 2},	 {"/dev/tty0", 2}, {"/dev/ttyS0", 2},
-		{"/dev/null", 3},    {"/dev/urandom", 4}, {"/dev/random", 4},
+		{"/dev/console", 2}, {"/dev/tty", 2},	  {"/dev/tty0", 2}, {"/dev/ttyS0", 2},
+		{"/dev/null", 3},    {"/dev/urandom", 4}, {"/dev/random", 4}, {"/dev/zero", 5},
 	};
 	for (size_t k = 0; k < sizeof(console_dev) / sizeof(console_dev[0]); k++)
 		if (strcmp(path, console_dev[k].path) == 0)

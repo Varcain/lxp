@@ -467,6 +467,36 @@ static void test_conf_tmpfs_sparse_hole_zeroed(void **state)
 	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
 
+/* /dev/zero: a read returns an all-zero fill, a write is discarded. Standard programs
+ * (dd if=/dev/zero, </dev/zero, zeroed padding) depend on it; before the fix the node was
+ * absent (open -> -ENOENT) even though the sibling /dev/null worked. */
+static void test_conf_dev_zero(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+
+	uint8_t *buf = lxp_conf_alloc(fx, 64);
+	assert_non_null(buf);
+	memset(buf, 0xAB, 64);
+
+	long fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/dev/zero"),
+		    LXP_O_RDWR, 0, 0, 0);
+	assert_true(fd >= 3);
+	assert_int_equal(SC(&p, LXP_NR_read, fd, (long)(uintptr_t)buf, 64, 0, 0, 0), 64);
+	for (int i = 0; i < 64; i++)
+		assert_int_equal(buf[i], 0);
+	assert_int_equal(SC(&p, LXP_NR_write, fd, (long)(uintptr_t)buf, 64, 0, 0, 0), 64); /* discarded */
+	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+
+	/* regression: the sibling /dev/null still returns EOF on read. */
+	long nfd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/dev/null"),
+		     LXP_O_RDONLY, 0, 0, 0);
+	assert_true(nfd >= 3);
+	assert_int_equal(SC(&p, LXP_NR_read, nfd, (long)(uintptr_t)buf, 64, 0, 0, 0), 0);
+	SC(&p, LXP_NR_close, nfd, 0, 0, 0, 0, 0);
+}
+
 /* =============================== time ================================================= */
 
 static void test_conf_time(void **state)
@@ -848,6 +878,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_pathmeta),
 		cmocka_unit_test(test_conf_fsmutate),
 		cmocka_unit_test(test_conf_tmpfs_sparse_hole_zeroed),
+		cmocka_unit_test(test_conf_dev_zero),
 		cmocka_unit_test(test_conf_time),
 		cmocka_unit_test(test_conf_identity),
 		cmocka_unit_test(test_conf_signal),
