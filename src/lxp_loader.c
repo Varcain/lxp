@@ -909,7 +909,10 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	 * reloc (upper bound). */
 	uint32_t pool_off = ((uint32_t)(rw_a + loadmap_sz) + 7u) & ~7u;
 	uint32_t max_fd = rel_ent ? rel_sz / rel_ent : 0;
-	if ((uint64_t)pool_off + (uint64_t)max_fd * 8u > region_size)
+	/* The pool lands at base + pool_off = region + text_a + pool_off, so the bound must
+	 * include text_a — else a copy_text (RAM-text) load overflows the region by up to
+	 * text_a bytes (region_used at the end of this function counts text_a for this reason). */
+	if ((uint64_t)text_a + pool_off + (uint64_t)max_fd * 8u > region_size)
 		return LXP_ERR_NO_MEMORY;
 	uint8_t *fdpool = base + pool_off;
 	uint32_t pool_used = 0;
