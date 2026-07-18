@@ -37,6 +37,17 @@
 #define LXP_O_NONBLOCK 0x800
 #endif
 
+/* Access mode (ARM): the low two bits of the open flags — 0 = RDONLY, 1 = WRONLY, 2 = RDWR. */
+#ifndef LXP_O_ACCMODE
+#define LXP_O_ACCMODE 3
+#endif
+#ifndef LXP_O_RDONLY
+#define LXP_O_RDONLY 0
+#endif
+#ifndef LXP_O_WRONLY
+#define LXP_O_WRONLY 1
+#endif
+
 /* proc->dev_wait states (LXP_DEVW_*) now live in ove/linux/dev.h, shared with
  * the run loop so it can special-case DEVW_MMAP (needs the engine map_device seam). */
 
@@ -176,6 +187,8 @@ long lxp_dev_read(lxp_proc_t *p, int oi, void *buf, size_t len)
 	struct lxp_dev_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
+	if ((o->oflags & LXP_O_ACCMODE) == LXP_O_WRONLY)
+		return -LXP_EBADF; /* a write-only fd is not readable */
 	struct lxp_dev *d = &g_lnx_devs[o->dev];
 	if (!d->ops->read)
 		return -LXP_EINVAL;
@@ -197,6 +210,8 @@ long lxp_dev_write(lxp_proc_t *p, int oi, const void *buf, size_t len)
 	struct lxp_dev_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
+	if ((o->oflags & LXP_O_ACCMODE) == LXP_O_RDONLY)
+		return -LXP_EBADF; /* a read-only fd is not writable */
 	struct lxp_dev *d = &g_lnx_devs[o->dev];
 	if (!d->ops->write)
 		return -LXP_EINVAL;

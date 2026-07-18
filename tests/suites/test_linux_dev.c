@@ -330,6 +330,45 @@ static void test_dev_input_syn_dropped_on_overrun(void **state)
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
 
+/* A device fd must honor its open access mode: writing an O_RDONLY fd (or reading an O_WRONLY
+ * one) is -EBADF, like Linux. Before the fix any device fd was both readable and writable
+ * regardless of how it was opened (e.g. write to an O_RDONLY /dev/fb0 scribbled the panel). */
+static void test_dev_accmode_enforced(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+
+	char b[4] = {0};
+	g_mock_rbuf[0] = 'x';
+	g_mock_rlen = 1;
+
+	/* O_RDONLY: read ok, write -> EBADF. */
+	long rfd = dev_open(&p, LXP_O_RDONLY);
+	assert_true(rfd >= 3);
+	assert_true(lxp_syscall(&p, LXP_NR_read, rfd, (long)(uintptr_t)b, 1, 0, 0, 0) >= 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, rfd, (long)(uintptr_t) "z", 1, 0, 0, 0),
+			 -LXP_EBADF);
+
+	/* O_WRONLY: write ok, read -> EBADF. */
+	long wfd = dev_open(&p, LXP_O_WRONLY);
+	assert_true(wfd >= 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t) "z", 1, 0, 0, 0), 1);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, wfd, (long)(uintptr_t)b, 1, 0, 0, 0),
+			 -LXP_EBADF);
+
+	/* O_RDWR: both directions allowed. */
+	long rwfd = dev_open(&p, LXP_O_RDWR);
+	assert_true(rwfd >= 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, rwfd, (long)(uintptr_t) "z", 1, 0, 0, 0), 1);
+	assert_true(lxp_syscall(&p, LXP_NR_read, rwfd, (long)(uintptr_t)b, 1, 0, 0, 0) >= 0);
+
+	lxp_syscall(&p, LXP_NR_close, rfd, 0, 0, 0, 0, 0);
+	lxp_syscall(&p, LXP_NR_close, wfd, 0, 0, 0, 0, 0);
+	lxp_syscall(&p, LXP_NR_close, rwfd, 0, 0, 0, 0, 0);
+}
+
 /* fb_write's flush must cover every row the write touched. A write that starts mid-row and
  * crosses a row boundary spans two rows; before the fix the height was ceil(n/stride), which
  * dropped the second row (a stale scanline on a port whose fb_flush uploads only the rect). */
@@ -549,6 +588,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_ioctl),
 		cmocka_unit_test(test_dev_input_eviocgname_size),
 		cmocka_unit_test(test_dev_input_syn_dropped_on_overrun),
+		cmocka_unit_test(test_dev_accmode_enforced),
 		cmocka_unit_test(test_dev_fb_flush_spans_crossed_rows),
 		cmocka_unit_test(test_dev_mmap),
 		cmocka_unit_test(test_dev_stat_lseek_poll),
