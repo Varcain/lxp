@@ -1052,30 +1052,14 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 	}
 #endif
 
-	/* A signal that won the race with coordinator service cancels the request
-	 * before it acquires resources. Ignored/default-SIGCHLD signals are consumed
-	 * and the syscall proceeds. */
-	int psig = pending_deliverable(proc);
-	if (psig) {
-		proc->pending_sigs &= ~lxp_sig_bit(psig);
-		if (!sig_swallowed(proc, psig)) {
-			deferred_state_store(slot, DEFER_IDLE);
-			eng->abort_slot(slot);
-			deliver_signal_parked(eng, slot, proc, psig, -LXP_EINTR);
-			return;
-		}
-	}
-	if (g_pending_sig && !lxp_sig_blocked(proc, g_pending_sig)) {
-		int sig = g_pending_sig;
-		g_pending_sig = 0;
-		if (!sig_swallowed(proc, sig)) {
-			deferred_state_store(slot, DEFER_IDLE);
-			eng->abort_slot(slot);
-			deliver_signal_parked(eng, slot, proc, sig, -LXP_EINTR);
-			return;
-		}
-	}
-
+	/* A signal pending when the coordinator picks up a deferred syscall is NOT delivered
+	 * here with a forced -EINTR: that spuriously interrupts a NON-restartable syscall the
+	 * guest never expects to fail with EINTR (e.g. close(), whose -1 return busybox then
+	 * dereferences as a pointer -> SIGSEGV — reproduced by a 4-stage pipe, where SIGCHLDs
+	 * from the children race the shell's pipe-fd closes). Instead run the syscall now; if it
+	 * blocks it sets a wait flag and the event loop delivers the pending signal against the
+	 * parked op (with -EINTR, the correct restart point); if it completes, the tail below
+	 * delivers the signal with the syscall's ACTUAL result. */
 	long nr = (long)(int32_t)g_ctx[slot].r4_11[3]; /* captured r7 */
 	long a0 = (long)(int32_t)req->a0;
 	long a1 = (long)(int32_t)g_ctx[slot].r1;
@@ -1097,7 +1081,7 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 		return;
 
 	eng->abort_slot(slot);
-	psig = pending_deliverable(proc);
+	int psig = pending_deliverable(proc);
 	if (psig) {
 		proc->pending_sigs &= ~lxp_sig_bit(psig);
 		deliver_signal_parked(eng, slot, proc, psig, r);
