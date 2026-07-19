@@ -24,9 +24,16 @@
 #ifndef LXP_WFS_POOL
 #define LXP_WFS_POOL (64u * 1024u)
 #endif
+/* Board-relocatable BSS section (default: normal .bss). A consumer whose on-chip SRAM is tight can
+ * point this at a far region (STM32 Zephyr: SDRAM1) so the tmpfs pool — and thus a large /tmp file
+ * a program mmap()s (e.g. iperf3's per-stream buffer, created mkstemp+ftruncate+mmap) — need not
+ * fit the SRAM. Same knob the pipe pool uses. */
+#ifndef LXP_FAR_BSS
+#define LXP_FAR_BSS
+#endif
 
 static lxp_wnode_t g_wnodes[LXP_NWNODE];
-static uint8_t g_wfs_pool[LXP_WFS_POOL] __attribute__((aligned(LXP_ARENA_ALIGN)));
+static uint8_t g_wfs_pool[LXP_WFS_POOL] LXP_FAR_BSS __attribute__((aligned(LXP_ARENA_ALIGN)));
 static lxp_arena_t g_wfs_arena;
 static int g_wfs_ready; /* the arena is initialised lazily on first allocation. */
 
