@@ -43,6 +43,7 @@ extern int g_mock_dma2d_calls;
 /* Matched by type 'D' + nr 1/2; the handler ignores _IOC_SIZE/dir. */
 #define TEST_DMA2D_SUBMIT ((0x44ul << 8) | 1ul)
 #define TEST_DMA2D_SUBMIT_BATCH ((0x44ul << 8) | 2ul)
+#define TEST_FBIO_DMA2D_BLIT 0x46f0ul
 
 /* The evdev feeder: pushes one touch (4 events) into the shared input ring. */
 void lxp_input_report_touch(int x, int y, int pressed);
@@ -405,6 +406,66 @@ static void test_dev_fb_flush_spans_crossed_rows(void **state)
 	assert_int_equal(g_mock_fb_flush_calls, 1);
 	assert_int_equal(g_mock_fb_flush_y, 0); /* first touched row */
 	assert_int_equal(g_mock_fb_flush_h, 2); /* rows 0 and 1 (pre-fix: only 1) */
+
+	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+}
+
+/* The DMA2D fb-blit ioctl offloads a rectangular framebuffer update: the coordinator
+ * validates the guest source rect + fb bounds, then issues one M2M DMA2D copy to the
+ * fb it owns (replacing the per-scanline pwrite storm) and refreshes the panel. */
+static void test_dev_fb_dma2d_blit(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+	lxp_dev_autoreg_fb(); /* 64x64 RGB565 mock fb, stride 128 */
+	lxp_dev_autoreg_dma2d();
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t) "/dev/fb0",
+			      LXP_O_RDWR, 0, 0, 0);
+	assert_true(fd >= 3);
+
+	static uint16_t src[16 * 8]; /* w=16 h=8, tight source stride 32 bytes */
+	for (int i = 0; i < 16 * 8; i++)
+		src[i] = (uint16_t)i;
+	struct lxp_fb_blit b;
+	b.src = (uint32_t)(uintptr_t)src;
+	b.src_stride = 16 * 2;
+	b.x = 4;
+	b.y = 6;
+	b.w = 16;
+	b.h = 8;
+	long a = (long)(uintptr_t)&b;
+
+	g_mock_dma2d_calls = 0;
+	g_mock_fb_flush_calls = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_FBIO_DMA2D_BLIT, a, 0, 0, 0), 0);
+	assert_int_equal(g_mock_dma2d_calls, 1);
+	assert_int_equal(g_mock_dma2d_op.mode, LXP_DMA2D_M2M);
+	assert_int_equal(g_mock_dma2d_op.w, 16);
+	assert_int_equal(g_mock_dma2d_op.h, 8);
+	assert_int_equal((uint32_t)g_mock_dma2d_op.fg_addr, (uint32_t)(uintptr_t)src);
+	assert_int_equal(g_mock_dma2d_op.fg_offset, 0);	       /* 32/2 - 16 */
+	assert_int_equal(g_mock_dma2d_op.out_offset, 64 - 16); /* fb stride 128/2 - 16 */
+	assert_int_equal(g_mock_fb_flush_calls, 1);
+	assert_int_equal(g_mock_fb_flush_w, 16);
+
+	/* Rejections — none reach DMA2D. */
+	g_mock_dma2d_calls = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_FBIO_DMA2D_BLIT, 0, 0, 0, 0),
+			 -LXP_EFAULT); /* NULL descriptor */
+	b.x = 60; /* x+w = 76 > fb width 64 */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_FBIO_DMA2D_BLIT, a, 0, 0, 0),
+			 -LXP_EINVAL);
+	b.x = 4;
+	b.w = 0; /* empty rect */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_FBIO_DMA2D_BLIT, a, 0, 0, 0),
+			 -LXP_EINVAL);
+	b.w = 16;
+	b.src = 0; /* NULL source → EFAULT (region_lo rejects addr 0) */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_FBIO_DMA2D_BLIT, a, 0, 0, 0),
+			 -LXP_EFAULT);
+	assert_int_equal(g_mock_dma2d_calls, 0);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
@@ -775,6 +836,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_input_syn_dropped_on_overrun),
 		cmocka_unit_test(test_dev_accmode_enforced),
 		cmocka_unit_test(test_dev_fb_flush_spans_crossed_rows),
+		cmocka_unit_test(test_dev_fb_dma2d_blit),
 		cmocka_unit_test(test_dev_mmap),
 		cmocka_unit_test(test_dev_stat_lseek_poll),
 		cmocka_unit_test(test_dev_deferred_block),

@@ -24,6 +24,18 @@
 #define LXP_FBIOPAN_DISPLAY 0x4606ul
 #define LXP_FBIOBLANK 0x4611ul
 
+/* oveRTOS extension (NOT a Linux uapi): offload a rectangular framebuffer update
+ * to DMA2D. The guest hands one blit instead of a per-scanline pwrite storm; the
+ * PRIVILEGED coordinator validates the guest source rect, then DMA2D-copies it to
+ * the framebuffer (which it owns). Falls back to pwrite when there is no DMA2D. */
+#define LXP_FBIO_DMA2D_BLIT 0x46f0ul
+struct lxp_fb_blit {
+	uint32_t src;	     /* guest address of the source pixels (rect top-left)   */
+	uint32_t src_stride; /* bytes per source row                                 */
+	uint32_t x, y;	     /* destination top-left in the framebuffer (pixels)     */
+	uint32_t w, h;	     /* rectangle size (pixels); RGB565, matches the fb      */
+};
+
 /* fb_fix_screeninfo.type / .visual */
 #define LXP_FB_TYPE_PACKED_PIXELS 0
 #define LXP_FB_VISUAL_TRUECOLOR 2

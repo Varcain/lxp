@@ -140,6 +140,45 @@ static long fb_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 		return 0; /* no power management; always on */
 	case LXP_FBIOPAN_DISPLAY:
 		return -LXP_EINVAL; /* no hardware panning */
+	case LXP_FBIO_DMA2D_BLIT: {
+		/* Offload a rectangular fb update to DMA2D: one ioctl instead of h pwrites.
+		 * The coordinator validates the guest SOURCE rect (a DMA engine with a
+		 * guest-supplied address is a confused-deputy risk); the destination is the
+		 * framebuffer it owns, so it is trusted but still bounds-checked. */
+		if (!g_lxp_disp_ops->dma2d_submit)
+			return -LXP_ENOSYS; /* no accelerator → guest keeps its pwrite/memcpy path */
+		struct lxp_fb_blit *u = (void *)arg;
+		if (!user_ok(p, u, sizeof(*u), 0))
+			return -LXP_EFAULT;
+		struct lxp_fb_blit b = *u;
+		const uint32_t bpp = 2; /* RGB565 framebuffer (see fill_vinfo) */
+		if (b.w == 0 || b.h == 0 || b.x + b.w > g_fbinfo.width ||
+		    b.y + b.h > g_fbinfo.height || (b.src_stride & 1u) || b.src_stride < b.w * bpp)
+			return -LXP_EINVAL;
+		uint64_t src_span = (uint64_t)(b.h - 1) * b.src_stride + (uint64_t)b.w * bpp;
+		if (!user_ok(p, (const void *)(uintptr_t)b.src, (size_t)src_span, 0))
+			return -LXP_EFAULT;
+		uint8_t *fb = g_lxp_disp_ops->fb_get_buffer();
+		if (!fb)
+			return -LXP_EIO;
+		uint32_t fb_stride = g_fbinfo.stride_bytes;
+
+		lxp_dma2d_op_t op;
+		memset(&op, 0, sizeof(op));
+		op.mode = LXP_DMA2D_M2M; /* straight copy, no format convert or blend */
+		op.w = b.w;
+		op.h = b.h;
+		op.out_addr = (uintptr_t)fb + (uintptr_t)b.y * fb_stride + (uintptr_t)b.x * bpp;
+		op.out_offset = fb_stride / bpp - b.w; /* inter-line gap in pixels */
+		op.out_cf = LXP_DMA2D_CF_RGB565;
+		op.fg_addr = (uintptr_t)b.src;
+		op.fg_offset = b.src_stride / bpp - b.w;
+		op.fg_cf = LXP_DMA2D_CF_RGB565;
+		if (g_lxp_disp_ops->dma2d_submit(&op) != 0)
+			return -LXP_EIO; /* guest falls back to the pwrite path */
+		g_lxp_disp_ops->fb_flush((int)b.x, (int)b.y, (int)b.w, (int)b.h);
+		return 0;
+	}
 	default:
 		return -LXP_ENOTTY;
 	}
