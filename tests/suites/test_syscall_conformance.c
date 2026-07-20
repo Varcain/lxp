@@ -412,6 +412,28 @@ static void test_conf_fsmutate(void **state)
 			    (long)(uintptr_t)lxp_conf_str(fx, "/tmp/l"), 0, 0, 0, 0), 0);
 	assert_int_equal(SC(&p, LXP_NR_chmod, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/d"), 0700, 0, 0, 0, 0), 0);
 
+	/* link() a RO-rootfs file into the overlay: an independent copy of its bytes (no shared
+	 * inode on this fs), enough for `ln` and the write-temp / link / unlink-temp idiom. */
+	assert_int_equal(SC(&p, LXP_NR_link, (long)(uintptr_t)lxp_conf_str(fx, "/etc/hostname"),
+			    (long)(uintptr_t)lxp_conf_str(fx, "/tmp/hn"), 0, 0, 0, 0), 0);
+	{
+		uint8_t *lb = lxp_conf_alloc(fx, 16);
+		assert_non_null(lb);
+		long lfd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/hn"),
+			      LXP_O_RDONLY, 0, 0, 0);
+		assert_true(lfd >= 3);
+		assert_int_equal(SC(&p, LXP_NR_read, lfd, (long)(uintptr_t)lb, 16, 0, 0, 0), 8);
+		assert_memory_equal(lb, "overtos\n", 8); /* copied from /etc/hostname */
+		SC(&p, LXP_NR_close, lfd, 0, 0, 0, 0, 0);
+	}
+	/* link onto an existing name -> EEXIST; missing source -> ENOENT; a directory -> EPERM. */
+	assert_int_equal(SC(&p, LXP_NR_link, (long)(uintptr_t)lxp_conf_str(fx, "/etc/hostname"),
+			    (long)(uintptr_t)lxp_conf_str(fx, "/tmp/hn"), 0, 0, 0, 0), -LXP_EEXIST);
+	assert_int_equal(SC(&p, LXP_NR_link, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/nope"),
+			    (long)(uintptr_t)lxp_conf_str(fx, "/tmp/x"), 0, 0, 0, 0), -LXP_ENOENT);
+	assert_int_equal(SC(&p, LXP_NR_link, (long)(uintptr_t)lxp_conf_str(fx, "/etc"),
+			    (long)(uintptr_t)lxp_conf_str(fx, "/tmp/etclink"), 0, 0, 0, 0), -LXP_EPERM);
+
 	/* mutating the read-only rootfs is -EROFS. */
 	assert_int_equal(SC(&p, LXP_NR_unlink, (long)(uintptr_t)lxp_conf_str(fx, "/etc/motd"), 0, 0, 0, 0, 0),
 			 -LXP_EROFS);

@@ -2093,6 +2093,68 @@ static long sys_symlink(lxp_proc_t *p, const char *target, const char *linkp)
 	return 0;
 }
 
+/*
+ * link(oldpath, newpath): make newpath name oldpath's file.
+ *
+ * The writable overlay has no shared-inode / link-count model (st_nlink is always
+ * reported as 1), so a true hard link is not representable. We satisfy the call by
+ * creating newpath as an independent writable copy of oldpath's current bytes — enough
+ * for the only realistic uses on this read-only-rootfs target: `ln a b`, and the
+ * write-temp / link / unlink-temp atomic-replace idiom (dropbear host-key generation,
+ * mkstemp-based writers, editors). oldpath may live in the RO rootfs or the overlay;
+ * directories are rejected with EPERM, matching Linux. The final path component is not
+ * dereferenced — link() does not follow a symlink at oldpath.
+ */
+static long sys_link(lxp_proc_t *p, const char *oldp, const char *newp)
+{
+	if (!oldp || !newp)
+		return -LXP_EFAULT;
+	char oldabs[LXP_PATH_MAX], newabs[LXP_PATH_MAX];
+	long r1 = resolve_path(p, oldp, oldabs, sizeof(oldabs));
+	if (r1 < 0)
+		return r1;
+	long r2 = resolve_path(p, newp, newabs, sizeof(newabs));
+	if (r2 < 0)
+		return r2;
+	if (strlen(newabs) >= LXP_PATH_MAX)
+		return -LXP_ENAMETOOLONG;
+	if (wfs_find(newabs) >= 0 || fs_lookup(p, newabs) >= 0)
+		return -LXP_EEXIST;
+
+	/* Source bytes: writable overlay first, then the RO rootfs. */
+	const uint8_t *src;
+	size_t srclen;
+	uint32_t srcmode;
+	int wi = wfs_find(oldabs);
+	if (wi >= 0) {
+		src = wnode_at(wi)->data;
+		srclen = wnode_at(wi)->size;
+		srcmode = wnode_at(wi)->mode;
+	} else {
+		int idx = fs_lookup(p, oldabs);
+		if (idx < 0)
+			return -LXP_ENOENT;
+		src = p->fs[idx].data;
+		srclen = p->fs[idx].size;
+		srcmode = file_mode(&p->fs[idx]);
+	}
+	if ((srcmode & LXP_S_IFMT) == LXP_S_IFDIR)
+		return -LXP_EPERM; /* hard links to directories are not permitted */
+
+	int ni = wfs_create(newabs, LXP_S_IFREG | (srcmode & 0777u));
+	if (ni < 0)
+		return -LXP_ENOSPC;
+	if (srclen > 0) {
+		if (wfs_reserve(ni, srclen) < 0) {
+			wfs_free(ni); /* roll back the just-created node (its data is still NULL) */
+			return -LXP_ENOSPC;
+		}
+		memcpy(wnode_at(ni)->data, src, srclen); /* the arena never moves the source block */
+		wnode_at(ni)->size = srclen;
+	}
+	return 0;
+}
+
 static long sys_chmod(lxp_proc_t *p, const char *path, uint32_t mode)
 {
 	if (!path)
@@ -3194,6 +3256,10 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return sys_symlink(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a1);
 	case LXP_NR_symlinkat: /* (target, newdirfd, linkpath) */
 		return sys_symlink(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a2);
+	case LXP_NR_link: /* (oldpath, newpath) */
+		return sys_link(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a1);
+	case LXP_NR_linkat: /* (olddirfd, oldpath, newdirfd, newpath, flags) */
+		return sys_link(proc, (const char *)(uintptr_t)a1, (const char *)(uintptr_t)a3);
 	case LXP_NR_chmod: /* (path, mode) */
 		return sys_chmod(proc, (const char *)(uintptr_t)a0, (uint32_t)a1);
 	case LXP_NR_fchmodat: /* (dirfd, path, mode) */

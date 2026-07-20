@@ -122,6 +122,7 @@ extern "C" {
 #define LXP_NR_clock_gettime64 403
 #define LXP_NR_clock_nanosleep_time64 407
 /* writable filesystem mutation. */
+#define LXP_NR_link 9
 #define LXP_NR_unlink 10
 #define LXP_NR_chmod 15
 #define LXP_NR_rename 38
@@ -131,6 +132,7 @@ extern "C" {
 #define LXP_NR_mkdirat 323
 #define LXP_NR_unlinkat 328
 #define LXP_NR_renameat 329
+#define LXP_NR_linkat 330
 #define LXP_NR_symlinkat 331
 #define LXP_NR_fchmodat 333
 #define LXP_NR_utimensat 348
@@ -307,6 +309,7 @@ extern "C" {
 #define LXP_STATX_BASIC_STATS 0x000007ffu
 
 /* Linux errno values returned (negated) on syscall failure. */
+#define LXP_EPERM 1
 #define LXP_ENOENT 2
 #define LXP_ESRCH 3
 #define LXP_EINTR 4
