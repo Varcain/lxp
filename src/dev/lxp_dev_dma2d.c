@@ -77,63 +77,108 @@ static long dma2d_check_plane(lxp_proc_t *p, uint32_t base, uint32_t w, uint32_t
 	return 0;
 }
 
+/* Validate one guest descriptor (already copied out of guest memory) and fill the
+ * coordinator-side op: check the enum fields, then bounds-check every plane the
+ * mode touches against the guest region. Shared by the single and batched paths. */
+static long dma2d_prepare_op(lxp_proc_t *p, const struct lxp_dma2d_submit *s, lxp_dma2d_op_t *op)
+{
+	if (s->mode > LXP_DMA2D_MODE_MAX || s->output_cf > LXP_DMA2D_CF_ARGB4444 ||
+	    s->fg_alpha_mode > LXP_DMA2D_AM_MAX || s->bg_alpha_mode > LXP_DMA2D_AM_MAX)
+		return -LXP_EINVAL;
+
+	memset(op, 0, sizeof(*op));
+	op->mode = s->mode;
+	op->w = s->w;
+	op->h = s->h;
+	op->out_offset = s->output_offset;
+	op->out_cf = s->output_cf;
+	op->out_color = s->reg_to_mem_color;
+	op->fg_offset = s->fg_offset;
+	op->fg_cf = s->fg_cf;
+	op->fg_color = s->fg_color;
+	op->fg_alpha_mode = s->fg_alpha_mode;
+	op->fg_alpha = s->fg_alpha;
+	op->bg_offset = s->bg_offset;
+	op->bg_cf = s->bg_cf;
+	op->bg_color = s->bg_color;
+	op->bg_alpha_mode = s->bg_alpha_mode;
+	op->bg_alpha = s->bg_alpha;
+
+	long r;
+	/* output plane is always WRITTEN. */
+	r = dma2d_check_plane(p, s->output_address, s->w, s->h, s->output_offset, s->output_cf, 1,
+			      &op->out_addr);
+	if (r)
+		return r;
+	/* fg plane is READ for every mode except a solid register→memory fill. */
+	if (s->mode != LXP_DMA2D_R2M) {
+		r = dma2d_check_plane(p, s->fg_address, s->w, s->h, s->fg_offset, s->fg_cf, 0,
+				      &op->fg_addr);
+		if (r)
+			return r;
+	}
+	/* bg plane is READ for the blending modes. */
+	if (s->mode == LXP_DMA2D_M2M_BLEND || s->mode == LXP_DMA2D_M2M_BLEND_FG) {
+		r = dma2d_check_plane(p, s->bg_address, s->w, s->h, s->bg_offset, s->bg_cf, 0,
+				      &op->bg_addr);
+		if (r)
+			return r;
+	}
+	return 0;
+}
+
 static long dma2d_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 			unsigned long cmd, unsigned long arg)
 {
 	(void)d;
 	(void)o;
-	if (LXP_DMA2D_IOC_TYPE(cmd) != LXP_DMA2D_IOC_D || LXP_DMA2D_IOC_NR(cmd) != LXP_DMA2D_SUBMIT_NR)
+	if (LXP_DMA2D_IOC_TYPE(cmd) != LXP_DMA2D_IOC_D)
 		return -LXP_ENOTTY;
 	if (!g_lxp_disp_ops || !g_lxp_disp_ops->dma2d_submit)
 		return -LXP_ENOSYS; /* no DMA2D on this board → guest renders in software */
 
-	struct lxp_dma2d_submit *u = (void *)arg;
-	if (!user_ok(p, u, sizeof(*u), 0))
-		return -LXP_EFAULT;
-	struct lxp_dma2d_submit s = *u; /* copy in once; never re-read guest memory */
+	unsigned long nr = LXP_DMA2D_IOC_NR(cmd);
 
-	if (s.mode > LXP_DMA2D_MODE_MAX || s.output_cf > LXP_DMA2D_CF_ARGB4444 ||
-	    s.fg_alpha_mode > LXP_DMA2D_AM_MAX || s.bg_alpha_mode > LXP_DMA2D_AM_MAX)
-		return -LXP_EINVAL;
-
-	lxp_dma2d_op_t op;
-	memset(&op, 0, sizeof(op));
-	op.mode = s.mode;
-	op.w = s.w;
-	op.h = s.h;
-	op.out_offset = s.output_offset;
-	op.out_cf = s.output_cf;
-	op.out_color = s.reg_to_mem_color;
-	op.fg_offset = s.fg_offset;
-	op.fg_cf = s.fg_cf;
-	op.fg_color = s.fg_color;
-	op.fg_alpha_mode = s.fg_alpha_mode;
-	op.fg_alpha = s.fg_alpha;
-	op.bg_offset = s.bg_offset;
-	op.bg_cf = s.bg_cf;
-	op.bg_color = s.bg_color;
-	op.bg_alpha_mode = s.bg_alpha_mode;
-	op.bg_alpha = s.bg_alpha;
-
-	long r;
-	/* output plane is always WRITTEN. */
-	r = dma2d_check_plane(p, s.output_address, s.w, s.h, s.output_offset, s.output_cf, 1,
-			      &op.out_addr);
-	if (r)
-		return r;
-	/* fg plane is READ for every mode except a solid register→memory fill. */
-	if (s.mode != LXP_DMA2D_R2M) {
-		r = dma2d_check_plane(p, s.fg_address, s.w, s.h, s.fg_offset, s.fg_cf, 0, &op.fg_addr);
+	if (nr == LXP_DMA2D_SUBMIT_NR) {
+		struct lxp_dma2d_submit *u = (void *)arg;
+		if (!user_ok(p, u, sizeof(*u), 0))
+			return -LXP_EFAULT;
+		struct lxp_dma2d_submit s = *u; /* copy in once; never re-read guest memory */
+		lxp_dma2d_op_t op;
+		long r = dma2d_prepare_op(p, &s, &op);
 		if (r)
 			return r;
+		return g_lxp_disp_ops->dma2d_submit(&op);
 	}
-	/* bg plane is READ for the blending modes. */
-	if (s.mode == LXP_DMA2D_M2M_BLEND || s.mode == LXP_DMA2D_M2M_BLEND_FG) {
-		r = dma2d_check_plane(p, s.bg_address, s.w, s.h, s.bg_offset, s.bg_cf, 0, &op.bg_addr);
-		if (r)
-			return r;
+
+	if (nr == LXP_DMA2D_SUBMIT_BATCH_NR) {
+		/* One SVC, N descriptors — amortizes the round-trip over a whole text run
+		 * (a label is many tiny glyphs, each unprofitable to submit alone). */
+		struct lxp_dma2d_batch *ub = (void *)arg;
+		if (!user_ok(p, ub, sizeof(*ub), 0))
+			return -LXP_EFAULT;
+		struct lxp_dma2d_batch b = *ub;
+		if (b.count == 0 || b.count > LXP_DMA2D_BATCH_MAX)
+			return -LXP_EINVAL;
+		const struct lxp_dma2d_submit *arr = (const void *)(uintptr_t)b.ops;
+		if (!user_ok(p, arr, (size_t)b.count * sizeof(*arr), 0))
+			return -LXP_EFAULT;
+		/* The guest is blocked in this SVC, so the validated array can't change
+		 * under us; still copy each element out before validating + programming it. */
+		for (uint32_t i = 0; i < b.count; i++) {
+			struct lxp_dma2d_submit s = arr[i];
+			lxp_dma2d_op_t op;
+			long r = dma2d_prepare_op(p, &s, &op);
+			if (r)
+				return r; /* fail fast; earlier (validated) ops may have drawn */
+			r = g_lxp_disp_ops->dma2d_submit(&op);
+			if (r)
+				return r;
+		}
+		return 0;
 	}
-	return g_lxp_disp_ops->dma2d_submit(&op);
+
+	return -LXP_ENOTTY;
 }
 
 static const struct lxp_dev_ops dma2d_ops = {

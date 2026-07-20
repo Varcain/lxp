@@ -127,7 +127,9 @@ struct lxp_input_absinfo {
 #define LXP_DMA2D_IOC_TYPE(cmd) (((cmd) >> 8) & 0xffu)
 #define LXP_DMA2D_IOC_NR(cmd) ((cmd) & 0xffu)
 #define LXP_DMA2D_IOC_D 0x44		/* 'D' */
-#define LXP_DMA2D_SUBMIT_NR 0x01	/* _IOW('D',1,struct lxp_dma2d_submit) */
+#define LXP_DMA2D_SUBMIT_NR 0x01	/* _IOW('D',1,struct lxp_dma2d_submit)       */
+#define LXP_DMA2D_SUBMIT_BATCH_NR 0x02	/* _IOW('D',2,struct lxp_dma2d_batch)        */
+#define LXP_DMA2D_BATCH_MAX 256u	/* max descriptors per batched submit        */
 
 /* Transfer mode. Values are the ABI (validated), NOT raw DMA2D register bits. */
 #define LXP_DMA2D_M2M 0		    /* memory-to-memory copy (blit)            */
@@ -172,6 +174,19 @@ struct lxp_dma2d_submit {
 	uint32_t bg_cf;
 	uint32_t bg_color;
 	uint32_t bg_alpha_mode, bg_alpha;
+};
+
+/* Batched submit (Phase D, text): offload N descriptors through ONE ioctl so a
+ * whole text run (a label = many glyphs) crosses the SVC boundary once instead of
+ * per-glyph — the per-op round-trip, not the DMA2D transfer, is what makes tiny
+ * glyphs unprofitable one at a time. The coordinator validates + programs each
+ * descriptor in order; a rejected descriptor fails the batch fast (well-formed
+ * guests never trip it, so earlier descriptors having drawn is benign). */
+struct lxp_dma2d_batch {
+	uint32_t count;	    /* number of descriptors, 1..LXP_DMA2D_BATCH_MAX */
+	uint32_t _reserved; /* keep @ops 8-byte aligned + the layout identical on 32/64-bit */
+	uint64_t ops;	    /* address of a struct lxp_dma2d_submit[count] array (guest ptr,
+			     * zero-extended; the coordinator narrows it back via uintptr_t) */
 };
 
 #endif /* LXP_UAPI_H */
