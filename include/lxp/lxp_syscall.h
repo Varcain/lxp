@@ -469,14 +469,17 @@ typedef struct lxp_fd {
 #define LXP_MAX_CHILD 8
 /** Bounds for an execve() argument vector captured for the engine to relaunch.
  * Overridable by the consumer: entries cost 2 bytes each per slot, the payload
- * buffer costs its full width per slot. 16 covers the compound hush commands
- * BusyBox builds (`cmd a b c && cmd d e f`); the 256-byte payload is unchanged
- * because argument *text* was never what overflowed. */
+ * buffer costs its full width per slot. Sized for a flag-heavy `curl`/`ssh`
+ * command run over a session — e.g. `curl -4 --resolve host:443:ip -A ua
+ * -w '<long format>' -o /dev/null https://host` runs to ~20 entries and several
+ * hundred bytes, which overflowed the former 16/256 and failed to exec (E2BIG).
+ * 32/768 covers those with headroom while staying small enough to replicate per
+ * slot on an SRAM-tight target. */
 #ifndef LXP_EXEC_MAXARGS
-#define LXP_EXEC_MAXARGS 16
+#define LXP_EXEC_MAXARGS 32
 #endif
 #ifndef LXP_EXEC_ARGBUF
-#define LXP_EXEC_ARGBUF 256
+#define LXP_EXEC_ARGBUF 768
 #endif
 /** Marks an exec vector entry the capture never wrote. Offset 0 is a legitimate
  * entry (the first captured string sits at the start of its buffer), so this is
