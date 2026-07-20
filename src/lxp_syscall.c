@@ -3653,16 +3653,26 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		 * stuck). The prior mask is restored when the delivered handler returns (sig_restore). */
 		const uint32_t *uset = (const uint32_t *)(uintptr_t)a0;
 		size_t sz = (size_t)a1;
-		if (uset && sz && sz <= 8 && user_ok(proc, uset, sz, 0)) {
-			uint64_t m = uset[0];
-			if (sz >= 8)
-				m |= (uint64_t)uset[1] << 32;
-			m &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP)); /* never blockable */
-			proc->sigsuspend_saved_mask = proc->sig_blocked;
-			proc->sig_blocked = m;
-			proc->sigsuspend_active = 1;
-		}
-		if (!proc->pending_sigs)
+		if (sz != 8)
+			return -LXP_EINVAL; /* Linux: sigsetsize must equal sizeof(kernel sigset_t) */
+		if (!uset || !user_ok(proc, uset, sz, 0))
+			return -LXP_EFAULT; /* validate the whole 8-byte mask before reading either word */
+		uint64_t m = (uint64_t)uset[0] | ((uint64_t)uset[1] << 32);
+		m &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP)); /* never blockable */
+		proc->sigsuspend_saved_mask = proc->sig_blocked;
+		proc->sig_blocked = m;
+		proc->sigsuspend_active = 1;
+		/* Park unless a signal that is deliverable UNDER THE NEW MASK is already pending — then
+		 * fall through so the dispatch delivers it now. A signal pending but blocked by the new
+		 * mask must NOT keep us running (it stays pending until the mask is restored). Mirrors
+		 * the run loop's pending_deliverable, which is static there. */
+		int deliverable = 0;
+		for (int sig = 1; sig < LXP_NSIG; sig++)
+			if ((proc->pending_sigs & lxp_sig_bit(sig)) && !lxp_sig_blocked(proc, sig)) {
+				deliverable = 1;
+				break;
+			}
+		if (!deliverable)
 			proc->sigsuspend_pending = 1;
 		return -LXP_EINTR;
 	}

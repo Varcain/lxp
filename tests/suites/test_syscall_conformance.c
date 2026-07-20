@@ -657,8 +657,16 @@ static void test_conf_signal(void **state)
 	assert_int_equal(SC(&p, LXP_NR_set_robust_list, 0, 0, 0, 0, 0, 0), 0);
 	assert_int_equal(SC(&p, LXP_NR_set_tid_address, 0, 0, 0, 0, 0, 0), 1);
 
-	/* rt_sigsuspend parks (returns -EINTR) and flags itself when nothing is pending. */
-	assert_int_equal(SC(&p, LXP_NR_rt_sigsuspend, 0, 0, 0, 0, 0, 0), -LXP_EINTR);
+	/* rt_sigsuspend installs the mask and parks (returns -EINTR), flagging itself when nothing
+	 * deliverable is pending. Like Linux, sigsetsize must be 8 (else -EINVAL) and the mask must
+	 * be readable (else -EFAULT). */
+	assert_int_equal(SC(&p, LXP_NR_rt_sigsuspend, 0, 0, 0, 0, 0, 0), -LXP_EINVAL); /* size 0 */
+	assert_int_equal(SC(&p, LXP_NR_rt_sigsuspend, 0, 8, 0, 0, 0, 0), -LXP_EFAULT); /* NULL mask */
+	uint32_t *sset = lxp_conf_alloc(fx, 2 * sizeof(uint32_t));
+	sset[0] = 0;
+	sset[1] = 0; /* empty mask -> nothing blocked */
+	assert_int_equal(SC(&p, LXP_NR_rt_sigsuspend, (long)(uintptr_t)sset, 8, 0, 0, 0, 0),
+			 -LXP_EINTR);
 	assert_int_equal(p.sigsuspend_pending, 1);
 
 	/* setitimer(ITIMER_REAL) arms the alarm deadline. */
