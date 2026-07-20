@@ -275,15 +275,20 @@ static void test_fdpic_reject_relent_zero(void **st)
 	munmap(reg.base, reg.cap + (size_t)sysconf(_SC_PAGESIZE));
 }
 
-/* A hard-float image (EF_ARM_ABI_FLOAT_HARD in e_flags) cannot link the soft-float rootfs and would
- * fault at first VFP use — the loader rejects it up front rather than launching it to crash. */
+/* A hard-float image: a soft-float guest rejects it up front (can't link the soft-float rootfs, would
+ * fault at first VFP use); a hard-float guest (LXP_ENABLE_FPU_CONTEXT — the coordinator preserves the
+ * full VFP state and the rootfs is uniformly hard-float) accepts it. */
 static void test_fdpic_reject_hard_float(void **st)
 {
 	(void)st;
 	uint8_t img[IMG_SZ];
 	size_t sz = build_fdpic(img);
 	w32(img + 36, 0x00000400); /* e_flags: EF_ARM_ABI_FLOAT_HARD */
+#if LXP_ENABLE_FPU_CONTEXT
+	assert_int_equal(load(img, sz), LXP_OK);
+#else
 	assert_int_equal(load(img, sz), LXP_ERR_NOT_SUPPORTED);
+#endif
 }
 
 /* A soft-float image (or one with no float-ABI flag) still loads — only hard-float is refused. */
@@ -305,7 +310,11 @@ static void test_abi_incompatible_predicate(void **st)
 	build_fdpic(img);
 	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ), 0);
 	w32(img + 36, 0x00000400);
-	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ), 1);
+#if LXP_ENABLE_FPU_CONTEXT
+	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ), 0); /* hard-float ok for a hard-float guest */
+#else
+	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ), 1); /* hard-float refused by a soft-float guest */
+#endif
 	assert_int_equal(lxp_loader_abi_incompatible(img, 39), 0); /* too small for e_flags */
 	uint8_t notelf[40] = {0};
 	assert_int_equal(lxp_loader_abi_incompatible(notelf, sizeof(notelf)), 0);

@@ -685,13 +685,19 @@ static uint32_t le32(const uint8_t *p)
 #define ELF_R_ARM_FUNCDESC 163u
 #define ELF_R_ARM_FUNCDESC_VALUE 164u
 
-/* True if the ELF image's ARM float ABI is incompatible with the soft-float guest — i.e. it is a
- * hard-float image (VFP calling convention, and VFP instructions). The rootfs libc/ld.so is
- * soft-float and the guest runs with no guaranteed FPU, so a hard-float exec cannot link the
- * soft-float libc and would fault (a NOCP UsageFault on an FPU-off part, or a mismatched call).
- * execve() consults this to refuse the image with a clean ENOEXEC before committing — like the ARM
- * kernel's elf_check_arch — instead of launching it to crash at first VFP use; lxp_loader_load_fdpic
- * enforces it too, as the backstop for a path (e.g. a remote exec) that reaches the loader directly.
+/* True if the ELF image's ARM float ABI is incompatible with THIS guest's ABI. execve() and
+ * lxp_loader_load_fdpic consult it to refuse a wrong-ABI image with a clean ENOEXEC — like the ARM
+ * kernel's elf_check_arch — instead of launching it to crash at first VFP use / a mismatched call.
+ *
+ * Soft-float guest (LXP_ENABLE_FPU_CONTEXT off): a hard-float image (VFP calling convention + VFP
+ * instructions) is incompatible — the rootfs libc/ld.so is soft-float and the guest has no
+ * guaranteed FPU, so it can't link and would fault (a NOCP UsageFault, or a mismatched call).
+ *
+ * Hard-float guest (LXP_ENABLE_FPU_CONTEXT on): the coordinator preserves the guest's full VFP
+ * state and the rootfs is uniformly hard-float (its libc/ld.so/libgcc are all EABIhf), so accept
+ * the image on ABI grounds — there is no soft-float image to guard against in this build, and the
+ * e_flags hard-float bit is not reliably set on every hard-float object to key an inverse check on.
+ *
  * A non-ELF image returns 0 (not "incompatible") so the normal path still reports it. */
 int lxp_loader_abi_incompatible(const void *image, size_t image_size)
 {
@@ -700,7 +706,12 @@ int lxp_loader_abi_incompatible(const void *image, size_t image_size)
 		return 0;
 	if (img[0] != 0x7f || img[1] != 'E' || img[2] != 'L' || img[3] != 'F')
 		return 0;
+#if LXP_ENABLE_FPU_CONTEXT
+	(void)img;
+	return 0;
+#else
 	return (le32(img + 36) & ELF_EF_ARM_ABI_FLOAT_HARD) != 0u;
+#endif
 }
 
 /* The runtime address of a link-time vaddr via the FDPIC loadmap, where each segment is
