@@ -115,12 +115,23 @@ static void mock_fb_flush(int x, int y, int w, int h)
 static void mock_fb_present(void)
 {
 }
+/* Recorded last dma2d_submit, so a suite can assert /dev/dma2d validated + forwarded a
+ * descriptor (bad descriptors are rejected by the device before reaching here). */
+lxp_dma2d_op_t g_mock_dma2d_op;
+int g_mock_dma2d_calls;
+static int mock_dma2d_submit(const lxp_dma2d_op_t *op)
+{
+	g_mock_dma2d_op = *op;
+	g_mock_dma2d_calls++;
+	return 0;
+}
 static const lxp_display_ops_t g_mock_disp = {
 	.fb_init = mock_fb_init,
 	.fb_get_info = mock_fb_get_info,
 	.fb_get_buffer = mock_fb_get_buffer,
 	.fb_flush = mock_fb_flush,
 	.fb_present = mock_fb_present,
+	.dma2d_submit = mock_dma2d_submit,
 };
 const lxp_display_ops_t *g_lxp_disp_ops = &g_mock_disp;
 #endif

@@ -117,4 +117,61 @@ struct lxp_input_absinfo {
 #define LXP_EVIOCGNAME_NR 0x06
 #define LXP_EVIOCGABS_BASE 0x40 /* EVIOCGABS(abs) nr = 0x40 + abs */
 
+/* ---- DMA2D 2D-accelerator (/dev/dma2d) ------------------------------------- */
+/* NOT a Linux uapi — an oveRTOS accelerator device. The guest submits one
+ * fill/blit/blend descriptor; the PRIVILEGED coordinator validates every plane
+ * address against the guest's own region (a DMA engine with guest-supplied
+ * addresses is a confused-deputy risk) and programs the STM32 DMA2D. Field order
+ * mirrors LVGL's lv_draw_dma2d_configuration_t so the guest shim is a field copy.
+ * Matched by type+nr (ignoring _IOC_SIZE) so the two sides can't drift on sizeof. */
+#define LXP_DMA2D_IOC_TYPE(cmd) (((cmd) >> 8) & 0xffu)
+#define LXP_DMA2D_IOC_NR(cmd) ((cmd) & 0xffu)
+#define LXP_DMA2D_IOC_D 0x44		/* 'D' */
+#define LXP_DMA2D_SUBMIT_NR 0x01	/* _IOW('D',1,struct lxp_dma2d_submit) */
+
+/* Transfer mode. Values are the ABI (validated), NOT raw DMA2D register bits. */
+#define LXP_DMA2D_M2M 0		    /* memory-to-memory copy (blit)            */
+#define LXP_DMA2D_M2M_PFC 1	    /* + pixel-format convert                  */
+#define LXP_DMA2D_M2M_BLEND 2	    /* fg over bg -> output (alpha blend)      */
+#define LXP_DMA2D_M2M_BLEND_FG 3    /* blend with fixed-color fg (A8 glyph; Phase D) */
+#define LXP_DMA2D_R2M 4		    /* register-to-memory (solid fill)         */
+#define LXP_DMA2D_MODE_MAX 4
+
+/* Colour formats — ABI values (validated + mapped to DMA2D xPFCCR.CM by the
+ * coordinator). Output supports 0..4; fg/bg additionally the alpha formats. */
+#define LXP_DMA2D_CF_ARGB8888 0
+#define LXP_DMA2D_CF_RGB888 1
+#define LXP_DMA2D_CF_RGB565 2
+#define LXP_DMA2D_CF_ARGB1555 3
+#define LXP_DMA2D_CF_ARGB4444 4
+#define LXP_DMA2D_CF_A8 9    /* fg/bg only (8-bit alpha; glyph coverage)     */
+#define LXP_DMA2D_CF_A4 10   /* fg/bg only                                   */
+#define LXP_DMA2D_CF_MAX 10
+
+/* Per-plane alpha mode (xPFCCR.AM): 0 = use pixel alpha, 1 = replace, 2 = combine. */
+#define LXP_DMA2D_AM_NONE 0
+#define LXP_DMA2D_AM_REPLACE 1
+#define LXP_DMA2D_AM_COMBINE 2
+#define LXP_DMA2D_AM_MAX 2
+
+/* Offsets are in PIXELS (line stride - width), matching DMA2D's OOR/FGOR/BGOR. */
+struct lxp_dma2d_submit {
+	uint32_t mode;	/* LXP_DMA2D_* */
+	uint32_t w, h;	/* transfer size in pixels (both > 0) */
+	/* output (destination) plane — WRITTEN */
+	uint32_t output_address, output_offset;
+	uint32_t output_cf;	    /* LXP_DMA2D_CF_ARGB8888..ARGB4444 */
+	uint32_t reg_to_mem_color;  /* ARGB8888 fill colour (LXP_DMA2D_R2M) */
+	/* foreground source plane — READ */
+	uint32_t fg_address, fg_offset;
+	uint32_t fg_cf;
+	uint32_t fg_color;	    /* fixed-colour fg (A8 glyph / alpha fill) */
+	uint32_t fg_alpha_mode, fg_alpha;
+	/* background source plane — READ (blend; usually == output) */
+	uint32_t bg_address, bg_offset;
+	uint32_t bg_cf;
+	uint32_t bg_color;
+	uint32_t bg_alpha_mode, bg_alpha;
+};
+
 #endif /* LXP_UAPI_H */

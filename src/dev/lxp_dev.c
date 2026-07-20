@@ -438,6 +438,9 @@ void lxp_dev_proc_exit(lxp_proc_t *p)
 #if LXP_ENABLE_DEV_FB
 void lxp_dev_autoreg_fb(void);
 #endif
+#if LXP_ENABLE_DEV_DMA2D
+void lxp_dev_autoreg_dma2d(void);
+#endif
 #if LXP_ENABLE_DEV_INPUT
 void lxp_dev_autoreg_input(void);
 #endif
@@ -446,6 +449,9 @@ void lxp_dev_autoreg_all(void)
 {
 #if LXP_ENABLE_DEV_FB
 	lxp_dev_autoreg_fb();
+#endif
+#if LXP_ENABLE_DEV_DMA2D
+	lxp_dev_autoreg_dma2d();
 #endif
 #if LXP_ENABLE_DEV_INPUT
 	lxp_dev_autoreg_input();

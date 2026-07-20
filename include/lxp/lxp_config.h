@@ -60,6 +60,9 @@
 #ifndef LXP_ENABLE_DEV_FB
 #define LXP_ENABLE_DEV_FB 0 /* needs DEV + a display-ops port */
 #endif
+#ifndef LXP_ENABLE_DEV_DMA2D
+#define LXP_ENABLE_DEV_DMA2D 0 /* needs DEV + a display-ops dma2d_submit op */
+#endif
 #ifndef LXP_ENABLE_DEV_INPUT
 #define LXP_ENABLE_DEV_INPUT 0 /* needs DEV */
 #endif

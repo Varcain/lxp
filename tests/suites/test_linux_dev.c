@@ -14,7 +14,9 @@
 #include "../framework/lxp_test.h"
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_dev.h"
+#include "lxp/lxp_port.h"		/* lxp_dma2d_op_t */
 #include "lxp/lxp_syscall.h"
+#include "../../src/dev/lxp_uapi.h" /* struct lxp_dma2d_submit + LXP_DMA2D_* */
 
 #include <stdint.h>
 #include <string.h>
@@ -32,6 +34,14 @@ void lxp_dev_autoreg_input(void);
 void lxp_dev_autoreg_fb(void);
 extern int g_mock_fb_flush_x, g_mock_fb_flush_y, g_mock_fb_flush_w, g_mock_fb_flush_h;
 extern int g_mock_fb_flush_calls;
+
+/* The DMA2D accelerator class registers /dev/dma2d over the stub's mock dma2d_submit,
+ * which records the last (already-validated) op so a suite can assert forwarding. */
+void lxp_dev_autoreg_dma2d(void);
+extern lxp_dma2d_op_t g_mock_dma2d_op;
+extern int g_mock_dma2d_calls;
+/* Matched by type 'D' + nr 1; the handler ignores _IOC_SIZE/dir. */
+#define TEST_DMA2D_SUBMIT ((0x44ul << 8) | 1ul)
 
 /* The evdev feeder: pushes one touch (4 events) into the shared input ring. */
 void lxp_input_report_touch(int x, int y, int pressed);
@@ -580,6 +590,104 @@ static void test_dev_getdents(void **state)
 	lxp_syscall(&p, LXP_NR_close, dfd, 0, 0, 0, 0, 0);
 }
 
+static long dma2d_open(lxp_proc_t *p)
+{
+	return lxp_syscall(p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t) "/dev/dma2d",
+			   LXP_O_RDWR, 0, 0, 0);
+}
+
+/* A valid solid fill reaches the display port with the fields the guest submitted.
+ * region_lo=1..MAX permits any nonzero plane address; the mock never derefs it. */
+static void test_dev_dma2d_submit_ok(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	lxp_arena_t arena;
+	setup(&p, &arena);
+	lxp_dev_autoreg_dma2d();
+	long fd = dma2d_open(&p);
+	assert_true(fd >= 0);
+	g_mock_dma2d_calls = 0;
+	struct lxp_dma2d_submit d;
+	memset(&d, 0, sizeof(d));
+	d.mode = LXP_DMA2D_R2M;
+	d.w = 8;
+	d.h = 8;
+	d.output_address = 0x1000;
+	d.output_cf = LXP_DMA2D_CF_RGB565;
+	d.reg_to_mem_color = 0xf800; /* red */
+	assert_int_equal(
+		lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, (long)(uintptr_t)&d, 0, 0, 0), 0);
+	assert_int_equal(g_mock_dma2d_calls, 1);
+	assert_int_equal(g_mock_dma2d_op.mode, LXP_DMA2D_R2M);
+	assert_int_equal(g_mock_dma2d_op.w, 8);
+	assert_int_equal(g_mock_dma2d_op.h, 8);
+	assert_int_equal((uint32_t)g_mock_dma2d_op.out_addr, 0x1000u);
+}
+
+/* Every malformed descriptor is rejected BEFORE any address reaches the hardware —
+ * the confused-deputy guard (a DMA engine must never be handed guest garbage). */
+static void test_dev_dma2d_rejects_bad_descriptor(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	lxp_arena_t arena;
+	setup(&p, &arena);
+	lxp_dev_autoreg_dma2d();
+	long fd = dma2d_open(&p);
+	assert_true(fd >= 0);
+	struct lxp_dma2d_submit d;
+	long a = (long)(uintptr_t)&d;
+
+	/* NULL descriptor pointer → EFAULT (region_lo=1 rejects addr 0). */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, 0, 0, 0, 0),
+			 -LXP_EFAULT);
+
+#define BASE()                                                                 \
+	do {                                                                   \
+		memset(&d, 0, sizeof(d));                                      \
+		d.mode = LXP_DMA2D_R2M;                                        \
+		d.w = 8;                                                       \
+		d.h = 8;                                                       \
+		d.output_address = 0x1000;                                     \
+		d.output_cf = LXP_DMA2D_CF_RGB565;                             \
+	} while (0)
+
+	/* NULL plane address → EFAULT (user_ok IS applied to the plane, not just the desc). */
+	BASE();
+	d.output_address = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, a, 0, 0, 0),
+			 -LXP_EFAULT);
+	/* illegal mode / output colour format → EINVAL. */
+	BASE();
+	d.mode = 99;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, a, 0, 0, 0),
+			 -LXP_EINVAL);
+	BASE();
+	d.output_cf = 99;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, a, 0, 0, 0),
+			 -LXP_EINVAL);
+	/* oversized dimension / span → EINVAL (bounds the arithmetic below uint64 overflow). */
+	BASE();
+	d.w = 5000;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, a, 0, 0, 0),
+			 -LXP_EINVAL);
+	BASE();
+	d.w = 4096;
+	d.h = 4096;
+	d.output_cf = LXP_DMA2D_CF_ARGB8888; /* ~64 MB > DMA2D_MAX_SPAN */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, a, 0, 0, 0),
+			 -LXP_EINVAL);
+	/* a blit with an illegal fg colour format → EINVAL (the fg plane is validated too). */
+	BASE();
+	d.mode = LXP_DMA2D_M2M;
+	d.fg_address = 0x2000;
+	d.fg_cf = 99;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, a, 0, 0, 0),
+			 -LXP_EINVAL);
+#undef BASE
+}
+
 int test_linux_dev_run(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -595,6 +703,8 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_deferred_block),
 		cmocka_unit_test(test_dev_dup_refcount),
 		cmocka_unit_test(test_dev_getdents),
+		cmocka_unit_test(test_dev_dma2d_submit_ok),
+		cmocka_unit_test(test_dev_dma2d_rejects_bad_descriptor),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

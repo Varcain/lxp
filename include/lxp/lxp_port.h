@@ -198,12 +198,30 @@ typedef struct lxp_fb_info {
 	uint32_t smem_len;
 } lxp_fb_info_t;
 
+/* A validated DMA2D fill/blit/blend, filled by the /dev/dma2d device from a guest
+ * descriptor AFTER every plane address was bounds-checked against the guest region.
+ * Addresses are absolute (coordinator-side); scalars are the validated ABI enums
+ * (LXP_DMA2D_* in lxp_uapi.h). The board's dma2d_submit maps enums to DMA2D
+ * registers + owns cache coherency. */
+typedef struct lxp_dma2d_op {
+	uint32_t mode, w, h;
+	uintptr_t out_addr;
+	uint32_t out_offset, out_cf, out_color;
+	uintptr_t fg_addr;
+	uint32_t fg_offset, fg_cf, fg_color, fg_alpha_mode, fg_alpha;
+	uintptr_t bg_addr;
+	uint32_t bg_offset, bg_cf, bg_color, bg_alpha_mode, bg_alpha;
+} lxp_dma2d_op_t;
+
 typedef struct lxp_display_ops {
 	int (*fb_init)(void);
 	int (*fb_get_info)(lxp_fb_info_t *info);
 	void *(*fb_get_buffer)(void);
 	void (*fb_flush)(int x, int y, int w, int h);
 	void (*fb_present)(void);
+	/* Optional 2D-accelerator submit (/dev/dma2d); NULL if the board has no DMA2D
+	 * -> the device returns -ENOSYS and the guest falls back to software render. */
+	int (*dma2d_submit)(const lxp_dma2d_op_t *op);
 	int (*touch_init)(void);
 	int (*touch_read)(int *x, int *y, int *pressed);
 } lxp_display_ops_t;
