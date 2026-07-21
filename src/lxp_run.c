@@ -620,6 +620,8 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	if (nr == LXP_NR_kill || nr == LXP_NR_tkill || nr == LXP_NR_tgkill) {
 		int sig = (nr == LXP_NR_tgkill) ? (int)f->r[2] : (int)f->r[1];
 		int target = (int)f->r[0];
+		/* Process-group target for a kill(pid<=0): pid==0 = the caller's group, pid<-1 = group |pid|. */
+		int want_pgid = (target == 0) ? proc->pgid : (target < -1 ? -target : 0);
 		if (sig < 0 || sig >= LXP_NSIG) { /* sig indexes sig_handler[]/pending_sig — reject OOB */
 			f->r[0] = -LXP_EINVAL;
 			return;
@@ -637,17 +639,24 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 			deliver_signal(f, proc, sig, 0);
 			return;
 		}
-		/* Cross-process kill (Phase D3): latch the signal on the target proc; it is
-		 * delivered at the target's next syscall boundary (running) or by the
-		 * coordinator (parked in sleep/wait/pipe). pid<=0 (process group / all) is
-		 * approximated as "every other live userspace proc". */
+		/* Cross-process kill (Phase D3): latch the signal on the target proc(s); it is
+		 * delivered at the target's next syscall boundary (running) or by the coordinator
+		 * (parked in sleep/wait/pipe). Real Linux targeting: pid>0 = that process; pid==0 =
+		 * the caller's process group; pid<-1 = process group |pid|; pid==-1 = broadcast to
+		 * all (but init). Skips the sender + init; an explicit self-signal took the inline
+		 * path above. This is the fix for `kill %job` no longer nuking unrelated procs. */
 		f->r[0] = -LXP_ESRCH;
 		for (int t = 0; t < LXP_NSLOT; t++) {
 			lxp_proc_t *tp = &g_lxp_proc[t];
 			if (!tp->alive || tp == proc || tp->pid <= 1)
 				continue;
-			if (target > 0 && tp->pid != target)
-				continue;
+			if (target > 0) {
+				if (tp->pid != target)
+					continue; /* a specific pid */
+			} else if (target != -1) {
+				if (tp->pgid != want_pgid)
+					continue; /* a process group (the caller's, or |pid|) */
+			}			  /* target == -1: broadcast to every live proc */
 			tp->pending_sigs |= lxp_sig_bit(sig);
 			f->r[0] = 0;
 		}
@@ -821,6 +830,7 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	g_lxp_proc[sidx].io_ctx = g_cfg->io_ctx;
 	g_lxp_proc[sidx].pid = pid;
 	g_lxp_proc[sidx].ppid = ppid;
+	g_lxp_proc[sidx].pgid = pid; /* a fresh proc leads its own group; fork inherits via *ch=*par, execve restores the saved pgid below */
 	/* Concurrent model: this slot is now a live process owning region ridx. */
 	g_lxp_proc[sidx].alive = 1;
 	g_lxp_proc[sidx].region = ridx;
@@ -1581,6 +1591,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			lxp_fd_t saved_fds[LXP_MAX_FDS];
 			char saved_cwd[LXP_PATH_MAX];
 			uint64_t saved_mask = p->sig_blocked; /* the signal mask survives execve (POSIX) */
+			int saved_pgid = p->pgid;	      /* the process group survives execve (POSIX) */
 			memcpy(saved_fds, p->fds, sizeof(saved_fds));
 			memcpy(saved_cwd, p->cwd, sizeof(saved_cwd));
 			if (p->region_owner &&
@@ -1616,6 +1627,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			memcpy(g_lxp_proc[es].fds, saved_fds, sizeof(saved_fds));
 			memcpy(g_lxp_proc[es].cwd, saved_cwd, sizeof(saved_cwd));
 			g_lxp_proc[es].sig_blocked = saved_mask;
+			g_lxp_proc[es].pgid = saved_pgid;
 			g_lxp_proc[es].exec_file_idx = idx; /* remember the running image so a
 								   later execv("/proc/self/exe") re-runs it */
 			idle = 0;

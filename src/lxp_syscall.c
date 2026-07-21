@@ -3371,9 +3371,17 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		proc->umask = (unsigned short)(a0 & 0777);
 		return old;
 	}
+	case LXP_NR_setpgid: { /* (pid, pgid) — job control: put a process into a group */
+		int tpid = (int)a0, tpgid = (int)a1;
+		/* Only a self-target is tracked here (pid 0, or my own pid); pgid 0 means "use my
+		 * pid" (become group leader). A child sets its OWN group via setpgid(0, …) after
+		 * fork, so a cross-proc setpgid is accepted inert (no proc table at this layer). */
+		if (tpid == 0 || tpid == proc->pid)
+			proc->pgid = (tpgid == 0) ? proc->pid : tpgid;
+		return 0;
+	}
 	case LXP_NR_prctl:
 	case LXP_NR_sched_yield: /* cooperative hint; FreeRTOS time-slices peers anyway */
-	case LXP_NR_setpgid:
 	case LXP_NR_sync:	  /* no backing store to flush */
 	case LXP_NR_fsync:	  /* dropbearkey fsyncs the host key; the writable overlay is RAM */
 	case LXP_NR_fdatasync:
@@ -3471,9 +3479,11 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		proc->alarm_deadline_us = val_us ? now + val_us : 0; /* it_value 0 disarms */
 		return 0;
 	}
-	case LXP_NR_getpgrp:   /* shell job control: process group == pid */
-	case LXP_NR_setsid:	   /* getty/login start a new session */
-		return proc->pid;  /* the caller becomes the session/group leader */
+	case LXP_NR_getpgrp: /* shell job control: the caller's process group */
+		return proc->pgid;
+	case LXP_NR_setsid: /* getty/login start a new session: the caller leads its own group */
+		proc->pgid = proc->pid;
+		return proc->pid;
 	case LXP_NR_reboot: {  /* reboot(magic1, magic2, cmd, arg) — cmd is a2 */
 		unsigned cmd = (unsigned)a2;
 		/* Only an actual halt/poweroff/restart stops the system; init calls

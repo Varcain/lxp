@@ -760,9 +760,89 @@ static void test_deferred_blocking_handoff_keeps_parked_task(void **state)
 	assert_int_equal(g_mock.resume_calls, 0);
 }
 
+/* kill(-pgid)/kill(0) target a PROCESS GROUP, not every proc — the fix for `kill %job` (and
+ * fg's SIGCONT) no longer nuking unrelated daemons like inetd. */
+static void test_kill_targets_process_group(void **state)
+{
+	(void)state;
+	/* pid / pgid layout: init(1,1) shell(2,2) cmd1(3,3) cmd2(4,3 — cmd1's group) inetd(5,5) */
+	const int pid[5] = {1, 2, 3, 4, 5};
+	const int pgid[5] = {1, 2, 3, 3, 5};
+	for (int i = 0; i < 5; i++) {
+		g_lxp_proc[i].alive = 1;
+		g_lxp_proc[i].pid = pid[i];
+		g_lxp_proc[i].pgid = pgid[i];
+	}
+	lxp_proc_t *shell = &g_lxp_proc[1]; /* the sender */
+	const uint64_t bit = lxp_sig_bit(LXP_SIGTERM);
+
+	/* shell: kill(-3, SIGTERM) -> process group 3 = {cmd1 pid3, cmd2 pid4} only. */
+	struct lxp_frame f;
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_kill;
+	f.r[0] = (uint32_t)(-3); /* target = -pgid */
+	f.r[1] = LXP_SIGTERM;
+	lxp_dispatch(&f, shell);
+	assert_int_equal((int32_t)f.r[0], 0);		/* a target was found */
+	assert_true(g_lxp_proc[2].pending_sigs & bit);	/* cmd1 (pgid 3) */
+	assert_true(g_lxp_proc[3].pending_sigs & bit);	/* cmd2 (pgid 3) */
+	assert_false(g_lxp_proc[0].pending_sigs & bit); /* init untouched */
+	assert_false(g_lxp_proc[1].pending_sigs & bit); /* the sender itself */
+	assert_false(g_lxp_proc[4].pending_sigs & bit); /* inetd (pgid 5) — the old broadcast bug */
+
+	/* kill(0, SIGTERM) targets the SENDER's own group (pgid 2); put inetd in it. */
+	for (int i = 0; i < 5; i++)
+		g_lxp_proc[i].pending_sigs = 0;
+	g_lxp_proc[4].pgid = 2;
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_kill;
+	f.r[0] = 0; /* caller's process group */
+	f.r[1] = LXP_SIGTERM;
+	lxp_dispatch(&f, shell);
+	assert_true(g_lxp_proc[4].pending_sigs & bit);	/* the group peer */
+	assert_false(g_lxp_proc[2].pending_sigs & bit); /* pgid 3, not in group 2 */
+}
+
+/* setpgid(0,pgid)/getpgrp track a real per-proc group; setsid makes the caller a leader. */
+static void test_setpgid_getpgrp_track_group(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	p->pid = 7;
+	p->pgid = 7;
+	struct lxp_frame f;
+
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_getpgrp;
+	lxp_dispatch(&f, p);
+	assert_int_equal((int32_t)f.r[0], 7); /* getpgrp -> current group */
+
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_setpgid;
+	f.r[0] = 0;  /* self */
+	f.r[1] = 42; /* pgid */
+	lxp_dispatch(&f, p);
+	assert_int_equal((int32_t)f.r[0], 0);
+	assert_int_equal(p->pgid, 42); /* setpgid(0,42) joined group 42 */
+
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_getpgrp;
+	lxp_dispatch(&f, p);
+	assert_int_equal((int32_t)f.r[0], 42); /* getpgrp reflects it */
+
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_setsid;
+	lxp_dispatch(&f, p);
+	assert_int_equal((int32_t)f.r[0], 7); /* setsid -> new session, pgid = pid */
+	assert_int_equal(p->pgid, 7);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
+		cmocka_unit_test_setup(test_kill_targets_process_group, reset_state),
+		cmocka_unit_test_setup(test_setpgid_getpgrp_track_group, reset_state),
 		cmocka_unit_test_setup(test_encode_wstatus, reset_state),
 		cmocka_unit_test_setup(test_dispatch_rejects_bad_tcsets_pointer, reset_state),
 		cmocka_unit_test_setup(test_dispatch_class_defaults_deferred, reset_state),

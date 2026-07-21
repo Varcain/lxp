@@ -537,6 +537,7 @@ typedef struct lxp_proc {
 	lxp_fd_t fds[LXP_MAX_FDS]; /**< fd table; 0/1/2 are the std streams. */
 	int pid;			   /**< This process's id (1 for the initial program). */
 	int ppid;			   /**< Parent process id (0 for the initial program). */
+	int pgid;			   /**< Process-group id (job control): pid at launch, inherited on fork, preserved across execve, set by setpgid/setsid. */
 	char comm[16];			   /**< Program name (argv[0] basename) for ps/top. */
 	char cwd[LXP_PATH_MAX];	   /**< Current working directory (absolute, normalized). */
 	int exited;			   /**< Set once @c exit / @c exit_group is called. */
