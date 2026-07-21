@@ -1831,21 +1831,16 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * the slot's region (no-op on a coherent host). */
 			if (!g_lxp_used[s])
 				lxp_coord_map(p->region);
-			/* Job-control stopped: alive but not scheduled, waiting for SIGCONT (or a
-			 * fatal SIGKILL). Counts as "busy" for the idle watchdog — its waker is an
-			 * external kill, not a deadlock. It responds ONLY to SIGCONT/SIGKILL; any
-			 * other pending signal stays latched until it is continued. */
+			/* Job-control stopped: alive but not scheduled. Counts as "busy" for the idle
+			 * watchdog — its waker is an external signal, not a deadlock. SIGCONT resumes it;
+			 * a pending signal whose default action is to TERMINATE wakes and kills it; a
+			 * caught or default-ignore signal stays latched until it is continued. */
 			if (p->stopped) {
 				any_busy = 1;
-				if (p->pending_sigs & lxp_sig_bit(LXP_SIGKILL)) {
-					p->pending_sigs &= ~lxp_sig_bit(LXP_SIGKILL);
-					p->stopped = 0;
-					p->exited = 1; /* EV_EXIT reaps it next pass */
-					p->exit_status = 128 + LXP_SIGKILL;
-					p->exit_reason = LXP_EXIT_REASON_SIGNAL;
-					p->exit_signal = LXP_SIGKILL;
-					progress = 1;
-				} else if (p->pending_sigs & lxp_sig_bit(LXP_SIGCONT)) {
+				if (p->pending_sigs & lxp_sig_bit(LXP_SIGCONT)) {
+					/* Resume. Checked before the terminate case so a stopped proc sent
+					 * cont+term is continued, then terminated by the still-pending signal
+					 * (matching Linux). */
 					p->pending_sigs &= ~lxp_sig_bit(LXP_SIGCONT);
 					int boundary = (p->stop_kind == LXP_STOP_BOUNDARY);
 					p->stopped = 0;
@@ -1856,6 +1851,25 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					if (boundary)
 						eng->spawn_resume(s, p->region, &g_ctx[s], p->stop_r0);
 					progress = 1;
+				} else {
+					/* A default-action-terminate signal kills a stopped proc: SIGKILL
+					 * always, and also e.g. SIGTERM from `kill %job`. POSIX would keep it
+					 * stopped until SIGCONT, but the shell does not send SIGCONT with a
+					 * job-kill, so a stopped job would otherwise leak its slot. A caught /
+					 * default-ignore / stop signal leaves it stopped. */
+					int ps = pending_deliverable(p);
+					if (ps == LXP_SIGKILL ||
+					    (ps && p->sig_handler[ps] == LXP_SIG_DFL &&
+					     !sig_default_ignore(ps) && !sig_is_stop(ps))) {
+						p->pending_sigs &= ~lxp_sig_bit(ps);
+						p->stopped = 0;
+						p->stop_kind = LXP_STOP_NONE;
+						p->exited = 1; /* EV_EXIT reaps it next pass */
+						p->exit_status = 128 + ps;
+						p->exit_reason = LXP_EXIT_REASON_SIGNAL;
+						p->exit_signal = (uint8_t)ps;
+						progress = 1;
+					}
 				}
 				continue;
 			}
