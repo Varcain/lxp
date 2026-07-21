@@ -1033,14 +1033,27 @@ static long fop_ioctl_console(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, uns
 	case LXP_TIOCSCTTY: /* getty/login: become/drop/set the tty session */
 	case LXP_TIOCNOTTY:
 		return 0;
-	case LXP_TIOCSPGRP:
+	case LXP_TIOCSPGRP: {
+		/* tcsetpgrp(): the shell (HUSH_JOB) records which process group is in the
+		 * foreground of the console. A console ^C then raises SIGINT on exactly that
+		 * group (see console_signal_fg). Runs in coordinator context (ioctl defers),
+		 * so writing the shared fg-pgrp state here is safe. */
 		if (!user_ok(p, ua, sizeof(int), 0))
 			return -LXP_EFAULT;
+		int pgrp;
+		memcpy(&pgrp, ua, sizeof(pgrp));
+		lxp_console_set_fg_pgrp(pgrp);
 		return 0;
+	}
 	case LXP_TIOCGPGRP: {
 		if (!user_ok(p, ua, sizeof(int), 1))
 			return -LXP_EFAULT;
-		int pgrp = p->pid;
+		/* Report the tracked foreground group once set; before the shell's first
+		 * tcsetpgrp, fall back to the caller's pid so tcgetpgrp() returns non-zero
+		 * and the shell enables job control at startup. */
+		int pgrp = lxp_console_fg_pgrp();
+		if (pgrp <= 0)
+			pgrp = p->pid;
 		memcpy(ua, &pgrp, sizeof(pgrp));
 		return 0;
 	}

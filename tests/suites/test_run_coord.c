@@ -137,6 +137,7 @@ static int reset_state(void **state)
 	memset(g_mock_regions, 0, sizeof(g_mock_regions));
 	memset(g_mock_dyn_pools, 0, sizeof(g_mock_dyn_pools));
 	memset(&g_mock, 0, sizeof(g_mock));
+	lxp_console_set_fg_pgrp(0);
 	g_eng = &g_mock_eng;
 	g_cfg = NULL;
 	g_pending_sig = 0;
@@ -838,11 +839,46 @@ static void test_setpgid_getpgrp_track_group(void **state)
 	assert_int_equal(p->pgid, 7);
 }
 
+/* A console ^C raises SIGINT on the console's FOREGROUND process group only (the group
+ * the shell set via tcsetpgrp/TIOCSPGRP) — the interactive shell (its own group) and any
+ * background job survive. The console analog of the pty ^C: what makes a foreground
+ * program interruptible from the direct console. */
+static void test_console_sigint_targets_fg_group(void **state)
+{
+	(void)state;
+	/* pid/pgid: init(1,1) shell(2,2) fg-job(3,3) fg-pipe-peer(4,3) bg-job(5,5) */
+	const int pid[5] = {1, 2, 3, 4, 5};
+	const int pgid[5] = {1, 2, 3, 3, 5};
+	for (int i = 0; i < 5; i++) {
+		g_lxp_proc[i].alive = 1;
+		g_lxp_proc[i].pid = pid[i];
+		g_lxp_proc[i].pgid = pgid[i];
+	}
+	const uint64_t bit = lxp_sig_bit(LXP_SIGINT);
+
+	/* No foreground group yet (pre-first-tcsetpgrp): ^C signals nobody. */
+	lxp_console_set_fg_pgrp(0);
+	console_signal_fg(LXP_SIGINT);
+	for (int i = 0; i < 5; i++)
+		assert_false(g_lxp_proc[i].pending_sigs & bit);
+
+	/* Shell put group 3 in the foreground: ^C hits that group only. */
+	lxp_console_set_fg_pgrp(3);
+	assert_int_equal(lxp_console_fg_pgrp(), 3);
+	console_signal_fg(LXP_SIGINT);
+	assert_true(g_lxp_proc[2].pending_sigs & bit);	/* fg job (pgid 3) */
+	assert_true(g_lxp_proc[3].pending_sigs & bit);	/* fg pipeline peer (pgid 3) */
+	assert_false(g_lxp_proc[0].pending_sigs & bit); /* init (pgid 1) */
+	assert_false(g_lxp_proc[1].pending_sigs & bit); /* the shell (pgid 2) — survives to re-prompt */
+	assert_false(g_lxp_proc[4].pending_sigs & bit); /* background job (pgid 5) — untouched */
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_kill_targets_process_group, reset_state),
 		cmocka_unit_test_setup(test_setpgid_getpgrp_track_group, reset_state),
+		cmocka_unit_test_setup(test_console_sigint_targets_fg_group, reset_state),
 		cmocka_unit_test_setup(test_encode_wstatus, reset_state),
 		cmocka_unit_test_setup(test_dispatch_rejects_bad_tcsets_pointer, reset_state),
 		cmocka_unit_test_setup(test_dispatch_class_defaults_deferred, reset_state),

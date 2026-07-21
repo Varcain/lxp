@@ -416,6 +416,11 @@ struct sig_save_stack_s g_sig_save[LXP_NSLOT];
 
 static volatile int g_tty_isig = 1;
 static volatile int g_pending_sig;
+/* The console tty's foreground process group (job control): the pgid the shell put
+ * in the foreground via tcsetpgrp(TIOCSPGRP). A console ^C (VINTR in cooked mode)
+ * raises SIGINT on exactly this group — the shell (a different group) and background
+ * jobs (their own groups) are left alone. 0 = unset (no ^C target). */
+static volatile int g_console_fg_pgrp;
 
 int lxp_tty_isig(void)
 {
@@ -426,6 +431,35 @@ void lxp_post_signal(int sig)
 {
 	if (sig > 0 && sig < LXP_NSIG)
 		g_pending_sig = sig;
+}
+
+void lxp_console_set_fg_pgrp(int pgrp)
+{
+	g_console_fg_pgrp = pgrp;
+}
+
+int lxp_console_fg_pgrp(void)
+{
+	return g_console_fg_pgrp;
+}
+
+/* A console ^C (VINTR, cooked/ISIG mode) raises @p sig on the console's foreground
+ * process group. Mirrors the kill(2) pgid fan-out in lxp_dispatch: every live process
+ * whose pgid matches takes the signal (delivered at its next syscall boundary if
+ * running, or by the coordinator if parked). The interactive shell sits in its own
+ * group and is untouched, so it survives to re-prompt; a background job (its own group)
+ * is likewise spared. With no foreground group yet (pre-first-tcsetpgrp) nothing is
+ * signalled — the same no-op as before this path existed. */
+static void console_signal_fg(int sig)
+{
+	int pg = g_console_fg_pgrp;
+	if (pg <= 0)
+		return;
+	for (int s = 0; s < LXP_NSLOT; s++) {
+		lxp_proc_t *p = &g_lxp_proc[s];
+		if (p->alive && p->pid > 1 && p->pgid == pg)
+			p->pending_sigs |= lxp_sig_bit(sig);
+	}
 }
 
 void lxp_run_health(lxp_run_health_t *out)
@@ -1237,6 +1271,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	}
 	g_pending_sig = 0;
 	g_tty_isig = 1;
+	g_console_fg_pgrp = 0;
 	lxp_stats_reset();
 	for (int i = 0; i < LXP_NSLOT; i++)
 		g_sig_save[i].depth = 0;
@@ -1991,10 +2026,39 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 									 (void *)p->console_buf,
 									 p->console_len)
 							    : 0;
+					/* Cooked-mode ^C (ISIG on): the line discipline turns VINTR
+					 * into SIGINT for the foreground group rather than handing the
+					 * byte to the reader, whose read returns -EINTR. At the raw
+					 * prompt (ISIG off) ^C is a literal byte for the shell's own
+					 * line editor, so pass it through. (c_cc[VINTR] is the fixed
+					 * ^C = 3; the console termios tracks ISIG only.) */
+					if (r == 1 && g_tty_isig &&
+					    ((const volatile uint8_t *)(uintptr_t)p->console_buf)[0] ==
+						    3) {
+						console_signal_fg(LXP_SIGINT);
+						r = -LXP_EINTR;
+					}
 					p->console_wait = 0;
 					eng->spawn_resume(s, p->region, &g_ctx[s], r);
 					progress = 1;
 				}
+			}
+		}
+		/* Async console ^C for a foreground program that never reads stdin (a GUI like
+		 * lvbench, or any compute loop): with no parked reader to catch VINTR, the
+		 * coordinator scans the console itself. Only in cooked mode (ISIG on = a
+		 * foreground child is running; the raw prompt keeps ^C for hush's line editor)
+		 * and only when no reader is parked to serve it. A non-^C byte has no waiting
+		 * reader here and is dropped (this path does not buffer type-ahead). The SIGINT
+		 * is latched on the foreground group; a running target takes it at its next
+		 * syscall boundary (e.g. the GUI's per-frame usleep). */
+		if (g_tty_isig && !any_console_wait && g_cfg && g_cfg->console_poll &&
+		    g_cfg->console_poll(g_cfg->io_ctx)) {
+			uint8_t c = 0;
+			long r = g_cfg->read_fn ? g_cfg->read_fn(g_cfg->io_ctx, 0, &c, 1) : 0;
+			if (r == 1 && c == 3 /* ^C */) {
+				console_signal_fg(LXP_SIGINT);
+				idle = 0;
 			}
 		}
 		if (!any_alive) {

@@ -27,6 +27,12 @@ long user_strnlen(const lxp_proc_t *p, const char *s, size_t max);
 /* The stat mode (S_IF* | perms) of a rootfs file entry. */
 uint32_t file_mode(const lxp_file_t *f);
 
+/* The console tty's foreground process group (job control). Set from tcsetpgrp
+ * (TIOCSPGRP) on a console fd; read by TIOCGPGRP and the coordinator's console ^C
+ * delivery. Coordinator-owned (defined in lxp_run.c), like the tty ISIG state. */
+void lxp_console_set_fg_pgrp(int pgrp);
+int lxp_console_fg_pgrp(void);
+
 /* Encode a child's exit code (our convention: 128 + signal for a signal-killed child) as
  * a Linux wait(2) status word: WIFSIGNALED with the signal in the low 7 bits for 129..159,
  * else WIFEXITED with the code in bits 8-15. Shared by sys_wait4 + the coordinator's

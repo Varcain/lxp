@@ -77,6 +77,19 @@ void lxp_cache_invalidate(const void *base, size_t len)
 	g_lxp_test_cache_invalidate_len = len;
 }
 
+/* Console tty foreground process group: lxp_run.c owns this in the coordinator; the
+ * isolated syscall tests (no lxp_run.c) just need a definition. A file-static gives
+ * the TIOCSPGRP/TIOCGPGRP round-trip real behavior on the host. */
+static int g_stub_console_fg_pgrp;
+void lxp_console_set_fg_pgrp(int pgrp)
+{
+	g_stub_console_fg_pgrp = pgrp;
+}
+int lxp_console_fg_pgrp(void)
+{
+	return g_stub_console_fg_pgrp;
+}
+
 #if LXP_ENABLE_DEV_FB
 /* A mock display port so the /dev/fb0 driver (src/dev/lxp_dev_fb.c) links + runs on the
  * host. g_lxp_disp_ops is normally published by lxp_run() (excluded here); back it with a
