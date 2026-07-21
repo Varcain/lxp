@@ -44,6 +44,8 @@ static void test_sig_swallowed(void **st)
 	assert_int_equal(sig_swallowed(&p, SIG_CUSTOM), 1); /* SIG_IGN */
 	p.sig_handler[LXP_SIGCHLD] = LXP_SIG_DFL;
 	assert_int_equal(sig_swallowed(&p, LXP_SIGCHLD), 1); /* SIG_DFL of a default-ignore signal */
+	p.sig_handler[LXP_SIGCONT] = LXP_SIG_DFL;
+	assert_int_equal(sig_swallowed(&p, LXP_SIGCONT), 1); /* SIGCONT is default-ignore too (fg's kill(-pgid)) */
 	p.sig_handler[SIG_CUSTOM] = 0x4321;
 	assert_int_equal(sig_swallowed(&p, SIG_CUSTOM), 0); /* a real handler is not swallowed */
 }
@@ -138,6 +140,24 @@ static void test_deliver_sigchld_swallowed(void **st)
 	deliver_signal(&f, &p, LXP_SIGCHLD, 7);
 	assert_int_equal((int32_t)f.r[0], 7);
 	assert_int_equal(p.exited, 0); /* SIGCHLD's default action is ignore, not terminate */
+}
+
+/* SIGCONT (what a shell's `fg` sends, kill(-pgid, SIGCONT)) must NOT terminate a proc that
+ * left it at SIG_DFL — regression for `lvbench & … fg` killing the job AND every proc in the
+ * broadcast range (both exited 128+18). Its default action never terminates. */
+static void test_deliver_sigcont_swallowed(void **st)
+{
+	(void)st;
+	lxp_proc_t p;
+	memset(&p, 0, sizeof(p));
+	p.sig_handler[LXP_SIGCONT] = LXP_SIG_DFL;
+	struct lxp_frame f;
+	memset(&f, 0, sizeof(f));
+	g_park_calls = 0;
+	deliver_signal(&f, &p, LXP_SIGCONT, 5);
+	assert_int_equal((int32_t)f.r[0], 5);
+	assert_int_equal(p.exited, 0);	   /* SIGCONT's default action never terminates */
+	assert_int_equal(g_park_calls, 0); /* not reaped */
 }
 
 /* The core round-trip: push a handler frame, then rt_sigreturn restores the interrupted
@@ -403,6 +423,7 @@ int test_signal_run(void)
 		cmocka_unit_test(test_deliver_ignored),
 		cmocka_unit_test(test_deliver_default_terminates),
 		cmocka_unit_test(test_deliver_sigchld_swallowed),
+		cmocka_unit_test(test_deliver_sigcont_swallowed),
 		cmocka_unit_test(test_deliver_and_restore),
 		cmocka_unit_test(test_sig_restore_noop),
 		cmocka_unit_test(test_nested_delivery_restores_lifo),

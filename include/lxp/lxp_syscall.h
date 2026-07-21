@@ -270,7 +270,10 @@ extern "C" {
 #define LXP_SIGALRM 14
 #define LXP_SIGTERM 15
 #define LXP_SIGCHLD 17 /* child stop/exit; default action = IGNORE (never terminates) */
+#define LXP_SIGCONT 18 /* continue if stopped; default action never terminates (a no-op here — stop/cont unmodeled) */
 #define LXP_SIGSTOP 19 /* like SIGKILL, can never be caught or blocked */
+#define LXP_SIGURG 23	/* urgent socket data; default action = IGNORE */
+#define LXP_SIGWINCH 28 /* terminal resized; default action = IGNORE */
 
 /* Host-side attribution for a guest process termination. The Linux-visible wait
  * status remains unchanged; these values explain how the personality arrived at

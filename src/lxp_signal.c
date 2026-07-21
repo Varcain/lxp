@@ -36,16 +36,27 @@ void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t
 	}
 }
 
+/* Signals whose POSIX default action never terminates the process: SIGCHLD (ignore),
+ * SIGCONT (continue — a no-op here since stop/cont is not modeled, so a running proc
+ * simply keeps running), SIGURG + SIGWINCH (ignore). A SIG_DFL of one of these must be
+ * SWALLOWED, not turned into a 128+signo termination — else a shell's `fg`, which sends
+ * kill(-pgid, SIGCONT) to resume a job, kills the very job (and every proc in range). */
+int sig_default_ignore(int sig)
+{
+	return sig == LXP_SIGCHLD || sig == LXP_SIGCONT || sig == LXP_SIGURG ||
+	       sig == LXP_SIGWINCH;
+}
+
 /* Is signal `sig` effectively ignored for `proc`? True for SIG_IGN, or SIG_DFL of a
- * signal whose default action is "ignore" (SIGCHLD). Such a signal is swallowed by the
- * coordinator: it neither runs a handler nor terminates a parked proc — a parent must
- * not die because a child exited. */
+ * signal whose default action is "ignore" (SIGCHLD/SIGCONT/SIGURG/SIGWINCH). Such a
+ * signal is swallowed by the coordinator: it neither runs a handler nor terminates a
+ * parked proc — a parent must not die because a child exited or a job was resumed. */
 int sig_swallowed(const lxp_proc_t *proc, int sig)
 {
 	uintptr_t h = proc->sig_handler[sig];
 	if (h == LXP_SIG_IGN)
 		return 1;
-	if (h == LXP_SIG_DFL && sig == LXP_SIGCHLD)
+	if (h == LXP_SIG_DFL && sig_default_ignore(sig))
 		return 1;
 	return 0;
 }
@@ -93,8 +104,8 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		return;
 	}
 	uintptr_t h = proc->sig_handler[sig];
-	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig == LXP_SIGCHLD)) {
-		f->r[0] = (uint32_t)ret; /* SIG_IGN, or a default-ignore signal (SIGCHLD) */
+	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
+		f->r[0] = (uint32_t)ret; /* SIG_IGN, or a default-ignore signal (SIGCHLD/SIGCONT/...) */
 		return;
 	}
 	if (h == LXP_SIG_DFL) {

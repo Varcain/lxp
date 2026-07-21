@@ -959,8 +959,8 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 				  lxp_proc_t *proc, int sig, long ret)
 {
 	uintptr_t h = proc->sig_handler[sig];
-	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig == LXP_SIGCHLD)) {
-		eng->spawn_resume(slot, proc->region, &g_ctx[slot], ret); /* IGN or SIGCHLD-default */
+	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
+		eng->spawn_resume(slot, proc->region, &g_ctx[slot], ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
 		return;
 	}
 	if (h == LXP_SIG_DFL) {
