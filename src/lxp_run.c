@@ -1999,6 +1999,18 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					progress = 1;
 				}
 #endif
+			} else if (psig && p->console_wait) {
+				/* Signal to a proc parked reading the console: deliver it so e.g. login's
+				 * timeout SIGALRM (or a kill) actually fires instead of lingering until the
+				 * next keystroke — console_wait had no delivery branch, so such a signal used
+				 * to sit undelivered while the proc blocked on input. The read returns -EINTR;
+				 * SIG_DFL terminates; SIG_IGN / default-ignore is swallowed (stays parked). */
+				p->pending_sigs &= ~lxp_sig_bit(psig);
+				if (!sig_swallowed(p, psig)) {
+					p->console_wait = 0;
+					deliver_signal_parked(eng, s, p, psig, -LXP_EINTR);
+					progress = 1;
+				}
 			}
 			if (p->sleeping) {
 				any_busy = 1;
