@@ -79,7 +79,7 @@ static long dma2d_check_plane(lxp_proc_t *p, uint32_t base, uint32_t w, uint32_t
 
 /* Validate one guest descriptor (already copied out of guest memory) and fill the
  * coordinator-side op: check the enum fields, then bounds-check every plane the
- * mode touches against the guest region. Shared by the single and batched paths. */
+ * mode touches against the guest region. Used by the single-submit ioctl. */
 static long dma2d_prepare_op(lxp_proc_t *p, const struct lxp_dma2d_submit *s, lxp_dma2d_op_t *op)
 {
 	if (s->mode > LXP_DMA2D_MODE_MAX || s->output_cf > LXP_DMA2D_CF_ARGB4444 ||
@@ -149,33 +149,6 @@ static long dma2d_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p
 		if (r)
 			return r;
 		return g_lxp_disp_ops->dma2d_submit(&op);
-	}
-
-	if (nr == LXP_DMA2D_SUBMIT_BATCH_NR) {
-		/* One SVC, N descriptors — amortizes the round-trip over a whole text run
-		 * (a label is many tiny glyphs, each unprofitable to submit alone). */
-		struct lxp_dma2d_batch *ub = (void *)arg;
-		if (!user_ok(p, ub, sizeof(*ub), 0))
-			return -LXP_EFAULT;
-		struct lxp_dma2d_batch b = *ub;
-		if (b.count == 0 || b.count > LXP_DMA2D_BATCH_MAX)
-			return -LXP_EINVAL;
-		const struct lxp_dma2d_submit *arr = (const void *)(uintptr_t)b.ops;
-		if (!user_ok(p, arr, (size_t)b.count * sizeof(*arr), 0))
-			return -LXP_EFAULT;
-		/* The guest is blocked in this SVC, so the validated array can't change
-		 * under us; still copy each element out before validating + programming it. */
-		for (uint32_t i = 0; i < b.count; i++) {
-			struct lxp_dma2d_submit s = arr[i];
-			lxp_dma2d_op_t op;
-			long r = dma2d_prepare_op(p, &s, &op);
-			if (r)
-				return r; /* fail fast; earlier (validated) ops may have drawn */
-			r = g_lxp_disp_ops->dma2d_submit(&op);
-			if (r)
-				return r;
-		}
-		return 0;
 	}
 
 	return -LXP_ENOTTY;

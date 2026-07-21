@@ -42,7 +42,6 @@ extern lxp_dma2d_op_t g_mock_dma2d_op;
 extern int g_mock_dma2d_calls;
 /* Matched by type 'D' + nr 1/2; the handler ignores _IOC_SIZE/dir. */
 #define TEST_DMA2D_SUBMIT ((0x44ul << 8) | 1ul)
-#define TEST_DMA2D_SUBMIT_BATCH ((0x44ul << 8) | 2ul)
 #define TEST_FBIO_DMA2D_BLIT 0x46f0ul
 
 /* The evdev feeder: pushes one touch (4 events) into the shared input ring. */
@@ -750,82 +749,6 @@ static void test_dev_dma2d_rejects_bad_descriptor(void **state)
 #undef BASE
 }
 
-/* A batched submit programs each descriptor in order through the port — the text
- * fast path (a label's glyphs cross the SVC boundary once). Uses BLEND_FG (A8 fg =
- * glyph coverage, fixed fg colour, bg == output) so it also exercises the alpha-map
- * plane validation, plus the batch-specific reject paths. */
-static void test_dev_dma2d_batch(void **state)
-{
-	(void)state;
-	lxp_proc_t p;
-	lxp_arena_t arena;
-	setup(&p, &arena);
-	lxp_dev_autoreg_dma2d();
-	long fd = dma2d_open(&p);
-	assert_true(fd >= 0);
-
-	struct lxp_dma2d_submit ops[3];
-	memset(ops, 0, sizeof(ops));
-	for (int i = 0; i < 3; i++) {
-		ops[i].mode = LXP_DMA2D_M2M_BLEND_FG; /* glyph blend */
-		ops[i].w = 6;
-		ops[i].h = 10;
-		ops[i].output_address = 0x1000u + (uint32_t)i * 0x100u; /* dest under the glyph */
-		ops[i].output_cf = LXP_DMA2D_CF_RGB565;
-		ops[i].fg_address = 0x8000u + (uint32_t)i * 0x80u; /* A8 coverage map */
-		ops[i].fg_cf = LXP_DMA2D_CF_A8;
-		ops[i].fg_color = 0x00112233u; /* text colour */
-		ops[i].bg_address = ops[i].output_address; /* blend onto the dest */
-		ops[i].bg_cf = LXP_DMA2D_CF_RGB565;
-	}
-	struct lxp_dma2d_batch b;
-	memset(&b, 0, sizeof(b));
-	b.count = 3;
-	b.ops = (uint64_t)(uintptr_t)ops;
-	long a = (long)(uintptr_t)&b;
-
-	/* All three reach the port; the last recorded op is ops[2]. */
-	g_mock_dma2d_calls = 0;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT_BATCH, a, 0, 0, 0), 0);
-	assert_int_equal(g_mock_dma2d_calls, 3);
-	assert_int_equal(g_mock_dma2d_op.mode, LXP_DMA2D_M2M_BLEND_FG);
-	assert_int_equal((uint32_t)g_mock_dma2d_op.fg_addr, 0x8000u + 2u * 0x80u);
-	assert_int_equal((uint32_t)g_mock_dma2d_op.out_addr, 0x1000u + 2u * 0x100u);
-
-	/* count 0 and count > MAX are rejected before any op reaches the port. */
-	g_mock_dma2d_calls = 0;
-	b.count = 0;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT_BATCH, a, 0, 0, 0),
-			 -LXP_EINVAL);
-	b.count = LXP_DMA2D_BATCH_MAX + 1u;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT_BATCH, a, 0, 0, 0),
-			 -LXP_EINVAL);
-	assert_int_equal(g_mock_dma2d_calls, 0);
-
-	/* A NULL ops array pointer → EFAULT (the array itself is user_ok-checked). */
-	b.count = 3;
-	b.ops = 0;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT_BATCH, a, 0, 0, 0),
-			 -LXP_EFAULT);
-
-	/* A malformed descriptor mid-batch fails fast: earlier (valid) ops already drew,
-	 * the bad one and everything after it do not. */
-	b.ops = (uint64_t)(uintptr_t)ops;
-	ops[1].mode = 99; /* illegal */
-	g_mock_dma2d_calls = 0;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT_BATCH, a, 0, 0, 0),
-			 -LXP_EINVAL);
-	assert_int_equal(g_mock_dma2d_calls, 1); /* only ops[0] reached the port */
-
-	/* A bad plane address anywhere in the batch is caught before that op → EFAULT. */
-	ops[1].mode = LXP_DMA2D_M2M_BLEND_FG;
-	ops[2].fg_address = 0; /* NULL alpha map */
-	g_mock_dma2d_calls = 0;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT_BATCH, a, 0, 0, 0),
-			 -LXP_EFAULT);
-	assert_int_equal(g_mock_dma2d_calls, 2); /* ops[0], ops[1] drew; ops[2] rejected */
-}
-
 int test_linux_dev_run(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -844,7 +767,6 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_getdents),
 		cmocka_unit_test(test_dev_dma2d_submit_ok),
 		cmocka_unit_test(test_dev_dma2d_rejects_bad_descriptor),
-		cmocka_unit_test(test_dev_dma2d_batch),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
