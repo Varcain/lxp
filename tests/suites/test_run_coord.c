@@ -873,12 +873,103 @@ static void test_console_sigint_targets_fg_group(void **state)
 	assert_false(g_lxp_proc[4].pending_sigs & bit); /* background job (pgid 5) — untouched */
 }
 
+/* Ctrl+Z (VSUSP) fans SIGTSTP out to the foreground group only — the shell and background
+ * jobs are untouched — exactly like the ^C→SIGINT path. */
+static void test_console_sigtstp_targets_fg_group(void **state)
+{
+	(void)state;
+	const int pid[3] = {2, 3, 5};	/* shell(2,2) fg-job(3,3) bg-job(5,5) */
+	const int pgid[3] = {2, 3, 5};
+	for (int i = 0; i < 3; i++) {
+		g_lxp_proc[i].alive = 1;
+		g_lxp_proc[i].pid = pid[i];
+		g_lxp_proc[i].pgid = pgid[i];
+	}
+	const uint64_t bit = lxp_sig_bit(LXP_SIGTSTP);
+	lxp_console_set_fg_pgrp(3);
+	console_signal_fg(LXP_SIGTSTP);
+	assert_true(g_lxp_proc[1].pending_sigs & bit);	/* fg job (pgid 3) */
+	assert_false(g_lxp_proc[0].pending_sigs & bit); /* the shell (pgid 2) */
+	assert_false(g_lxp_proc[2].pending_sigs & bit); /* background job (pgid 5) */
+}
+
+/* The stop-signal predicate: SIGSTOP always stops (uncatchable); SIGTSTP/TTIN/TTOU stop
+ * only at their default disposition (a caught one runs the handler). */
+static void test_sig_stops_proc_predicate(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->sig_handler[LXP_SIGTSTP] = LXP_SIG_DFL;
+	assert_true(sig_is_stop(LXP_SIGTSTP));
+	assert_true(sig_is_stop(LXP_SIGSTOP));
+	assert_false(sig_is_stop(LXP_SIGINT));
+	assert_true(sig_stops_proc(p, LXP_SIGTSTP)); /* SIG_DFL → stops */
+	p->sig_handler[LXP_SIGTSTP] = 0x1000;	     /* a caught handler → runs it, no stop */
+	assert_false(sig_stops_proc(p, LXP_SIGTSTP));
+	p->sig_handler[LXP_SIGSTOP] = 0x1000;	     /* SIGSTOP is uncatchable → always stops */
+	assert_true(sig_stops_proc(p, LXP_SIGSTOP));
+	assert_false(sig_stops_proc(p, LXP_SIGINT)); /* not a stop signal */
+}
+
+/* A stopped child wakes a parent blocked in wait4(WUNTRACED) with a WIFSTOPPED status and,
+ * unlike an exit, leaves live_children intact (the child is still alive). */
+static void test_stop_notify_wakes_wuntraced_waiter(void **state)
+{
+	(void)state;
+	int status = -1;
+	g_lxp_proc[0].alive = 1;
+	g_lxp_proc[0].pid = 1;
+	g_lxp_proc[0].live_children = 1;
+	g_lxp_proc[0].wait_pending = 1;
+	g_lxp_proc[0].wait_pid = -1;
+	g_lxp_proc[0].wait_options = LXP_WUNTRACED;
+	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
+
+	notify_parent_stopped(&g_mock_eng, /*ppid*/ 1, /*cpid*/ 7, LXP_SIGTSTP);
+
+	assert_int_equal(g_mock.resume_calls, 1);
+	assert_int_equal(g_mock.resume_r0, 7);
+	assert_int_equal(status, ((LXP_SIGTSTP & 0xff) << 8) | 0x7f); /* WIFSTOPPED */
+	assert_int_equal(g_lxp_proc[0].wait_pending, 0);
+	assert_int_equal(g_lxp_proc[0].live_children, 1); /* NOT decremented — the child lives */
+	assert_int_equal(g_lxp_proc[0].child_count, 0);
+}
+
+/* A stopped child whose parent is NOT waiting (or waits without WUNTRACED) queues a STOPPED
+ * notice + raises SIGCHLD, again without touching live_children. */
+static void test_stop_notify_queues_without_wuntraced(void **state)
+{
+	(void)state;
+	/* Parent blocked in wait4 but WITHOUT WUNTRACED → cannot take the stop → queue it. */
+	g_lxp_proc[0].alive = 1;
+	g_lxp_proc[0].pid = 1;
+	g_lxp_proc[0].live_children = 1;
+	g_lxp_proc[0].wait_pending = 1;
+	g_lxp_proc[0].wait_pid = -1;
+	g_lxp_proc[0].wait_options = 0;
+
+	notify_parent_stopped(&g_mock_eng, /*ppid*/ 1, /*cpid*/ 7, LXP_SIGTSTP);
+
+	assert_int_equal(g_mock.resume_calls, 0);	 /* the waiter is not woken */
+	assert_int_equal(g_lxp_proc[0].wait_pending, 1); /* still blocked */
+	assert_int_equal(g_lxp_proc[0].child_count, 1);
+	assert_int_equal(g_lxp_proc[0].child_pid[0], 7);
+	assert_int_equal(g_lxp_proc[0].child_status[0], LXP_SIGTSTP);
+	assert_int_equal(g_lxp_proc[0].child_kind[0], LXP_CHILD_STOPPED);
+	assert_int_equal(g_lxp_proc[0].live_children, 1); /* NOT decremented */
+	assert_true(g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD));
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_kill_targets_process_group, reset_state),
 		cmocka_unit_test_setup(test_setpgid_getpgrp_track_group, reset_state),
 		cmocka_unit_test_setup(test_console_sigint_targets_fg_group, reset_state),
+		cmocka_unit_test_setup(test_console_sigtstp_targets_fg_group, reset_state),
+		cmocka_unit_test_setup(test_sig_stops_proc_predicate, reset_state),
+		cmocka_unit_test_setup(test_stop_notify_wakes_wuntraced_waiter, reset_state),
+		cmocka_unit_test_setup(test_stop_notify_queues_without_wuntraced, reset_state),
 		cmocka_unit_test_setup(test_encode_wstatus, reset_state),
 		cmocka_unit_test_setup(test_dispatch_rejects_bad_tcsets_pointer, reset_state),
 		cmocka_unit_test_setup(test_dispatch_class_defaults_deferred, reset_state),

@@ -61,6 +61,26 @@ int sig_swallowed(const lxp_proc_t *proc, int sig)
 	return 0;
 }
 
+/* The job-control stop signals: their default action suspends the process. */
+int sig_is_stop(int sig)
+{
+	return sig == LXP_SIGSTOP || sig == LXP_SIGTSTP || sig == LXP_SIGTTIN ||
+	       sig == LXP_SIGTTOU;
+}
+
+/* Would delivering `sig` to `proc` actually STOP it (rather than run a handler or be
+ * ignored)? SIGSTOP always stops (it can be neither caught nor ignored); SIGTSTP/TTIN/
+ * TTOU stop only at their default disposition — a caught one runs the handler, an
+ * ignored one is dropped. */
+int sig_stops_proc(const lxp_proc_t *proc, int sig)
+{
+	if (!sig_is_stop(sig))
+		return 0;
+	if (sig == LXP_SIGSTOP)
+		return 1;
+	return proc->sig_handler[sig] == LXP_SIG_DFL;
+}
+
 /* Reserve the next host-owned signal frame and install the handler mask. For a
  * signal that wakes rt_sigsuspend, the frame must restore the mask from before
  * the suspend, not the temporary wait mask. Consume that association here so a
@@ -99,6 +119,16 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	 * re-entry. The personality does not model SA_NODEFER, so a self-kill from
 	 * inside that handler must remain pending rather than recursively deliver. */
 	if (lxp_sig_blocked(proc, sig)) {
+		proc->pending_sigs |= lxp_sig_bit(sig);
+		f->r[0] = (uint32_t)ret;
+		return;
+	}
+	/* Job-control stop taken by a RUNNING proc at a syscall boundary: do not terminate
+	 * and do not stop inline (the coordinator, which owns thread suspend, does that).
+	 * Keep it pending and let the syscall complete — the proc stops at its next parked
+	 * syscall via the coordinator's parked-stop scan. A proc that never parks stays
+	 * running until its next boundary, matching the non-preemptive delivery model. */
+	if (sig_stops_proc(proc, sig)) {
 		proc->pending_sigs |= lxp_sig_bit(sig);
 		f->r[0] = (uint32_t)ret;
 		return;

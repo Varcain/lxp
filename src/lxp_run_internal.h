@@ -46,6 +46,8 @@ void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t
 		     uintptr_t *restorer);
 int sig_swallowed(const lxp_proc_t *proc, int sig);
 int sig_default_ignore(int sig); /* SIG_DFL of this signal never terminates (SIGCHLD/SIGCONT/SIGURG/SIGWINCH) */
+int sig_is_stop(int sig);	 /* a job-control stop signal (SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU) */
+int sig_stops_proc(const lxp_proc_t *proc, int sig); /* would delivering `sig` stop `proc`? */
 struct sig_save_s *sig_save_push(lxp_proc_t *proc, int sig);
 void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret);
 void sig_restore(struct lxp_frame *f, lxp_proc_t *proc);

@@ -983,9 +983,43 @@ static void test_lnx_readlink_self_exe(void **state)
 	assert_string_equal(buf, "/bin/sh");
 }
 
+/* wait4 reports a job-control STOPPED child only when WUNTRACED is set, and leaves the
+ * child alive (only the notice is consumed) — how the shell learns a job was Ctrl+Z'd. */
+static void test_lnx_wait4_wuntraced_stopped(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	lxp_arena_t arena;
+	setup_proc(&p, &arena);
+	/* One live child with a queued STOPPED notification (status = the stop signal). */
+	p.live_children = 1;
+	p.child_pid[0] = 7;
+	p.child_status[0] = LXP_SIGTSTP;
+	p.child_kind[0] = LXP_CHILD_STOPPED;
+	p.child_count = 1;
+
+	/* Without WUNTRACED the stop is not reported; the child is still live, so wait4 blocks
+	 * (returns 0, wait_pending set) and the notice stays queued. */
+	int status = -1;
+	long r = lxp_syscall(&p, LXP_NR_wait4, -1, (long)(uintptr_t)&status, 0, 0, 0, 0);
+	assert_int_equal(r, 0);
+	assert_int_equal(p.wait_pending, 1);
+	assert_int_equal(p.child_count, 1);
+
+	/* With WUNTRACED it is reported as WIFSTOPPED(SIGTSTP); the child stays alive. */
+	p.wait_pending = 0;
+	status = -1;
+	r = lxp_syscall(&p, LXP_NR_wait4, -1, (long)(uintptr_t)&status, LXP_WUNTRACED, 0, 0, 0);
+	assert_int_equal(r, 7);
+	assert_int_equal(status, ((LXP_SIGTSTP & 0xff) << 8) | 0x7f); /* WIFSTOPPED */
+	assert_int_equal(p.child_count, 0);   /* notice consumed */
+	assert_int_equal(p.live_children, 1); /* child is still alive */
+}
+
 int test_linux_syscall_run(void)
 {
 	const struct CMUnitTest tests[] = {
+		cmocka_unit_test(test_lnx_wait4_wuntraced_stopped),
 		cmocka_unit_test(test_lnx_prlimit_nofile),
 		cmocka_unit_test(test_lnx_readlink_self_exe),
 		cmocka_unit_test(test_lnx_sigprocmask),

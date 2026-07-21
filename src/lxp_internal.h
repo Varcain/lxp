@@ -42,4 +42,11 @@ static inline int lxp_encode_wstatus(int code)
 	return (code > 128 && code <= 128 + 31) ? (code - 128) : ((code & 0xff) << 8);
 }
 
+/* Encode a WIFSTOPPED wait status for a job-control stop: the stop signal in bits 8-15
+ * with 0x7f in the low byte (Linux WIFSTOPPED(s) == (s & 0xff) == 0x7f). */
+static inline int lxp_encode_wstopped(int stopsig)
+{
+	return ((stopsig & 0xff) << 8) | 0x7f;
+}
+
 #endif /* LXP_INTERNAL_H */

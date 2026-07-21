@@ -954,6 +954,7 @@ static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int stat
 		if (par->child_count < LXP_MAX_CHILD) {
 			par->child_pid[par->child_count] = cpid;
 			par->child_status[par->child_count] = status;
+			par->child_kind[par->child_count] = LXP_CHILD_EXITED;
 			par->child_count++;
 		}
 		/* A vfork parent was just resumed (vfork returned the child pid) and will wait4() the
@@ -962,6 +963,40 @@ static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int stat
 		 * Only signal a parent that is NOT synchronously reaping (a daemon in select/poll). */
 		if (sigchld)
 			par->pending_sigs |= lxp_sig_bit(LXP_SIGCHLD);
+	}
+}
+
+/* A child (cpid) just STOPPED for job control (stopsig). Notify its parent (ppid) the
+ * way reap_to_parent does for an exit — resume a wait4 that accepts stops (WUNTRACED)
+ * with a WIFSTOPPED status, else queue a stop notice + raise SIGCHLD — but WITHOUT
+ * decrementing live_children: a stopped child is still alive, only its state changed. */
+static void notify_parent_stopped(const lxp_os_ops_t *eng, int ppid, int cpid, int stopsig)
+{
+	int pslot = -1;
+	for (int t = 0; t < LXP_NSLOT; t++)
+		if (g_lxp_proc[t].alive && g_lxp_proc[t].pid == ppid) {
+			pslot = t;
+			break;
+		}
+	if (pslot < 0)
+		return;
+	lxp_proc_t *par = &g_lxp_proc[pslot];
+	if (par->wait_pending && (par->wait_options & LXP_WUNTRACED) &&
+	    (par->wait_pid <= 0 || par->wait_pid == cpid)) {
+		if (par->wait_status_p)
+			*(int *)(uintptr_t)par->wait_status_p = lxp_encode_wstopped(stopsig);
+		par->wait_pending = 0;
+		if (g_lxp_used[pslot])
+			eng->abort_slot(pslot);
+		eng->spawn_resume(pslot, par->region, &g_ctx[pslot], cpid);
+	} else {
+		if (par->child_count < LXP_MAX_CHILD) {
+			par->child_pid[par->child_count] = cpid;
+			par->child_status[par->child_count] = stopsig;
+			par->child_kind[par->child_count] = LXP_CHILD_STOPPED;
+			par->child_count++;
+		}
+		par->pending_sigs |= lxp_sig_bit(LXP_SIGCHLD);
 	}
 }
 
@@ -1005,6 +1040,15 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 	uintptr_t h = proc->sig_handler[sig];
 	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
 		eng->spawn_resume(slot, proc->region, &g_ctx[slot], ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
+		return;
+	}
+	/* A job-control stop must never terminate the proc here. The coordinator's
+	 * parked-stop scan normally consumes it first; if one slips through (a deferred
+	 * completion carrying a pending stop), re-latch it and resume the syscall so the
+	 * scan stops the proc on the next pass. */
+	if (sig_stops_proc(proc, sig)) {
+		proc->pending_sigs |= lxp_sig_bit(sig);
+		eng->spawn_resume(slot, proc->region, &g_ctx[slot], ret);
 		return;
 	}
 	if (h == LXP_SIG_DFL) {
@@ -1508,6 +1552,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			ch->alarm_deadline_us = 0; /* itimers are not inherited across fork */
 			ch->alarm_interval_us = 0;
 			ch->child_count = ch->live_children = 0;
+			ch->stopped = 0; /* a forked child is never born stopped */
+			ch->stop_kind = LXP_STOP_NONE;
 			ch->clone_is_thread = 0;
 			ch->snap_region = -1; /* set by vfork_snapshot below for a non-thread fork */
 			ch->alive = 1;
@@ -1785,6 +1831,34 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * the slot's region (no-op on a coherent host). */
 			if (!g_lxp_used[s])
 				lxp_coord_map(p->region);
+			/* Job-control stopped: alive but not scheduled, waiting for SIGCONT (or a
+			 * fatal SIGKILL). Counts as "busy" for the idle watchdog — its waker is an
+			 * external kill, not a deadlock. It responds ONLY to SIGCONT/SIGKILL; any
+			 * other pending signal stays latched until it is continued. */
+			if (p->stopped) {
+				any_busy = 1;
+				if (p->pending_sigs & lxp_sig_bit(LXP_SIGKILL)) {
+					p->pending_sigs &= ~lxp_sig_bit(LXP_SIGKILL);
+					p->stopped = 0;
+					p->exited = 1; /* EV_EXIT reaps it next pass */
+					p->exit_status = 128 + LXP_SIGKILL;
+					p->exit_reason = LXP_EXIT_REASON_SIGNAL;
+					p->exit_signal = LXP_SIGKILL;
+					progress = 1;
+				} else if (p->pending_sigs & lxp_sig_bit(LXP_SIGCONT)) {
+					p->pending_sigs &= ~lxp_sig_bit(LXP_SIGCONT);
+					int boundary = (p->stop_kind == LXP_STOP_BOUNDARY);
+					p->stopped = 0;
+					p->stop_kind = LXP_STOP_NONE;
+					/* PARKED: its X_wait flag is still set → the normal retry resumes
+					 * it on a later pass, right where it blocked. BOUNDARY: resume the
+					 * captured context now with the stashed syscall result. */
+					if (boundary)
+						eng->spawn_resume(s, p->region, &g_ctx[s], p->stop_r0);
+					progress = 1;
+				}
+				continue;
+			}
 			if (g_lxp_used[s])
 				any_busy = 1;
 			if (p->pipe_wait)
@@ -1820,6 +1894,20 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * action terminates (a custom handler on a blocked proc is approximated as
 			 * terminate). LXP_EV_EXIT reaps it next pass. */
 			int psig = (!g_lxp_used[s]) ? pending_deliverable(p) : 0;
+			/* Job control: a stop signal pending on a parked proc SUSPENDS it (instead
+			 * of terminating via the branches below). Handled here for ALL wait kinds —
+			 * including console_wait/dev_wait, which have no psig branch. Keep the wait
+			 * flag so SIGCONT resumes it exactly where it blocked; notify the parent
+			 * (a wait4(WUNTRACED) waiter gets WIFSTOPPED). */
+			if (psig && sig_stops_proc(p, psig)) {
+				p->pending_sigs &= ~lxp_sig_bit(psig);
+				p->stopped = 1;
+				p->stop_kind = LXP_STOP_PARKED;
+				p->stop_sig = (uint8_t)psig;
+				notify_parent_stopped(eng, p->ppid, p->pid, psig);
+				progress = 1;
+				continue;
+			}
 			if (psig && p->sigsuspend_pending) {
 				/* rt_sigsuspend-parked thread woken by a delivered signal (the
 				 * LinuxThreads restart): run the handler, then resume the syscall
@@ -2026,15 +2114,22 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 									 (void *)p->console_buf,
 									 p->console_len)
 							    : 0;
-					/* Cooked-mode ^C (ISIG on): the line discipline turns VINTR
-					 * into SIGINT for the foreground group rather than handing the
-					 * byte to the reader, whose read returns -EINTR. At the raw
-					 * prompt (ISIG off) ^C is a literal byte for the shell's own
-					 * line editor, so pass it through. (c_cc[VINTR] is the fixed
-					 * ^C = 3; the console termios tracks ISIG only.) */
-					if (r == 1 && g_tty_isig &&
-					    ((const volatile uint8_t *)(uintptr_t)p->console_buf)[0] ==
-						    3) {
+					uint8_t ch = (r == 1)
+						? ((const volatile uint8_t *)(uintptr_t)
+							   p->console_buf)[0]
+						: 0;
+					/* Cooked-mode line discipline (ISIG on): ^C/^Z become signals to
+					 * the foreground group, not literal bytes. ^Z (VSUSP=26) leaves the
+					 * reader parked so the parked-stop scan suspends it — its pending
+					 * read is not consumed. ^C (VINTR=3) interrupts the read (-EINTR).
+					 * At the raw prompt (ISIG off) both are literal bytes for hush's own
+					 * line editor. (c_cc is fixed; the console termios tracks ISIG only.) */
+					if (r == 1 && g_tty_isig && ch == 26) {
+						console_signal_fg(LXP_SIGTSTP);
+						progress = 1;
+						continue; /* stay in console_wait; do not resume */
+					}
+					if (r == 1 && g_tty_isig && ch == 3) {
 						console_signal_fg(LXP_SIGINT);
 						r = -LXP_EINTR;
 					}
@@ -2044,20 +2139,20 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				}
 			}
 		}
-		/* Async console ^C for a foreground program that never reads stdin (a GUI like
-		 * lvbench, or any compute loop): with no parked reader to catch VINTR, the
+		/* Async console ^C/^Z for a foreground program that never reads stdin (a GUI like
+		 * lvbench, or any compute loop): with no parked reader to catch VINTR/VSUSP, the
 		 * coordinator scans the console itself. Only in cooked mode (ISIG on = a
 		 * foreground child is running; the raw prompt keeps ^C for hush's line editor)
-		 * and only when no reader is parked to serve it. A non-^C byte has no waiting
-		 * reader here and is dropped (this path does not buffer type-ahead). The SIGINT
+		 * and only when no reader is parked to serve it. Any other byte has no waiting
+		 * reader here and is dropped (this path does not buffer type-ahead). The signal
 		 * is latched on the foreground group; a running target takes it at its next
-		 * syscall boundary (e.g. the GUI's per-frame usleep). */
+		 * syscall boundary (e.g. the GUI's per-frame usleep), then stops/dies. */
 		if (g_tty_isig && !any_console_wait && g_cfg && g_cfg->console_poll &&
 		    g_cfg->console_poll(g_cfg->io_ctx)) {
 			uint8_t c = 0;
 			long r = g_cfg->read_fn ? g_cfg->read_fn(g_cfg->io_ctx, 0, &c, 1) : 0;
-			if (r == 1 && c == 3 /* ^C */) {
-				console_signal_fg(LXP_SIGINT);
+			if (r == 1 && (c == 3 || c == 26)) { /* ^C / ^Z */
+				console_signal_fg(c == 3 ? LXP_SIGINT : LXP_SIGTSTP);
 				idle = 0;
 			}
 		}

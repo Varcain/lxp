@@ -270,8 +270,11 @@ extern "C" {
 #define LXP_SIGALRM 14
 #define LXP_SIGTERM 15
 #define LXP_SIGCHLD 17 /* child stop/exit; default action = IGNORE (never terminates) */
-#define LXP_SIGCONT 18 /* continue if stopped; default action never terminates (a no-op here — stop/cont unmodeled) */
-#define LXP_SIGSTOP 19 /* like SIGKILL, can never be caught or blocked */
+#define LXP_SIGCONT 18 /* continue a stopped process; default action never terminates */
+#define LXP_SIGSTOP 19 /* stop (job control); can never be caught or blocked */
+#define LXP_SIGTSTP 20 /* stop from the tty (^Z); default action = stop */
+#define LXP_SIGTTIN 21 /* background read from the tty; default action = stop */
+#define LXP_SIGTTOU 22 /* background write to the tty; default action = stop */
 #define LXP_SIGURG 23	/* urgent socket data; default action = IGNORE */
 #define LXP_SIGWINCH 28 /* terminal resized; default action = IGNORE */
 
@@ -304,7 +307,22 @@ extern "C" {
 #define LXP_VERASE 2
 #define LXP_VEOF 4
 #define LXP_VMIN 6
+#define LXP_VSUSP 10 /* ^Z suspend key */
 #define LXP_NCCS 19
+
+/* wait4/waitpid options. */
+#define LXP_WNOHANG 1
+#define LXP_WUNTRACED 2   /* also report children that stopped (job control) */
+#define LXP_WCONTINUED 8
+
+/* Ready-child queue entry kind (child_kind[]): an exited zombie vs a stop notification. */
+#define LXP_CHILD_EXITED 0
+#define LXP_CHILD_STOPPED 1
+
+/* How a process entered the `stopped` state, for the SIGCONT resume path. */
+#define LXP_STOP_NONE 0
+#define LXP_STOP_PARKED 1   /* was parked with an X_wait flag; resume = clear stopped, retry resumes */
+#define LXP_STOP_BOUNDARY 2 /* took the stop at a syscall boundary; resume = spawn_resume(g_ctx, stop_r0) */
 /* statx: AT_EMPTY_PATH means "stat the dirfd itself" (fstat); the basic-stats
  * result mask reported back in stx_mask. */
 #define LXP_AT_EMPTY_PATH 0x1000
@@ -547,11 +565,22 @@ typedef struct lxp_proc {
 	uint16_t _exit_pad;
 	uint32_t exit_detail;	/**< Port-defined fault status (0 for core-originated exits). */
 	uintptr_t exit_address; /**< Port-defined fault address, when one is valid. */
-	/* Queue of exited (zombie) children awaiting wait4, FIFO. A pipeline forks
-	 * more than one child, so a single slot is not enough. */
-	int child_pid[LXP_MAX_CHILD];    /**< pids of exited children. */
-	int child_status[LXP_MAX_CHILD]; /**< their exit codes. */
+	/* Queue of child state-changes awaiting wait4, FIFO. A pipeline forks more than
+	 * one child, so a single slot is not enough. Each entry is an exited zombie
+	 * (LXP_CHILD_EXITED, status = exit code) or a stop notification for job control
+	 * (LXP_CHILD_STOPPED, status = the stop signal; the child stays alive). */
+	int child_pid[LXP_MAX_CHILD];    /**< pids of the children. */
+	int child_status[LXP_MAX_CHILD]; /**< exit code, or stop signal for a STOPPED entry. */
+	uint8_t child_kind[LXP_MAX_CHILD]; /**< LXP_CHILD_EXITED / LXP_CHILD_STOPPED. */
 	int child_count;		     /**< number queued. */
+	/* Job control: a stopped process is alive but has no RTOS thread and is not
+	 * scheduled until it takes SIGCONT. stop_kind picks the resume path (see the
+	 * LXP_STOP_* constants); stop_r0 is the syscall result to hand back on a
+	 * boundary-stop resume. */
+	int stopped;		 /**< Non-zero while job-control-stopped (SIGSTOP/SIGTSTP). */
+	uint8_t stop_kind;	 /**< LXP_STOP_PARKED / LXP_STOP_BOUNDARY. */
+	uint8_t stop_sig;	 /**< The stop signal, for the WIFSTOPPED status word. */
+	long stop_r0;		 /**< Boundary-stop: syscall result to resume with on SIGCONT. */
 	/* Signal disposition: per-signal handler address (or SIG_DFL/SIG_IGN). The
 	 * sa_restorer the engine returns to after a handler is ONE value per proc, not one
 	 * per signal — uClibc-ng installs the same __restore_rt trampoline for every signal
@@ -623,6 +652,7 @@ typedef struct lxp_proc {
 	int wait_pending; /**< Blocked in wait4 (parked) awaiting a child exit. */
 	int wait_pid;	  /**< wait4 pid arg (-1 = any child). */
 	int wait_nohang;  /**< WNOHANG was set. */
+	int wait_options; /**< wait4 options (WUNTRACED etc.), so a parked waiter can accept a stop. */
 	uintptr_t wait_status_p; /**< User int* to fill with the wait status on wake. */
 	int live_children;	 /**< Count of live (un-reaped) children, for wait4. */
 	/* futex(2) uaddr-keyed wait/wake for co-running CLONE_VM threads. A FUTEX_WAIT whose

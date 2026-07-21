@@ -1013,6 +1013,7 @@ static long fop_ioctl_console(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, uns
 		t.c_cc[LXP_VINTR] = 3;     /* ^C */
 		t.c_cc[LXP_VERASE] = 0x7f; /* DEL */
 		t.c_cc[LXP_VEOF] = 4;      /* ^D */
+		t.c_cc[LXP_VSUSP] = 26;    /* ^Z */
 		t.c_cc[LXP_VMIN] = 1;
 		memcpy(ua, &t, sizeof(t));
 		return 0;
@@ -3629,29 +3630,40 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_wait4: {
 		if (a1 && !user_ok(proc, (void *)(uintptr_t)a1, sizeof(int), 1))
 			return -LXP_EFAULT; /* the kernel WRITES *status */
-		/* Reap an already-exited child immediately (FIFO; status = exit_code << 8).
-		 * Else, if children are still live, BLOCK: set wait_pending so the dispatch
-		 * parks us and the run-loop coordinator resumes us (returning the reaped pid
-		 * + writing *status) when one exits. No children at all → -ECHILD. */
-		if (proc->child_count > 0) {
-			int pid = proc->child_pid[0];
-			int code = proc->child_status[0];
-			for (int i = 1; i < proc->child_count; i++) {
-				proc->child_pid[i - 1] = proc->child_pid[i];
-				proc->child_status[i - 1] = proc->child_status[i];
+		int options = (int)a2;
+		int wpid = (int)a0;
+		int *status = (int *)(uintptr_t)a1;
+		/* Report the first queued child state-change this call is allowed to see (FIFO):
+		 * an exited zombie always; a STOPPED notification only with WUNTRACED (job control).
+		 * A pid filter (wpid > 0) must match. A STOPPED entry leaves live_children intact —
+		 * the child is alive, only the notice is consumed. Else, if children are still live,
+		 * BLOCK (wait_pending; the coordinator resumes us on the next change). None → -ECHILD. */
+		for (int i = 0; i < proc->child_count; i++) {
+			if (wpid > 0 && proc->child_pid[i] != wpid)
+				continue;
+			if (proc->child_kind[i] == LXP_CHILD_STOPPED && !(options & LXP_WUNTRACED))
+				continue;
+			int pid = proc->child_pid[i];
+			int code = proc->child_status[i];
+			int kind = proc->child_kind[i];
+			for (int j = i + 1; j < proc->child_count; j++) {
+				proc->child_pid[j - 1] = proc->child_pid[j];
+				proc->child_status[j - 1] = proc->child_status[j];
+				proc->child_kind[j - 1] = proc->child_kind[j];
 			}
 			proc->child_count--;
-			int *status = (int *)(uintptr_t)a1;
 			if (status)
-				*status = lxp_encode_wstatus(code);
+				*status = (kind == LXP_CHILD_STOPPED) ? lxp_encode_wstopped(code)
+								      : lxp_encode_wstatus(code);
 			return pid;
 		}
 		if (proc->live_children == 0)
 			return -LXP_ECHILD;
-		if ((int)a2 & 1) /* WNOHANG: children live but none ready */
+		if (options & LXP_WNOHANG) /* children live but none ready */
 			return 0;
 		proc->wait_pending = 1;
-		proc->wait_pid = (int)a0;
+		proc->wait_pid = wpid;
+		proc->wait_options = options;
 		proc->wait_status_p = (uintptr_t)a1;
 		return 0; /* dispatch parks; the coordinator's resume supplies the real r0 */
 	}
