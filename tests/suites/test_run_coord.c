@@ -142,6 +142,7 @@ static int reset_state(void **state)
 	g_cfg = NULL;
 	g_pending_sig = 0;
 	g_tty_isig = 1;
+	g_tty_icrnl = 1;
 	return 0;
 }
 
@@ -580,6 +581,7 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 		f.r[2] = 0x20000000u; /* mapped host SRAM on target; outside this guest */
 		f.r[7] = LXP_NR_ioctl;
 		g_tty_isig = 1;
+		g_tty_icrnl = 1;
 		g_lxp_used[0] = 1;
 
 		lxp_dispatch(&f, proc);
@@ -589,7 +591,24 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 		execute_deferred(&g_mock_eng, 0);
 		assert_int_equal(g_mock.resume_r0, -LXP_EFAULT);
 		assert_int_equal(g_tty_isig, 1); /* invalid input cannot alter console state */
+		assert_int_equal(g_tty_icrnl, 1);
 	}
+}
+
+/* The board transport supplies CR for Enter because BusyBox's raw shell editor expects
+ * it.  A cooked tty advertising ICRNL must instead give applications LF: login's retry
+ * path uses fgets(), which otherwise consumes the second username forever waiting for
+ * a newline.  When a guest clears ICRNL, the transport byte must be preserved. */
+static void test_console_icrnl_translation(void **state)
+{
+	(void)state;
+	g_tty_icrnl = 1;
+	assert_int_equal(lxp_console_input_xlate('\r'), '\n');
+	assert_int_equal(lxp_console_input_xlate('x'), 'x');
+	assert_int_equal(lxp_console_input_xlate('\n'), '\n');
+
+	g_tty_icrnl = 0;
+	assert_int_equal(lxp_console_input_xlate('\r'), '\r');
 }
 
 /* Pointer-free identity calls stay in the bounded top half; unknown/new calls
@@ -731,6 +750,47 @@ static int console_not_ready(void *ctx)
 {
 	(void)ctx;
 	return 0;
+}
+
+static int console_ready(void *ctx)
+{
+	(void)ctx;
+	return 1;
+}
+
+static long console_read_cr(void *ctx, int fd, void *buf, size_t len)
+{
+	(void)ctx;
+	(void)fd;
+	if (!len)
+		return 0;
+	((uint8_t *)buf)[0] = '\r';
+	return 1;
+}
+
+/* A byte may already be ready when read(2) enters, bypassing console_wait entirely.
+ * That fast path must use the same ICRNL discipline as a coordinator-resumed read. */
+static void test_console_icrnl_immediate_read(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	assert_int_equal(lxp_arena_init(&arena, g_mock_regions[0], sizeof(g_mock_regions[0])),
+			 LXP_OK);
+	assert_int_equal(lxp_proc_init(&p, &arena, 0), LXP_OK);
+	p.region_lo = 1;
+	p.region_hi = UINTPTR_MAX;
+	p.read_fn = console_read_cr;
+	p.console_poll = console_ready;
+
+	uint8_t ch = 0;
+	g_tty_icrnl = 1;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, 0, (long)(uintptr_t)&ch, 1, 0, 0, 0), 1);
+	assert_int_equal(ch, '\n');
+
+	g_tty_icrnl = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, 0, (long)(uintptr_t)&ch, 1, 0, 0, 0), 1);
+	assert_int_equal(ch, '\r');
 }
 
 /* Blocking handlers hand ownership to the existing wait state machine. The
@@ -972,11 +1032,13 @@ int main(void)
 		cmocka_unit_test_setup(test_stop_notify_queues_without_wuntraced, reset_state),
 		cmocka_unit_test_setup(test_encode_wstatus, reset_state),
 		cmocka_unit_test_setup(test_dispatch_rejects_bad_tcsets_pointer, reset_state),
+		cmocka_unit_test_setup(test_console_icrnl_translation, reset_state),
 		cmocka_unit_test_setup(test_dispatch_class_defaults_deferred, reset_state),
 		cmocka_unit_test_setup(test_deferred_requests_are_per_slot, reset_state),
 		cmocka_unit_test_setup(test_deferred_generation_rejects_stale_work, reset_state),
 		cmocka_unit_test_setup(test_deferred_same_slot_rejects_overwrite, reset_state),
 		cmocka_unit_test_setup(test_deferred_signal_cancels_before_execute, reset_state),
+		cmocka_unit_test_setup(test_console_icrnl_immediate_read, reset_state),
 		cmocka_unit_test_setup(test_deferred_blocking_handoff_keeps_parked_task,
 				       reset_state),
 		cmocka_unit_test_setup(test_pending_deliverable, reset_state),

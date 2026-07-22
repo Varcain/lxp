@@ -628,7 +628,12 @@ static long fop_read_console(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 		p->console_len = len;
 		return 0; /* parked; the coordinator resumes it when a key arrives */
 	}
-	return p->read_fn(p->io_ctx, (int)(s - p->fds), buf, len);
+	long r = p->read_fn(p->io_ctx, (int)(s - p->fds), buf, len);
+	/* A byte that was already ready bypasses the coordinator's parked-read path,
+	 * so apply the same tty input translation here as that path does. */
+	if (r == 1)
+		((uint8_t *)buf)[0] = lxp_console_input_xlate(((const uint8_t *)buf)[0]);
+	return r;
 }
 
 /* A pipe read end drains the shared ring; blocks while empty + a writer is open,

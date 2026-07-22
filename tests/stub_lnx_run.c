@@ -89,6 +89,10 @@ int lxp_console_fg_pgrp(void)
 {
 	return g_stub_console_fg_pgrp;
 }
+uint8_t lxp_console_input_xlate(uint8_t ch)
+{
+	return ch;
+}
 
 #if LXP_ENABLE_DEV_FB
 /* A mock display port so the /dev/fb0 driver (src/dev/lxp_dev_fb.c) links + runs on the

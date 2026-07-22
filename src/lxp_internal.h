@@ -33,6 +33,11 @@ uint32_t file_mode(const lxp_file_t *f);
 void lxp_console_set_fg_pgrp(int pgrp);
 int lxp_console_fg_pgrp(void);
 
+/* Apply the console tty's currently tracked input-character translations.  Both
+ * immediate reads in lxp_syscall.c and coordinator-resumed reads must pass bytes
+ * through the same discipline. */
+uint8_t lxp_console_input_xlate(uint8_t ch);
+
 /* Encode a child's exit code (our convention: 128 + signal for a signal-killed child) as
  * a Linux wait(2) status word: WIFSIGNALED with the signal in the low 7 bits for 129..159,
  * else WIFEXITED with the code in bits 8-15. Shared by sys_wait4 + the coordinator's

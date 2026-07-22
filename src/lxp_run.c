@@ -415,6 +415,11 @@ void park_frame(struct lxp_frame *f)
 struct sig_save_stack_s g_sig_save[LXP_NSLOT];
 
 static volatile int g_tty_isig = 1;
+/* Input translation advertised by the console's canonical termios.  The board
+ * callback deliberately preserves CR for raw-mode line editors, so perform the
+ * tty's ICRNL conversion here, after the byte enters the personality and only
+ * while the guest has that flag enabled. */
+static volatile int g_tty_icrnl = 1;
 static volatile int g_pending_sig;
 /* The console tty's foreground process group (job control): the pgid the shell put
  * in the foreground via tcsetpgrp(TIOCSPGRP). A console ^C (VINTR in cooked mode)
@@ -1093,7 +1098,7 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 	eng->spawn_resume(slot, proc->region, &g_ctx[slot], sig); /* r0 = signo */
 }
 
-/* Track the tty ISIG mode from the coordinator, never from SVC handler mode.
+/* Track the tty input/local modes from the coordinator, never from SVC handler mode.
  * The guest is parked and the termios payload is copied before use. */
 static void deferred_track_tty(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 {
@@ -1109,7 +1114,13 @@ static void deferred_track_tty(lxp_proc_t *proc, long nr, long a0, long a1, long
 		lxp_termios t;
 		memcpy(&t, ut, sizeof(t));
 		g_tty_isig = (t.c_lflag & LXP_ISIG) ? 1 : 0;
+		g_tty_icrnl = (t.c_iflag & LXP_ICRNL) ? 1 : 0;
 	}
+}
+
+uint8_t lxp_console_input_xlate(uint8_t ch)
+{
+	return (g_tty_icrnl && ch == '\r') ? '\n' : ch;
 }
 
 /* Execute one READY mailbox in privileged task context. The lower-priority guest
@@ -1315,6 +1326,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	}
 	g_pending_sig = 0;
 	g_tty_isig = 1;
+	g_tty_icrnl = 1;
 	g_console_fg_pgrp = 0;
 	lxp_stats_reset();
 	for (int i = 0; i < LXP_NSLOT; i++)
@@ -2144,6 +2156,14 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 						? ((const volatile uint8_t *)(uintptr_t)
 							   p->console_buf)[0]
 						: 0;
+					/* ICRNL is part of the tty input discipline, not the hardware
+					 * callback.  In cooked mode this turns the serial terminal's CR
+					 * into the LF required by stdio fgets() (notably login's second
+					 * username prompt).  A guest that clears ICRNL still receives CR. */
+					if (r == 1) {
+						ch = lxp_console_input_xlate(ch);
+						((volatile uint8_t *)(uintptr_t)p->console_buf)[0] = ch;
+					}
 					/* Cooked-mode line discipline (ISIG on): ^C/^Z become signals to
 					 * the foreground group, not literal bytes. ^Z (VSUSP=26) leaves the
 					 * reader parked so the parked-stop scan suspends it — its pending
