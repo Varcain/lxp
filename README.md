@@ -20,8 +20,9 @@ space:
   to its linked address, guests are FDPIC (function-descriptor PIC) ELFs — fully relocatable,
   each segment placed anywhere and reached through a per-process GOT, which supplies the
   position bias page tables otherwise would. So one read-only copy of each program and shared
-  library (busybox, `libc.so`, `ld.so`) lives in flash and is executed in place by every
-  process; only writable data, the GOT, and the heap are per-process in RAM.
+  library (busybox, `libc.so`, `ld.so`) lives in the rootfs backing store (internal flash,
+  external QSPI NOR, or emulator PSRAM) and is executed in place by every process; only writable
+  data, the GOT, and the heap are per-process in RAM.
 - **The loader does the kernel's job.** There's no `binfmt_elf_fdpic` in a kernel underneath,
   so lxp's loader is it — it places the segments, self-applies the `R_ARM_RELATIVE` fixups,
   and builds the FUNCDESC `{func, GOT}` descriptors into each process's GOT, then hands

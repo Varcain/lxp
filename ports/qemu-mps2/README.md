@@ -62,7 +62,8 @@ rootfs (~11 MiB) instead of the minimal fixture.
 - **M2** — `pipe` + `vfork` + `execve` + `wait4` across slots (multi-slot spawn_launch +
   spawn_resume, pipe IPC, reaped exit status). **Done.**
 - **M3a** — dynamic-FDPIC busybox: `ld-uClibc.so.0` + `libuClibc` loaded/relocated, libc
-  mmap'd into the PSRAM `dyn_pool`, cpio XIP'd from PSRAM. Runs **privileged**. **Done.**
+  mmap'd into the PSRAM `dyn_pool`, cpio XIP'd from PSRAM. The loader milestone is complete;
+  current builds run it under the M3b isolation below.
 - **M3b** — unprivileged guests + per-slot MPU (W^X) via the ARM_CM4_MPU port. All three
   milestones run unprivileged; a stray access faults MemManage (contained as SIGSEGV).
 - **M4** — syscall conformance on the true SVC path. `/syscheck` drives exactly what host

@@ -281,9 +281,8 @@ int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actua
 	return LXP_ERR_NOT_SUPPORTED;
 }
 
-/* The cpio data region [lo, hi): the embedded rootfs files' bytes. A dynamic FDPIC proc now runs
- * ALL its code — busybox.so + ld.so + libc.so text, shared in-place — straight from here, so a
- * PC-discriminating seam (NuttX) must count a cpio PC as "in a program" when routing the svc.
+/* The rootfs cpio region [lo, hi). Dynamic FDPIC processes execute busybox.so, ld.so and libc.so
+ * text shared in place from this backing store; engine MPU policies grant it user RO+X access.
  * NULL until a run starts. */
 const uint8_t *g_lxp_rootfs_lo;
 const uint8_t *g_lxp_rootfs_hi;

@@ -1410,10 +1410,9 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 	/* Text-sharing: a read-only file map of a rootfs file whose whole extent lies within the file
 	 * is returned IN-PLACE (zero-copy). FDPIC text is pure PIC — its relocations land in the
 	 * per-process GOT/data, never the shared text — so every dynamic process shares ONE libc.so
-	 * text copy (the embedded cpio bytes) instead of its own ~358K arena copy. Privileged engines
-	 * (FreeRTOS/NuttX) reach the cpio directly; Zephyr embeds the cpio in an executable .text
-	 * subsection (.text.ove_rootfs), covered by the kernel's user-RX .text MPU region, so the
-	 * unprivileged program reads + executes the in-place text there too — no separate partition. */
+	 * text copy (the cpio bytes) instead of its own ~358K arena copy. Every engine exposes the
+	 * backing span to its unprivileged guest as RO+X: a static or per-task window on FreeRTOS,
+	 * Zephyr's user-RX text/QSPI region, or the NuttX seam's raw MPU region. */
 	if (!(flags & LXP_MAP_ANONYMOUS) && fd >= 0 && !(prot & 0x2 /* PROT_WRITE */)) {
 		lxp_fd_t *s = fd_slot(p, fd);
 		if (s && s->kind == LXP_FD_FILE) {

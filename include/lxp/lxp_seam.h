@@ -97,8 +97,8 @@ extern lxp_proc_t g_lxp_proc[LXP_NSLOT];
 extern int g_lxp_used[LXP_NSLOT]; /* slot in use (run loop + seam read) */
 extern volatile int g_lxp_active;	  /* a run is in progress (seam trap gate) */
 extern volatile int g_lxp_halt;	  /* reboot(2)/poweroff: stop the run loop */
-/* The embedded cpio's data span [lo, hi): a dynamic FDPIC proc runs its shared in-place text from
- * here, so a PC-discriminating seam (NuttX) treats a cpio PC as a program svc. NULL pre-run. */
+/* The rootfs cpio's data span [lo, hi): dynamic FDPIC processes execute shared text in place from
+ * this backing store, and engine MPU policies grant that span user RO+X access. NULL pre-run. */
 extern const uint8_t *g_lxp_rootfs_lo, *g_lxp_rootfs_hi;
 
 /* Where a parked program spins (in shared .text) until the run loop reaps it. */
