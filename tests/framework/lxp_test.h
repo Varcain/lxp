@@ -27,6 +27,8 @@
 extern int g_lxp_test_random_result;
 extern size_t g_lxp_test_random_calls;
 extern size_t g_lxp_test_random_len;
+extern int g_lxp_test_mem_stats_result;
+extern struct lxp_mem_stats g_lxp_test_mem_stats;
 
 /* Suite entry points — one per tests/suites/test_<name>.c. */
 int test_arena_run(void);

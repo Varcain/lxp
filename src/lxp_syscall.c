@@ -3321,10 +3321,30 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		uint64_t ns = 0;
 		lxp_time_ns(&ns);
 		si->uptime = (int32_t)(ns / 1000000000ull);
-		si->totalram = 4u * 1024u * 1024u;
-		si->freeram = 2u * 1024u * 1024u;
-		si->procs = 2;
-		si->mem_unit = 1;
+		struct lxp_mem_stats m;
+		(void)lxp_mem_stats(&m);
+		/* ARM's sysinfo fields are 32-bit. Pick the smallest power-of-two
+		 * byte unit that represents the host heap, preserving byte accuracy
+		 * for the embedded heaps that fit without scaling. */
+		uint64_t largest = m.total > m.free ? m.total : m.free;
+		uint32_t unit = 1;
+		while (largest / unit > UINT32_MAX && unit <= UINT32_MAX / 2u)
+			unit *= 2u;
+		uint64_t total_units = m.total / unit;
+		uint64_t free_units = m.free / unit;
+		si->totalram = (uint32_t)(total_units > UINT32_MAX ? UINT32_MAX : total_units);
+		si->freeram = (uint32_t)(free_units > UINT32_MAX ? UINT32_MAX : free_units);
+		si->mem_unit = unit;
+		/* Report the actual live personality process count. The direct host
+		 * syscall tests do not register their caller in a run-loop table, so
+		 * retain one for the process making this syscall. */
+		unsigned live = 0;
+		lxp_proc_t *tab = lxp_proc_table();
+		int nslot = lxp_proc_nslot();
+		for (int i = 0; tab && i < nslot; i++)
+			if (tab[i].alive && live < UINT16_MAX)
+				live++;
+		si->procs = (uint16_t)(live ? live : 1u);
 		return 0;
 	}
 	case LXP_NR_fcntl: /* old 32-bit fcntl: same dispatch as fcntl64 here */

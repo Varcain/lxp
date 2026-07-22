@@ -26,6 +26,13 @@ size_t g_lxp_test_cache_clean_len;
 size_t g_lxp_test_cache_invalidate_calls;
 const void *g_lxp_test_cache_invalidate_base;
 size_t g_lxp_test_cache_invalidate_len;
+int g_lxp_test_mem_stats_result = LXP_OK;
+struct lxp_mem_stats g_lxp_test_mem_stats = {
+	.total = 12u * 1024u * 1024u,
+	.free = 3u * 1024u * 1024u,
+	.used = 9u * 1024u * 1024u,
+	.peak_used = 10u * 1024u * 1024u,
+};
 
 int lxp_random_fill(void *buf, size_t len)
 {
@@ -53,6 +60,17 @@ int lxp_time_ns(uint64_t *out)
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	*out = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 	return 0;
+}
+int lxp_mem_stats(struct lxp_mem_stats *out)
+{
+	if (!out)
+		return LXP_ERR_INVALID_PARAM;
+	if (g_lxp_test_mem_stats_result != LXP_OK) {
+		memset(out, 0, sizeof(*out));
+		return g_lxp_test_mem_stats_result;
+	}
+	*out = g_lxp_test_mem_stats;
+	return LXP_OK;
 }
 void lxp_guest_flush(const void *base, size_t len)
 {

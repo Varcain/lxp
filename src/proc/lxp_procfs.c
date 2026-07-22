@@ -14,6 +14,7 @@
 #include "lxp/lxp_config.h"
 #include "lxp/lxp_stats.h"
 #include "lxp/lxp_syscall.h"
+#include "lxp_internal.h"
 #if LXP_ENABLE_NET
 #include "lxp/lxp_net.h"
 #endif
@@ -214,10 +215,17 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		o = p_dec(buf, o, cap, ns / 1000000000ull);
 		o = p_str(buf, o, cap, ".00\n");
 	} else if (strcmp(abs, "/proc/meminfo") == 0) {
+		struct lxp_mem_stats m;
+		(void)lxp_mem_stats(&m);
+		o = p_str(buf, o, cap, "MemTotal:       ");
+		o = p_dec(buf, o, cap, m.total / 1024u);
+		o = p_str(buf, o, cap, " kB\nMemFree:        ");
+		o = p_dec(buf, o, cap, m.free / 1024u);
+		o = p_str(buf, o, cap, " kB\nMemAvailable:   ");
+		o = p_dec(buf, o, cap, m.free / 1024u);
 		o = p_str(buf, o, cap,
-			  "MemTotal:       4096 kB\nMemFree:        2048 kB\n"
-			  "MemAvailable:   2048 kB\nBuffers:           0 kB\nCached:            0 "
-			  "kB\n");
+			  " kB\nBuffers:           0 kB\nCached:            0 kB\n"
+			  "SReclaimable:      0 kB\n");
 	} else if (strcmp(abs, "/proc/cpuinfo") == 0) {
 		o = p_str(buf, o, cap,
 			  "processor\t: 0\nmodel name\t: ARM Cortex-M\nFeatures\t: thumb\n\n");
@@ -291,4 +299,3 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 	}
 	return (long)o;
 }
-

@@ -120,4 +120,18 @@ struct lxp_thread_info {
 	struct lxp_thread_state_times state_times;
 };
 
+/**
+ * @brief Host system-heap snapshot.
+ *
+ * This intentionally describes the allocator exposed by the host OS, not
+ * fabricated physical RAM.  The layout mirrors oveRTOS's @c ove_mem_stats so
+ * a host adapter only has to copy the four fields.
+ */
+struct lxp_mem_stats {
+	size_t total;     /**< Total host system-heap capacity in bytes. */
+	size_t free;      /**< Bytes currently available for allocation. */
+	size_t used;      /**< Bytes currently allocated. */
+	size_t peak_used; /**< Peak allocated bytes, or 0 when unavailable. */
+};
+
 #endif /* LXP_TYPES_H */

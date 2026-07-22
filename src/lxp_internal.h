@@ -38,6 +38,10 @@ int lxp_console_fg_pgrp(void);
  * through the same discipline. */
 uint8_t lxp_console_input_xlate(uint8_t ch);
 
+/* Snapshot the host allocator through lxp_os_ops.mem_stats.  On failure `out`
+ * is zeroed, so procfs/sysinfo never fall back to fabricated memory totals. */
+int lxp_mem_stats(struct lxp_mem_stats *out);
+
 /* Encode a child's exit code (our convention: 128 + signal for a signal-killed child) as
  * a Linux wait(2) status word: WIFSIGNALED with the signal in the low 7 bits for 129..159,
  * else WIFEXITED with the code in bits 8-15. Shared by sys_wait4 + the coordinator's

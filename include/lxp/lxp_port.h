@@ -149,6 +149,11 @@ typedef struct lxp_os_ops {
 	 * instead of receiving a predictable in-core fallback. Kept at the end so
 	 * extending the source-level vtable does not move existing members. */
 	int (*random_fill)(void *buf, size_t len);
+
+	/* Host system-heap snapshot for sysinfo(2) and /proc/meminfo. NULL reports
+	 * zero memory rather than inventing a fixed total. Kept at the end so source
+	 * initializers for older ports remain valid. */
+	int (*mem_stats)(struct lxp_mem_stats *out);
 } lxp_os_ops_t;
 
 /* ─────────────────────────────────────────────────────────────────────────

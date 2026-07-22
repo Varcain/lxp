@@ -436,6 +436,17 @@ static int qemu_time_ns(uint64_t *out)
 	return LXP_OK;
 }
 
+static int qemu_mem_stats(struct lxp_mem_stats *out)
+{
+	if (!out)
+		return LXP_ERR_INVALID_PARAM;
+	out->total = configTOTAL_HEAP_SIZE;
+	out->free = xPortGetFreeHeapSize();
+	out->used = out->total - out->free;
+	out->peak_used = out->total - xPortGetMinimumEverFreeHeapSize();
+	return LXP_OK;
+}
+
 /* Explicitly non-cryptographic entropy for the deterministic development-only
  * QEMU target. Production ports must provide a hardware/OS entropy source; the
  * personality core itself has no weak fallback. */
@@ -466,6 +477,7 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.time_us = qemu_time_us,
 	.time_ns = qemu_time_ns,
 	.random_fill = qemu_random_fill,
+	.mem_stats = qemu_mem_stats,
 	.dyn_pool = qemu_dyn_pool, /* M3: hosts a dynamic proc's libc.so mmap + arena */
 	/* map_device / thread_list / cache_* / rootfs_window / exec_stage: NULL — the
 	 * target is coherent (no cache), the rootfs is a plain RAM/PSRAM window (weak

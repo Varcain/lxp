@@ -181,6 +181,28 @@ int lxp_random_fill(void *buf, size_t len)
 		return (!buf && len != 0u) ? LXP_ERR_INVALID_PARAM : LXP_ERR_NOT_SUPPORTED;
 	return g_eng->random_fill(buf, len);
 }
+int lxp_mem_stats(struct lxp_mem_stats *out)
+{
+	if (!out)
+		return LXP_ERR_INVALID_PARAM;
+	memset(out, 0, sizeof(*out));
+	if (!g_eng || !g_eng->mem_stats)
+		return LXP_ERR_NOT_SUPPORTED;
+	int rc = g_eng->mem_stats(out);
+	if (rc != LXP_OK) {
+		memset(out, 0, sizeof(*out));
+		return rc;
+	}
+	/* Keep Linux's total/free view internally consistent even if a host port
+	 * samples a changing allocator or only populates part of the snapshot. */
+	if (out->free > out->total)
+		out->free = out->total;
+	if (out->used > out->total)
+		out->used = out->total;
+	if (out->peak_used > out->total)
+		out->peak_used = out->total;
+	return rc;
+}
 void lxp_cache_clean(const void *base, size_t len)
 {
 	if (g_eng && g_eng->cache_clean)

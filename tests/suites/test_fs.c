@@ -201,7 +201,10 @@ static void test_procfs(void **s)
 	assert_true(r > 0);
 	assert_true((size_t)r < sizeof(out));
 	out[r] = '\0';
-	assert_non_null(strstr(out, "Mem")); /* meminfo reports MemTotal etc. */
+	assert_non_null(strstr(out, "MemTotal:       12288 kB"));
+	assert_non_null(strstr(out, "MemFree:        3072 kB"));
+	assert_non_null(strstr(out, "MemAvailable:   3072 kB"));
+	assert_non_null(strstr(out, "SReclaimable:      0 kB"));
 }
 
 /* ---- pointer validators: user_ok / user_strnlen / file_mode ------------------- */
