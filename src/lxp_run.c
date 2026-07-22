@@ -150,6 +150,10 @@ static volatile uint32_t g_coord_iters;
  * host syscall tests link without the run loop; the run loop only observes it. */
 
 static lxp_arena_t g_arenas[LXP_NREG];
+/* Exact region reservations, including vfork snapshot/exec handoff regions that
+ * do not yet appear as a distinct live process region. Kept outside the run-loop
+ * stack so sysinfo/procfs can report current NREG pressure. */
+static int g_region_owner[LXP_NREG];
 /* vfork data isolation: a snapshot of the shared arena's allocator metadata, taken when a vfork
  * child is spawned (keyed by the child's slot) and restored when it execs/exits — the region+dyn_pool
  * BYTES are snapshotted into a spare region, but g_arenas[] lives in coordinator memory. */
@@ -202,6 +206,44 @@ int lxp_mem_stats(struct lxp_mem_stats *out)
 	if (out->peak_used > out->total)
 		out->peak_used = out->total;
 	return rc;
+}
+void lxp_get_resource_stats(struct lxp_resource_stats *out)
+{
+	if (!out)
+		return;
+	memset(out, 0, sizeof(*out));
+	out->slots_total = LXP_NSLOT;
+	out->regions_total = LXP_NREG;
+	out->program_region_bytes = LXP_PROG_REGION_SIZE;
+	if (g_eng && g_eng->dyn_pool) {
+		size_t dyn_size = 0;
+		if (g_eng->dyn_pool(0, &dyn_size))
+			out->dynamic_pool_bytes = dyn_size;
+	}
+
+	unsigned slots_used = 0;
+	for (int s = 0; s < LXP_NSLOT; s++)
+		if (g_lxp_proc[s].alive)
+			slots_used++;
+	out->slots_free = LXP_NSLOT - slots_used;
+
+	unsigned regions_used = 0;
+	for (int r = 0; r < LXP_NREG; r++) {
+		int occupied = g_lxp_active && g_region_owner[r] >= 0;
+		for (int s = 0; !occupied && s < LXP_NSLOT; s++)
+			if (g_lxp_proc[s].alive && g_lxp_proc[s].region == r)
+				occupied = 1;
+		if (occupied)
+			regions_used++;
+	}
+	out->regions_free = LXP_NREG - regions_used;
+
+	uint64_t region_bytes = (uint64_t)out->program_region_bytes + out->dynamic_pool_bytes;
+	out->total_bytes = region_bytes * LXP_NREG;
+	out->free_bytes = region_bytes * out->regions_free;
+	unsigned allocatable = out->regions_free < out->slots_free ? out->regions_free
+								  : out->slots_free;
+	out->available_bytes = region_bytes * allocatable;
 }
 const char *lxp_system_version(void)
 {
@@ -1385,14 +1427,14 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	/* Concurrent process model: the run loop COORDINATES the live process SET
 	 * (g_lxp_proc[*].alive). Each live proc owns a region + an RTOS thread for
 	 * its lifetime; a vfork parent resumes the instant its child execs into its own
-	 * region (or exits) so the two co-run. rowner[r] = the slot owning region r. */
-	int rowner[LXP_NREG]; /* slot that owns each region, or -1 */
+	 * region (or exits) so the two co-run. g_region_owner[r] is the slot owning
+	 * region r, including a reserved vfork snapshot/exec-handoff region. */
 	for (int r = 0; r < LXP_NREG; r++)
-		rowner[r] = -1;
+		g_region_owner[r] = -1;
 
 	g_lxp_active = 1;
 	g_lxp_halt = 0;
-	rowner[0] = 0;
+	g_region_owner[0] = 0;
 	if (launch(eng, 0, 0, cfg->rootfs[bb].data, cfg->rootfs[bb].size, 1, 0, argc, argv, cfg->env,
 		   0) != 0) {
 		g_lxp_active = 0;
@@ -1626,7 +1668,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				es; /* resume the parent when this child execs/exits */
 			/* NOMMU vfork isolation: snapshot the parent's writable data so the child's
 			 * pre-exec writes to the SHARED region can't corrupt the suspended parent. */
-			ch->snap_region = vfork_snapshot(eng, par, c, rowner, g_ctx[es].sp);
+			ch->snap_region =
+				vfork_snapshot(eng, par, c, g_region_owner, g_ctx[es].sp);
 			if (ch->snap_region < 0) {
 				/* No spare region to isolate the child's pre-exec writes from the
 				 * suspended parent (deep vfork nesting — e.g. a pipeline over an SSH
@@ -1677,7 +1720,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			int nr = p->snap_region;
 			if (nr < 0)
 				for (int r = 0; r < LXP_NREG; r++)
-					if (region_free(r, rowner)) {
+					if (region_free(r, g_region_owner)) {
 						nr = r;
 						break;
 					}
@@ -1685,8 +1728,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			if (nr <
 			    0) { /* region exhaustion: kill THIS proc, do NOT tear down init. */
 				eng->abort_slot(es);
-				if (p->region_owner && rowner[p->region] == es)
-					rowner[p->region] = -1;
+				if (p->region_owner && g_region_owner[p->region] == es)
+					g_region_owner[p->region] = -1;
 				p->exit_status = 127;
 				p->exit_reason = LXP_EXIT_REASON_EXEC_RESOURCE;
 				p->exit_signal = 0;
@@ -1719,9 +1762,9 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			memcpy(saved_fds, p->fds, sizeof(saved_fds));
 			memcpy(saved_cwd, p->cwd, sizeof(saved_cwd));
 			if (p->region_owner &&
-			    rowner[p->region] == es) /* free the old owned region */
-				rowner[p->region] = -1;
-			rowner[nr] = es;
+			    g_region_owner[p->region] == es) /* free the old owned region */
+				g_region_owner[p->region] = -1;
+			g_region_owner[nr] = es;
 			eng->abort_slot(es);
 			const uint8_t *img_data = cfg->rootfs[idx].data;
 			size_t img_size = cfg->rootfs[idx].size;
@@ -1737,7 +1780,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			if (!img_data ||
 			    launch(eng, es, nr, img_data, img_size, pid, ppid, eargc, ptrs, eptrs,
 				   rexec) != 0) {
-				rowner[nr] = -1;
+				g_region_owner[nr] = -1;
 				g_lxp_proc[es].exit_status = 127;
 				g_lxp_proc[es].exit_reason = LXP_EXIT_REASON_EXEC_LOAD;
 				g_lxp_proc[es].exit_signal = 0;
@@ -1776,8 +1819,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			eng->abort_slot(es);
 			g_sig_save[es].depth = 0;
 			notify_guest_exit(es, p);
-			if (p->region_owner && rowner[p->region] == es)
-				rowner[p->region] = -1;
+			if (p->region_owner && g_region_owner[p->region] == es)
+				g_region_owner[p->region] = -1;
 			p->alive = 0;
 			g_lxp_used[es] = 0;
 			if (es == 0) { /* init exited → the system is done */
@@ -1789,7 +1832,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				 * the shared region so the parent is not corrupted, and free the scratch. */
 				vfork_restore(eng, &g_lxp_proc[vp], p->snap_region, es,
 					      g_ctx[vp].sp);
-				rowner[p->snap_region] = -1;
+				g_region_owner[p->snap_region] = -1;
 			}
 			if (vp >=
 			    0) /* fork-without-exec: the suspended parent resumes (vfork returns) */

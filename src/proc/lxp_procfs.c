@@ -99,8 +99,9 @@ int proc_pid_known(const lxp_proc_t *p, int pid)
 	return pid == 1 || pid == p->pid || lxp_pent_find(pid) != NULL;
 }
 
-const char *const g_proc_files[] = {"version", "uptime",	 "meminfo",	"cpuinfo", "mounts",
-					   "stat",    "loadavg", "filesystems", NULL};
+const char *const g_proc_files[] = {"version", "uptime", "meminfo", "lxp_resources",
+					   "cpuinfo", "mounts", "stat", "loadavg", "filesystems",
+					   NULL};
 
 /* st_mode for a /proc node, or 0 if the path is not a synthetic /proc node. */
 uint32_t proc_mode(const char *abs, const lxp_proc_t *p)
@@ -217,17 +218,55 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		o = p_dec(buf, o, cap, ns / 1000000000ull);
 		o = p_str(buf, o, cap, ".00\n");
 	} else if (strcmp(abs, "/proc/meminfo") == 0) {
-		struct lxp_mem_stats m;
-		(void)lxp_mem_stats(&m);
+		struct lxp_resource_stats resources;
+		struct lxp_mem_stats heap;
+		lxp_get_resource_stats(&resources);
+		(void)lxp_mem_stats(&heap);
 		o = p_str(buf, o, cap, "MemTotal:       ");
-		o = p_dec(buf, o, cap, m.total / 1024u);
+		o = p_dec(buf, o, cap, resources.total_bytes / 1024u);
 		o = p_str(buf, o, cap, " kB\nMemFree:        ");
-		o = p_dec(buf, o, cap, m.free / 1024u);
+		o = p_dec(buf, o, cap, resources.free_bytes / 1024u);
 		o = p_str(buf, o, cap, " kB\nMemAvailable:   ");
-		o = p_dec(buf, o, cap, m.free / 1024u);
+		o = p_dec(buf, o, cap, resources.available_bytes / 1024u);
 		o = p_str(buf, o, cap,
 			  " kB\nBuffers:           0 kB\nCached:            0 kB\n"
 			  "SReclaimable:      0 kB\n");
+		o = p_str(buf, o, cap, "LxpSlotsTotal:  ");
+		o = p_dec(buf, o, cap, resources.slots_total);
+		o = p_str(buf, o, cap, "\nLxpSlotsFree:   ");
+		o = p_dec(buf, o, cap, resources.slots_free);
+		o = p_str(buf, o, cap, "\nLxpRegionsTotal: ");
+		o = p_dec(buf, o, cap, resources.regions_total);
+		o = p_str(buf, o, cap, "\nLxpRegionsFree: ");
+		o = p_dec(buf, o, cap, resources.regions_free);
+		o = p_str(buf, o, cap, "\nHostHeapTotal:  ");
+		o = p_dec(buf, o, cap, heap.total / 1024u);
+		o = p_str(buf, o, cap, " kB\nHostHeapFree:   ");
+		o = p_dec(buf, o, cap, heap.free / 1024u);
+		o = p_str(buf, o, cap, " kB\n");
+	} else if (strcmp(abs, "/proc/lxp_resources") == 0) {
+		struct lxp_resource_stats resources;
+		struct lxp_mem_stats heap;
+		lxp_get_resource_stats(&resources);
+		(void)lxp_mem_stats(&heap);
+#define RESOURCE_LINE(name, value)                       \
+	do {                                               \
+		o = p_str(buf, o, cap, name " ");           \
+		o = p_dec(buf, o, cap, (uint64_t)(value));  \
+		o = p_str(buf, o, cap, "\n");              \
+	} while (0)
+		RESOURCE_LINE("slots_total", resources.slots_total);
+		RESOURCE_LINE("slots_free", resources.slots_free);
+		RESOURCE_LINE("regions_total", resources.regions_total);
+		RESOURCE_LINE("regions_free", resources.regions_free);
+		RESOURCE_LINE("program_region_bytes", resources.program_region_bytes);
+		RESOURCE_LINE("dynamic_pool_bytes", resources.dynamic_pool_bytes);
+		RESOURCE_LINE("guest_bytes_total", resources.total_bytes);
+		RESOURCE_LINE("guest_bytes_free", resources.free_bytes);
+		RESOURCE_LINE("guest_bytes_available", resources.available_bytes);
+		RESOURCE_LINE("host_heap_total", heap.total);
+		RESOURCE_LINE("host_heap_free", heap.free);
+#undef RESOURCE_LINE
 	} else if (strcmp(abs, "/proc/cpuinfo") == 0) {
 		o = p_str(buf, o, cap,
 			  "processor\t: 0\nmodel name\t: ARM Cortex-M\nFeatures\t: thumb\n\n");

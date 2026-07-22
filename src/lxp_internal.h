@@ -42,6 +42,22 @@ uint8_t lxp_console_input_xlate(uint8_t ch);
  * is zeroed, so procfs/sysinfo never fall back to fabricated memory totals. */
 int lxp_mem_stats(struct lxp_mem_stats *out);
 
+/* Capacity of the personality's fixed process slots and program regions. The
+ * byte view is what sysinfo/free consume; the count view is exported explicitly
+ * through procfs because Linux memory tools cannot label values as slots. */
+struct lxp_resource_stats {
+	size_t program_region_bytes;
+	size_t dynamic_pool_bytes;
+	uint64_t total_bytes;
+	uint64_t free_bytes;
+	uint64_t available_bytes;
+	unsigned slots_total;
+	unsigned slots_free;
+	unsigned regions_total;
+	unsigned regions_free;
+};
+void lxp_get_resource_stats(struct lxp_resource_stats *out);
+
 /* Host-supplied utsname.version identity, or the honest module fallback "lxp". */
 const char *lxp_system_version(void);
 

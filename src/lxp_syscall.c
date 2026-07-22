@@ -3321,17 +3321,19 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		uint64_t ns = 0;
 		lxp_time_ns(&ns);
 		si->uptime = (int32_t)(ns / 1000000000ull);
-		struct lxp_mem_stats m;
-		(void)lxp_mem_stats(&m);
+		struct lxp_resource_stats resources;
+		lxp_get_resource_stats(&resources);
 		/* ARM's sysinfo fields are 32-bit. Pick the smallest power-of-two
-		 * byte unit that represents the host heap, preserving byte accuracy
-		 * for the embedded heaps that fit without scaling. */
-		uint64_t largest = m.total > m.free ? m.total : m.free;
+		 * byte unit that represents the guest capacity. freeram is the
+		 * effective capacity remaining after both slot and region limits. */
+		uint64_t largest = resources.total_bytes > resources.available_bytes
+					   ? resources.total_bytes
+					   : resources.available_bytes;
 		uint32_t unit = 1;
 		while (largest / unit > UINT32_MAX && unit <= UINT32_MAX / 2u)
 			unit *= 2u;
-		uint64_t total_units = m.total / unit;
-		uint64_t free_units = m.free / unit;
+		uint64_t total_units = resources.total_bytes / unit;
+		uint64_t free_units = resources.available_bytes / unit;
 		si->totalram = (uint32_t)(total_units > UINT32_MAX ? UINT32_MAX : total_units);
 		si->freeram = (uint32_t)(free_units > UINT32_MAX ? UINT32_MAX : free_units);
 		si->mem_unit = unit;

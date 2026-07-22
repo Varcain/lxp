@@ -142,9 +142,12 @@ static int reset_state(void **state)
 	memset(g_mock_regions, 0, sizeof(g_mock_regions));
 	memset(g_mock_dyn_pools, 0, sizeof(g_mock_dyn_pools));
 	memset(&g_mock, 0, sizeof(g_mock));
+	for (int r = 0; r < LXP_NREG; r++)
+		g_region_owner[r] = -1;
 	lxp_console_set_fg_pgrp(0);
 	g_eng = &g_mock_eng;
 	g_cfg = NULL;
+	g_lxp_active = 0;
 	g_pending_sig = 0;
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
@@ -158,6 +161,41 @@ static void test_system_version_routes_to_engine(void **state)
 			    "MockRTOS 9.8.7 ove-fedcba9 lxp-7654321");
 	g_eng = NULL;
 	assert_string_equal(lxp_system_version(), "lxp");
+}
+
+static void test_resource_stats_track_slots_and_reserved_regions(void **state)
+{
+	(void)state;
+	g_lxp_active = 1;
+	g_region_owner[0] = 0; /* live init region */
+	g_region_owner[2] = 1; /* reserved vfork snapshot/exec region */
+	g_lxp_proc[0].alive = 1;
+	g_lxp_proc[0].region = 0;
+	g_lxp_proc[1].alive = 1;
+	g_lxp_proc[1].region = 0; /* thread shares region 0 but consumes a slot */
+
+	struct lxp_resource_stats resources;
+	lxp_get_resource_stats(&resources);
+	assert_int_equal(resources.slots_total, LXP_NSLOT);
+	assert_int_equal(resources.slots_free, LXP_NSLOT - 2);
+	assert_int_equal(resources.regions_total, LXP_NREG);
+	assert_int_equal(resources.regions_free, LXP_NREG - 2);
+	assert_int_equal(resources.program_region_bytes, LXP_PROG_REGION_SIZE);
+	assert_int_equal(resources.dynamic_pool_bytes, sizeof(g_mock_dyn_pools[0]));
+	uint64_t region_bytes = LXP_PROG_REGION_SIZE + sizeof(g_mock_dyn_pools[0]);
+	assert_int_equal(resources.total_bytes, region_bytes * LXP_NREG);
+	assert_int_equal(resources.free_bytes, region_bytes * (LXP_NREG - 2));
+	assert_int_equal(resources.available_bytes, region_bytes * (LXP_NREG - 2));
+
+	/* Clone-style processes can share a region but still exhaust process slots. */
+	for (int s = 2; s < LXP_NSLOT; s++) {
+		g_lxp_proc[s].alive = 1;
+		g_lxp_proc[s].region = 0;
+	}
+	lxp_get_resource_stats(&resources);
+	assert_int_equal(resources.slots_free, 0);
+	assert_int_equal(resources.regions_free, LXP_NREG - 2);
+	assert_int_equal(resources.available_bytes, 0);
 }
 
 /* ---- wait-status encoding --------------------------------------------------- */
@@ -1038,6 +1076,8 @@ int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
+		cmocka_unit_test_setup(test_resource_stats_track_slots_and_reserved_regions,
+				       reset_state),
 		cmocka_unit_test_setup(test_kill_targets_process_group, reset_state),
 		cmocka_unit_test_setup(test_setpgid_getpgrp_track_group, reset_state),
 		cmocka_unit_test_setup(test_console_sigint_targets_fg_group, reset_state),

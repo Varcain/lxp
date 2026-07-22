@@ -11,6 +11,7 @@
  * maintenance to do).
  */
 #include "lxp/lxp_syscall.h"
+#include "lxp_internal.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -32,6 +33,17 @@ struct lxp_mem_stats g_lxp_test_mem_stats = {
 	.free = 3u * 1024u * 1024u,
 	.used = 9u * 1024u * 1024u,
 	.peak_used = 10u * 1024u * 1024u,
+};
+static const struct lxp_resource_stats g_lxp_test_resource_stats = {
+	.program_region_bytes = 256u * 1024u,
+	.dynamic_pool_bytes = 512u * 1024u,
+	.total_bytes = 6u * 1024u * 1024u,
+	.free_bytes = 3840u * 1024u,
+	.available_bytes = 3072u * 1024u,
+	.slots_total = 12,
+	.slots_free = 9,
+	.regions_total = 8,
+	.regions_free = 5,
 };
 
 int lxp_random_fill(void *buf, size_t len)
@@ -71,6 +83,11 @@ int lxp_mem_stats(struct lxp_mem_stats *out)
 	}
 	*out = g_lxp_test_mem_stats;
 	return LXP_OK;
+}
+void lxp_get_resource_stats(struct lxp_resource_stats *out)
+{
+	if (out)
+		*out = g_lxp_test_resource_stats;
 }
 const char *lxp_system_version(void)
 {

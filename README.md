@@ -36,7 +36,9 @@ space:
   carved upfront into fixed, statically-sized pools (`LXP_NSLOT` slots over `LXP_NREG`
   regions) — no heap, no buddy allocator. A spawn claims a free slot and region in bounded
   time; it never fragments and never fails partway for want of a contiguous block. Process
-  count and RAM footprint are fixed at compile time.
+  count and RAM footprint are fixed at compile time. Linux `sysinfo`/`free` report the
+  remaining effective guest capacity, while `/proc/lxp_resources` and the `Lxp*` fields in
+  `/proc/meminfo` expose exact free/total slot and region counts.
 - **`mmap` + `brk` over a bounded arena.** There is no page cache or demand paging: writable
   mappings are copied eagerly into a fixed region, while read-only rootfs text can execute
   in place. A full arena returns `ENOMEM` synchronously (no overcommit, no OOM killer). The

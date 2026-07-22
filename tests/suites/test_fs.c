@@ -201,10 +201,30 @@ static void test_procfs(void **s)
 	assert_true(r > 0);
 	assert_true((size_t)r < sizeof(out));
 	out[r] = '\0';
-	assert_non_null(strstr(out, "MemTotal:       12288 kB"));
-	assert_non_null(strstr(out, "MemFree:        3072 kB"));
+	assert_non_null(strstr(out, "MemTotal:       6144 kB"));
+	assert_non_null(strstr(out, "MemFree:        3840 kB"));
 	assert_non_null(strstr(out, "MemAvailable:   3072 kB"));
 	assert_non_null(strstr(out, "SReclaimable:      0 kB"));
+	assert_non_null(strstr(out, "LxpSlotsTotal:  12"));
+	assert_non_null(strstr(out, "LxpSlotsFree:   9"));
+	assert_non_null(strstr(out, "LxpRegionsTotal: 8"));
+	assert_non_null(strstr(out, "LxpRegionsFree: 5"));
+	assert_non_null(strstr(out, "HostHeapTotal:  12288 kB"));
+	assert_non_null(strstr(out, "HostHeapFree:   3072 kB"));
+
+	r = proc_gen("/proc/lxp_resources", &p, out, sizeof(out) - 1);
+	assert_true(r > 0);
+	assert_true((size_t)r < sizeof(out));
+	out[r] = '\0';
+	assert_non_null(strstr(out, "slots_total 12\nslots_free 9\n"));
+	assert_non_null(strstr(out, "regions_total 8\nregions_free 5\n"));
+	assert_non_null(strstr(out, "program_region_bytes 262144\n"));
+	assert_non_null(strstr(out, "dynamic_pool_bytes 524288\n"));
+	assert_non_null(strstr(out, "guest_bytes_total 6291456\n"));
+	assert_non_null(strstr(out, "guest_bytes_free 3932160\n"));
+	assert_non_null(strstr(out, "guest_bytes_available 3145728\n"));
+	assert_non_null(strstr(out, "host_heap_total 12582912\n"));
+	assert_non_null(strstr(out, "host_heap_free 3145728\n"));
 
 	r = proc_gen("/proc/version", &p, out, sizeof(out) - 1);
 	assert_true(r > 0);

@@ -592,17 +592,17 @@ static void test_conf_identity(void **state)
 	/* sysinfo: the fields uptime/free report. */
 	struct conf_sysinfo *si = lxp_conf_alloc(fx, sizeof(*si));
 	assert_int_equal(SC(&p, LXP_NR_sysinfo, (long)(uintptr_t)si, 0, 0, 0, 0, 0), 0);
-	assert_int_equal(si->totalram, 12u * 1024 * 1024);
+	assert_int_equal(si->totalram, 6u * 1024 * 1024);
 	assert_int_equal(si->freeram, 3u * 1024 * 1024);
 	assert_int_equal(si->procs, 1);
 	assert_int_equal(si->mem_unit, 1);
 
-	/* An unavailable host metric is represented honestly, never by canned RAM. */
+	/* Host-heap availability does not change the guest region capacity. */
 	g_lxp_test_mem_stats_result = LXP_ERR_NOT_SUPPORTED;
 	struct conf_sysinfo *si_unavailable = lxp_conf_alloc(fx, sizeof(*si_unavailable));
 	assert_int_equal(SC(&p, LXP_NR_sysinfo, (long)(uintptr_t)si_unavailable, 0, 0, 0, 0, 0), 0);
-	assert_int_equal(si_unavailable->totalram, 0);
-	assert_int_equal(si_unavailable->freeram, 0);
+	assert_int_equal(si_unavailable->totalram, 6u * 1024 * 1024);
+	assert_int_equal(si_unavailable->freeram, 3u * 1024 * 1024);
 	assert_int_equal(si_unavailable->mem_unit, 1);
 	g_lxp_test_mem_stats_result = LXP_OK;
 
