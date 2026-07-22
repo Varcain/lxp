@@ -586,6 +586,7 @@ static void test_conf_identity(void **state)
 	assert_int_equal(SC(&p, LXP_NR_uname, (long)(uintptr_t)u, 0, 0, 0, 0, 0), 0);
 	assert_string_equal(u + 0 * 65, "Linux");
 	assert_string_equal(u + 2 * 65, "6.1.0");
+	assert_string_equal(u + 3 * 65, "TestRTOS 1.2.3 ove-abcdef0 lxp-1234567");
 	assert_string_equal(u + 4 * 65, "armv7l");
 
 	/* sysinfo: the fields uptime/free report. */

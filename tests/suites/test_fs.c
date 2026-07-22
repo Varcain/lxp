@@ -205,6 +205,14 @@ static void test_procfs(void **s)
 	assert_non_null(strstr(out, "MemFree:        3072 kB"));
 	assert_non_null(strstr(out, "MemAvailable:   3072 kB"));
 	assert_non_null(strstr(out, "SReclaimable:      0 kB"));
+
+	r = proc_gen("/proc/version", &p, out, sizeof(out) - 1);
+	assert_true(r > 0);
+	assert_true((size_t)r < sizeof(out));
+	out[r] = '\0';
+	assert_string_equal(out,
+			    "Linux version 6.1.0 (TestRTOS 1.2.3 ove-abcdef0 lxp-1234567) "
+			    "(uClibc)\n");
 }
 
 /* ---- pointer validators: user_ok / user_strnlen / file_mode ------------------- */

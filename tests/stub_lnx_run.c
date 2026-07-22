@@ -72,6 +72,10 @@ int lxp_mem_stats(struct lxp_mem_stats *out)
 	*out = g_lxp_test_mem_stats;
 	return LXP_OK;
 }
+const char *lxp_system_version(void)
+{
+	return "TestRTOS 1.2.3 ove-abcdef0 lxp-1234567";
+}
 void lxp_guest_flush(const void *base, size_t len)
 {
 	(void)base;

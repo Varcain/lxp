@@ -3613,12 +3613,14 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		char *u = (char *)(uintptr_t)a0;
 		if (!user_ok(proc, u, 6 * 65, 1))
 			return -LXP_EFAULT;
-		static const char *const f[6] = {"Linux",   "overtos", "6.1.0",
-						 "oveRTOS", "armv7l",  "(none)"};
+		const char *const f[6] = {"Linux", "overtos", "6.1.0", lxp_system_version(),
+					  "armv7l", "(none)"};
 		memset(u, 0, 6 * 65);
 		for (int i = 0; i < 6; i++) {
-			size_t l = strlen(f[i]);
-			memcpy(u + i * 65, f[i], l + 1);
+			size_t l = 0;
+			while (l < 64 && f[i][l])
+				l++;
+			memcpy(u + i * 65, f[i], l);
 		}
 		return 0;
 	}

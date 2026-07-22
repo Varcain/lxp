@@ -203,6 +203,15 @@ int lxp_mem_stats(struct lxp_mem_stats *out)
 		out->peak_used = out->total;
 	return rc;
 }
+const char *lxp_system_version(void)
+{
+	if (g_eng && g_eng->system_version) {
+		const char *version = g_eng->system_version();
+		if (version && version[0])
+			return version;
+	}
+	return "lxp";
+}
 void lxp_cache_clean(const void *base, size_t len)
 {
 	if (g_eng && g_eng->cache_clean)

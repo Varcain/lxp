@@ -42,6 +42,9 @@ uint8_t lxp_console_input_xlate(uint8_t ch);
  * is zeroed, so procfs/sysinfo never fall back to fabricated memory totals. */
 int lxp_mem_stats(struct lxp_mem_stats *out);
 
+/* Host-supplied utsname.version identity, or the honest module fallback "lxp". */
+const char *lxp_system_version(void);
+
 /* Encode a child's exit code (our convention: 128 + signal for a signal-killed child) as
  * a Linux wait(2) status word: WIFSIGNALED with the signal in the low 7 bits for 129..159,
  * else WIFEXITED with the code in bits 8-15. Shared by sys_wait4 + the coordinator's

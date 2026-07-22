@@ -206,7 +206,9 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		return (long)o;
 	}
 	if (strcmp(abs, "/proc/version") == 0) {
-		o = p_str(buf, o, cap, "Linux version 6.1.0 (overtos) (uClibc) #1 oveRTOS\n");
+		o = p_str(buf, o, cap, "Linux version 6.1.0 (");
+		o = p_str(buf, o, cap, lxp_system_version());
+		o = p_str(buf, o, cap, ") (uClibc)\n");
 	} else if (strcmp(abs, "/proc/uptime") == 0) {
 		uint64_t ns = 0;
 		lxp_time_ns(&ns);

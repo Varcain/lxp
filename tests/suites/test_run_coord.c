@@ -104,6 +104,10 @@ static void mock_event_post(void)
 {
 	g_mock.event_posts++;
 }
+static const char *mock_system_version(void)
+{
+	return "MockRTOS 9.8.7 ove-fedcba9 lxp-7654321";
+}
 
 static const lxp_os_ops_t g_mock_eng = {
 	.region = mock_region,
@@ -113,6 +117,7 @@ static const lxp_os_ops_t g_mock_eng = {
 	.event_post = mock_event_post,
 	.cache_clean = mock_cache_clean,
 	.cache_invalidate = mock_cache_invalidate,
+	.system_version = mock_system_version,
 };
 
 static void mock_on_guest_exit(const lxp_guest_exit_info_t *info)
@@ -144,6 +149,15 @@ static int reset_state(void **state)
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
 	return 0;
+}
+
+static void test_system_version_routes_to_engine(void **state)
+{
+	(void)state;
+	assert_string_equal(lxp_system_version(),
+			    "MockRTOS 9.8.7 ove-fedcba9 lxp-7654321");
+	g_eng = NULL;
+	assert_string_equal(lxp_system_version(), "lxp");
 }
 
 /* ---- wait-status encoding --------------------------------------------------- */
@@ -1023,6 +1037,7 @@ static void test_stop_notify_queues_without_wuntraced(void **state)
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
+		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
 		cmocka_unit_test_setup(test_kill_targets_process_group, reset_state),
 		cmocka_unit_test_setup(test_setpgid_getpgrp_track_group, reset_state),
 		cmocka_unit_test_setup(test_console_sigint_targets_fg_group, reset_state),

@@ -154,6 +154,11 @@ typedef struct lxp_os_ops {
 	 * zero memory rather than inventing a fixed total. Kept at the end so source
 	 * initializers for older ports remain valid. */
 	int (*mem_stats)(struct lxp_mem_stats *out);
+
+	/* Immutable host identity for the utsname.version field and /proc/version,
+	 * e.g. "Zephyr 4.4.0 ove-1a2b3c4 lxp-5d6e7f8". The returned string must
+	 * remain valid for the run; lxp truncates it to Linux's 64-byte field. */
+	const char *(*system_version)(void);
 } lxp_os_ops_t;
 
 /* ─────────────────────────────────────────────────────────────────────────

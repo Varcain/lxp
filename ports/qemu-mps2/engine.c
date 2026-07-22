@@ -447,6 +447,11 @@ static int qemu_mem_stats(struct lxp_mem_stats *out)
 	return LXP_OK;
 }
 
+static const char *qemu_system_version(void)
+{
+	return "FreeRTOS " tskKERNEL_VERSION_NUMBER " lxp-standalone";
+}
+
 /* Explicitly non-cryptographic entropy for the deterministic development-only
  * QEMU target. Production ports must provide a hardware/OS entropy source; the
  * personality core itself has no weak fallback. */
@@ -478,6 +483,7 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.time_ns = qemu_time_ns,
 	.random_fill = qemu_random_fill,
 	.mem_stats = qemu_mem_stats,
+	.system_version = qemu_system_version,
 	.dyn_pool = qemu_dyn_pool, /* M3: hosts a dynamic proc's libc.so mmap + arena */
 	/* map_device / thread_list / cache_* / rootfs_window / exec_stage: NULL — the
 	 * target is coherent (no cache), the rootfs is a plain RAM/PSRAM window (weak

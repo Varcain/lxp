@@ -56,7 +56,7 @@ Surface: 138 LXP_NR_* — 95 implemented, 32 benign-stub, 1 refused-eopnotsupp, 
 | 118 | fsync | benign-stub | writable overlay is RAM |
 | 119 | sigreturn | run-loop-handled | restores the pre-signal frame |
 | 120 | clone | run-loop-handled | CLONE_VM treated as a co-running thread |
-| 122 | uname | implemented | Linux/overtos/6.1.0/oveRTOS/armv7l/(none) |
+| 122 | uname | implemented | Linux identity + host RTOS/version/build revisions |
 | 125 | mprotect | benign-stub | no-op (NOMMU: no page protection) |
 | 140 | _llseek | implemented |  |
 | 141 | getdents | implemented | 32-bit dirent (uClibc readdir) |
