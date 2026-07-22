@@ -219,12 +219,16 @@ static void testpad_tick(uint64_t now_us)
 static void ft5336_tick(uint64_t now_us)
 {
 	static uint64_t last_us;
+	static int last_pressed;
 	if (now_us - last_us < 16000u)
 		return;
 	last_us = now_us;
 	int x, y, pressed;
-	if (g_lxp_disp_ops->touch_read(&x, &y, &pressed) == 0)
-		lxp_input_report_touch(x, y, pressed);
+	if (g_lxp_disp_ops->touch_read(&x, &y, &pressed) == 0) {
+		if (pressed || last_pressed)
+			lxp_input_report_touch(x, y, pressed);
+		last_pressed = pressed;
+	}
 }
 #endif
 
