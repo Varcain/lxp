@@ -99,7 +99,7 @@ static inline lxp_conf_t *lxp_conf_begin(lxp_proc_t *p, const lxp_file_t *rootfs
 		lxp_conf_release(&g_conf);
 		return NULL;
 	}
-	if (lxp_proc_init(p, &g_conf.arena, LXP_CONF_BRK) != LXP_OK) {
+	if (lxp_test_proc_init(p, &g_conf.arena, LXP_CONF_BRK) != LXP_OK) {
 		lxp_conf_release(&g_conf);
 		return NULL;
 	}

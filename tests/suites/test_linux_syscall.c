@@ -28,8 +28,8 @@ extern size_t g_lxp_test_cache_clean_len;
 
 /* The exec capture stores uint16_t offsets into its own backing buffer rather
  * than pointers, so resolve one to compare its text. */
-#define EXEC_ARG(p, j) ((p).exec_argv_buf + (p).exec_argv[j])
-#define EXEC_ENV(p, j) ((p).exec_env_buf + (p).exec_env[j])
+#define EXEC_ARG(p, j) ((p).exec_capture->argv_buf + (p).exec_capture->argv[j])
+#define EXEC_ENV(p, j) ((p).exec_capture->env_buf + (p).exec_capture->env[j])
 
 /* Captures fd 1/2 output so writes can be asserted by value. */
 static char g_cap[256];
@@ -51,7 +51,7 @@ static uint8_t g_pool[8192] __attribute__((aligned(16)));
 static void setup_proc(lxp_proc_t *p, lxp_arena_t *arena)
 {
 	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), OVE_OK);
-	assert_int_equal(lxp_proc_init(p, arena, 4096), OVE_OK);
+	assert_int_equal(lxp_test_proc_init(p, arena, 4096), OVE_OK);
 	/* The host test uses ordinary host buffers, not a bounded program region, so give this proc an
 	 * all-permitting access_ok range (NULL is still rejected via region_lo=1). On-target the run loop
 	 * restricts region_lo/hi to the real image region. */
@@ -429,20 +429,20 @@ static void test_lnx_exec_capture_is_per_proc(void **state)
 
 	assert_int_equal(a.exec_pending, 1);
 	assert_int_equal(b.exec_pending, 1);
-	assert_int_equal(a.exec_argc, 2);
-	assert_int_equal(b.exec_argc, 3);
+	assert_int_equal(a.exec_capture->argc, 2);
+	assert_int_equal(b.exec_capture->argc, 3);
 	assert_string_equal(EXEC_ARG(a, 0), "aaa");
 	assert_string_equal(EXEC_ARG(a, 1), "a1");
 	assert_string_equal(EXEC_ARG(b, 0), "bbb");
 	assert_string_equal(EXEC_ARG(b, 2), "b2");
-	assert_int_equal(a.exec_envc, 1);
-	assert_int_equal(b.exec_envc, 1);
+	assert_int_equal(a.exec_capture->envc, 1);
+	assert_int_equal(b.exec_capture->envc, 1);
 	assert_string_equal(EXEC_ENV(a, 0), "A=1");
 	assert_string_equal(EXEC_ENV(b, 0), "B=2");
 
 	/* The buffers are distinct storage, not two views of one staging area. */
-	assert_ptr_not_equal(a.exec_argv_buf, b.exec_argv_buf);
-	assert_ptr_not_equal(a.exec_env_buf, b.exec_env_buf);
+	assert_ptr_not_equal(a.exec_capture->argv_buf, b.exec_capture->argv_buf);
+	assert_ptr_not_equal(a.exec_capture->env_buf, b.exec_capture->env_buf);
 }
 
 /* Exec a #! script whose interpreter is a symlink — BusyBox init running
@@ -478,7 +478,7 @@ static void test_lnx_exec_script_symlink_interp(void **state)
 	/* Re-targeted at the interpreter's target, not the script. */
 	assert_int_equal(p.exec_pending, 1);
 	assert_string_equal(k_lnkfs[p.exec_file_idx].path, "/bin/busybox");
-	assert_int_equal(p.exec_argc, 2);
+	assert_int_equal(p.exec_capture->argc, 2);
 	assert_string_equal(EXEC_ARG(p, 0), "/bin/sh");
 	assert_string_equal(EXEC_ARG(p, 1), "/etc/init.d/rcS");
 }
@@ -675,7 +675,7 @@ static void test_lnx_execve(void **state)
 			 0);
 	assert_int_equal(p.exec_pending, 1);
 	assert_string_equal(k_rootfs[p.exec_file_idx].path, "/bin/sh");
-	assert_int_equal(p.exec_argc, 2);
+	assert_int_equal(p.exec_capture->argc, 2);
 	assert_string_equal(EXEC_ARG(p, 0), "prog");
 	assert_string_equal(EXEC_ARG(p, 1), "x");
 
@@ -683,7 +683,7 @@ static void test_lnx_execve(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/bin/script",
 					 (long)(uintptr_t)argv, 0, 0, 0, 0),
 			 0);
-	assert_int_equal(p.exec_argc, 4);
+	assert_int_equal(p.exec_capture->argc, 4);
 	assert_string_equal(EXEC_ARG(p, 0), "/bin/sh");
 	assert_string_equal(EXEC_ARG(p, 1), "-e");
 	assert_string_equal(EXEC_ARG(p, 2), "/bin/script");
@@ -694,7 +694,7 @@ static void test_lnx_execve(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/bin/sh",
 					 (long)(uintptr_t)argv, (long)(uintptr_t)envp, 0, 0, 0),
 			 0);
-	assert_int_equal(p.exec_envc, 2);
+	assert_int_equal(p.exec_capture->envc, 2);
 	assert_string_equal(EXEC_ENV(p, 0), "PATH=/bin:/sbin");
 	assert_string_equal(EXEC_ENV(p, 1), "TERM=vt100");
 
@@ -702,7 +702,7 @@ static void test_lnx_execve(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/bin/sh",
 					 (long)(uintptr_t)argv, 0, 0, 0, 0),
 			 0);
-	assert_int_equal(p.exec_envc, 0);
+	assert_int_equal(p.exec_capture->envc, 0);
 
 	/* A missing path is -ENOENT; exec'ing a directory is -EACCES. */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t) "/nope",

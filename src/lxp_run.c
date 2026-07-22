@@ -649,7 +649,7 @@ static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 }
 
 /* Copy a captured argv/envp vector out of the proc into a static staging buffer (needed
- * because launch() re-inits the slot, clearing exec_argv_buf/exec_env_buf), writing the
+ * because launch() re-inits the slot, clearing the bound capture), writing the
  * NUL-terminated pointers into ptrs[0..count] with a trailing NULL. The capture stores
  * offsets into @p src_buf, so the trusted pointer vector is rebuilt only here, for the
  * launch that consumes it. */
@@ -932,6 +932,7 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	}
 	lxp_arena_init(&g_arenas[ridx], arena_mem, arena_sz);
 	lxp_proc_init(&g_lxp_proc[sidx], &g_arenas[ridx], 0x8000);
+	lxp_proc_bind_exec_capture(&g_lxp_proc[sidx], eng->exec_capture(sidx));
 	/* A fresh image has no handler return chain from the previous slot owner.
 	 * execve likewise discards the old image's in-flight signal contexts. */
 	g_sig_save[sidx].depth = 0;
@@ -1376,8 +1377,11 @@ static void vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *par, int rsnap,
 int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		       const char *path, int argc, const char *const argv[])
 {
-	if (!eng || !cfg || !cfg->rootfs || !path || argc < 1 || !argv)
+	if (!eng || !eng->exec_capture || !cfg || !cfg->rootfs || !path || argc < 1 || !argv)
 		return LXP_RUN_ELAUNCH;
+	for (int s = 0; s < LXP_NSLOT; s++)
+		if (!eng->exec_capture(s))
+			return LXP_RUN_ELAUNCH;
 	g_cfg = cfg;
 	g_eng = eng;
 	g_lxp_rootfs_lo = NULL; /* the cpio span — a seam's svc discrimination treats a cpio PC */
@@ -1604,6 +1608,9 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			lxp_proc_t *ch = &g_lxp_proc[c];
 			deferred_slot_reassign(c);
 			*ch = *par; /* vfork shares the image + region */
+			/* The struct copy inherits the parent's pointer, but every slot owns an
+			 * independent transient exec capture. The child has no pending exec yet. */
+			lxp_proc_bind_exec_capture(ch, eng->exec_capture(c));
 			/* fork/clone resumes from the same instruction stream. If it was called
 			 * inside a handler, both parent and child may reach the restorer and each
 			 * therefore needs an independent copy of the active return chain. */
@@ -1704,15 +1711,21 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		    LXP_EV_EXEC) { /* the child gets its own region → resume any vfork parent NOW. */
 			lxp_proc_t *p = &g_lxp_proc[es];
 			deferred_slot_reassign(es); /* invalidate the old image's completed request token */
-			int idx = p->exec_file_idx, eargc = p->exec_argc, eenvc = p->exec_envc;
+			lxp_exec_capture_t *cap = p->exec_capture;
+			if (!cap) { /* a port contract violation: contain it to this process */
+				p->exit_status = 127;
+				p->exited = 1;
+				continue;
+			}
+			int idx = p->exec_file_idx, eargc = cap->argc, eenvc = cap->envc;
 			/* Copy argv AND envp out of the proc into static buffers before launch()
-			 * re-inits the slot (which clears exec_argv_buf / exec_env_buf). */
+			 * re-inits the slot (which clears the bound capture). */
 			static char args[LXP_EXEC_ARGBUF];
 			static const char *ptrs[LXP_EXEC_MAXARGS + 1];
 			static char envs[LXP_EXEC_ENVBUF];
 			static const char *eptrs[LXP_EXEC_MAXENVS + 1];
-			flatten_vec(args, ptrs, p->exec_argv_buf, p->exec_argv, eargc);
-			flatten_vec(envs, eptrs, p->exec_env_buf, p->exec_env, eenvc);
+			flatten_vec(args, ptrs, cap->argv_buf, cap->argv, eargc);
+			flatten_vec(envs, eptrs, cap->env_buf, cap->env, eenvc);
 			/* Reuse the reserved snapshot region as the exec image region — it's free once we
 			 * restore the parent from it below, and reserving it at fork is why exec always has
 			 * a region. No snapshot (region-pressure fallback) → find a free region as before. */

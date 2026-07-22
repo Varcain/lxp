@@ -33,6 +33,7 @@ extern "C" {
  * saved register context). The port only ever passes pointers to these. */
 typedef struct lxp_flat lxp_flat_t;             /* full def in lxp_loader.h  */
 typedef struct lxp_run_config lxp_run_config_t; /* full def in lxp_run.h     */
+typedef struct lxp_exec_capture lxp_exec_capture_t; /* full def in lxp_syscall.h */
 struct lxp_resume_ctx;                          /* full def in lxp_run_internal.h */
 
 /* Host-owned opaque handles: the module holds these, the port allocates the
@@ -108,6 +109,9 @@ typedef struct lxp_os_ops {
 	/* FDPIC dynamic-linking scratch pool for region `ridx` (ld.so mmaps libc
 	 * here). NULL => dynamic execs can't launch on that engine. */
 	uint8_t *(*dyn_pool)(int ridx, size_t *size);
+	/* Privileged cold storage for slot `sidx`'s transient execve argv/env
+	 * capture. Required by the coordinator; ports may place it in external RAM. */
+	lxp_exec_capture_t *(*exec_capture)(int sidx);
 	/* Map [addr,addr+size) RW into slot sidx's view with attrs (LXP_MAP_*).
 	 * NULL => a device mmap returns -ENODEV. */
 	int (*map_device)(int sidx, uintptr_t addr, size_t size, unsigned attrs);

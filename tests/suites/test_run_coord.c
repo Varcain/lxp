@@ -52,6 +52,7 @@ static struct {
 
 static uint8_t g_mock_regions[LXP_NREG][256];
 static uint8_t g_mock_dyn_pools[LXP_NREG][64];
+static lxp_exec_capture_t g_mock_exec_captures[LXP_NSLOT];
 
 static uint8_t *mock_region(int ridx)
 {
@@ -62,6 +63,10 @@ static uint8_t *mock_dyn_pool(int ridx, size_t *size)
 	if (size)
 		*size = sizeof(g_mock_dyn_pools[ridx]);
 	return g_mock_dyn_pools[ridx];
+}
+static lxp_exec_capture_t *mock_exec_capture(int sidx)
+{
+	return (sidx >= 0 && sidx < LXP_NSLOT) ? &g_mock_exec_captures[sidx] : NULL;
 }
 static void mock_cache_clean(const void *base, size_t len)
 {
@@ -112,6 +117,7 @@ static const char *mock_system_version(void)
 static const lxp_os_ops_t g_mock_eng = {
 	.region = mock_region,
 	.dyn_pool = mock_dyn_pool,
+	.exec_capture = mock_exec_capture,
 	.spawn_resume = mock_spawn_resume,
 	.abort_slot = mock_abort_slot,
 	.event_post = mock_event_post,

@@ -279,6 +279,15 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 	return LXP_OK;
 }
 
+void lxp_proc_bind_exec_capture(lxp_proc_t *proc, lxp_exec_capture_t *capture)
+{
+	if (!proc)
+		return;
+	proc->exec_capture = capture;
+	if (capture)
+		memset(capture, 0, sizeof(*capture));
+}
+
 void lxp_proc_set_rootfs(lxp_proc_t *proc, const lxp_file_t *files, int count)
 {
 	if (!proc)
@@ -2684,9 +2693,9 @@ static long exec_copy_vec(lxp_proc_t *p, char *const uvec[], uint16_t *vec, char
 	return -LXP_E2BIG;
 }
 
-/* Rewrite an already-snapshotted script argv in place. Keeping the snapshot in the process
- * object avoids a second 256-byte argument buffer on the coordinator task's embedded stack. */
-static long exec_rewrite_script_argv(lxp_proc_t *p, int old_argc, size_t old_bytes,
+/* Rewrite an already-snapshotted script argv in place. Keeping the snapshot in privileged
+ * slot storage avoids a second argument buffer on the coordinator task's embedded stack. */
+static long exec_rewrite_script_argv(lxp_exec_capture_t *cap, int old_argc, size_t old_bytes,
 				     const char *interp, const char *iarg, int have_iarg,
 				     const char *script, int *new_argc)
 {
@@ -2697,7 +2706,7 @@ static long exec_rewrite_script_argv(lxp_proc_t *p, int old_argc, size_t old_byt
 
 	size_t tail_off = old_bytes;
 	if (tail_count)
-		tail_off = p->exec_argv[1];
+		tail_off = cap->argv[1];
 	if (tail_off > old_bytes)
 		return -LXP_EFAULT; /* internal snapshot invariant */
 	size_t tail_bytes = old_bytes - tail_off;
@@ -2710,30 +2719,30 @@ static long exec_rewrite_script_argv(lxp_proc_t *p, int old_argc, size_t old_byt
 	size_t prefix_bytes = 0;
 	for (int j = 0; j < prefix_count; j++) {
 		size_t len = strlen(prefix[j]) + 1;
-		if (prefix_bytes > sizeof(p->exec_argv_buf) ||
-		    len > sizeof(p->exec_argv_buf) - prefix_bytes)
+		if (prefix_bytes > sizeof(cap->argv_buf) ||
+		    len > sizeof(cap->argv_buf) - prefix_bytes)
 			return -LXP_E2BIG;
 		prefix_bytes += len;
 	}
-	if (tail_bytes > sizeof(p->exec_argv_buf) - prefix_bytes)
+	if (tail_bytes > sizeof(cap->argv_buf) - prefix_bytes)
 		return -LXP_E2BIG;
 
-	memmove(p->exec_argv_buf + prefix_bytes, p->exec_argv_buf + tail_off, tail_bytes);
+	memmove(cap->argv_buf + prefix_bytes, cap->argv_buf + tail_off, tail_bytes);
 	size_t off = 0;
 	for (int j = 0; j < prefix_count; j++) {
 		size_t len = strlen(prefix[j]) + 1;
-		p->exec_argv[j] = (uint16_t)off;
-		memcpy(p->exec_argv_buf + off, prefix[j], len);
+		cap->argv[j] = (uint16_t)off;
+		memcpy(cap->argv_buf + off, prefix[j], len);
 		off += len;
 	}
 	for (int j = 0; j < tail_count; j++) {
-		p->exec_argv[prefix_count + j] = (uint16_t)off;
-		off += strlen(p->exec_argv_buf + off) + 1;
+		cap->argv[prefix_count + j] = (uint16_t)off;
+		off += strlen(cap->argv_buf + off) + 1;
 	}
 	/* The rewrite shortens the vector when the script took no arguments; leave
 	 * nothing from the pre-rewrite capture readable as a valid offset. */
 	for (int j = prefix_count + tail_count; j < LXP_EXEC_MAXARGS; j++)
-		p->exec_argv[j] = LXP_EXEC_OFF_NONE;
+		cap->argv[j] = LXP_EXEC_OFF_NONE;
 	*new_argc = prefix_count + tail_count;
 	return 0;
 }
@@ -2742,20 +2751,23 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 {
 	if (!path)
 		return -LXP_EFAULT;
+	lxp_exec_capture_t *cap = p->exec_capture;
+	if (!cap)
+		return -LXP_ENOMEM;
 	/* Snapshot both vectors before path resolution. This bounds work to the actual storage the
 	 * relaunch can preserve instead of scanning and silently dropping hundreds of strings. */
 	int raw_argc = 0, envc = 0;
 	size_t raw_argbytes = 0;
-	long vr = exec_copy_vec(p, argv, p->exec_argv, p->exec_argv_buf,
-				sizeof(p->exec_argv_buf), LXP_EXEC_MAXARGS, &raw_argc,
+	long vr = exec_copy_vec(p, argv, cap->argv, cap->argv_buf,
+				sizeof(cap->argv_buf), LXP_EXEC_MAXARGS, &raw_argc,
 				&raw_argbytes);
 	if (vr < 0)
 		return vr;
-	vr = exec_copy_vec(p, envp, p->exec_env, p->exec_env_buf, sizeof(p->exec_env_buf),
+	vr = exec_copy_vec(p, envp, cap->env, cap->env_buf, sizeof(cap->env_buf),
 			   LXP_EXEC_MAXENVS, &envc, NULL);
 	if (vr < 0)
 		return vr;
-	p->exec_envc = envc;
+	cap->envc = envc;
 	char execabs[LXP_PATH_MAX];
 	long rr = resolve_path(p, path, execabs, sizeof(execabs));
 	if (rr < 0)
@@ -2768,7 +2780,7 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 		for (int cfd = 0; cfd < LXP_MAX_FDS; cfd++)
 			if (p->fds[cfd].kind != LXP_FD_FREE && p->fds[cfd].cloexec)
 				sys_close(p, cfd);
-		p->exec_argc = raw_argc;
+		cap->argc = raw_argc;
 		return lxp_netfs_exec_fetch(p, execabs); /* parks, or a negative errno inline */
 	}
 #endif
@@ -2829,7 +2841,7 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 
 	int argc = raw_argc;
 	if (interp_idx >= 0) {
-		long ar = exec_rewrite_script_argv(p, raw_argc, raw_argbytes, interp, iarg,
+		long ar = exec_rewrite_script_argv(cap, raw_argc, raw_argbytes, interp, iarg,
 						   have_iarg, execabs, &argc);
 		if (ar < 0)
 			return ar;
@@ -2847,7 +2859,7 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	for (int cfd = 0; cfd < LXP_MAX_FDS; cfd++)
 		if (p->fds[cfd].kind != LXP_FD_FREE && p->fds[cfd].cloexec)
 			sys_close(p, cfd);
-	p->exec_argc = argc;
+	cap->argc = argc;
 	p->exec_file_idx = idx;
 	p->exec_pending = 1;
 	return 0;

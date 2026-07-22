@@ -504,7 +504,7 @@ typedef struct lxp_fd {
 #endif
 /** Marks an exec vector entry the capture never wrote. Offset 0 is a legitimate
  * entry (the first captured string sits at the start of its buffer), so this is
- * not a terminator — @c exec_argc / @c exec_envc bound the vectors. It exists so
+ * not a terminator — the capture's @c argc / @c envc bound the vectors. It exists so
  * a stale entry from a previous image reads as obviously invalid rather than as
  * a plausible offset. */
 #define LXP_EXEC_OFF_NONE ((uint16_t)0xffffu)
@@ -532,6 +532,24 @@ _Static_assert(LXP_EXEC_ENVBUF < LXP_EXEC_OFF_NONE, "LXP_EXEC_ENVBUF exceeds uin
 _Static_assert(LXP_EXEC_MAXARGS <= LXP_EXEC_ARGBUF, "more argv entries than argv buffer bytes");
 _Static_assert(LXP_EXEC_MAXENVS <= LXP_EXEC_ENVBUF, "more envp entries than envp buffer bytes");
 _Static_assert(LXP_EXEC_MAXARGS >= 4, "argv vector too short for a #! rewrite plus one argument");
+
+/**
+ * @brief Transient argv/environment capture for an execve request.
+ *
+ * The coordinator consumes this state as soon as the calling process parks for
+ * image replacement.  Keeping the sizeable string stores outside @ref lxp_proc
+ * lets constrained ports place them in privileged external RAM while the hot
+ * process state remains in internal SRAM.  A capture is private to one process
+ * slot and must remain valid for that slot's lifetime.
+ */
+typedef struct lxp_exec_capture {
+	int argc; /**< Captured argument count. */
+	uint16_t argv[LXP_EXEC_MAXARGS]; /**< Offsets into @ref argv_buf. */
+	char argv_buf[LXP_EXEC_ARGBUF];  /**< Captured argument strings. */
+	int envc; /**< Captured environment count. */
+	uint16_t env[LXP_EXEC_MAXENVS]; /**< Offsets into @ref env_buf. */
+	char env_buf[LXP_EXEC_ENVBUF];  /**< Captured environment strings. */
+} lxp_exec_capture_t;
 
 /**
  * @brief A Linux process context — the state syscalls act on.
@@ -601,20 +619,12 @@ typedef struct lxp_proc {
 	uint64_t sigsuspend_saved_mask;
 	int sigsuspend_active; /**< Wait mask installed; next caught signal frame consumes saved_mask. */
 	/* execve request: the engine seam relaunches the thread on this rootfs
-	 * program with the captured argument vector (image replacement). */
+	 * program with the captured argument vector (image replacement). The large
+	 * transient payload is port-owned cold storage so it need not be replicated
+	 * in scarce internal SRAM with the hot process table. */
 	int exec_pending;	   /**< Set when execve() should relaunch. */
 	int exec_file_idx;	   /**< Rootfs index of the program to run. */
-	int exec_argc;		   /**< Captured argument count. */
-	/* Offsets, not pointers: this capture is replicated across every slot, so a
-	 * pointer costs 4 bytes per entry on the target to address a buffer only
-	 * LXP_EXEC_ARGBUF bytes wide. uint16_t halves that and buys argument
-	 * capacity for free. Offset 0 is a valid entry — @c exec_argc bounds the
-	 * vector; LXP_EXEC_OFF_NONE only marks entries the capture never wrote. */
-	uint16_t exec_argv[LXP_EXEC_MAXARGS]; /**< Captured argv: offsets into exec_argv_buf. */
-	char exec_argv_buf[LXP_EXEC_ARGBUF];  /**< Backing store for exec_argv. */
-	int exec_envc;			      /**< Captured environment count. */
-	uint16_t exec_env[LXP_EXEC_MAXENVS];  /**< Captured envp: offsets into exec_env_buf. */
-	char exec_env_buf[LXP_EXEC_ENVBUF];   /**< Backing store for exec_env. */
+	lxp_exec_capture_t *exec_capture; /**< Port-owned capture, or NULL if exec is unavailable. */
 	/* nanosleep request: the dispatch parks the program and the run loop delays
 	 * to the deadline (so RTOS idle/kernel threads run + time advances). */
 	int sleep_pending;	 /**< Set when nanosleep() should park + delay. */
@@ -859,6 +869,9 @@ long lxp_rootfs_resolve(const lxp_file_t *fs, int count, const char *abspath,
  * @note Requires @c LXP_ENABLE_LINUX.
  */
 int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes);
+
+/** Bind and clear the transient exec capture owned by @p proc's process slot. */
+void lxp_proc_bind_exec_capture(lxp_proc_t *proc, lxp_exec_capture_t *capture);
 
 /* ELF auxiliary-vector types in the startup block (uClibc scans them after envp). */
 #define LXP_AT_NULL 0

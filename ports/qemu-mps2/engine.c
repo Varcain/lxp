@@ -33,6 +33,10 @@
 /* Monotonic microsecond clock, maintained by the FreeRTOS tick hook (boot.c). */
 extern uint64_t lxp_qemu_now_us(void);
 
+/* Cold per-slot execve captures stay in the harness's roomy SRAM. Production
+ * STM32 ports place the same port-owned storage in external SDRAM. */
+static lxp_exec_capture_t g_exec_captures[LXP_NSLOT];
+
 /* ---- guest program regions (RW image + arena + stack), in RAM --------------- */
 /* Plain .bss (zeroed by Reset): the FDPIC loader relies on the region — the guest's
  * .bss + arena — starting zeroed. A NOLOAD section would be uninitialised garbage. */
@@ -326,6 +330,11 @@ static uint8_t *qemu_dyn_pool(int ridx, size_t *sz)
 	return g_dyn_pools[ridx];
 }
 
+static lxp_exec_capture_t *qemu_exec_capture(int sidx)
+{
+	return (sidx >= 0 && sidx < LXP_NSLOT) ? &g_exec_captures[sidx] : NULL;
+}
+
 /* Spawn the guest as a RESTRICTED, UNPRIVILEGED FreeRTOS task entering prog_tramp.
  * Its only RW regions are its program region + dyn_pool (both execute-never), plus an
  * unprivileged RO+X window over the PSRAM cpio so it can XIP ld.so/libc/busybox in
@@ -485,6 +494,7 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.mem_stats = qemu_mem_stats,
 	.system_version = qemu_system_version,
 	.dyn_pool = qemu_dyn_pool, /* M3: hosts a dynamic proc's libc.so mmap + arena */
+	.exec_capture = qemu_exec_capture,
 	/* map_device / thread_list / cache_* / rootfs_window / exec_stage: NULL — the
 	 * target is coherent (no cache), the rootfs is a plain RAM/PSRAM window (weak
 	 * lxp_rootfs_window no-op), and the spawn path already installs each task's MPU

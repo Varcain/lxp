@@ -45,7 +45,7 @@ static long bounded_sink(void *ctx, int fd, const void *buf, size_t len)
 static void setup_proc(lxp_proc_t *p, lxp_arena_t *arena)
 {
 	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), LXP_OK);
-	assert_int_equal(lxp_proc_init(p, arena, 4096), LXP_OK);
+	assert_int_equal(lxp_test_proc_init(p, arena, 4096), LXP_OK);
 	p->region_lo = 1;
 	p->region_hi = UINTPTR_MAX; /* all-permitting; a test narrows it when needed */
 	p->pool_lo = p->pool_hi = 0;
@@ -247,8 +247,8 @@ static void test_exec_vector_bounds(void **st)
 /* The boundary itself, from the accepting side. The vectors are snapshotted
  * before the path is resolved, so a vector the capture accepts still fails on
  * the missing program: ENOENT means "the vector fit", E2BIG would mean the limit
- * is off by one. exec_argc is not asserted — sys_execve only commits it once the
- * program resolves — so the capture is read through the offsets it wrote. */
+ * is off by one. The capture's argc is not asserted — sys_execve only commits it
+ * once the program resolves — so the capture is read through the offsets it wrote. */
 static void test_exec_vector_at_limit(void **st)
 {
 	(void)st;
@@ -265,8 +265,8 @@ static void test_exec_vector_at_limit(void **st)
 			 -LXP_ENOENT);
 	/* Every entry up to the limit was captured, the last one included. */
 	for (int i = 0; i < LXP_EXEC_MAXARGS; i++) {
-		assert_int_not_equal(p.exec_argv[i], LXP_EXEC_OFF_NONE);
-		assert_string_equal(p.exec_argv_buf + p.exec_argv[i], "x");
+		assert_int_not_equal(p.exec_capture->argv[i], LXP_EXEC_OFF_NONE);
+		assert_string_equal(p.exec_capture->argv_buf + p.exec_capture->argv[i], "x");
 	}
 
 	/* And the payload boundary: a string that exactly fills the buffer with its
@@ -278,8 +278,8 @@ static void test_exec_vector_at_limit(void **st)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)"/bin/x",
 				     (long)(uintptr_t)full_argv, 0, 0, 0, 0),
 			 -LXP_ENOENT);
-	assert_int_equal(p.exec_argv[0], 0);
-	assert_string_equal(p.exec_argv_buf + p.exec_argv[0], exact_buf);
+	assert_int_equal(p.exec_capture->argv[0], 0);
+	assert_string_equal(p.exec_capture->argv_buf + p.exec_capture->argv[0], exact_buf);
 }
 
 /* A slot outlives the image that captured into it. A shorter vector must not
@@ -296,15 +296,15 @@ static void test_exec_vector_no_stale_offsets(void **st)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)"/bin/x",
 				     (long)(uintptr_t)many, 0, 0, 0, 0),
 			 -LXP_ENOENT);
-	assert_string_equal(p.exec_argv_buf + p.exec_argv[3], "ddd");
+	assert_string_equal(p.exec_capture->argv_buf + p.exec_capture->argv[3], "ddd");
 
 	char *few[] = {(char *)"z", NULL};
 	assert_int_equal(lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)"/bin/x",
 				     (long)(uintptr_t)few, 0, 0, 0, 0),
 			 -LXP_ENOENT);
-	assert_string_equal(p.exec_argv_buf + p.exec_argv[0], "z");
+	assert_string_equal(p.exec_capture->argv_buf + p.exec_capture->argv[0], "z");
 	for (int i = 1; i < LXP_EXEC_MAXARGS; i++)
-		assert_int_equal(p.exec_argv[i], LXP_EXEC_OFF_NONE);
+		assert_int_equal(p.exec_capture->argv[i], LXP_EXEC_OFF_NONE);
 }
 
 /* 2g: dup(2)/dup2 clear FD_CLOEXEC on the new fd (Linux ABI). */

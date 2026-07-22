@@ -19,6 +19,8 @@
 
 /* The suites assert against OVE_OK; in lxp that is LXP_OK (0). */
 #include "lxp/lxp_types.h"
+#include "lxp/lxp_arena.h"
+#include "lxp/lxp_syscall.h"
 #ifndef OVE_OK
 #define OVE_OK LXP_OK
 #endif
@@ -29,6 +31,35 @@ extern size_t g_lxp_test_random_calls;
 extern size_t g_lxp_test_random_len;
 extern int g_lxp_test_mem_stats_result;
 extern struct lxp_mem_stats g_lxp_test_mem_stats;
+
+/* Host tests put process objects on their stack, while production ports own a
+ * stable capture per slot. Associate the handful of simultaneously-live test
+ * objects with independent captures so execve exercises the production API. */
+static inline int lxp_test_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
+{
+	struct capture_slot {
+		lxp_proc_t *owner;
+		lxp_exec_capture_t capture;
+	};
+	static struct capture_slot slots[8];
+	struct capture_slot *free_slot = NULL;
+	for (size_t i = 0; i < sizeof(slots) / sizeof(slots[0]); i++) {
+		if (slots[i].owner == proc) {
+			free_slot = &slots[i];
+			break;
+		}
+		if (!slots[i].owner && !free_slot)
+			free_slot = &slots[i];
+	}
+	if (!free_slot)
+		return LXP_ERR_NO_MEMORY;
+	int rc = lxp_proc_init(proc, arena, brk_bytes);
+	if (rc != LXP_OK)
+		return rc;
+	free_slot->owner = proc;
+	lxp_proc_bind_exec_capture(proc, &free_slot->capture);
+	return LXP_OK;
+}
 
 /* Suite entry points — one per tests/suites/test_<name>.c. */
 int test_arena_run(void);
