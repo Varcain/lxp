@@ -6,16 +6,16 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * The standalone QEMU harness engine: it fills lxp_os_ops_t on top of a vendored
- * FreeRTOS kernel (Arm MPS2-AN500 / Cortex-M7, non-MPU port), so the lxp module
+ * FreeRTOS kernel (Arm MPS2-AN500 / Cortex-M7, ARM_CM4_MPU port), so the lxp module
  * runs under QEMU with FreeRTOS providing the proven task/context-switch — this is
  * a de-oveRTOS'd distillation of backends/freertos/freertos_lnx.c. Each guest is a
  * FreeRTOS task; its Linux syscall traps to SVC_Handler, which captures the frame,
  * drives lxp_dispatch(), and (on a park) wakes the coordinator via a semaphore.
  *
- * M1 scope: guests run PRIVILEGED, no MPU (the process model is cooperative +
- * serialized). Unprivileged + per-region MPU (the ARM_CM4_MPU port + the QSPI/PSRAM
- * XIP window) is a later milestone; the module's user_ok/user_strnlen guards still
- * cover the confused-deputy vector meanwhile.
+ * Guests are restricted, unprivileged tasks. Per-task MPU regions grant only the
+ * program, dynamic pool and rootfs XIP windows; user_ok/user_strnlen remain the
+ * privileged dispatcher's confused-deputy guards rather than a substitute for
+ * MPU isolation.
  */
 
 #include "FreeRTOS.h"
@@ -487,5 +487,6 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.dyn_pool = qemu_dyn_pool, /* M3: hosts a dynamic proc's libc.so mmap + arena */
 	/* map_device / thread_list / cache_* / rootfs_window / exec_stage: NULL — the
 	 * target is coherent (no cache), the rootfs is a plain RAM/PSRAM window (weak
-	 * lxp_rootfs_window no-op), and MPU/devices/netfs are later milestones. */
+	 * lxp_rootfs_window no-op), and the spawn path already installs each task's MPU
+	 * view. Device mapping and netfs exec staging are not provided by this port. */
 };

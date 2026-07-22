@@ -3429,8 +3429,8 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_fchmod: /* modes/ownership not tracked (login chmods the tty) */
 	case LXP_NR_fchown32:
 	case LXP_NR_chown32: /* dropbear chowns the pty over SSH; ownership not enforced (inert) */
-	case LXP_NR_setgroups32: /* uid/gid not enforced (login's privilege drop is */
-	case LXP_NR_setuid32:    /* inert — programs run privileged in this tier) */
+	case LXP_NR_setgroups32: /* uid/gid policy is not implemented (login's credential drop is */
+	case LXP_NR_setuid32:    /* accepted inert; CPU privilege remains engine-enforced nPRIV/user) */
 	case LXP_NR_setgid32:
 	case LXP_NR_setreuid32: /* dropbear's post-auth privilege drop: accept (inert) so it */
 	case LXP_NR_setregid32: /* does not abort — a failed drop is fatal to an SSH server */
