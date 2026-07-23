@@ -289,6 +289,7 @@ extern "C" {
 #define LXP_EXIT_REASON_MEMORY_FAULT 4
 #define LXP_EXIT_REASON_EXEC_RESOURCE 5
 #define LXP_EXIT_REASON_EXEC_LOAD 6
+#define LXP_EXIT_REASON_STATE_CORRUPTION 7
 /* rt_sigprocmask(2) `how` values. */
 #define LXP_SIG_BLOCK 0
 #define LXP_SIG_UNBLOCK 1

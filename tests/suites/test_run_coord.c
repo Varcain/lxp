@@ -143,6 +143,8 @@ static int reset_state(void **state)
 	memset(g_lxp_used, 0, sizeof(g_lxp_used));
 	memset(g_deferred, 0, sizeof(g_deferred));
 	memset(g_slot_generation, 0, sizeof(g_slot_generation));
+	memset(g_region_generation, 0, sizeof(g_region_generation));
+	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
 	memset(g_ctx, 0, sizeof(g_ctx));
 	memset(g_sig_save, 0, sizeof(g_sig_save));
 	memset(g_mock_regions, 0, sizeof(g_mock_regions));
@@ -150,6 +152,9 @@ static int reset_state(void **state)
 	memset(&g_mock, 0, sizeof(g_mock));
 	for (int r = 0; r < LXP_NREG; r++)
 		g_region_owner[r] = -1;
+	for (int s = 0; s < LXP_NSLOT; s++)
+		g_vfork_guard[s].parent_slot = g_vfork_guard[s].parent_region =
+			g_vfork_guard[s].snapshot_region = -1;
 	lxp_console_set_fg_pgrp(0);
 	g_eng = &g_mock_eng;
 	g_cfg = NULL;
@@ -425,12 +430,9 @@ static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
 		g_mock_regions[0][i] = (uint8_t)(i ^ 0x3cu);
 	for (size_t i = 0; i < sizeof(g_mock_dyn_pools[0]); i++)
 		g_mock_dyn_pools[0][i] = (uint8_t)(i ^ 0xa5u);
-	int rowner[LXP_NREG];
-	for (int i = 0; i < LXP_NREG; i++)
-		rowner[i] = -1;
-	rowner[0] = 0;
+	(void)region_reserve(0, 0);
 
-	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, rowner, sp), 1);
+	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, sp), 1);
 	assert_memory_equal(g_mock_regions[1], g_mock_regions[0], 128u);
 	assert_memory_equal(&g_mock_regions[1][192], &g_mock_regions[0][192], 64u);
 	for (size_t i = 128u; i < 192u; i++)
@@ -479,7 +481,15 @@ static void test_vfork_restore_publishes_cacheable_parent(void **state)
 	memset(&g_mock_regions[0][192], 0xbb, 64u);
 	memset(g_mock_dyn_pools[0], 0xdd, sizeof(g_mock_dyn_pools[0]));
 
-	vfork_restore(&g_mock_eng, p, 1, 1, sp);
+	(void)region_reserve(0, 0);
+	(void)region_reserve(1, 1);
+	g_vfork_guard[1].parent_slot = 0;
+	g_vfork_guard[1].parent_slot_generation = g_slot_generation[0];
+	g_vfork_guard[1].parent_region = 0;
+	g_vfork_guard[1].parent_region_generation = g_region_generation[0];
+	g_vfork_guard[1].snapshot_region = 1;
+	g_vfork_guard[1].snapshot_region_generation = g_region_generation[1];
+	assert_int_equal(vfork_restore(&g_mock_eng, p, 1, 1, sp), 0);
 
 	assert_memory_equal(g_mock_regions[0], g_mock_regions[1], 128u);
 	assert_memory_equal(&g_mock_regions[0][192], &g_mock_regions[1][192], 64u);
@@ -496,6 +506,62 @@ static void test_vfork_restore_publishes_cacheable_parent(void **state)
 	assert_ptr_equal(g_mock.cache_invalidate_base[3], &g_mock_regions[0][192]);
 	assert_ptr_equal(g_mock.cache_invalidate_base[4], g_mock_dyn_pools[0]);
 	assert_ptr_equal(g_mock.cache_invalidate_base[5], g_mock_dyn_pools[0]);
+}
+
+static void test_vfork_snapshot_refuses_no_spare_region(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	p->region = 0;
+	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	p->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	for (int r = 0; r < LXP_NREG; r++)
+		(void)region_reserve(r, r);
+
+	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1,
+					 (uintptr_t)g_mock_regions[0] + 192u), -1);
+	assert_int_equal(g_mock.cache_clean_calls, 0);
+	assert_int_equal(g_vfork_guard[1].snapshot_region, -1);
+}
+
+static void test_vfork_restore_rejects_recycled_snapshot(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	p->region = 0;
+	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	p->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	(void)region_reserve(0, 0);
+	uintptr_t sp = (uintptr_t)g_mock_regions[0] + 192u;
+	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, sp), 1);
+	memset(g_mock_regions[0], 0x5a, sizeof(g_mock_regions[0]));
+	region_release_if_owned(1, 1);
+	(void)region_reserve(1, 2); /* same index, different reservation incarnation */
+
+	assert_int_equal(vfork_restore(&g_mock_eng, p, 1, 1, sp), -1);
+	for (size_t i = 0; i < sizeof(g_mock_regions[0]); i++)
+		assert_int_equal(g_mock_regions[0][i], 0x5a);
+}
+
+static void test_vfork_restore_rejects_recycled_parent(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+	p->alive = 1;
+	p->region = 0;
+	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	p->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	(void)region_reserve(0, 0);
+	uintptr_t sp = (uintptr_t)g_mock_regions[0] + 192u;
+	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, sp), 1);
+	memset(g_mock_regions[0], 0xa5, sizeof(g_mock_regions[0]));
+	deferred_slot_reassign(0); /* same slot, different process incarnation */
+
+	assert_int_equal(vfork_restore(&g_mock_eng, p, 1, 1, sp), -1);
+	for (size_t i = 0; i < sizeof(g_mock_regions[0]); i++)
+		assert_int_equal(g_mock_regions[0][i], 0xa5);
 }
 
 /* ---- region_free: owner table AND liveness both gate reuse ------------------ */
@@ -1118,6 +1184,12 @@ int main(void)
 		cmocka_unit_test_setup(test_vfork_snapshot_publishes_cacheable_destination,
 				       reset_state),
 		cmocka_unit_test_setup(test_vfork_restore_publishes_cacheable_parent,
+				       reset_state),
+		cmocka_unit_test_setup(test_vfork_snapshot_refuses_no_spare_region,
+				       reset_state),
+		cmocka_unit_test_setup(test_vfork_restore_rejects_recycled_snapshot,
+				       reset_state),
+		cmocka_unit_test_setup(test_vfork_restore_rejects_recycled_parent,
 				       reset_state),
 		cmocka_unit_test_setup(test_region_free, reset_state),
 	};
