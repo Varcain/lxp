@@ -39,6 +39,9 @@ static struct {
 	long resume_results[LXP_NSLOT];
 	int abort_calls;
 	int abort_sidx;
+	int park_prepare_calls;
+	int park_calls;
+	int park_sidx;
 	int event_posts;
 	int cache_clean_calls;
 	const void *cache_clean_base[8];
@@ -105,6 +108,18 @@ static void mock_abort_slot(int sidx)
 	g_mock.abort_sidx = sidx;
 	g_lxp_used[sidx] = 0;
 }
+static void *mock_park_prepare(int sidx, const struct lxp_resume_ctx *c)
+{
+	(void)sidx;
+	g_mock.park_prepare_calls++;
+	return (void *)c;
+}
+static void mock_park_slot(int sidx)
+{
+	g_mock.park_calls++;
+	g_mock.park_sidx = sidx;
+	g_lxp_used[sidx] = 0;
+}
 static void mock_event_post(void)
 {
 	g_mock.event_posts++;
@@ -120,6 +135,8 @@ static const lxp_os_ops_t g_mock_eng = {
 	.exec_capture = mock_exec_capture,
 	.spawn_resume = mock_spawn_resume,
 	.abort_slot = mock_abort_slot,
+	.park_prepare = mock_park_prepare,
+	.park_slot = mock_park_slot,
 	.event_post = mock_event_post,
 	.cache_clean = mock_cache_clean,
 	.cache_invalidate = mock_cache_invalidate,
@@ -318,13 +335,14 @@ static void test_reap_signaled_child_status(void **state)
 	g_lxp_proc[0].wait_pending = 1;
 	g_lxp_proc[0].wait_pid = -1;
 	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
-	g_lxp_used[0] = 1; /* a parked-waiter spin thread must be aborted before resume */
+	g_lxp_used[0] = 1; /* coordinator has not yet suspended the parked waiter */
 
 	reap_to_parent(&g_mock_eng, 1, 7, 128 + 15 /* SIGTERM */, /*sigchld=*/1);
 
 	assert_int_equal(status, 15); /* low 7 bits = the signal */
-	assert_int_equal(g_mock.abort_calls, 1);
-	assert_int_equal(g_mock.abort_sidx, 0);
+	assert_int_equal(g_mock.park_calls, 1);
+	assert_int_equal(g_mock.park_sidx, 0);
+	assert_int_equal(g_mock.abort_calls, 0);
 	assert_int_equal(g_mock.resume_calls, 1);
 }
 
@@ -919,7 +937,8 @@ static void test_deferred_signal_cancels_before_execute(void **state)
 	execute_deferred(&g_mock_eng, 0);
 
 	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
-	assert_int_equal(g_mock.abort_calls, 1);
+	assert_int_equal(g_mock.park_calls, 1);
+	assert_int_equal(g_mock.abort_calls, 0);
 	assert_int_equal(g_mock.resume_calls, 0);
 	assert_int_equal(p->exited, 1);
 	assert_int_equal(p->exit_status, 128 + LXP_SIGTERM);
@@ -973,8 +992,8 @@ static void test_console_icrnl_immediate_read(void **state)
 }
 
 /* Blocking handlers hand ownership to the existing wait state machine. The
- * parked task must remain present until that event claims and aborts it; deleting
- * it in the generic bottom half makes the wait predicate permanently false. */
+ * coordinator suspends the existing task before executing the host syscall and
+ * leaves it parked when the syscall establishes a wait condition. */
 static void test_deferred_blocking_handoff_keeps_parked_task(void **state)
 {
 	(void)state;
@@ -996,7 +1015,8 @@ static void test_deferred_blocking_handoff_keeps_parked_task(void **state)
 	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
 	assert_int_equal(p->sleep_pending, 1);
 	assert_true(primary_slot_pending(0));
-	assert_int_equal(g_lxp_used[0], 1);
+	assert_int_equal(g_lxp_used[0], 0);
+	assert_int_equal(g_mock.park_calls, 1);
 	assert_int_equal(g_mock.abort_calls, 0);
 	assert_int_equal(g_mock.resume_calls, 0);
 }

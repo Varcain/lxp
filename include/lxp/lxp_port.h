@@ -170,6 +170,16 @@ typedef struct lxp_os_ops {
 	 * e.g. "Zephyr 4.4.0 ove-1a2b3c4 lxp-5d6e7f8". The returned string must
 	 * remain valid for the run; lxp truncates it to Linux's 64-byte field. */
 	const char *(*system_version)(void);
+
+	/* Persistent parked-task handoff. park_prepare runs in the guest's svc
+	 * exception and may return an opaque, guest-readable token which LXP passes
+	 * to lxp_park_loop in r0 (NULL is valid for a native saved-frame restore).
+	 * park_slot then blocks the existing RTOS task from coordinator context; a
+	 * later spawn_resume restores and resumes that same task. Ports which leave
+	 * either callback NULL keep the legacy abort/recreate behavior. Kept at the
+	 * end for source-level compatibility with older port initializers. */
+	void *(*park_prepare)(int sidx, const struct lxp_resume_ctx *c);
+	void (*park_slot)(int sidx);
 } lxp_os_ops_t;
 
 /* ─────────────────────────────────────────────────────────────────────────

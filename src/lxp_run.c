@@ -528,18 +528,25 @@ static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 		g_deferred[slot].pub_ns = t;
 	}
 #endif
-	capture_ctx(slot, f);
 	deferred_state_store(slot, DEFER_READY);
 	park_frame(f, proc);
 }
 
-/* Park the program frame at the spin loop until the coordinator reaps the event,
- * and wake the coordinator (it blocks in event_wait rather than busy-polling). */
+/* Park the program frame until the coordinator reaps the event, and wake the
+ * coordinator (it blocks in event_wait rather than busy-polling). Persistent
+ * ports prepare a guest-readable resume token while the original svc frame is
+ * still live; legacy ports leave r0 NULL and retain abort/recreate behavior. */
 void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 {
+	int slot = slot_of(proc);
+	capture_ctx(slot, f);
+	void *token = NULL;
+	if (g_eng && g_eng->park_prepare && g_eng->park_slot)
+		token = g_eng->park_prepare(slot, &g_ctx[slot]);
+	f->r[0] = (uint32_t)(uintptr_t)token;
 	f->r[15] = (uint32_t)((uintptr_t)&lxp_park_loop & ~(uintptr_t)1u);
 	f->xpsr |= (1u << 24);
-	lxp_event_post_slot(slot_of(proc));
+	lxp_event_post_slot(slot);
 }
 
 /* Bounded per-slot stacks of interrupted signal contexts. LinuxThreads can
@@ -610,8 +617,9 @@ void lxp_run_health(lxp_run_health_t *out)
 	out->active = g_lxp_active;
 }
 
-void lxp_park_loop(void)
+__attribute__((weak)) void lxp_park_loop(void *token)
 {
+	(void)token;
 	for (;;) {
 	}
 }
@@ -688,7 +696,6 @@ static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 		proc->futex_uaddr = uaddr;
 		proc->futex_wait = 1;
 		proc->futex_deadline_us = deadline;
-		capture_ctx(slot_of(proc), f);
 		park_frame(f, proc); /* the coordinator parks us; FUTEX_WAKE / timeout resumes us */
 		return;
 	}
@@ -906,7 +913,6 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 			proc->clone_is_thread = 1;
 			proc->clone_child_stack = f->r[1];
 		}
-		capture_ctx(slot_of(proc), f);
 		proc->fork_pending = 1;
 		park_frame(f, proc);
 		return;
@@ -934,7 +940,6 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	if (proc->sleep_pending || proc->wait_pending || proc->pipe_wait || proc->dev_wait ||
 	    proc->sock_wait || proc->netfs_wait || proc->pty_wait || proc->sigsuspend_pending ||
 	    proc->console_wait) {
-		capture_ctx(slot_of(proc), f);
 		park_frame(f, proc);
 		return;
 	}
@@ -1108,6 +1113,20 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	return eng->spawn_launch(sidx, ridx, &prog, (void *)pc, sp, stack_lo);
 }
 
+/* Stop a guest at the park trampoline without changing its Linux slot
+ * identity. Persistent ports suspend the existing RTOS task; older ports keep
+ * the delete/recreate fallback. A slot already parked needs no second host
+ * transition (notably wait4 completion may race its primary park event). */
+static void coordinator_park_slot(const lxp_os_ops_t *eng, int sidx)
+{
+	if (!g_lxp_used[sidx])
+		return;
+	if (eng->park_prepare && eng->park_slot)
+		eng->park_slot(sidx);
+	else
+		eng->abort_slot(sidx);
+}
+
 /* A child (cpid, status) exited: hand it to its parent (ppid). Wake a parent blocked
  * in wait4 (resume returning cpid + write *status), else queue the zombie for a later
  * wait4. Decrements the parent's live-children count either way. */
@@ -1133,8 +1152,7 @@ static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int stat
 						*(int *)(uintptr_t)par->wait_status_p = lxp_encode_wstatus(status);
 		}
 		par->wait_pending = 0;
-		if (g_lxp_used[pslot]) /* abort the parked-waiter spin thread first */
-			eng->abort_slot(pslot);
+		coordinator_park_slot(eng, pslot);
 		eng->spawn_resume(pslot, par->region, &g_ctx[pslot], cpid);
 	} else {
 		/* The parent is not blocking in wait4 (typically sitting in select()/poll() —
@@ -1177,8 +1195,7 @@ static void notify_parent_stopped(const lxp_os_ops_t *eng, int ppid, int cpid, i
 		if (par->wait_status_p)
 			*(int *)(uintptr_t)par->wait_status_p = lxp_encode_wstopped(stopsig);
 		par->wait_pending = 0;
-		if (g_lxp_used[pslot])
-			eng->abort_slot(pslot);
+		coordinator_park_slot(eng, pslot);
 		eng->spawn_resume(pslot, par->region, &g_ctx[pslot], cpid);
 	} else {
 		if (par->child_count < LXP_MAX_CHILD) {
@@ -1312,10 +1329,9 @@ uint8_t lxp_console_input_xlate(uint8_t ch)
 }
 
 /* Execute one READY mailbox in privileged task context. The lower-priority guest
- * remains parked while the coordinator runs. Immediate completion deletes and
- * recreates it at the captured context; a blocking syscall leaves it parked so
- * the established wait event can observe g_lxp_used and perform the handoff.
- * Host RT tasks above the coordinator can preempt all work performed here. */
+ * is suspended before its host syscall runs; immediate completion resumes that
+ * same task, while a blocking syscall leaves it parked for the established wait
+ * event. Host RT tasks above the coordinator can preempt all work performed here. */
 static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 {
 	uint8_t expected = DEFER_READY;
@@ -1329,6 +1345,7 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 		deferred_state_store(slot, DEFER_IDLE);
 		return;
 	}
+	coordinator_park_slot(eng, slot);
 #if LXP_ENABLE_LATENCY
 	{ /* publish -> claim. Recorded only for a live, generation-matched entry:
 	   * a discarded one never waited on the coordinator. */
@@ -1360,8 +1377,8 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 		g_cfg->on_enosys(nr);
 	deferred_state_store(slot, DEFER_IDLE);
 
-	/* Existing retry state owns completion from here and expects the spin task to
-	 * remain present; exec/exit are likewise consumed by higher-level events. The
+	/* Existing retry state owns completion from here and expects the parked host
+	 * task to remain present; exec/exit are likewise consumed by higher-level events. The
 	 * deferred event hint was consumed before entering this function, so publish
 	 * the follow-on state before returning to the coordinator wait loop. */
 	if (proc->sleep_pending || proc->wait_pending || proc->pipe_wait || proc->dev_wait ||
@@ -1371,7 +1388,6 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 		return;
 	}
 
-	eng->abort_slot(slot);
 	int psig = pending_deliverable(proc);
 	if (psig) {
 		proc->pending_sigs &= ~lxp_sig_bit(psig);
@@ -1732,7 +1748,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * later exit status disappear. EAGAIN is Linux's process-table pressure
 			 * result and becomes retryable as soon as wait4 drains one entry. */
 			if (!fork_capacity_available(par)) {
-				eng->abort_slot(es);
+				coordinator_park_slot(eng, es);
 				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_EAGAIN);
 				idle = 0;
 				continue;
@@ -1744,7 +1760,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					break;
 				}
 			if (c < 0) { /* no free slot: Linux reports retryable process pressure. */
-				eng->abort_slot(es);
+				coordinator_park_slot(eng, es);
 				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_EAGAIN);
 				idle = 0;
 				continue;
@@ -1808,7 +1824,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				g_ctx[c] = g_ctx[es]; /* clone resumes from the parent's ctx... */
 				g_ctx[c].sp =
 					par->clone_child_stack; /* ...but on the child stack */
-				eng->abort_slot(es);		/* drop the parent's parked task */
+				coordinator_park_slot(eng, es);
 				eng->spawn_resume(es, par->region, &g_ctx[es],
 						  ch->pid); /* parent co-runs, gets the tid */
 				eng->spawn_resume(c, ch->region, &g_ctx[c],
@@ -1841,12 +1857,12 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				g_lxp_used[c] = 0;
 				if (par->live_children > 0)
 					par->live_children--;
-				eng->abort_slot(es);
+				coordinator_park_slot(eng, es);
 				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_ENOMEM);
 				idle = 0;
 				continue;
 			}
-			eng->abort_slot(es); /* suspend the parent (no thread) */
+			coordinator_park_slot(eng, es); /* suspend the parent task */
 			eng->spawn_resume(c, ch->region, &g_ctx[es],
 					  0); /* child returns 0 from fork */
 			idle = 0;
@@ -2011,58 +2027,58 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 
 		if (et ==
 		    LXP_EV_SLEEP) { /* park the slot for the nanosleep duration (deadline below). */
-			eng->abort_slot(es);
+			coordinator_park_slot(eng, es);
 			g_lxp_proc[es].sleeping = 1;
 			idle = 0;
 			continue;
 		}
-		if (et == LXP_EV_FUTEXWAIT) { /* free the waiter's spin thread until a peer's FUTEX_WAKE. */
-			eng->abort_slot(es);
+		if (et == LXP_EV_FUTEXWAIT) { /* block the waiter until a peer's FUTEX_WAKE. */
+			coordinator_park_slot(eng, es);
 			idle = 0;
 			continue;
 		}
 		if (et ==
-		    LXP_EV_WAITPARK) { /* free the blocked waiter's spin thread until a child exits. */
-			eng->abort_slot(es);
+		    LXP_EV_WAITPARK) { /* block the waiter until a child exits. */
+			coordinator_park_slot(eng, es);
 			idle = 0;
 			continue;
 		}
-		if (et == LXP_EV_PIPE) { /* free the spin thread; the retry below resumes it. */
-			eng->abort_slot(es);
+		if (et == LXP_EV_PIPE) { /* block the task; the retry below resumes it. */
+			coordinator_park_slot(eng, es);
 			idle = 0;
 			continue;
 		}
-		if (et == LXP_EV_DEVWAIT) { /* free the spin thread; the device retry below resumes it. */
-			eng->abort_slot(es);
+		if (et == LXP_EV_DEVWAIT) { /* block the task; the device retry below resumes it. */
+			coordinator_park_slot(eng, es);
 			idle = 0;
 			continue;
 		}
-		if (et == LXP_EV_SOCKWAIT) { /* free the spin thread; the socket retry below resumes it. */
-			eng->abort_slot(es);
+		if (et == LXP_EV_SOCKWAIT) { /* block the task; the socket retry below resumes it. */
+			coordinator_park_slot(eng, es);
 			idle = 0;
 			continue;
 		}
 #if LXP_ENABLE_NETFS
-		if (et == LXP_EV_NETFSWAIT) { /* free the spin thread; the netfs retry below resumes it. */
-			eng->abort_slot(es);
+		if (et == LXP_EV_NETFSWAIT) { /* block the task; the netfs retry below resumes it. */
+			coordinator_park_slot(eng, es);
 			idle = 0;
 			continue;
 		}
 #endif
 #if LXP_ENABLE_PTY
-		if (et == LXP_EV_PTYWAIT) { /* free the spin thread; the pty retry below resumes it. */
-			eng->abort_slot(es);
+		if (et == LXP_EV_PTYWAIT) { /* block the task; the pty retry below resumes it. */
+			coordinator_park_slot(eng, es);
 			idle = 0;
 			continue;
 		}
 #endif
-		if (et == LXP_EV_SIGSUSPEND) { /* free the spin thread; pending_sig below wakes it. */
-			eng->abort_slot(es);
+		if (et == LXP_EV_SIGSUSPEND) { /* block the task; pending_sig below wakes it. */
+			coordinator_park_slot(eng, es);
 			idle = 0;
 			continue;
 		}
-		if (et == LXP_EV_CONSOLEWAIT) { /* free the spin thread; the console retry below resumes it. */
-			eng->abort_slot(es);
+		if (et == LXP_EV_CONSOLEWAIT) { /* block the task; the console retry below resumes it. */
+			coordinator_park_slot(eng, es);
 			idle = 0;
 			continue;
 		}
@@ -2500,8 +2516,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	/* Tear down any still-running slot tasks so a subsequent lxp_run() starts
 	 * clean and no leaked task starves the next program. */
 	for (int i = 0; i < LXP_NSLOT; i++)
-		if (g_lxp_used[i])
-			eng->abort_slot(i);
+		eng->abort_slot(i);
 	for (int i = 0; i < LXP_NSLOT; i++)
 		deferred_slot_reassign(i);
 	g_lxp_active = 0;

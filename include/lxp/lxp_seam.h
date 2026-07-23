@@ -36,7 +36,7 @@
 /* Complete Cortex-M single-precision floating-point state. `active` records
  * whether the interrupted task owned an extended FP exception frame. The seam
  * is responsible for forcing any lazy stack operation before populating this
- * object and for applying changes before exception return/task recreation. */
+ * object and for applying changes before exception return or task resume. */
 #if LXP_ENABLE_FPU_CONTEXT
 struct lxp_fp_context {
 	uint32_t s[32];
@@ -75,9 +75,9 @@ struct lxp_resume_ctx {
 	uint32_t r1;
 	uint32_t r2;
 	uint32_t r3;
-	/** APSR condition flags captured at the SVC. A deferred syscall recreates the
-	 * task instead of exception-returning, so its resume trampoline must restore
-	 * NZCVQ just as the hardware exception return would. */
+	/** APSR condition flags captured at the SVC. A deferred syscall may resume
+	 * through a native saved frame or a trampoline; either path must restore
+	 * NZCVQ just as the immediate hardware exception return would. */
 	uint32_t xpsr;
 #if LXP_ENABLE_FPU_CONTEXT
 	/* Appended to retain all legacy core-register offsets used by assembly
@@ -87,9 +87,9 @@ struct lxp_resume_ctx {
 };
 
 /* The per-engine operations the shared run loop drives are the public port vtable
- * lxp_os_ops_t (lxp_port.h): region/spawn_launch/spawn_resume/abort_slot, the
- * crit/event primitives, dyn_pool/map_device, and the OS-service hooks (time,
- * thread_list, cache, rootfs_window, exec_stage) + prepare/teardown. */
+ * lxp_os_ops_t (lxp_port.h): region/spawn_launch/spawn_resume, task
+ * park/abort, the crit/event primitives, dyn_pool/map_device, and the OS-service
+ * hooks (time, thread_list, cache, rootfs_window, exec_stage) + prepare/teardown. */
 
 /* ---- shared state (defined in lxp_run.c) ------------------------------- */
 extern struct lxp_resume_ctx g_lxp_vfork; /* vfork capture buffer */
@@ -101,8 +101,10 @@ extern volatile int g_lxp_halt;	  /* reboot(2)/poweroff: stop the run loop */
  * this backing store, and engine MPU policies grant that span user RO+X access. NULL pre-run. */
 extern const uint8_t *g_lxp_rootfs_lo, *g_lxp_rootfs_hi;
 
-/* Where a parked program spins (in shared .text) until the run loop reaps it. */
-void lxp_park_loop(void);
+/* Where a parked program waits in shared .text until the coordinator blocks it.
+ * A token-based engine may override the weak fallback to complete its resume;
+ * native saved-frame engines resume directly without consuming the token. */
+void lxp_park_loop(void *token);
 
 /* The shared svc-dispatch body. Called by the seam's trap with the uniform frame
  * and the running slot's proc; on return the seam writes the frame back. */
