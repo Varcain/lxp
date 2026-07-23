@@ -341,6 +341,71 @@ static void test_dev_input_syn_dropped_on_overrun(void **state)
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
 
+/* Guest test tools may inject a canonical touch report by writing the normal
+ * ARM32 input_event layout to event0.  The report is validated as a whole, then
+ * re-timestamped and queued exactly like a physical FT5336 report. */
+static void test_dev_input_write_injects_touch(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+	lxp_dev_autoreg_input();
+
+	long rfd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+			       (long)(uintptr_t) "/dev/input/event0",
+			       LXP_O_RDONLY | LXP_O_NONBLOCK, 0, 0, 0);
+	long wfd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+			       (long)(uintptr_t) "/dev/input/event0", LXP_O_WRONLY, 0, 0, 0);
+	assert_true(rfd >= 3);
+	assert_true(wfd >= 3);
+
+	struct lxp_input_event report[4];
+	memset(report, 0, sizeof(report));
+	report[0].type = LXP_EV_ABS;
+	report[0].code = LXP_ABS_X;
+	report[0].value = 123;
+	report[1].type = LXP_EV_ABS;
+	report[1].code = LXP_ABS_Y;
+	report[1].value = 45;
+	report[2].type = LXP_EV_KEY;
+	report[2].code = LXP_BTN_TOUCH;
+	report[2].value = 1;
+	report[3].type = LXP_EV_SYN;
+	report[3].code = LXP_SYN_REPORT;
+
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t)report,
+				     sizeof(report), 0, 0, 0),
+			 sizeof(report));
+
+	struct lxp_input_event out[4];
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, rfd, (long)(uintptr_t)out,
+				     sizeof(out), 0, 0, 0),
+			 sizeof(out));
+	assert_int_equal(out[0].type, LXP_EV_ABS);
+	assert_int_equal(out[0].code, LXP_ABS_X);
+	assert_int_equal(out[0].value, 123);
+	assert_int_equal(out[1].type, LXP_EV_ABS);
+	assert_int_equal(out[1].code, LXP_ABS_Y);
+	assert_int_equal(out[1].value, 45);
+	assert_int_equal(out[2].type, LXP_EV_KEY);
+	assert_int_equal(out[2].code, LXP_BTN_TOUCH);
+	assert_int_equal(out[2].value, 1);
+	assert_int_equal(out[3].type, LXP_EV_SYN);
+	assert_int_equal(out[3].code, LXP_SYN_REPORT);
+
+	/* A partial report is rejected without appending anything to the ring. */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t)report,
+				     sizeof(report) - sizeof(report[0]), 0, 0, 0),
+			 -LXP_EINVAL);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, rfd, (long)(uintptr_t)out,
+				     sizeof(out), 0, 0, 0),
+			 -LXP_EAGAIN);
+
+	lxp_syscall(&p, LXP_NR_close, rfd, 0, 0, 0, 0, 0);
+	lxp_syscall(&p, LXP_NR_close, wfd, 0, 0, 0, 0, 0);
+}
+
 /* A device fd must honor its open access mode: writing an O_RDONLY fd (or reading an O_WRONLY
  * one) is -EBADF, like Linux. Before the fix any device fd was both readable and writable
  * regardless of how it was opened (e.g. write to an O_RDONLY /dev/fb0 scribbled the panel). */
@@ -757,6 +822,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_ioctl),
 		cmocka_unit_test(test_dev_input_eviocgname_size),
 		cmocka_unit_test(test_dev_input_syn_dropped_on_overrun),
+		cmocka_unit_test(test_dev_input_write_injects_touch),
 		cmocka_unit_test(test_dev_accmode_enforced),
 		cmocka_unit_test(test_dev_fb_flush_spans_crossed_rows),
 		cmocka_unit_test(test_dev_fb_dma2d_blit),

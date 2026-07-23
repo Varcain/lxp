@@ -117,6 +117,32 @@ static long in_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, vo
 	return (long)(n * sizeof(struct lxp_input_event));
 }
 
+/* Inject one complete single-touch report through the evdev fd.  This is an
+ * explicit guest-userspace test seam: it feeds the personality's input ring,
+ * not the host RTOS or the physical controller.  Requiring one canonical,
+ * self-contained report makes each write atomic and prevents malformed or
+ * interleaved writers from leaving a stuck partial touch state. */
+static long in_write(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
+		     const void *buf, size_t len)
+{
+	(void)d;
+	(void)o;
+	(void)p;
+	const struct lxp_input_event *e = buf;
+
+	if (len != 4u * sizeof(*e))
+		return -LXP_EINVAL;
+	if (e[0].type != LXP_EV_ABS || e[0].code != LXP_ABS_X ||
+	    e[1].type != LXP_EV_ABS || e[1].code != LXP_ABS_Y ||
+	    e[2].type != LXP_EV_KEY || e[2].code != LXP_BTN_TOUCH ||
+	    (e[2].value != 0 && e[2].value != 1) ||
+	    e[3].type != LXP_EV_SYN || e[3].code != LXP_SYN_REPORT)
+		return -LXP_EINVAL;
+
+	lxp_input_report_touch(e[0].value, e[1].value, e[2].value);
+	return (long)len;
+}
+
 static unsigned in_poll(struct lxp_dev *d, struct lxp_dev_open *o)
 {
 	(void)d;
@@ -191,6 +217,7 @@ static long in_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 static const struct lxp_dev_ops in_ops = {
 	.open = in_open,
 	.read = in_read,
+	.write = in_write,
 	.ioctl = in_ioctl,
 	.poll = in_poll,
 };
