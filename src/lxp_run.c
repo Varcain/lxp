@@ -680,6 +680,56 @@ static void flatten_vec(char *buf, const char **ptrs, const char *src_buf, const
 	ptrs[count] = NULL;
 }
 
+/* Inspect and, where necessary, consume one slot's highest-priority primary
+ * event. The caller holds the engine critical section, so a program SVC cannot
+ * change a flag between its test and clear. Keep this helper constant-time with
+ * respect to LXP_NSLOT: the coordinator deliberately locks around one slot at a
+ * time so a larger process table cannot lengthen one interrupt-masked window. */
+static int claim_slot_event(int s)
+{
+	lxp_proc_t *p = &g_lxp_proc[s];
+
+	if (!p->alive)
+		return LXP_EV_NONE;
+	if (p->exited)
+		return LXP_EV_EXIT;
+	if (p->exec_pending)
+		return LXP_EV_EXEC;
+	if (p->fork_pending) {
+		p->fork_pending = 0;
+		return LXP_EV_FORK;
+	}
+	if (deferred_state_load(s) == DEFER_READY)
+		return LXP_EV_DEFER;
+	if (p->sleep_pending) {
+		p->sleep_pending = 0;
+		return LXP_EV_SLEEP;
+	}
+	if (p->futex_wait && g_lxp_used[s])
+		return LXP_EV_FUTEXWAIT;
+	if (p->wait_pending && g_lxp_used[s])
+		return LXP_EV_WAITPARK;
+	if (p->pipe_wait && g_lxp_used[s])
+		return LXP_EV_PIPE;
+	if (p->dev_wait && g_lxp_used[s])
+		return LXP_EV_DEVWAIT;
+	if (p->sock_wait && g_lxp_used[s])
+		return LXP_EV_SOCKWAIT;
+#if LXP_ENABLE_NETFS
+	if (p->netfs_wait && g_lxp_used[s])
+		return LXP_EV_NETFSWAIT;
+#endif
+#if LXP_ENABLE_PTY
+	if (p->pty_wait && g_lxp_used[s])
+		return LXP_EV_PTYWAIT;
+#endif
+	if (p->sigsuspend_pending && g_lxp_used[s])
+		return LXP_EV_SIGSUSPEND;
+	if (p->console_wait && g_lxp_used[s])
+		return LXP_EV_CONSOLEWAIT;
+	return LXP_EV_NONE;
+}
+
 /* Lowest-numbered pending signal for @p p that is not currently blocked (SIGKILL/SIGSTOP are
  * never blocked), or 0 if none is deliverable. Does NOT clear it — the caller clears the bit
  * (pending_sigs &= ~lxp_sig_bit(sig)) once it commits to delivering. A blocked pending signal
@@ -1578,99 +1628,26 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			break;
 		}
 
-		/* Claim ONE pending event under the crit (flags are atomic ints; the brief
-		 * masked window keeps a preempting program svc from racing the read/clear).
-		 * Act on it OUTSIDE the crit — abort/spawn/launch may yield. */
+		/* Claim ONE pending event. Each slot gets its own brief critical section so
+		 * the maximum interrupt-masked interval is independent of LXP_NSLOT. A
+		 * pending interrupt runs as soon as a slot is unlocked, before the next lock.
+		 * Act on the event OUTSIDE the crit — abort/spawn/launch may yield. */
 		/* Event classes: enum lxp_ev_class, expanded from LXP_LAT_CLASS_LIST in
 		 * lxp_latency.h so the dispatch, the stats array and the names a port
 		 * prints cannot fall out of step. LXP_EV_NONE (0) means "nothing claimed". */
 		int es = -1, et = LXP_EV_NONE;
-		eng->crit_enter();
 		for (int i = 0; i < LXP_NSLOT; i++) {
 			int s = (int)((event_cursor + (unsigned)i) % LXP_NSLOT);
-			lxp_proc_t *p = &g_lxp_proc[s];
-			if (!p->alive)
-				continue;
-			if (p->exited) {
+			eng->crit_enter();
+			et = claim_slot_event(s);
+			eng->crit_exit();
+			if (et != LXP_EV_NONE) {
 				es = s;
-				et = LXP_EV_EXIT;
-				break;
-			}
-			if (p->exec_pending) {
-				es = s;
-				et = LXP_EV_EXEC;
-				break;
-			}
-			if (p->fork_pending) {
-				p->fork_pending = 0;
-				es = s;
-				et = LXP_EV_FORK;
-				break;
-			}
-			if (deferred_state_load(s) == DEFER_READY) {
-				es = s;
-				et = LXP_EV_DEFER;
-				break;
-			}
-			if (p->sleep_pending) {
-				p->sleep_pending = 0;
-				es = s;
-				et = LXP_EV_SLEEP;
-				break;
-			}
-			if (p->futex_wait && g_lxp_used[s]) {
-				es = s;
-				et = LXP_EV_FUTEXWAIT;
-				break;
-			}
-			if (p->wait_pending && g_lxp_used[s]) {
-				es = s;
-				et = LXP_EV_WAITPARK;
-				break;
-			}
-			if (p->pipe_wait && g_lxp_used[s]) {
-				es = s;
-				et = LXP_EV_PIPE;
-				break;
-			}
-			if (p->dev_wait && g_lxp_used[s]) {
-				es = s;
-				et = LXP_EV_DEVWAIT;
-				break;
-			}
-			if (p->sock_wait && g_lxp_used[s]) {
-				es = s;
-				et = LXP_EV_SOCKWAIT;
-				break;
-			}
-#if LXP_ENABLE_NETFS
-			if (p->netfs_wait && g_lxp_used[s]) {
-				es = s;
-				et = LXP_EV_NETFSWAIT;
-				break;
-			}
-#endif
-#if LXP_ENABLE_PTY
-			if (p->pty_wait && g_lxp_used[s]) {
-				es = s;
-				et = LXP_EV_PTYWAIT;
-				break;
-			}
-#endif
-			if (p->sigsuspend_pending && g_lxp_used[s]) {
-				es = s;
-				et = LXP_EV_SIGSUSPEND;
-				break;
-			}
-			if (p->console_wait && g_lxp_used[s]) {
-				es = s;
-				et = LXP_EV_CONSOLEWAIT;
 				break;
 			}
 		}
 		if (es >= 0)
 			event_cursor = ((unsigned)es + 1u) % LXP_NSLOT;
-		eng->crit_exit();
 #if LXP_ENABLE_LATENCY
 		if (es >= 0 && et) { /* dispatch starts here; closed at the loop top */
 			lxp_time_ns(&lat_t0);

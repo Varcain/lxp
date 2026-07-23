@@ -209,6 +209,39 @@ static void test_resource_stats_track_slots_and_reserved_regions(void **state)
 	assert_int_equal(resources.available_bytes, 0);
 }
 
+/* The per-slot claim helper keeps the original event ordering while consuming
+ * only the two edge-style latches (fork and sleep). Level-style state remains
+ * set for the handler that runs after the critical section. */
+static void test_claim_slot_event_priority_and_consumption(void **state)
+{
+	(void)state;
+	const int s = 2;
+	lxp_proc_t *p = &g_lxp_proc[s];
+
+	assert_int_equal(claim_slot_event(s), LXP_EV_NONE);
+	p->alive = 1;
+	p->exited = 1;
+	p->exec_pending = 1;
+	p->fork_pending = 1;
+	p->sleep_pending = 1;
+	assert_int_equal(claim_slot_event(s), LXP_EV_EXIT);
+	assert_int_equal(p->fork_pending, 1);
+	assert_int_equal(p->sleep_pending, 1);
+
+	p->exited = 0;
+	assert_int_equal(claim_slot_event(s), LXP_EV_EXEC);
+	p->exec_pending = 0;
+	assert_int_equal(claim_slot_event(s), LXP_EV_FORK);
+	assert_int_equal(p->fork_pending, 0);
+	assert_int_equal(claim_slot_event(s), LXP_EV_SLEEP);
+	assert_int_equal(p->sleep_pending, 0);
+
+	p->console_wait = 1;
+	assert_int_equal(claim_slot_event(s), LXP_EV_NONE);
+	g_lxp_used[s] = 1;
+	assert_int_equal(claim_slot_event(s), LXP_EV_CONSOLEWAIT);
+}
+
 /* ---- wait-status encoding --------------------------------------------------- */
 static void test_encode_wstatus(void **state)
 {
@@ -1149,6 +1182,8 @@ int main(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
 		cmocka_unit_test_setup(test_resource_stats_track_slots_and_reserved_regions,
+				       reset_state),
+		cmocka_unit_test_setup(test_claim_slot_event_priority_and_consumption,
 				       reset_state),
 		cmocka_unit_test_setup(test_kill_targets_process_group, reset_state),
 		cmocka_unit_test_setup(test_setpgid_getpgrp_track_group, reset_state),
