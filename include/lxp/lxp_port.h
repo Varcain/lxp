@@ -73,6 +73,13 @@ typedef struct {
 #define LXP_NETIF_FLAG_RUNNING 0x08u
 #define LXP_NETIF_FLAG_MULTICAST 0x10u
 
+/*
+ * The host calls lxp_sock_kick() whenever network activity may change socket
+ * readiness. This lets the coordinator sleep on its event instead of polling
+ * parked recv/connect/accept/poll operations every 5 ms.
+ */
+#define LXP_NET_CAP_SOCKET_READY_EVENT 0x01u
+
 /* Device-mmap attribute selectors for lxp_os_ops.map_device. */
 #define LXP_MAP_NC 0u  /**< Non-cacheable. */
 #define LXP_MAP_WT 1u  /**< Write-through. */
@@ -200,6 +207,10 @@ typedef struct lxp_net_ops {
 	int (*netif_set_up)(lxp_netif_t nif, int up);
 
 	lxp_netif_t netif; /**< eth0 the SIOC* ioctls act on; host sets it before the run. */
+
+	/* LXP_NET_CAP_* bits. Kept last so older designated initializers default to
+	 * the polling fallback without moving existing members. */
+	unsigned capabilities;
 } lxp_net_ops_t;
 
 /* ─────────────────────────────────────────────────────────────────────────

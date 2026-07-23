@@ -210,6 +210,20 @@ static void test_resource_stats_track_slots_and_reserved_regions(void **state)
 	assert_int_equal(resources.available_bytes, 0);
 }
 
+static void test_coordinator_socket_wait_uses_readiness_events(void **state)
+{
+	(void)state;
+
+	/* Legacy/portable ports retain the bounded polling fallback. */
+	assert_int_equal(coordinator_wait_timeout(0, 1, 0), 5);
+	/* An event-driven net port can sleep until lxp_sock_kick() (or the normal
+	 * 50 ms maintenance wakeup) without quantizing socket readiness to 5 ms. */
+	assert_int_equal(coordinator_wait_timeout(0, 1, 1), 50);
+	/* A different polling wait class still requires the short timeout. */
+	assert_int_equal(coordinator_wait_timeout(1, 1, 1), 5);
+	assert_int_equal(coordinator_wait_timeout(0, 0, 0), 50);
+}
+
 /* The per-slot claim helper keeps the original event ordering while consuming
  * only the two edge-style latches (fork and sleep). Level-style state remains
  * set for the handler that runs after the critical section. */
@@ -1191,6 +1205,8 @@ int main(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
 		cmocka_unit_test_setup(test_resource_stats_track_slots_and_reserved_regions,
+				       reset_state),
+		cmocka_unit_test_setup(test_coordinator_socket_wait_uses_readiness_events,
 				       reset_state),
 		cmocka_unit_test_setup(test_claim_slot_event_priority_and_consumption,
 				       reset_state),

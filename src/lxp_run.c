@@ -362,6 +362,15 @@ void lxp_netfs_kick(void)
 }
 #endif
 
+/*
+ * Socket waits only need the short retry timeout when the host cannot publish
+ * readiness changes. Other wait classes retain their polling fallback.
+ */
+static unsigned coordinator_wait_timeout(int any_poll_wait, int any_sock_wait,
+					 int socket_ready_events)
+{
+	return (any_poll_wait || (any_sock_wait && !socket_ready_events)) ? 5u : 50u;
+}
 
 /* Per-slot captured resume context (replaces the single global g_lxp_vfork +
  * the run-loop-local vctx[] — many forks/sleeps/waits can be outstanding at once
@@ -2466,12 +2475,19 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		 * that would preempt running programs every tick and reset their time-slice,
 		 * starving a fg command while a CPU-bound background job runs. The timeout is the
 		 * NEAREST sleeper deadline (so nanosleep wakes on time, not quantized to the old
-		 * fixed 50ms), clamped to a short poll while a pipe is blocked; a pipe read/write
-		 * that unblocks a peer also kicks us directly (lxp_pipe_kick). */
-		unsigned to = (any_pipe_wait || any_dev_wait || any_sock_wait || any_netfs_wait ||
-			       any_pty_wait || any_console_wait || any_futex_wait)
-				      ? 5u
-				      : 50u;
+		 * fixed 50ms), clamped to a short poll for wait classes without an event source.
+		 * Socket waits use lxp_sock_kick when the port advertises it; portable ports keep
+		 * the 5ms fallback. */
+		int socket_ready_events = 0;
+#if LXP_ENABLE_NET
+		socket_ready_events =
+			g_lxp_net_ops &&
+			(g_lxp_net_ops->capabilities & LXP_NET_CAP_SOCKET_READY_EVENT);
+#endif
+		int any_poll_wait = any_pipe_wait || any_dev_wait || any_netfs_wait ||
+				    any_pty_wait || any_console_wait || any_futex_wait;
+		unsigned to = coordinator_wait_timeout(any_poll_wait, any_sock_wait,
+						       socket_ready_events);
 		if (next_sleep != UINT64_MAX && next_sleep > now) {
 			uint64_t d_ms = (next_sleep - now + 999u) / 1000u; /* round up, don't wake early */
 			if (d_ms < 1u)
