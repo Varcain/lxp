@@ -39,7 +39,7 @@ extern struct sig_save_stack_s g_sig_save[LXP_NSLOT];
 
 /* ---- coordinator primitives (lxp_run.c) ------------------------------------ */
 int slot_of(const lxp_proc_t *p);	/* slot index of proc (proc - g_lxp_proc) */
-void park_frame(struct lxp_frame *f);	/* park the frame at the spin loop + wake the coordinator */
+void park_frame(struct lxp_frame *f, lxp_proc_t *proc); /* park + publish this slot to the coordinator */
 
 /* ---- signal delivery (lxp_signal.c) ---------------------------------------- */
 void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,

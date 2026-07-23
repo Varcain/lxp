@@ -143,7 +143,7 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		proc->exit_status = 128 + sig;
 		proc->exit_reason = LXP_EXIT_REASON_SIGNAL;
 		proc->exit_signal = (uint8_t)sig;
-		park_frame(f); /* the coordinator reaps it */
+		park_frame(f, proc); /* the coordinator reaps it */
 		return;
 	}
 	struct sig_save_s *sv = sig_save_push(proc, sig);
@@ -155,7 +155,7 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		proc->exit_status = 128 + LXP_SIGSEGV;
 		proc->exit_reason = LXP_EXIT_REASON_SIGNAL_DEPTH;
 		proc->exit_signal = LXP_SIGSEGV;
-		park_frame(f);
+		park_frame(f, proc);
 		return;
 	}
 	sv->r0 = (uint32_t)ret;

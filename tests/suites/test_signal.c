@@ -26,9 +26,10 @@ int slot_of(const lxp_proc_t *p)
 	(void)p;
 	return 0; /* the tests use a single proc → slot 0 */
 }
-void park_frame(struct lxp_frame *f)
+void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	(void)f;
+	(void)proc;
 	g_park_calls++;
 }
 

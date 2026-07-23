@@ -174,6 +174,14 @@ static lxp_arena_t g_snap_arena[LXP_NSLOT];
 static const lxp_run_config_t *g_cfg;
 static const lxp_os_ops_t *g_eng; /* for the dispatch to post coordinator events */
 
+#define LXP_EVENT_WORD_BITS 32u
+#define LXP_EVENT_WORDS ((LXP_NSLOT + LXP_EVENT_WORD_BITS - 1u) / LXP_EVENT_WORD_BITS)
+/* SVC/fault context publishes the slot it parked before waking the coordinator.
+ * The bitmap lets the coordinator find primary work without locking and scanning
+ * the whole process table. The selected slot is still revalidated and claimed
+ * under the engine critical section. */
+static uint32_t g_primary_pending[LXP_EVENT_WORDS];
+
 /* ---- OS-service hooks routed through the engine ops ------------------------
  * The personality core calls these instead of the host's ove_time_* / cache
  * primitives, so it carries no direct dependency on any particular OS. The seam
@@ -430,6 +438,40 @@ int slot_of(const lxp_proc_t *p)
 	return (int)((a - lo) / sizeof(g_lxp_proc[0]));
 }
 
+static void primary_slot_mark(int slot)
+{
+	if (slot < 0 || slot >= LXP_NSLOT)
+		return;
+	unsigned word = (unsigned)slot / LXP_EVENT_WORD_BITS;
+	uint32_t bit = (uint32_t)1u << ((unsigned)slot % LXP_EVENT_WORD_BITS);
+	__atomic_fetch_or(&g_primary_pending[word], bit, __ATOMIC_RELEASE);
+}
+
+static int primary_slot_pending(int slot)
+{
+	unsigned word = (unsigned)slot / LXP_EVENT_WORD_BITS;
+	uint32_t bit = (uint32_t)1u << ((unsigned)slot % LXP_EVENT_WORD_BITS);
+	return (__atomic_load_n(&g_primary_pending[word], __ATOMIC_ACQUIRE) & bit) != 0;
+}
+
+static void primary_slot_clear(int slot)
+{
+	unsigned word = (unsigned)slot / LXP_EVENT_WORD_BITS;
+	uint32_t bit = (uint32_t)1u << ((unsigned)slot % LXP_EVENT_WORD_BITS);
+	__atomic_fetch_and(&g_primary_pending[word], ~bit, __ATOMIC_RELAXED);
+}
+
+/* Publish a primary per-slot event and wake the coordinator. Ports use this for
+ * contained guest faults; normal syscall/signal parking reaches it through
+ * park_frame(). Safe when the slot is stale: the coordinator simply clears a
+ * hint that fails revalidation. */
+void lxp_event_post_slot(int slot)
+{
+	primary_slot_mark(slot);
+	if (g_eng && g_eng->event_post)
+		g_eng->event_post();
+}
+
 /* Capture the post-svc context of frame f into slot s's resume ctx. */
 static void capture_ctx(int s, const struct lxp_frame *f)
 {
@@ -479,17 +521,16 @@ static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 #endif
 	capture_ctx(slot, f);
 	deferred_state_store(slot, DEFER_READY);
-	park_frame(f);
+	park_frame(f, proc);
 }
 
 /* Park the program frame at the spin loop until the coordinator reaps the event,
  * and wake the coordinator (it blocks in event_wait rather than busy-polling). */
-void park_frame(struct lxp_frame *f)
+void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	f->r[15] = (uint32_t)((uintptr_t)&lxp_park_loop & ~(uintptr_t)1u);
 	f->xpsr |= (1u << 24);
-	if (g_eng && g_eng->event_post)
-		g_eng->event_post();
+	lxp_event_post_slot(slot_of(proc));
 }
 
 /* Bounded per-slot stacks of interrupted signal contexts. LinuxThreads can
@@ -639,7 +680,7 @@ static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 		proc->futex_wait = 1;
 		proc->futex_deadline_us = deadline;
 		capture_ctx(slot_of(proc), f);
-		park_frame(f); /* the coordinator parks us; FUTEX_WAKE / timeout resumes us */
+		park_frame(f, proc); /* the coordinator parks us; FUTEX_WAKE / timeout resumes us */
 		return;
 	}
 	if (op == 1 || op == 10) { /* FUTEX_WAKE / FUTEX_WAKE_BITSET */
@@ -858,7 +899,7 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		}
 		capture_ctx(slot_of(proc), f);
 		proc->fork_pending = 1;
-		park_frame(f);
+		park_frame(f, proc);
 		return;
 	}
 	/* futex: a co-running thread's WAIT parks here / WAKE resumes peers (needs the proc
@@ -885,11 +926,11 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	    proc->sock_wait || proc->netfs_wait || proc->pty_wait || proc->sigsuspend_pending ||
 	    proc->console_wait) {
 		capture_ctx(slot_of(proc), f);
-		park_frame(f);
+		park_frame(f, proc);
 		return;
 	}
 	if (proc->exited || proc->exec_pending) {
-		park_frame(f);
+		park_frame(f, proc);
 		return;
 	}
 	/* Cross-process signal (Phase D3): another proc's kill() latched a signal on us;
@@ -1197,6 +1238,7 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 		proc->exit_status = 128 + sig;
 		proc->exit_reason = LXP_EXIT_REASON_SIGNAL;
 		proc->exit_signal = (uint8_t)sig;
+		primary_slot_mark(slot);
 		return;
 	}
 	struct sig_save_s *sv = sig_save_push(proc, sig);
@@ -1207,6 +1249,7 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 		proc->exit_status = 128 + LXP_SIGSEGV;
 		proc->exit_reason = LXP_EXIT_REASON_SIGNAL_DEPTH;
 		proc->exit_signal = LXP_SIGSEGV;
+		primary_slot_mark(slot);
 		return;
 	}
 	sv->r0 = (uint32_t)ret;
@@ -1508,6 +1551,7 @@ static void vfork_contain_stale(int child_slot, lxp_proc_t *child)
 		par->exit_reason = LXP_EXIT_REASON_STATE_CORRUPTION;
 		par->exit_signal = 0;
 		par->exited = 1;
+		primary_slot_mark(guard->parent_slot);
 	}
 	if (guard->snapshot_region >= 0 && guard->snapshot_region < LXP_NREG &&
 	    g_region_owner[guard->snapshot_region] == child_slot &&
@@ -1522,6 +1566,7 @@ static void vfork_contain_stale(int child_slot, lxp_proc_t *child)
 	child->exit_reason = LXP_EXIT_REASON_STATE_CORRUPTION;
 	child->exit_signal = 0;
 	child->exited = 1;
+	primary_slot_mark(child_slot);
 }
 
 int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
@@ -1550,6 +1595,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		g_lxp_proc[i].alive = 0;
 		deferred_slot_reassign(i);
 	}
+	memset(g_primary_pending, 0, sizeof(g_primary_pending));
 	memset(g_region_generation, 0, sizeof(g_region_generation));
 	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
 	for (int i = 0; i < LXP_NSLOT; i++)
@@ -1628,17 +1674,20 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			break;
 		}
 
-		/* Claim ONE pending event. Each slot gets its own brief critical section so
-		 * the maximum interrupt-masked interval is independent of LXP_NSLOT. A
-		 * pending interrupt runs as soon as a slot is unlocked, before the next lock.
-		 * Act on the event OUTSIDE the crit — abort/spawn/launch may yield. */
+		/* Claim ONE published event. The atomic bitmap finds a candidate without
+		 * touching the proc table; one brief critical section revalidates and claims
+		 * only that slot. Thus both lock duration and lock count are independent of
+		 * LXP_NSLOT. Act OUTSIDE the crit — abort/spawn/launch may yield. */
 		/* Event classes: enum lxp_ev_class, expanded from LXP_LAT_CLASS_LIST in
 		 * lxp_latency.h so the dispatch, the stats array and the names a port
 		 * prints cannot fall out of step. LXP_EV_NONE (0) means "nothing claimed". */
 		int es = -1, et = LXP_EV_NONE;
 		for (int i = 0; i < LXP_NSLOT; i++) {
 			int s = (int)((event_cursor + (unsigned)i) % LXP_NSLOT);
+			if (!primary_slot_pending(s))
+				continue;
 			eng->crit_enter();
+			primary_slot_clear(s);
 			et = claim_slot_event(s);
 			eng->crit_exit();
 			if (et != LXP_EV_NONE) {
@@ -1799,6 +1848,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			if (!cap) { /* a port contract violation: contain it to this process */
 				p->exit_status = 127;
 				p->exited = 1;
+				primary_slot_mark(es);
 				continue;
 			}
 			int idx = p->exec_file_idx, eargc = cap->argc, eenvc = cap->envc;
@@ -2058,6 +2108,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 						p->exit_status = 128 + ps;
 						p->exit_reason = LXP_EXIT_REASON_SIGNAL;
 						p->exit_signal = (uint8_t)ps;
+						primary_slot_mark(s);
 						progress = 1;
 					}
 				}
@@ -2245,6 +2296,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 						p->exit_status = 128 + LXP_SIGPIPE;
 						p->exit_reason = LXP_EXIT_REASON_SIGNAL;
 						p->exit_signal = LXP_SIGPIPE;
+						primary_slot_mark(s);
 					} else {
 						eng->spawn_resume(s, p->region, &g_ctx[s], r);
 					}

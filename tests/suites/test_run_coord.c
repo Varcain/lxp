@@ -142,6 +142,7 @@ static int reset_state(void **state)
 	memset(g_lxp_proc, 0, sizeof(g_lxp_proc));
 	memset(g_lxp_used, 0, sizeof(g_lxp_used));
 	memset(g_deferred, 0, sizeof(g_deferred));
+	memset(g_primary_pending, 0, sizeof(g_primary_pending));
 	memset(g_slot_generation, 0, sizeof(g_slot_generation));
 	memset(g_region_generation, 0, sizeof(g_region_generation));
 	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
@@ -217,6 +218,13 @@ static void test_claim_slot_event_priority_and_consumption(void **state)
 	(void)state;
 	const int s = 2;
 	lxp_proc_t *p = &g_lxp_proc[s];
+
+	assert_false(primary_slot_pending(s));
+	lxp_event_post_slot(s);
+	assert_true(primary_slot_pending(s));
+	assert_int_equal(g_mock.event_posts, 1);
+	primary_slot_clear(s);
+	assert_false(primary_slot_pending(s));
 
 	assert_int_equal(claim_slot_event(s), LXP_EV_NONE);
 	p->alive = 1;

@@ -108,6 +108,10 @@ void lxp_park_loop(void);
  * and the running slot's proc; on return the seam writes the frame back. */
 void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc);
 
+/* Publish a primary event for @p slot and wake the coordinator. Engine fault
+ * containment paths use this after marking a guest exited. */
+void lxp_event_post_slot(int slot);
+
 /* The shared run loop. The public lxp_run() (lxp_run.c) wraps this: it publishes
  * the net/display ports, runs ops->prepare(), drives this loop, then ops->teardown(). */
 int lxp_run_common(const lxp_os_ops_t *ops, const lxp_run_config_t *cfg,

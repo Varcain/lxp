@@ -222,7 +222,7 @@ void lxp_qemu_fault_c(uint32_t *frame /* the faulting program's PSP HW frame */)
 		frame[6] = ((uint32_t)&lxp_park_loop) & ~1u;    /* stacked PC → park loop */
 		frame[7] |= (1u << 24);                         /* xPSR.T */
 		*(volatile uint32_t *)0xE000ED28u = *(volatile uint32_t *)0xE000ED28u; /* clear CFSR */
-		engine_event_post();
+		lxp_event_post_slot(sidx);
 		return;
 	}
 	HardFault_Handler(); /* not a program fault → fatal */

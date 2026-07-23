@@ -27,9 +27,10 @@ int slot_of(const lxp_proc_t *p)
 	return 0;
 }
 
-void park_frame(struct lxp_frame *f)
+void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	(void)f;
+	(void)proc;
 }
 
 #if LXP_ENABLE_NETFS_EXEC
