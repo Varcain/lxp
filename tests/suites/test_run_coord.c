@@ -981,6 +981,7 @@ static void test_deferred_blocking_handoff_keeps_parked_task(void **state)
 
 	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
 	assert_int_equal(p->sleep_pending, 1);
+	assert_true(primary_slot_pending(0));
 	assert_int_equal(g_lxp_used[0], 1);
 	assert_int_equal(g_mock.abort_calls, 0);
 	assert_int_equal(g_mock.resume_calls, 0);

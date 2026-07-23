@@ -1352,11 +1352,15 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 	deferred_state_store(slot, DEFER_IDLE);
 
 	/* Existing retry state owns completion from here and expects the spin task to
-	 * remain present; exec/exit are likewise consumed by higher-level events. */
+	 * remain present; exec/exit are likewise consumed by higher-level events. The
+	 * deferred event hint was consumed before entering this function, so publish
+	 * the follow-on state before returning to the coordinator wait loop. */
 	if (proc->sleep_pending || proc->wait_pending || proc->pipe_wait || proc->dev_wait ||
 	    proc->sock_wait || proc->netfs_wait || proc->pty_wait || proc->sigsuspend_pending ||
-	    proc->console_wait || proc->exited || proc->exec_pending)
+	    proc->console_wait || proc->exited || proc->exec_pending) {
+		primary_slot_mark(slot);
 		return;
+	}
 
 	eng->abort_slot(slot);
 	int psig = pending_deliverable(proc);
