@@ -95,6 +95,10 @@ static int lnx_slot_of_name(const char *name)
  * into /proc/stat idle, not shown as a process (else it crushes top's %CPU math). */
 static void refresh_stats(void)
 {
+	/* Short-lived shell commands must not consume cumulative-CPU slots
+	 * forever. The preceding completed snapshot is the safe liveness set. */
+	lxp_stats_prune();
+
 	struct lxp_thread_info ti[LXP_MAX_KTHREAD];
 	size_t n = 0;
 	if (lxp_thread_list(ti, LXP_MAX_KTHREAD, &n) != LXP_OK)

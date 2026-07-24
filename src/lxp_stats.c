@@ -83,6 +83,25 @@ void lxp_stats_reset(void)
 	g_busy_us = 0;
 }
 
+void lxp_stats_prune(void)
+{
+	for (int k = 0; k < LXP_MAX_PENT; k++) {
+		if (g_pc[k].pid == 0)
+			continue;
+
+		int live = 0;
+		for (int i = 0; i < g_npent; i++) {
+			if (g_pent[i].live && !g_pent[i].is_kernel &&
+			    g_pent[i].pid == g_pc[k].pid) {
+				live = 1;
+				break;
+			}
+		}
+		if (!live)
+			memset(&g_pc[k], 0, sizeof(g_pc[k]));
+	}
+}
+
 void lxp_stats_begin(void)
 {
 	for (int i = 0; i < g_npent; i++)
@@ -92,16 +111,22 @@ void lxp_stats_begin(void)
 void lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu_us,
 		       int is_kernel)
 {
-	int slot = -1;
-	for (int i = 0; i < g_npent; i++)
+	int slot = -1, stale_slot = -1;
+	for (int i = 0; i < g_npent; i++) {
 		if (g_pent[i].pid == pid) {
 			slot = i;
 			break;
 		}
+		if (!g_pent[i].live && stale_slot < 0)
+			stale_slot = i;
+	}
 	if (slot < 0) {
-		if (g_npent >= LXP_MAX_PENT)
+		if (stale_slot >= 0)
+			slot = stale_slot;
+		else if (g_npent < LXP_MAX_PENT)
+			slot = g_npent++;
+		else
 			return;
-		slot = g_npent++;
 	}
 	struct lxp_pentry *e = &g_pent[slot];
 	e->pid = pid;

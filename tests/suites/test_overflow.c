@@ -14,6 +14,7 @@
  */
 #include "../framework/lxp_test.h"
 #include "lxp/lxp_arena.h"
+#include "lxp/lxp_stats.h"
 #include "lxp/lxp_syscall.h"
 
 #include <stdint.h>
@@ -350,6 +351,44 @@ static void test_symlink_target_fault(void **st)
 	assert_int_equal(r, -LXP_EFAULT);
 }
 
+/* Repeated short-lived commands must not exhaust the fixed /proc snapshot.
+ * Every refresh leaves the preceding PID stale and the next add must reuse it. */
+static void test_stats_snapshot_reuses_stale_entries(void **st)
+{
+	(void)st;
+	lxp_stats_reset();
+
+	for (int pid = 1; pid <= LXP_MAX_PENT + 8; pid++) {
+		lxp_stats_begin();
+		lxp_stats_add(pid, 0, "short", 'R', (uint64_t)pid * 1000u, 0);
+		assert_int_equal(lxp_pent_count(), 1);
+		assert_non_null(lxp_pent_find(pid));
+	}
+}
+
+/* The cumulative CPU table is independently bounded. Reclaim records for PIDs
+ * absent from the last completed snapshot while retaining a still-live PID. */
+static void test_stats_prunes_exited_cpu_records(void **st)
+{
+	(void)st;
+	lxp_stats_reset();
+
+	for (int pid = 1; pid <= LXP_MAX_PENT; pid++) {
+		assert_int_equal(lxp_stats_charge(pid, 1000u), 0);
+		assert_int_equal(lxp_stats_charge(pid, 2000u), 1000);
+	}
+
+	lxp_stats_begin();
+	lxp_stats_add(LXP_MAX_PENT, 0, "live", 'R',
+		      lxp_proc_cpu_us(LXP_MAX_PENT), 0);
+	lxp_stats_prune();
+
+	const int replacement = LXP_MAX_PENT + 100;
+	assert_int_equal(lxp_stats_charge(replacement, 5000u), 0);
+	assert_int_equal(lxp_stats_charge(replacement, 7000u), 2000);
+	assert_int_equal(lxp_proc_cpu_us(LXP_MAX_PENT), 1000);
+}
+
 int test_overflow_run(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -364,6 +403,8 @@ int test_overflow_run(void)
 		cmocka_unit_test(test_dup_clears_cloexec),
 		cmocka_unit_test(test_dup3_same_fd_einval),
 		cmocka_unit_test(test_symlink_target_fault),
+		cmocka_unit_test(test_stats_snapshot_reuses_stale_entries),
+		cmocka_unit_test(test_stats_prunes_exited_cpu_records),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

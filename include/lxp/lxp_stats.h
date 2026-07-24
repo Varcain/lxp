@@ -20,7 +20,7 @@
 #include <stdint.h>
 
 #define LXP_MAX_PENT 24    /* live Linux slots (<=NSLOT) + kernel threads */
-#define LXP_MAX_KTHREAD 16 /* RTOS threads to track */
+#define LXP_MAX_KTHREAD 24 /* host threads + every possible Linux slot */
 #define LXP_KPID_BASE 1000 /* kernel pids start here; Linux pids are 1..~16 */
 
 struct lxp_thread_info; /* from <ove/thread.h> */
@@ -38,6 +38,9 @@ struct lxp_pentry {
 
 /* ---- written by the run-loop thread only ---------------------------------- */
 void lxp_stats_reset(void); /* clear everything (at lxp_run start) */
+/* Reclaim cumulative-CPU records whose Linux PID was absent from the previous
+ * completed snapshot. Call once at the start of each refresh. */
+void lxp_stats_prune(void);
 void lxp_stats_begin(void); /* start a refresh: mark all entries not-live */
 /* Add/update one entry (matched by pid). */
 void lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu_us,
