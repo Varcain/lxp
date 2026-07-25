@@ -750,6 +750,33 @@ static void test_device_map_index_tracks_both_ranges(void **state)
 	assert_int_equal(device_map_index(p, UINTPTR_MAX - 7u, 8u), -LXP_EINVAL);
 }
 
+static void test_teardown_releases_every_slot_resource(void **state)
+{
+	(void)state;
+	const int s = 2;
+	lxp_proc_t *p = &g_lxp_proc[s];
+	p->alive = 1;
+	p->region = 1;
+	p->mm_ref = 1;
+	p->snap_region = 2;
+	p->netfs_req = -1;
+	g_lxp_used[s] = 1;
+	assert_true(region_reserve(1, s) != 0);
+	assert_true(region_reserve(2, s) != 0);
+	assert_true(lxp_fd_install(p, LXP_FD_CONSOLE, 0) >= 0);
+
+	coordinator_teardown_all(&g_mock_eng);
+
+	assert_int_equal(g_mock.abort_calls, LXP_NSLOT);
+	assert_false(p->alive);
+	assert_false(g_lxp_used[s]);
+	assert_null(lxp_fd_description(p, 0));
+	for (int r = 0; r < LXP_NREG; r++) {
+		assert_int_equal(g_region_owner[r], -1);
+		assert_int_equal(g_region_refs[r], 0);
+	}
+}
+
 /* ---- futex: co-runner gate + FUTEX_WAKE bookkeeping ------------------------- */
 /* futex_has_corunner: a FUTEX_WAIT only parks when another live thread shares the region
  * (else nobody could ever wake it). */
@@ -1364,6 +1391,8 @@ int main(void)
 		cmocka_unit_test_setup(test_thread_group_exit_marks_every_peer, reset_state),
 		cmocka_unit_test_setup(test_exec_stops_only_thread_group_peers, reset_state),
 		cmocka_unit_test_setup(test_device_map_index_tracks_both_ranges,
+				       reset_state),
+		cmocka_unit_test_setup(test_teardown_releases_every_slot_resource,
 				       reset_state),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

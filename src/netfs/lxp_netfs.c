@@ -1063,6 +1063,31 @@ void lxp_netfs_init(void)
 	conn_connect(now); /* best-effort; a down server reconnects lazily */
 }
 
+void lxp_netfs_shutdown(void)
+{
+	/* Do not turn outstanding requests into DONE requests as conn_drop() does:
+	 * every owner has already been stopped, so nobody remains to consume them.
+	 * Keep g_mnt: it is boot configuration, not per-run state. */
+	if (g_sk && g_lxp_net_ops && g_lxp_net_ops->sock_close)
+		g_lxp_net_ops->sock_close(g_sk);
+	g_sk = NULL;
+	g_conn = CONN_DOWN;
+	g_msize = NETFS_MSIZE;
+	g_reconnect_at_us = 0;
+	g_txlen = g_txoff = g_rxlen = 0;
+	g_inflight = -1;
+	g_req_seq = 0;
+	g_clunk_head = g_clunk_tail = 0;
+	memset(g_fid_bm, 0, sizeof(g_fid_bm));
+	memset(g_open, 0, sizeof(g_open));
+	memset(g_req, 0, sizeof(g_req));
+	memset(g_clunk_fid, 0, sizeof(g_clunk_fid));
+#if LXP_ENABLE_NETFS_EXEC
+	g_exec_buf = NULL;
+	g_exec_cap = g_exec_size = 0;
+#endif
+}
+
 /* ---- provider entry points (called from the syscall handlers) -------------- */
 int lxp_netfs_lookup(const char *abspath)
 {

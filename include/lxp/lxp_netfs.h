@@ -70,6 +70,14 @@ void lxp_netfs_mount_config(const char *mountpoint, const uint8_t ip[4], uint16_
  *  the mount is marked DISCONNECTED and reconnected lazily; boot never hangs. */
 void lxp_netfs_init(void);
 
+/** @brief Close the transport and discard all per-run requests, opens and fids.
+ *
+ * Called after every guest has been stopped and its descriptors closed. The
+ * mount configuration is retained, so a later @ref lxp_netfs_init starts a
+ * completely fresh session against the same configured mount.
+ */
+void lxp_netfs_shutdown(void);
+
 /* ---- syscall-layer <-> netfs-core interface (called from lxp_syscall.c) ---- */
 
 /** @return mount id (>=0) if @p abspath is at or under the mount point, else -1. */

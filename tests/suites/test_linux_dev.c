@@ -814,6 +814,24 @@ static void test_dev_dma2d_rejects_bad_descriptor(void **state)
 #undef BASE
 }
 
+static int g_tick_dedup_calls;
+
+static void dedup_tick(uint64_t now_us)
+{
+	(void)now_us;
+	g_tick_dedup_calls++;
+}
+
+static void test_dev_tick_registration_is_idempotent(void **state)
+{
+	(void)state;
+	g_tick_dedup_calls = 0;
+	lxp_dev_tick_register(dedup_tick);
+	lxp_dev_tick_register(dedup_tick);
+	lxp_dev_tick(123);
+	assert_int_equal(g_tick_dedup_calls, 1);
+}
+
 int test_linux_dev_run(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -833,6 +851,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_getdents),
 		cmocka_unit_test(test_dev_dma2d_submit_ok),
 		cmocka_unit_test(test_dev_dma2d_rejects_bad_descriptor),
+		cmocka_unit_test(test_dev_tick_registration_is_idempotent),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

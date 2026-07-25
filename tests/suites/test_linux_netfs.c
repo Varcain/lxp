@@ -392,9 +392,9 @@ static void start_mock_and_mount(void)
 
 static void stop_mock(void)
 {
-	/* The coordinator socket has no disconnect API, so the mock thread stays blocked
-	 * reading it; detach it and let process teardown reap it (no heap → no ASan leak). */
-	pthread_detach(g_mock_thread);
+	lxp_netfs_shutdown();
+	assert_int_equal(lxp_netfs_busy(), 0);
+	assert_int_equal(pthread_join(g_mock_thread, NULL), 0);
 	if (g_mock_ls >= 0)
 		close(g_mock_ls);
 	g_mock_ls = -1;

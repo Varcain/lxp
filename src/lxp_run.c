@@ -1553,6 +1553,54 @@ static void region_release_if_owned(int r, int slot)
 		region_put(r);
 }
 
+/* Stop every host task before releasing resource objects: descriptor close
+ * hooks and request cancellation touch state a live guest could otherwise
+ * still mutate. This is the common path for normal completion, halt, timeout
+ * and launch failure, so a later lxp_run() never inherits the prior run. */
+static void coordinator_teardown_all(const lxp_os_ops_t *eng)
+{
+	for (int s = 0; s < LXP_NSLOT; s++)
+		eng->abort_slot(s);
+
+	for (int s = 0; s < LXP_NSLOT; s++) {
+		lxp_proc_t *p = &g_lxp_proc[s];
+		deferred_slot_reassign(s);
+		primary_slot_clear(s);
+#if LXP_ENABLE_NETFS
+		if (p->netfs_req >= 0)
+			lxp_netfs_cancel(p);
+#endif
+		lxp_fd_close_all(p);
+		if (eng->map_device)
+			eng->map_device(s, 0, 0, 0);
+		p->dev_map_lo[0] = p->dev_map_hi[0] = 0;
+		p->dev_map_lo[1] = p->dev_map_hi[1] = 0;
+		if (p->snap_region >= 0)
+			region_release_if_owned(p->snap_region, s);
+		proc_mm_put(p);
+		g_sig_save[s].depth = 0;
+		g_lxp_used[s] = 0;
+		memset(p, 0, sizeof(*p));
+		p->snap_region = -1;
+		p->vfork_parent_slot = -1;
+		p->netfs_req = -1;
+	}
+
+	/* Contain inconsistent ownership metadata as well as the ordinary
+	 * reference-balanced case above. No guest survives this boundary. */
+	memset(g_region_refs, 0, sizeof(g_region_refs));
+	for (int r = 0; r < LXP_NREG; r++)
+		g_region_owner[r] = -1;
+	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
+	for (int s = 0; s < LXP_NSLOT; s++)
+		g_vfork_guard[s].parent_slot = g_vfork_guard[s].parent_region =
+			g_vfork_guard[s].snapshot_region = -1;
+	lxp_fd_runtime_reset();
+#if LXP_ENABLE_NETFS
+	lxp_netfs_shutdown();
+#endif
+}
+
 /* Copy into storage that may retain cache lines from an earlier tenant. The
  * explicit pre-invalidate prevents a later clean from writing that tenant back
  * over an uncached copy; the final clean publishes cacheable coordinator writes. */
@@ -1714,7 +1762,6 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		if (!eng->exec_capture(s))
 			return LXP_RUN_ELAUNCH;
 	g_cfg = cfg;
-	lxp_fd_runtime_reset();
 	g_eng = eng;
 	g_lxp_rootfs_lo = NULL; /* the cpio span — a seam's svc discrimination treats a cpio PC */
 	g_lxp_rootfs_hi = NULL; /* as a program svc (the shared in-place text runs from here) */
@@ -1764,7 +1811,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			break;
 		}
 	if (bb < 0 || !cfg->rootfs[bb].data)
-		return LXP_RUN_ELAUNCH;
+		goto launch_failed;
 
 	/* Concurrent process model: the run loop COORDINATES the live process SET
 	 * (g_lxp_proc[*].alive). Each live proc owns a region + an RTOS thread for
@@ -1780,8 +1827,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	(void)region_reserve(0, 0);
 	if (launch(eng, 0, 0, cfg->rootfs[bb].data, cfg->rootfs[bb].size, 1, 0, argc, argv, cfg->env,
 		   0) != 0) {
-		g_lxp_active = 0;
-		return LXP_RUN_ELAUNCH;
+		goto launch_failed;
 	}
 	g_lxp_proc[0].exec_file_idx = bb; /* the running image, for /proc/self/exe re-exec */
 
@@ -2636,14 +2682,14 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		}
 		eng->event_wait(to);
 	}
-	/* Tear down any still-running slot tasks so a subsequent lxp_run() starts
-	 * clean and no leaked task starves the next program. */
-	for (int i = 0; i < LXP_NSLOT; i++)
-		eng->abort_slot(i);
-	for (int i = 0; i < LXP_NSLOT; i++)
-		deferred_slot_reassign(i);
 	g_lxp_active = 0;
+	coordinator_teardown_all(eng);
 	return rc;
+
+launch_failed:
+	g_lxp_active = 0;
+	coordinator_teardown_all(eng);
+	return LXP_RUN_ELAUNCH;
 }
 
 /* THE port entry (see lxp_run.h). Publishes the net/display ports the subsystem

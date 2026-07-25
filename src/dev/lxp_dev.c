@@ -84,7 +84,15 @@ int lxp_dev_register(const struct lxp_dev *dev)
 void lxp_dev_tick_register(void (*fn)(uint64_t now_us));
 void lxp_dev_tick_register(void (*fn)(uint64_t now_us))
 {
-	if (fn && g_lnx_ndevtick < LXP_NDEVTICK)
+	if (!fn)
+		return;
+	/* Autoregistration runs once per lxp_run(). Keep the persistent registry
+	 * idempotent too: otherwise every restart adds another invocation of the
+	 * same framebuffer/touch callback until the table fills. */
+	for (int i = 0; i < g_lnx_ndevtick; i++)
+		if (g_lnx_devtick[i] == fn)
+			return;
+	if (g_lnx_ndevtick < LXP_NDEVTICK)
 		g_lnx_devtick[g_lnx_ndevtick++] = fn;
 }
 
