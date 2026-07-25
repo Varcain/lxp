@@ -97,13 +97,17 @@ typedef struct {
 typedef struct lxp_os_ops {
 	/* The engine owns prog_regions[]; return region `ridx`'s base. */
 	uint8_t *(*region)(int ridx);
-	/* Spawn slot `sidx` running the freshly-loaded `prog` at (entry, sp). */
-	int (*spawn_launch)(int sidx, int ridx, const lxp_flat_t *prog, void *entry, void *sp,
+	/* Host task transitions are generation checked and synchronous. The engine
+	 * records `generation` when it creates a task and rejects park/resume/abort
+	 * requests for another slot incarnation. Return LXP_OK only after the host
+	 * transition has committed; a negative result leaves the prior host state
+	 * intact (or, for a failed create, leaves no task). */
+	int (*spawn_launch)(int sidx, uint32_t generation, int ridx,
+			    const lxp_flat_t *prog, void *entry, void *sp,
 			    void *stack_lo);
-	/* Spawn slot `sidx` resuming at captured context `c` with r0 = r0val. */
-	void (*spawn_resume)(int sidx, int ridx, const struct lxp_resume_ctx *c, long r0val);
-	/* Abort (delete) slot `sidx`'s task. */
-	void (*abort_slot)(int sidx);
+	int (*spawn_resume)(int sidx, uint32_t generation, int ridx,
+			    const struct lxp_resume_ctx *c, long r0val);
+	int (*abort_slot)(int sidx, uint32_t generation);
 	/* Sleep the run-loop task for `ms` milliseconds. */
 	void (*sleep_ms)(unsigned ms);
 	/* Coordinator critical section: mask the program svc exception. */
@@ -175,11 +179,13 @@ typedef struct lxp_os_ops {
 	 * exception and may return an opaque, guest-readable token which LXP passes
 	 * to lxp_park_loop in r0 (NULL is valid for a native saved-frame restore).
 	 * park_slot then blocks the existing RTOS task from coordinator context; a
-	 * later spawn_resume restores and resumes that same task. Ports which leave
-	 * either callback NULL keep the legacy abort/recreate behavior. Kept at the
-	 * end for source-level compatibility with older port initializers. */
-	void *(*park_prepare)(int sidx, const struct lxp_resume_ctx *c);
-	void (*park_slot)(int sidx);
+	 * later spawn_resume restores and resumes that same task. Both callbacks are
+	 * required: deleting and recreating a task on every blocking syscall is not
+	 * a supported lifecycle. Kept at the end for source-level compatibility
+	 * with older designated initializers. */
+	void *(*park_prepare)(int sidx, uint32_t generation,
+			      const struct lxp_resume_ctx *c);
+	int (*park_slot)(int sidx, uint32_t generation);
 } lxp_os_ops_t;
 
 /* ─────────────────────────────────────────────────────────────────────────

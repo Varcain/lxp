@@ -54,13 +54,17 @@ static uint8_t g_dyn_pools[LXP_NREG][LXP_DYN_POOL_SIZE]
 	__attribute__((section(".psram"), aligned(LXP_DYN_POOL_SIZE)));
 
 #define SLOT_PRIO 1 /* guests run below the coordinator; NO portPRIVILEGE_BIT (unprivileged) */
-#define TRAMP_STACK_WORDS 256
+#define TRAMP_STACK_WORDS 192
+#define TRAMP_STORAGE_WORDS 256
 /* The tramp stack is the restricted task's auto MPU stack region, so it must be
- * aligned to its (power-of-2) size (PMSAv7). 256 words = 1 KB. */
-static StackType_t g_tramp_stacks[LXP_NSLOT][TRAMP_STACK_WORDS]
-	__attribute__((aligned(TRAMP_STACK_WORDS * sizeof(StackType_t))));
+ * backed by a power-of-2-aligned allocation. The task receives 768 bytes; its
+ * MPU region rounds to this 1K allocation, whose tail holds the persistent
+ * resume descriptor outside FreeRTOS's logical stack. */
+static StackType_t g_tramp_stacks[LXP_NSLOT][TRAMP_STORAGE_WORDS]
+	__attribute__((aligned(TRAMP_STORAGE_WORDS * sizeof(StackType_t))));
 static StaticTask_t g_tcb[LXP_NSLOT];
 static TaskHandle_t g_tid[LXP_NSLOT];
+static uint32_t g_task_generation[LXP_NSLOT];
 
 static int current_slot(void)
 {
@@ -219,6 +223,7 @@ void lxp_qemu_fault_c(uint32_t *frame /* the faulting program's PSP HW frame */)
 	if (g_lxp_active && sidx >= 0) {
 		g_lxp_proc[sidx].exited = 1;
 		g_lxp_proc[sidx].exit_status = 139;             /* 128 + SIGSEGV */
+		frame[0] = 0;                                   /* fault park has no resume token */
 		frame[6] = ((uint32_t)&lxp_park_loop) & ~1u;    /* stacked PC → park loop */
 		frame[7] |= (1u << 24);                         /* xPSR.T */
 		*(volatile uint32_t *)0xE000ED28u = *(volatile uint32_t *)0xE000ED28u; /* clear CFSR */
@@ -259,7 +264,9 @@ __attribute__((naked)) void BusFault_Handler(void)
 struct resume_desc {
 	uint32_t r0;
 	struct lxp_resume_ctx ctx;
+	volatile uint32_t ready;
 };
+static struct resume_desc *g_park_desc[LXP_NSLOT];
 
 #if LXP_ENABLE_FPU_CONTEXT
 /* prog_tramp is naked assembly, so pin every optional field offset it consumes.
@@ -304,16 +311,42 @@ __attribute__((naked)) static void prog_tramp(void *desc __attribute__((unused))
 			 "pop   {pc}          \n"); /* branch ctx.pc; sp restored to ctx.sp */
 }
 
-static struct resume_desc *stash_desc(uint32_t sp, const struct lxp_resume_ctx *ctx, long r0)
+static struct resume_desc *stash_desc(int sidx, const struct lxp_resume_ctx *ctx, long r0)
 {
-	/* Reserve 8 bytes just below sp: prog_tramp stages ctx.pc there (push) as it enters
-	 * the guest, so the descriptor must NOT occupy [sp-8, sp) — otherwise that push
-	 * overwrites the descriptor's tail (ctx.r3) before prog_tramp reads it back. */
-	uint32_t top = (sp & ~7u) - 8u;
-	struct resume_desc *d = (struct resume_desc *)(top - ((sizeof(struct resume_desc) + 7u) & ~7u));
+	struct resume_desc *d =
+		(struct resume_desc *)&g_tramp_stacks[sidx][TRAMP_STACK_WORDS];
 	d->r0 = (uint32_t)r0;
 	d->ctx = *ctx;
+	d->ready = 1u;
 	return d;
+}
+
+_Static_assert(sizeof(struct resume_desc) <=
+		       (TRAMP_STORAGE_WORDS - TRAMP_STACK_WORDS) * sizeof(StackType_t),
+	       "resume descriptor exceeds reserved trampoline-stack tail");
+
+static void *qemu_park_prepare(int sidx, uint32_t generation,
+			       const struct lxp_resume_ctx *ctx)
+{
+	if (sidx < 0 || sidx >= LXP_NSLOT || !g_tid[sidx] ||
+	    g_task_generation[sidx] != generation)
+		return NULL;
+	struct resume_desc *d = stash_desc(sidx, ctx, 0);
+	__atomic_store_n(&d->ready, 0u, __ATOMIC_RELEASE);
+	g_park_desc[sidx] = d;
+	return d;
+}
+
+void lxp_park_loop(void *token)
+{
+	struct resume_desc *d = token;
+	if (!d)
+		for (;;)
+			__asm__ volatile("nop");
+	while (!__atomic_load_n(&d->ready, __ATOMIC_ACQUIRE))
+		__asm__ volatile("nop");
+	prog_tramp(d);
+	__builtin_unreachable();
 }
 
 /* ---- the lxp_os_ops_t vtable ----------------------------------------------- */
@@ -365,14 +398,17 @@ static int spawn_common(int sidx, int ridx, struct resume_desc *desc)
 		},
 	};
 	BaseType_t ok = xTaskCreateRestrictedStatic(&tp, &g_tid[sidx]);
-	g_lxp_used[sidx] = (ok == pdPASS);
 	return (ok == pdPASS) ? 0 : -1;
 }
 
-static int qemu_spawn_launch(int sidx, int ridx, const lxp_flat_t *prog, void *entry, void *sp,
+static int qemu_spawn_launch(int sidx, uint32_t generation, int ridx,
+			     const lxp_flat_t *prog, void *entry, void *sp,
 			     void *stack_lo)
 {
+	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0 || g_tid[sidx])
+		return -1;
 	(void)stack_lo;
+	g_park_desc[sidx] = NULL;
 	struct lxp_resume_ctx c;
 	memset(&c, 0, sizeof(c));
 	c.r4_11[3] = prog->is_fdpic ? (uint32_t)prog->loadmap : 0u;        /* r7 */
@@ -380,20 +416,57 @@ static int qemu_spawn_launch(int sidx, int ridx, const lxp_flat_t *prog, void *e
 	c.r4_11[5] = prog->is_fdpic ? (uint32_t)prog->got : 0u;            /* r9 */
 	c.sp = (uint32_t)sp;
 	c.pc = (uint32_t)entry | 1u; /* Cortex-M is Thumb-only: prog_tramp's bx needs bit0 set */
-	return spawn_common(sidx, ridx, stash_desc((uint32_t)sp, &c, 0));
+	int rc = spawn_common(sidx, ridx, stash_desc(sidx, &c, 0));
+	if (rc == 0)
+		g_task_generation[sidx] = generation;
+	return rc;
 }
 
-static void qemu_spawn_resume(int sidx, int ridx, const struct lxp_resume_ctx *ctx, long r0val)
+static int qemu_spawn_resume(int sidx, uint32_t generation, int ridx,
+			     const struct lxp_resume_ctx *ctx, long r0val)
 {
-	(void)spawn_common(sidx, ridx, stash_desc(ctx->sp, ctx, r0val));
+	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0)
+		return -1;
+	struct resume_desc *d = g_park_desc[sidx];
+	if (!g_lxp_used[sidx] && g_tid[sidx] && d) {
+		if (g_task_generation[sidx] != generation)
+			return -1;
+		d->r0 = (uint32_t)r0val;
+		d->ctx = *ctx;
+		__atomic_store_n(&d->ready, 1u, __ATOMIC_RELEASE);
+		vTaskResume(g_tid[sidx]);
+		return 0;
+	}
+	if (g_tid[sidx])
+		return -1;
+	d = stash_desc(sidx, ctx, r0val);
+	int rc = spawn_common(sidx, ridx, d);
+	if (rc == 0)
+		g_task_generation[sidx] = generation;
+	return rc;
 }
 
-static void qemu_abort_slot(int sidx)
+static int qemu_abort_slot(int sidx, uint32_t generation)
 {
-	if (g_lxp_used[sidx] && g_tid[sidx])
+	if (sidx < 0 || sidx >= LXP_NSLOT)
+		return -1;
+	if (g_tid[sidx] && g_task_generation[sidx] != generation)
+		return -1;
+	if (g_tid[sidx])
 		vTaskDelete(g_tid[sidx]);
-	g_lxp_used[sidx] = 0;
 	g_tid[sidx] = NULL;
+	g_park_desc[sidx] = NULL;
+	g_task_generation[sidx] = 0;
+	return 0;
+}
+
+static int qemu_park_slot(int sidx, uint32_t generation)
+{
+	if (sidx < 0 || sidx >= LXP_NSLOT || !g_lxp_used[sidx] ||
+	    !g_tid[sidx] || g_task_generation[sidx] != generation)
+		return -1;
+	vTaskSuspend(g_tid[sidx]);
+	return 0;
 }
 
 static void qemu_sleep_ms(unsigned ms)
@@ -482,6 +555,8 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.spawn_launch = qemu_spawn_launch,
 	.spawn_resume = qemu_spawn_resume,
 	.abort_slot = qemu_abort_slot,
+	.park_prepare = qemu_park_prepare,
+	.park_slot = qemu_park_slot,
 	.sleep_ms = qemu_sleep_ms,
 	.crit_enter = qemu_crit_enter,
 	.crit_exit = qemu_crit_exit,

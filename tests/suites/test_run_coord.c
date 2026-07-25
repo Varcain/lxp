@@ -36,16 +36,22 @@ const lxp_display_ops_t *g_lxp_disp_ops;
 static struct {
 	int resume_calls;
 	int resume_sidx;
+	uint32_t resume_generation;
 	long resume_r0;
 	uint32_t resume_xpsr;
 	struct lxp_fp_context resume_fp;
 	int resume_order[LXP_NSLOT];
 	long resume_results[LXP_NSLOT];
+	int resume_failures;
 	int abort_calls;
 	int abort_sidx;
+	uint32_t abort_generation;
+	int abort_failures;
 	int park_prepare_calls;
 	int park_calls;
 	int park_sidx;
+	uint32_t park_generation;
+	int park_failures;
 	int event_posts;
 	int cache_clean_calls;
 	const void *cache_clean_base[8];
@@ -98,12 +104,15 @@ static void mock_cache_invalidate(const void *base, size_t len)
 		g_mock.cache_invalidate_len[i] = len;
 	}
 }
-static void mock_spawn_resume(int sidx, int ridx, const struct lxp_resume_ctx *c, long r0)
+static int mock_spawn_resume(int sidx, uint32_t generation, int ridx,
+			     const struct lxp_resume_ctx *c, long r0)
 {
+	(void)generation;
 	(void)ridx;
 	(void)c;
 	g_mock.resume_calls++;
 	g_mock.resume_sidx = sidx;
+	g_mock.resume_generation = generation;
 	g_mock.resume_r0 = r0;
 	g_mock.resume_xpsr = c->xpsr;
 	g_mock.resume_fp = c->fp;
@@ -111,25 +120,43 @@ static void mock_spawn_resume(int sidx, int ridx, const struct lxp_resume_ctx *c
 		g_mock.resume_order[g_mock.resume_calls - 1] = sidx;
 		g_mock.resume_results[g_mock.resume_calls - 1] = r0;
 	}
-	g_lxp_used[sidx] = 1;
+	if (g_mock.resume_failures > 0) {
+		g_mock.resume_failures--;
+		return -LXP_EIO;
+	}
+	return LXP_OK;
 }
-static void mock_abort_slot(int sidx)
+static int mock_abort_slot(int sidx, uint32_t generation)
 {
+	(void)generation;
 	g_mock.abort_calls++;
 	g_mock.abort_sidx = sidx;
-	g_lxp_used[sidx] = 0;
+	g_mock.abort_generation = generation;
+	if (g_mock.abort_failures > 0) {
+		g_mock.abort_failures--;
+		return -LXP_EIO;
+	}
+	return LXP_OK;
 }
-static void *mock_park_prepare(int sidx, const struct lxp_resume_ctx *c)
+static void *mock_park_prepare(int sidx, uint32_t generation,
+			       const struct lxp_resume_ctx *c)
 {
 	(void)sidx;
+	(void)generation;
 	g_mock.park_prepare_calls++;
 	return (void *)c;
 }
-static void mock_park_slot(int sidx)
+static int mock_park_slot(int sidx, uint32_t generation)
 {
+	(void)generation;
 	g_mock.park_calls++;
 	g_mock.park_sidx = sidx;
-	g_lxp_used[sidx] = 0;
+	g_mock.park_generation = generation;
+	if (g_mock.park_failures > 0) {
+		g_mock.park_failures--;
+		return -LXP_EIO;
+	}
+	return LXP_OK;
 }
 static void mock_event_post(void)
 {
@@ -191,6 +218,7 @@ static int reset_state(void **state)
 		g_lxp_proc[s].alive = 0;
 	}
 	memset(g_lxp_used, 0, sizeof(g_lxp_used));
+	memset(g_slot_lifecycle, SLOT_FREE, sizeof(g_slot_lifecycle));
 	memset(g_deferred, 0, sizeof(g_deferred));
 	memset(g_primary_pending, 0, sizeof(g_primary_pending));
 	memset(g_slot_generation, 0, sizeof(g_slot_generation));
@@ -313,6 +341,7 @@ static void test_claim_slot_event_priority_and_consumption(void **state)
 	p->console_wait = 1;
 	assert_int_equal(claim_slot_event(s), LXP_EV_NONE);
 	g_lxp_used[s] = 1;
+	g_slot_lifecycle[s] = SLOT_RUNNING;
 	assert_int_equal(claim_slot_event(s), LXP_EV_CONSOLEWAIT);
 }
 
@@ -345,6 +374,7 @@ static void test_reap_wakes_blocking_parent(void **state)
 	g_lxp_proc[0].wait_pending = 1;
 	g_lxp_proc[0].wait_pid = -1; /* any child */
 	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
+	g_slot_lifecycle[0] = SLOT_PARKED;
 
 	reap_to_parent(&g_mock_eng, /*ppid*/ 1, /*cpid*/ 7, /*status*/ 42, /*sigchld=*/1);
 
@@ -376,6 +406,7 @@ static void test_reap_wakes_waiter_in_parent_thread_group(void **state)
 	g_lxp_proc[1].wait_pending = 1;
 	g_lxp_proc[1].wait_pid = -1;
 	g_lxp_proc[1].wait_status_p = (uintptr_t)&status;
+	g_slot_lifecycle[1] = SLOT_PARKED;
 
 	reap_to_parent(&g_mock_eng, 10, 17, 9, /*sigchld=*/1);
 
@@ -399,6 +430,7 @@ static void test_reap_signaled_child_status(void **state)
 	g_lxp_proc[0].wait_pid = -1;
 	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
 	g_lxp_used[0] = 1; /* coordinator has not yet suspended the parked waiter */
+	g_slot_lifecycle[0] = SLOT_RUNNING;
 
 	reap_to_parent(&g_mock_eng, 1, 7, 128 + 15 /* SIGTERM */, /*sigchld=*/1);
 
@@ -784,6 +816,7 @@ static void test_exec_stops_only_thread_group_peers(void **state)
 		g_lxp_proc[s].pid = 10 + s;
 		g_lxp_proc[s].group->tgid = s < 2 ? 10 : 12;
 		g_lxp_used[s] = 1;
+		g_slot_lifecycle[s] = SLOT_RUNNING;
 	}
 	lxp_proc_group_put(&g_lxp_proc[1]);
 	assert_int_equal(lxp_proc_group_fork(&g_lxp_proc[1], &g_lxp_proc[0],
@@ -877,6 +910,7 @@ static void test_teardown_releases_every_slot_resource(void **state)
 	p->snap_region = 2;
 	p->netfs_req = -1;
 	g_lxp_used[s] = 1;
+	g_slot_lifecycle[s] = SLOT_RUNNING;
 	assert_true(region_reserve(1, s) != 0);
 	assert_true(region_reserve(2, s) != 0);
 	assert_non_null(lxp_fd_description(p, 0));
@@ -891,6 +925,79 @@ static void test_teardown_releases_every_slot_resource(void **state)
 		assert_int_equal(g_region_owner[r], -1);
 		assert_int_equal(g_region_refs[r], 0);
 	}
+}
+
+static void test_park_failure_aborts_and_kills_slot(void **state)
+{
+	(void)state;
+	const int s = 2;
+	lxp_proc_t *p = &g_lxp_proc[s];
+	p->alive = 1;
+	g_lxp_used[s] = 1;
+	g_slot_lifecycle[s] = SLOT_RUNNING;
+	deferred_slot_reassign(s);
+	uint32_t generation = g_slot_generation[s];
+	g_mock.park_failures = 1;
+
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, s), -LXP_EIO);
+	assert_int_equal(g_mock.park_calls, 1);
+	assert_int_equal(g_mock.park_generation, generation);
+	assert_int_equal(g_mock.abort_calls, 1);
+	assert_int_equal(g_mock.abort_generation, generation);
+	assert_int_equal(g_slot_lifecycle[s], SLOT_DEAD);
+	assert_false(g_lxp_used[s]);
+	assert_true(p->exited);
+	assert_int_equal(p->exit_reason, LXP_EXIT_REASON_HOST_TRANSITION);
+	assert_true(primary_slot_pending(s));
+}
+
+static void test_resume_failure_aborts_parked_slot(void **state)
+{
+	(void)state;
+	const int s = 3;
+	lxp_proc_t *p = &g_lxp_proc[s];
+	p->alive = 1;
+	g_slot_lifecycle[s] = SLOT_PARKED;
+	deferred_slot_reassign(s);
+	uint32_t generation = g_slot_generation[s];
+	g_mock.resume_failures = 1;
+
+	assert_int_equal(coordinator_resume_slot(&g_mock_eng, s, 0, &g_ctx[s], 42),
+			 -LXP_EIO);
+	assert_int_equal(g_mock.resume_calls, 1);
+	assert_int_equal(g_mock.resume_generation, generation);
+	assert_int_equal(g_mock.abort_calls, 1);
+	assert_int_equal(g_mock.abort_generation, generation);
+	assert_int_equal(g_slot_lifecycle[s], SLOT_DEAD);
+	assert_false(g_lxp_used[s]);
+	assert_true(p->exited);
+	assert_int_equal(p->exit_reason, LXP_EXIT_REASON_HOST_TRANSITION);
+}
+
+static void test_abort_failure_retains_slot_until_retry(void **state)
+{
+	(void)state;
+	const int s = 4;
+	lxp_proc_t *p = &g_lxp_proc[s];
+	p->alive = 1;
+	g_lxp_used[s] = 1;
+	g_slot_lifecycle[s] = SLOT_RUNNING;
+	deferred_slot_reassign(s);
+	uint32_t generation = g_slot_generation[s];
+	g_mock.abort_failures = 1;
+
+	assert_int_equal(coordinator_abort_slot(&g_mock_eng, s), -LXP_EIO);
+	assert_int_equal(g_slot_lifecycle[s], SLOT_FAILED);
+	assert_true(g_lxp_used[s]);
+	assert_true(p->alive);
+	assert_true(p->exited);
+	assert_int_equal(p->exit_reason, LXP_EXIT_REASON_HOST_TRANSITION);
+	assert_int_equal(g_mock.abort_generation, generation);
+
+	assert_int_equal(coordinator_abort_slot(&g_mock_eng, s), LXP_OK);
+	assert_int_equal(g_slot_lifecycle[s], SLOT_DEAD);
+	assert_false(g_lxp_used[s]);
+	assert_true(p->alive); /* Linux ownership is released only by EV_EXIT. */
 }
 
 /* ---- futex: co-runner gate + FUTEX_WAKE bookkeeping ------------------------- */
@@ -1010,6 +1117,7 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 		g_tty_isig = 1;
 		g_tty_icrnl = 1;
 		g_lxp_used[0] = 1;
+		g_slot_lifecycle[0] = SLOT_RUNNING;
 
 		lxp_dispatch(&f, proc);
 
@@ -1067,6 +1175,7 @@ static void test_dispatch_class_defaults_deferred(void **state)
 	fp.active = 1;
 	f.fp = &fp;
 	g_lxp_used[0] = 1;
+	g_slot_lifecycle[0] = SLOT_RUNNING;
 	lxp_dispatch(&f, p);
 	assert_int_equal(deferred_state_load(0), DEFER_READY);
 	assert_int_equal(g_mock.event_posts, 1);
@@ -1086,6 +1195,7 @@ static void test_deferred_requests_are_per_slot(void **state)
 		g_lxp_proc[s].pid = s + 1;
 		deferred_slot_reassign(s);
 		g_lxp_used[s] = 1;
+		g_slot_lifecycle[s] = SLOT_RUNNING;
 		struct lxp_frame f;
 		memset(&f, 0, sizeof(f));
 		f.r[7] = 900u + (uint32_t)s;
@@ -1121,6 +1231,7 @@ static void test_deferred_generation_rejects_stale_work(void **state)
 	g_deferred[0].generation = old_generation;
 	deferred_state_store(0, DEFER_READY); /* delayed event from the prior occupant */
 	g_lxp_used[0] = 1;
+	g_slot_lifecycle[0] = SLOT_RUNNING;
 
 	execute_deferred(&g_mock_eng, 0);
 
@@ -1162,6 +1273,7 @@ static void test_deferred_signal_cancels_before_execute(void **state)
 	memset(&f, 0, sizeof(f));
 	f.r[7] = 999;
 	g_lxp_used[0] = 1;
+	g_slot_lifecycle[0] = SLOT_RUNNING;
 	lxp_dispatch(&f, p);
 	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
 
@@ -1233,6 +1345,7 @@ static void test_deferred_blocking_handoff_keeps_parked_task(void **state)
 	p->console_poll = console_not_ready;
 	deferred_slot_reassign(0);
 	g_lxp_used[0] = 1;
+	g_slot_lifecycle[0] = SLOT_RUNNING;
 
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
@@ -1419,6 +1532,7 @@ static void test_stop_notify_wakes_wuntraced_waiter(void **state)
 	g_lxp_proc[0].wait_pid = -1;
 	g_lxp_proc[0].wait_options = LXP_WUNTRACED;
 	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
+	g_slot_lifecycle[0] = SLOT_PARKED;
 
 	notify_parent_stopped(&g_mock_eng, /*ppid*/ 1, /*cpid*/ 7, LXP_SIGTSTP);
 
@@ -1518,6 +1632,10 @@ int main(void)
 		cmocka_unit_test_setup(test_device_maps_follow_shared_address_space,
 				       reset_state),
 		cmocka_unit_test_setup(test_teardown_releases_every_slot_resource,
+				       reset_state),
+		cmocka_unit_test_setup(test_park_failure_aborts_and_kills_slot, reset_state),
+		cmocka_unit_test_setup(test_resume_failure_aborts_parked_slot, reset_state),
+		cmocka_unit_test_setup(test_abort_failure_retains_slot_until_retry,
 				       reset_state),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
