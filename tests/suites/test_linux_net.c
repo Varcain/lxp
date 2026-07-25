@@ -37,9 +37,9 @@ static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 	assert_int_equal(lxp_proc_init(p, arena, 4096), OVE_OK);
 	/* All-permitting access_ok range except NULL (region_lo = 1) — a NULL user
 	 * pointer still fails user_ok → -EFAULT. Matches the dev/syscall harnesses. */
-	p->region_lo = 1;
-	p->region_hi = UINTPTR_MAX;
-	p->pool_lo = p->pool_hi = 0;
+	p->mm->region_lo = 1;
+	p->mm->region_hi = UINTPTR_MAX;
+	p->mm->pool_lo = p->mm->pool_hi = 0;
 }
 
 /* Drive a syscall and, if it parked on the socket layer (returns 0 with

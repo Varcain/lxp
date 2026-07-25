@@ -108,13 +108,14 @@ target_include_directories(lxp_coord_test PRIVATE
   "${LXP_ROOT}/fuzz"
   "${cmocka_SOURCE_DIR}/include"
 )
-# Minimal feature set: the coordinator's process model (fork/exec/wait/reap, region
-# liveness) is feature-independent, and the optional subsystems (DEV/NET/NETFS/PTY) pull
-# in host-provided globals (g_lxp_disp_ops, lxp_netfs_exec_stage) that only the port /
-# stub supplies. Keeping them off avoids re-stubbing them for no added coordinator coverage.
+# Minimal feature set plus DEV: the coordinator's address-space tests exercise
+# task-local hardware mappings inherited and shared through lxp_mm. NET/NETFS/PTY
+# remain off because they pull in host-provided globals unrelated to coordinator
+# process bookkeeping.
 target_compile_options(lxp_coord_test PRIVATE -Wall -Wextra)
 target_compile_definitions(lxp_coord_test PRIVATE
   LXP_RESOURCE_POOL_COUNT=64
+  LXP_ENABLE_DEV=1
   LXP_ENABLE_FPU_CONTEXT=1
 )
 target_link_libraries(lxp_coord_test PRIVATE cmocka-static pthread rt m)

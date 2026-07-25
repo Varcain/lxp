@@ -47,9 +47,9 @@ static void setup_proc(lxp_proc_t *p, lxp_arena_t *arena)
 {
 	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), LXP_OK);
 	assert_int_equal(lxp_test_proc_init(p, arena, 4096), LXP_OK);
-	p->region_lo = 1;
-	p->region_hi = UINTPTR_MAX; /* all-permitting; a test narrows it when needed */
-	p->pool_lo = p->pool_hi = 0;
+	p->mm->region_lo = 1;
+	p->mm->region_hi = UINTPTR_MAX; /* all-permitting; a test narrows it when needed */
+	p->mm->pool_lo = p->mm->pool_hi = 0;
 }
 
 /* 2a: poll caps nfds at LXP_MAX_FDS before the nfds*sizeof(pollfd) that can wrap a
@@ -345,8 +345,8 @@ static void test_symlink_target_fault(void **st)
 	setup_proc(&p, &a);
 	static char lbuf[64];
 	strcpy(lbuf, "/tmp/lnk");
-	p.region_lo = (uintptr_t)lbuf; /* in range: linkp; out of range: the far target */
-	p.region_hi = (uintptr_t)(lbuf + sizeof(lbuf));
+	p.mm->region_lo = (uintptr_t)lbuf; /* in range: linkp; out of range: the far target */
+	p.mm->region_hi = (uintptr_t)(lbuf + sizeof(lbuf));
 	long r = lxp_syscall(&p, LXP_NR_symlink, (long)(uintptr_t)g_far_target,
 			     (long)(uintptr_t)lbuf, 0, 0, 0, 0);
 	assert_int_equal(r, -LXP_EFAULT);

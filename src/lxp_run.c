@@ -258,7 +258,8 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out)
 	for (int r = 0; r < LXP_NREG; r++) {
 		int occupied = g_lxp_active && g_region_owner[r] >= 0;
 		for (int s = 0; !occupied && s < LXP_NSLOT; s++)
-			if (g_lxp_proc[s].alive && g_lxp_proc[s].region == r)
+			if (g_lxp_proc[s].alive && g_lxp_proc[s].mm &&
+			    g_lxp_proc[s].mm->region == r)
 				occupied = 1;
 		if (occupied)
 			regions_used++;
@@ -631,19 +632,21 @@ __attribute__((weak)) void lxp_park_loop(void *token)
 }
 
 
-/* Another live thread shares this proc's memory region (a co-running CLONE_VM thread or its
+/* Another live thread shares this proc's address space (a co-running CLONE_VM thread or its
  * creator) — the only case where a parked FUTEX_WAIT could ever be woken. Without one, the
  * wait would deadlock, so the futex handler returns -EAGAIN instead of parking (which keeps
  * single-threaded behaviour byte-identical to the old stub). */
 static int futex_has_corunner(const lxp_proc_t *proc)
 {
+	if (!proc || !proc->mm)
+		return 0;
 	/* A suspended vfork parent shares our region but is frozen until we exec/exit, so it can
 	 * never FUTEX_WAKE us — exclude it (proc->vfork_parent_slot), or a vfork child's libc
 	 * futex would park forever where the old stub returned -EAGAIN and made progress. */
 	int vp = proc->vfork_parent_slot;
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		const lxp_proc_t *q = &g_lxp_proc[s];
-		if (q != proc && q->alive && q->region == proc->region && s != vp)
+		if (q != proc && q->alive && q->mm == proc->mm && s != vp)
 			return 1;
 	}
 	return 0;
@@ -1072,16 +1075,15 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	g_lxp_proc[sidx].pgid = pid; /* a fresh proc leads its own group; fork inherits via *ch=*par, execve restores the saved pgid below */
 	/* Concurrent model: this slot is now a live process owning region ridx. */
 	g_lxp_proc[sidx].alive = 1;
-	g_lxp_proc[sidx].region = ridx;
-	g_lxp_proc[sidx].mm_ref = 1;
+	g_lxp_proc[sidx].mm->region = ridx;
 	/* access_ok bounds: this proc's own writable memory (image region + dynamic arena). The syscall
 	 * layer rejects any user pointer outside these (+ the shared RO rootfs for reads). */
-	g_lxp_proc[sidx].region_lo = (uintptr_t)region;
-	g_lxp_proc[sidx].region_hi = (uintptr_t)region + LXP_PROG_REGION_SIZE;
-	g_lxp_proc[sidx].pool_lo = (uintptr_t)arena_mem;
-	g_lxp_proc[sidx].pool_hi = (uintptr_t)arena_mem + arena_sz;
+	g_lxp_proc[sidx].mm->region_lo = (uintptr_t)region;
+	g_lxp_proc[sidx].mm->region_hi = (uintptr_t)region + LXP_PROG_REGION_SIZE;
+	g_lxp_proc[sidx].mm->pool_lo = (uintptr_t)arena_mem;
+	g_lxp_proc[sidx].mm->pool_hi = (uintptr_t)arena_mem + arena_sz;
 	g_lxp_proc[sidx].is_fdpic = prog.is_fdpic;
-	g_lxp_proc[sidx].is_dynamic = dynamic; /* arena/libc RW data lives in the dyn_pool */
+	g_lxp_proc[sidx].mm->is_dynamic = dynamic; /* arena/libc RW data lives in the dyn_pool */
 	g_lxp_proc[sidx].stack_lo = (uintptr_t)stack_lo; /* writable-data / stack boundary (snapshot) */
 	g_lxp_proc[sidx].snap_region = -1;		     /* no vfork snapshot outstanding */
 	g_lxp_proc[sidx].vfork_parent_slot = -1;
@@ -1114,8 +1116,8 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	/* P3: a fresh image in this slot inherits no device mmap. Clear the dev_map ranges
 	 * (they gate user_ok) and tear down any framebuffer region a prior occupant of this
 	 * slot installed (map_device with size 0), so an exec/relaunch never leaks it. */
-	g_lxp_proc[sidx].dev_map_lo[0] = g_lxp_proc[sidx].dev_map_hi[0] = 0;
-	g_lxp_proc[sidx].dev_map_lo[1] = g_lxp_proc[sidx].dev_map_hi[1] = 0;
+	g_lxp_proc[sidx].mm->dev_map_lo[0] = g_lxp_proc[sidx].mm->dev_map_hi[0] = 0;
+	g_lxp_proc[sidx].mm->dev_map_lo[1] = g_lxp_proc[sidx].mm->dev_map_hi[1] = 0;
 	if (eng->map_device)
 		eng->map_device(sidx, 0, 0, 0);
 	return eng->spawn_launch(sidx, ridx, &prog, (void *)pc, sp, stack_lo);
@@ -1140,17 +1142,69 @@ static void coordinator_park_slot(const lxp_os_ops_t *eng, int sidx)
  * transition commits the matching access_ok range below. */
 static int device_map_index(const lxp_proc_t *p, uintptr_t addr, size_t len)
 {
-	if (len == 0 || addr > UINTPTR_MAX - len)
+	if (!p || !p->mm || len == 0 || addr > UINTPTR_MAX - len)
 		return -LXP_EINVAL;
 	int free_map = -1;
 	for (int i = 0; i < 2; i++) {
-		if (p->dev_map_lo[i] == addr)
+		if (p->mm->dev_map_lo[i] == addr)
 			return i;
-		if (p->dev_map_lo[i] == 0 && free_map < 0)
+		if (p->mm->dev_map_lo[i] == 0 && free_map < 0)
 			free_map = i;
 	}
 	return free_map >= 0 ? free_map : -LXP_ENOMEM;
 }
+
+/* The logical mappings live in an mm object, while the hardware MPU entries
+ * live in each engine task. Rebuild one slot from its mm after fork, rollback,
+ * task replacement, or resume. A clear request (size == 0) removes every
+ * device entry owned by the slot. */
+static int coordinator_restore_mm_maps(const lxp_os_ops_t *eng, int sidx,
+				       const lxp_mm_t *mm)
+{
+	int has_maps = 0;
+	for (int i = 0; mm && i < 2; i++)
+		if (mm->dev_map_hi[i] > mm->dev_map_lo[i])
+			has_maps = 1;
+	if (!eng->map_device)
+		return has_maps ? -LXP_ENODEV : 0;
+	if (eng->map_device(sidx, 0, 0, 0) != 0)
+		return -LXP_ENOMEM;
+	for (int i = 0; mm && i < 2; i++) {
+		if (mm->dev_map_hi[i] <= mm->dev_map_lo[i])
+			continue;
+		if (eng->map_device(sidx, mm->dev_map_lo[i],
+				    mm->dev_map_hi[i] - mm->dev_map_lo[i],
+				    mm->dev_map_attrs[i]) != 0) {
+			(void)eng->map_device(sidx, 0, 0, 0);
+			return -LXP_ENOMEM;
+		}
+	}
+	return 0;
+}
+
+/* Install a new logical-mm mapping in every live task sharing that mm. Commit
+ * the mm metadata only after every engine task accepted it. On failure, rebuild
+ * all peers from the still-unmodified mm so a partial hardware update cannot
+ * escape into userspace. */
+#if LXP_ENABLE_DEV
+static int coordinator_map_mm_range(const lxp_os_ops_t *eng, lxp_mm_t *mm,
+				    uintptr_t addr, size_t len, unsigned attrs)
+{
+	if (!eng->map_device)
+		return -LXP_ENODEV;
+	for (int s = 0; s < LXP_NSLOT; s++) {
+		if (!g_lxp_proc[s].alive || g_lxp_proc[s].mm != mm)
+			continue;
+		if (eng->map_device(s, addr, len, attrs) != 0) {
+			for (int r = 0; r < LXP_NSLOT; r++)
+				if (g_lxp_proc[r].alive && g_lxp_proc[r].mm == mm)
+					(void)coordinator_restore_mm_maps(eng, r, mm);
+			return -LXP_ENOMEM;
+		}
+	}
+	return 0;
+}
+#endif
 
 /* A child (cpid, status) exited: hand it to its parent (ppid). Wake a parent blocked
  * in wait4 (resume returning cpid + write *status), else queue the zombie for a later
@@ -1178,7 +1232,7 @@ static void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int stat
 		}
 		par->wait_pending = 0;
 		coordinator_park_slot(eng, pslot);
-		eng->spawn_resume(pslot, par->region, &g_ctx[pslot], cpid);
+		eng->spawn_resume(pslot, par->mm->region, &g_ctx[pslot], cpid);
 	} else {
 		/* The parent is not blocking in wait4 (typically sitting in select()/poll() —
 		 * busybox inetd's accept loop, dropbear's session relay). Queue the zombie for a
@@ -1221,7 +1275,7 @@ static void notify_parent_stopped(const lxp_os_ops_t *eng, int ppid, int cpid, i
 			*(int *)(uintptr_t)par->wait_status_p = lxp_encode_wstopped(stopsig);
 		par->wait_pending = 0;
 		coordinator_park_slot(eng, pslot);
-		eng->spawn_resume(pslot, par->region, &g_ctx[pslot], cpid);
+		eng->spawn_resume(pslot, par->mm->region, &g_ctx[pslot], cpid);
 	} else {
 		if (par->child_count < LXP_MAX_CHILD) {
 			par->child_pid[par->child_count] = cpid;
@@ -1324,7 +1378,7 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 {
 	uintptr_t h = lxp_sig_handler_get(proc, sig);
 	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
-		eng->spawn_resume(slot, proc->region, &g_ctx[slot], ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
+		eng->spawn_resume(slot, proc->mm->region, &g_ctx[slot], ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
 		return;
 	}
 	/* A job-control stop must never terminate the proc here. The coordinator's
@@ -1333,7 +1387,7 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 	 * scan stops the proc on the next pass. */
 	if (sig_stops_proc(proc, sig)) {
 		proc->pending_sigs |= lxp_sig_bit(sig);
-		eng->spawn_resume(slot, proc->region, &g_ctx[slot], ret);
+		eng->spawn_resume(slot, proc->mm->region, &g_ctx[slot], ret);
 		return;
 	}
 	if (h == LXP_SIG_DFL) {
@@ -1377,7 +1431,7 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 		g_ctx[slot].r4_11[5] = got;	    /* r9 = handler's GOT */
 	g_ctx[slot].lr = restorer | 1u;		    /* return -> sa_restorer entry -> sigreturn */
 	g_ctx[slot].pc = entry | 1u;		    /* enter the handler (Thumb) */
-	eng->spawn_resume(slot, proc->region, &g_ctx[slot], sig); /* r0 = signo */
+	eng->spawn_resume(slot, proc->mm->region, &g_ctx[slot], sig); /* r0 = signo */
 }
 
 /* Track the tty input/local modes from the coordinator, never from SVC handler mode.
@@ -1477,7 +1531,7 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 		deliver_signal_parked(eng, slot, proc, sig, r);
 		return;
 	}
-	eng->spawn_resume(slot, proc->region, &g_ctx[slot], r);
+	eng->spawn_resume(slot, proc->mm->region, &g_ctx[slot], r);
 }
 
 /* ---- vfork data isolation (NOMMU) ------------------------------------------ */
@@ -1497,7 +1551,8 @@ static int region_free(int r, const int *rowner)
 	if (rowner[r] >= 0 || g_region_refs[r] != 0)
 		return 0;
 	for (int s = 0; s < LXP_NSLOT; s++)
-		if (g_lxp_proc[s].alive && g_lxp_proc[s].region == r)
+		if (g_lxp_proc[s].alive && g_lxp_proc[s].mm &&
+		    g_lxp_proc[s].mm->region == r)
 			return 0; /* a live proc runs here despite rowner<0 — do not trample it */
 	return 1;
 }
@@ -1540,10 +1595,10 @@ static void region_put(int r)
 
 static void proc_mm_put(lxp_proc_t *p)
 {
-	if (!p || !p->mm_ref)
+	if (!p || !p->mm)
 		return;
-	region_put(p->region);
-	p->mm_ref = 0;
+	region_put(p->mm->region);
+	lxp_proc_mm_put(p);
 }
 
 static void region_release_if_owned(int r, int slot)
@@ -1573,8 +1628,10 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 		lxp_proc_resources_put(p);
 		if (eng->map_device)
 			eng->map_device(s, 0, 0, 0);
-		p->dev_map_lo[0] = p->dev_map_hi[0] = 0;
-		p->dev_map_lo[1] = p->dev_map_hi[1] = 0;
+		if (p->mm) {
+			p->mm->dev_map_lo[0] = p->mm->dev_map_hi[0] = 0;
+			p->mm->dev_map_lo[1] = p->mm->dev_map_hi[1] = 0;
+		}
 		if (p->snap_region >= 0)
 			region_release_if_owned(p->snap_region, s);
 		proc_mm_put(p);
@@ -1639,7 +1696,8 @@ static int vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, int child_sl
 {
 	int parent_slot = slot_of(par);
 	if (parent_slot < 0 || child_slot < 0 || child_slot >= LXP_NSLOT || !par->alive ||
-	    par->region < 0 || par->region >= LXP_NREG)
+	    !par->mm ||
+	    par->mm->region < 0 || par->mm->region >= LXP_NREG)
 		return -1;
 	int rsnap = -1;
 	for (int r = 0; r < LXP_NREG; r++)
@@ -1649,26 +1707,26 @@ static int vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, int child_sl
 		}
 	if (rsnap < 0)
 		return -1; /* the caller must fail the fork rather than share without isolation */
-	uint8_t *pr = eng->region(par->region);
+	uint8_t *pr = eng->region(par->mm->region);
 	size_t dlen = par->stack_lo - (uintptr_t)pr; /* in-region writable data, below the stack */
 	uint8_t *sr = eng->region(rsnap);
-	if (sp < par->stack_lo || sp > par->region_hi)
+	if (sp < par->stack_lo || sp > par->mm->region_hi)
 		return -1; /* corrupt/unavailable capture: do not resume an unisolated parent */
 	snapshot_copy_span(sr, pr, dlen);
-	size_t slen = par->region_hi - sp;
+	size_t slen = par->mm->region_hi - sp;
 	snapshot_copy_span(sr + (sp - (uintptr_t)pr), (const void *)sp, slen);
-	if (par->is_dynamic && eng->dyn_pool) {
+	if (par->mm->is_dynamic && eng->dyn_pool) {
 		size_t ds = 0;
-		uint8_t *pdp = eng->dyn_pool(par->region, &ds);
+		uint8_t *pdp = eng->dyn_pool(par->mm->region, &ds);
 		uint8_t *sdp = eng->dyn_pool(rsnap, NULL);
 		snapshot_copy_span(sdp, pdp, ds);
 	}
-	g_snap_arena[child_slot] = g_arenas[par->region]; /* allocator metadata (coordinator memory) */
+	g_snap_arena[child_slot] = g_arenas[par->mm->region]; /* allocator metadata (coordinator memory) */
 	struct vfork_snapshot_guard *guard = &g_vfork_guard[child_slot];
 	guard->parent_slot = parent_slot;
 	guard->parent_slot_generation = g_slot_generation[parent_slot];
-	guard->parent_region = par->region;
-	guard->parent_region_generation = g_region_generation[par->region];
+	guard->parent_region = par->mm->region;
+	guard->parent_region_generation = g_region_generation[par->mm->region];
 	guard->snapshot_region = rsnap;
 	guard->snapshot_region_generation = region_reserve(rsnap, child_slot);
 	return rsnap;
@@ -1684,30 +1742,31 @@ static int vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *par, int rsnap,
 		return -1;
 	struct vfork_snapshot_guard *guard = &g_vfork_guard[child_slot];
 	int parent_slot = slot_of(par);
-	if (parent_slot < 0 || !par->alive || par->region < 0 || par->region >= LXP_NREG ||
+	if (parent_slot < 0 || !par->alive || !par->mm ||
+	    par->mm->region < 0 || par->mm->region >= LXP_NREG ||
 	    parent_slot != guard->parent_slot ||
 	    g_slot_generation[parent_slot] != guard->parent_slot_generation ||
-	    par->region != guard->parent_region ||
-	    g_region_generation[par->region] != guard->parent_region_generation ||
+	    par->mm->region != guard->parent_region ||
+	    g_region_generation[par->mm->region] != guard->parent_region_generation ||
 	    rsnap != guard->snapshot_region || rsnap < 0 || rsnap >= LXP_NREG ||
 	    g_region_owner[rsnap] != child_slot ||
 	    g_region_refs[rsnap] != 1 ||
 	    g_region_generation[rsnap] != guard->snapshot_region_generation)
 		return -1;
-	uint8_t *pr = eng->region(par->region);
+	uint8_t *pr = eng->region(par->mm->region);
 	size_t dlen = par->stack_lo - (uintptr_t)pr;
 	uint8_t *sr = eng->region(rsnap);
 	restore_copy_span(pr, sr, dlen);
-	if (sp >= par->stack_lo && sp <= par->region_hi) {
-		size_t slen = par->region_hi - sp;
+	if (sp >= par->stack_lo && sp <= par->mm->region_hi) {
+		size_t slen = par->mm->region_hi - sp;
 		restore_copy_span((void *)sp, sr + (sp - (uintptr_t)pr), slen);
 	}
-	if (par->is_dynamic && eng->dyn_pool) {
+	if (par->mm->is_dynamic && eng->dyn_pool) {
 		size_t ds = 0;
-		uint8_t *pdp = eng->dyn_pool(par->region, &ds);
+		uint8_t *pdp = eng->dyn_pool(par->mm->region, &ds);
 		restore_copy_span(pdp, eng->dyn_pool(rsnap, NULL), ds);
 	}
-	g_arenas[par->region] = g_snap_arena[child_slot];
+	g_arenas[par->mm->region] = g_snap_arena[child_slot];
 	memset(guard, 0, sizeof(*guard));
 	guard->parent_slot = guard->parent_region = guard->snapshot_region = -1;
 	return 0;
@@ -1718,8 +1777,9 @@ static int vfork_parent_is_current(int child_slot)
 	const struct vfork_snapshot_guard *guard = &g_vfork_guard[child_slot];
 	int ps = guard->parent_slot;
 	return ps >= 0 && ps < LXP_NSLOT && g_lxp_proc[ps].alive &&
+	       g_lxp_proc[ps].mm &&
 	       g_slot_generation[ps] == guard->parent_slot_generation &&
-	       g_lxp_proc[ps].region == guard->parent_region;
+	       g_lxp_proc[ps].mm->region == guard->parent_region;
 }
 
 /* A stale snapshot is an internal ownership violation, not a recoverable guest
@@ -1890,7 +1950,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 #endif
 
 		if (et == LXP_EV_DEFER) {
-			lxp_coord_map(g_lxp_proc[es].region); /* coherent coordinator view of es's guest buffers */
+			lxp_coord_map(g_lxp_proc[es].mm->region); /* coherent coordinator view of es's guest buffers */
 			execute_deferred(eng, es);
 			idle = 0;
 			continue;
@@ -1905,7 +1965,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * result and becomes retryable as soon as wait4 drains one entry. */
 			if (!fork_capacity_available(par)) {
 				coordinator_park_slot(eng, es);
-				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_EAGAIN);
+				eng->spawn_resume(es, par->mm->region, &g_ctx[es], -LXP_EAGAIN);
 				idle = 0;
 				continue;
 			}
@@ -1917,7 +1977,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				}
 			if (c < 0) { /* no free slot: Linux reports retryable process pressure. */
 				coordinator_park_slot(eng, es);
-				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_EAGAIN);
+				eng->spawn_resume(es, par->mm->region, &g_ctx[es], -LXP_EAGAIN);
 				idle = 0;
 				continue;
 			}
@@ -1927,10 +1987,18 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			g_vfork_guard[c].parent_slot = g_vfork_guard[c].parent_region =
 				g_vfork_guard[c].snapshot_region = -1;
 			*ch = *par; /* vfork shares the image + region */
-			if (region_get(par->region) != 0) {
+			if (region_get(par->mm->region) != 0) {
 				memset(ch, 0, sizeof(*ch));
 				coordinator_park_slot(eng, es);
-				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_EAGAIN);
+				eng->spawn_resume(es, par->mm->region, &g_ctx[es], -LXP_EAGAIN);
+				idle = 0;
+				continue;
+			}
+			if (lxp_proc_mm_fork(ch, par, par->clone_flags) != 0) {
+				region_put(par->mm->region);
+				memset(ch, 0, sizeof(*ch));
+				coordinator_park_slot(eng, es);
+				eng->spawn_resume(es, par->mm->region, &g_ctx[es], -LXP_EAGAIN);
 				idle = 0;
 				continue;
 			}
@@ -1938,7 +2006,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				proc_mm_put(ch);
 				memset(ch, 0, sizeof(*ch));
 				coordinator_park_slot(eng, es);
-				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_EAGAIN);
+				eng->spawn_resume(es, par->mm->region, &g_ctx[es], -LXP_EAGAIN);
 				idle = 0;
 				continue;
 			}
@@ -1973,8 +2041,16 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			ch->clone_flags = 0;
 			ch->snap_region = -1; /* set by vfork_snapshot below for a non-thread fork */
 			ch->alive = 1;
-			ch->region = par->region;
-			ch->mm_ref = 1; /* shares the parent's refcounted address space */
+			if (coordinator_restore_mm_maps(eng, c, ch->mm) != 0) {
+				lxp_proc_resources_put(ch);
+				proc_mm_put(ch);
+				memset(ch, 0, sizeof(*ch));
+				coordinator_park_slot(eng, es);
+				eng->spawn_resume(es, par->mm->region, &g_ctx[es],
+						  -LXP_ENOMEM);
+				idle = 0;
+				continue;
+			}
 			if (par->clone_flags & LXP_CLONE_VM) {
 				/* A shared-mm clone runs on its own stack while the parent
 				 * co-runs. CLONE_THREAD controls thread-group membership;
@@ -1990,9 +2066,9 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				g_ctx[c].sp =
 					par->clone_child_stack; /* ...but on the child stack */
 				coordinator_park_slot(eng, es);
-				eng->spawn_resume(es, par->region, &g_ctx[es],
+				eng->spawn_resume(es, par->mm->region, &g_ctx[es],
 						  ch->pid); /* parent co-runs, gets the tid */
-				eng->spawn_resume(c, ch->region, &g_ctx[c],
+				eng->spawn_resume(c, ch->mm->region, &g_ctx[c],
 						  0); /* child enters the thread fn (r0=0) */
 				idle = 0;
 				continue;
@@ -2018,12 +2094,12 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				if (par->live_children > 0)
 					par->live_children--;
 				coordinator_park_slot(eng, es);
-				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_ENOMEM);
+				eng->spawn_resume(es, par->mm->region, &g_ctx[es], -LXP_ENOMEM);
 				idle = 0;
 				continue;
 			}
 			coordinator_park_slot(eng, es); /* suspend the parent task */
-			eng->spawn_resume(c, ch->region, &g_ctx[es],
+			eng->spawn_resume(c, ch->mm->region, &g_ctx[es],
 					  0); /* child returns 0 from fork */
 			idle = 0;
 			continue;
@@ -2073,7 +2149,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				p->alive = 0;
 				g_lxp_used[es] = 0;
 				if (vp >= 0)
-					eng->spawn_resume(vp, g_lxp_proc[vp].region, &g_ctx[vp],
+					eng->spawn_resume(vp, g_lxp_proc[vp].mm->region, &g_ctx[vp],
 							  pid);
 				reap_to_parent(eng, ppid, pid, 127, /*sigchld=*/vp < 0);
 				idle = 0;
@@ -2092,13 +2168,13 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					continue;
 				}
 				p->vfork_parent_slot = -1;
-				eng->spawn_resume(vp, g_lxp_proc[vp].region, &g_ctx[vp], pid);
+				eng->spawn_resume(vp, g_lxp_proc[vp].mm->region, &g_ctx[vp], pid);
 			}
 			/* execve gets a private descriptor table, preserves its descriptor
 			 * entries and fs context, and resets signal dispositions. */
 			if (lxp_proc_files_unshare(p) != 0) {
 				p->exec_pending = 0;
-				eng->spawn_resume(es, p->region, &g_ctx[es], -LXP_ENOMEM);
+				eng->spawn_resume(es, p->mm->region, &g_ctx[es], -LXP_ENOMEM);
 				idle = 0;
 				continue;
 			}
@@ -2116,6 +2192,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				p->snap_region == nr && g_region_owner[nr] == es &&
 				g_region_refs[nr] == 1;
 			thread_group_stop_exec_peers(eng, es, 127);
+			if (eng->map_device)
+				(void)eng->map_device(es, 0, 0, 0);
 			proc_mm_put(p);
 			/* Transfer these objects across launch()'s proc reinitialization. */
 			p->files = NULL;
@@ -2146,7 +2224,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					.sighand = old_sighand,
 				};
 				lxp_proc_resources_put(&old_resources);
-				g_lxp_proc[es].mm_ref = 0;
+				lxp_proc_mm_put(&g_lxp_proc[es]);
 				g_lxp_proc[es].exit_status = 127;
 				g_lxp_proc[es].exit_reason = LXP_EXIT_REASON_EXEC_LOAD;
 				g_lxp_proc[es].exit_signal = 0;
@@ -2186,6 +2264,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			    vp = p->vfork_parent_slot, ppid = p->ppid;
 			lxp_proc_resources_put(p);
 			eng->abort_slot(es);
+			if (eng->map_device)
+				(void)eng->map_device(es, 0, 0, 0);
 			g_sig_save[es].depth = 0;
 			if (vp >= 0 && p->snap_region >= 0) {
 				/* a vfork child died before exec (e.g. a failed exec) → undo its writes to
@@ -2210,7 +2290,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			}
 			if (vp >=
 			    0) /* fork-without-exec: the suspended parent resumes (vfork returns) */
-				eng->spawn_resume(vp, g_lxp_proc[vp].region, &g_ctx[vp], cpid);
+				eng->spawn_resume(vp, g_lxp_proc[vp].mm->region, &g_ctx[vp], cpid);
 			if (group_is_dead)
 				reap_to_parent(eng, ppid, tgid, status, /*sigchld=*/vp < 0);
 			idle = 0;
@@ -2291,7 +2371,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * the coordinator, give the coordinator a coherent (cacheable) view of
 			 * the slot's region (no-op on a coherent host). */
 			if (!g_lxp_used[s])
-				lxp_coord_map(p->region);
+				lxp_coord_map(p->mm->region);
 			/* Job-control stopped: alive but not scheduled. Counts as "busy" for the idle
 			 * watchdog — its waker is an external signal, not a deadlock. SIGCONT resumes it;
 			 * a pending signal whose default action is to TERMINATE wakes and kills it; a
@@ -2310,7 +2390,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					 * it on a later pass, right where it blocked. BOUNDARY: resume the
 					 * captured context now with the stashed syscall result. */
 					if (boundary)
-						eng->spawn_resume(s, p->region, &g_ctx[s], p->stop_r0);
+						eng->spawn_resume(s, p->mm->region, &g_ctx[s], p->stop_r0);
 					progress = 1;
 				} else {
 					/* A default-action-terminate signal kills a stopped proc: SIGKILL
@@ -2478,7 +2558,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				any_busy = 1;
 				if (now >= p->sleep_until_us) {
 					p->sleeping = 0;
-					eng->spawn_resume(s, p->region, &g_ctx[s], 0);
+					eng->spawn_resume(s, p->mm->region, &g_ctx[s], 0);
 					progress = 1;
 				} else if (p->sleep_until_us < next_sleep) {
 					next_sleep = p->sleep_until_us; /* wake the coordinator at this deadline */
@@ -2492,12 +2572,12 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				if (p->futex_woken) {
 					p->futex_wait = p->futex_woken = 0;
 					p->futex_deadline_us = 0;
-					eng->spawn_resume(s, p->region, &g_ctx[s], 0);
+					eng->spawn_resume(s, p->mm->region, &g_ctx[s], 0);
 					progress = 1;
 				} else if (p->futex_deadline_us && now >= p->futex_deadline_us) {
 					p->futex_wait = 0;
 					p->futex_deadline_us = 0;
-					eng->spawn_resume(s, p->region, &g_ctx[s], -LXP_ETIMEDOUT);
+					eng->spawn_resume(s, p->mm->region, &g_ctx[s], -LXP_ETIMEDOUT);
 					progress = 1;
 				} else if (p->futex_deadline_us && p->futex_deadline_us < next_sleep) {
 					next_sleep = p->futex_deadline_us;
@@ -2519,7 +2599,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 						p->exit_signal = LXP_SIGPIPE;
 						primary_slot_mark(s);
 					} else {
-						eng->spawn_resume(s, p->region, &g_ctx[s], r);
+						eng->spawn_resume(s, p->mm->region, &g_ctx[s], r);
 					}
 					progress = 1;
 				}
@@ -2533,24 +2613,26 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				 * not svc-exception-safe — record it for user_ok, and resume the proc
 				 * with r0 = the mapped address (or -errno if the engine can't map). */
 				int map = device_map_index(p, (uintptr_t)p->dev_buf, p->dev_len);
-				long r = map < 0	    ? map
-					 : !eng->map_device ? -LXP_ENODEV
-					 : eng->map_device(s, (uintptr_t)p->dev_buf, p->dev_len,
-							   (unsigned)p->dev_cmd) == 0
-						 ? (long)p->dev_buf
-						 : -LXP_ENOMEM;
+				long r = map;
+				if (map >= 0) {
+					int mr = coordinator_map_mm_range(
+						eng, p->mm, (uintptr_t)p->dev_buf,
+						p->dev_len, (unsigned)p->dev_cmd);
+					r = mr == 0 ? (long)p->dev_buf : mr;
+				}
 				if (r >= 0) {
-					p->dev_map_lo[map] = (uintptr_t)p->dev_buf;
-					p->dev_map_hi[map] = (uintptr_t)p->dev_buf + p->dev_len;
+					p->mm->dev_map_lo[map] = (uintptr_t)p->dev_buf;
+					p->mm->dev_map_hi[map] = (uintptr_t)p->dev_buf + p->dev_len;
+					p->mm->dev_map_attrs[map] = (unsigned)p->dev_cmd;
 				}
 				p->dev_wait = 0;
-				eng->spawn_resume(s, p->region, &g_ctx[s], r);
+				eng->spawn_resume(s, p->mm->region, &g_ctx[s], r);
 				progress = 1;
 			} else if (p->dev_wait && !g_lxp_used[s]) {
 				long r = lxp_dev_retry(p);
 				if (r != -LXP_EAGAIN) {
 					p->dev_wait = 0;
-					eng->spawn_resume(s, p->region, &g_ctx[s], r);
+					eng->spawn_resume(s, p->mm->region, &g_ctx[s], r);
 					progress = 1;
 				}
 			}
@@ -2563,7 +2645,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				long r = lxp_sock_retry(p);
 				if (r != -LXP_EAGAIN) {
 					p->sock_wait = 0;
-					eng->spawn_resume(s, p->region, &g_ctx[s], r);
+					eng->spawn_resume(s, p->mm->region, &g_ctx[s], r);
 					progress = 1;
 				}
 			}
@@ -2578,7 +2660,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					/* a completed exec-fetch sets exec_pending → LXP_EV_EXEC launches it
 					 * from the staging buffer; don't resume the parked execve. */
 					if (!p->exec_pending)
-						eng->spawn_resume(s, p->region, &g_ctx[s], r);
+						eng->spawn_resume(s, p->mm->region, &g_ctx[s], r);
 					progress = 1;
 				}
 			}
@@ -2590,7 +2672,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				long r = lxp_pty_retry(p);
 				if (r != -LXP_EAGAIN) {
 					p->pty_wait = 0;
-					eng->spawn_resume(s, p->region, &g_ctx[s], r);
+					eng->spawn_resume(s, p->mm->region, &g_ctx[s], r);
 					progress = 1;
 				}
 			}
@@ -2632,7 +2714,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 						r = -LXP_EINTR;
 					}
 					p->console_wait = 0;
-					eng->spawn_resume(s, p->region, &g_ctx[s], r);
+					eng->spawn_resume(s, p->mm->region, &g_ctx[s], r);
 					progress = 1;
 				}
 			}

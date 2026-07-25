@@ -45,9 +45,9 @@ static void pty_setup(void)
 {
 	assert_int_equal(lxp_arena_init(&g_arena, g_pool, sizeof(g_pool)), OVE_OK);
 	assert_int_equal(lxp_proc_init(&g_proc, &g_arena, 4096), OVE_OK);
-	g_proc.region_lo = 1; /* all-permitting user_ok except NULL */
-	g_proc.region_hi = UINTPTR_MAX;
-	g_proc.pool_lo = g_proc.pool_hi = 0;
+	g_proc.mm->region_lo = 1; /* all-permitting user_ok except NULL */
+	g_proc.mm->region_hi = UINTPTR_MAX;
+	g_proc.mm->pool_lo = g_proc.mm->pool_hi = 0;
 	g_proc.alive = 1; /* so pty_ends counts this proc's fds */
 }
 

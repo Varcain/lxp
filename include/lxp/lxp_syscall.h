@@ -521,6 +521,24 @@ typedef struct lxp_sighand {
 	uintptr_t restorer;
 } lxp_sighand_t;
 
+/** Refcounted NOMMU address-space state. CLONE_VM shares this object; a
+ * vfork-style child receives a logical copy while its task temporarily
+ * references the same program region. */
+typedef struct lxp_mm {
+	uint16_t refs;
+	uint16_t _pad;
+	lxp_arena_t *arena;
+	uintptr_t brk_base;
+	uintptr_t brk_cur;
+	uintptr_t brk_max;
+	int region;
+	uintptr_t region_lo, region_hi;
+	uintptr_t pool_lo, pool_hi;
+	int is_dynamic;
+	uintptr_t dev_map_lo[2], dev_map_hi[2];
+	unsigned dev_map_attrs[2];
+} lxp_mm_t;
+
 /** Max exited children queued for wait4 (a pipeline forks several). */
 #define LXP_MAX_CHILD 8
 /** Bounds for an execve() argument vector captured for the engine to relaunch.
@@ -595,10 +613,7 @@ typedef struct lxp_exec_capture {
  * fork+exec land in later phases.
  */
 typedef struct lxp_proc {
-	lxp_arena_t *arena;		/**< Backs @c brk and anonymous @c mmap. */
-	uintptr_t brk_base;		/**< Initial program break. */
-	uintptr_t brk_cur;		/**< Current program break. */
-	uintptr_t brk_max;		/**< Ceiling imposed by the arena reservation. */
+	lxp_mm_t *mm;			/**< Refcounted address space, arena and mappings. */
 	lxp_write_fn write_fn;	/**< fd 1/2 sink; NULL → @c -LXP_EBADF. */
 	lxp_read_fn read_fn;	/**< fd 0 source; NULL → EOF. */
 	int (*console_poll)(void *ctx); /**< Optional non-blocking "key available?" for poll(2). */
@@ -669,14 +684,6 @@ typedef struct lxp_proc {
 	 * live process SET, not a stack. These were the run-loop locals top/R[]/rowner[]/
 	 * vctx[]; the per-slot resume contexts live in lxp_run.c. */
 	int alive;	  /**< This slot holds a live process. */
-	int region;	  /**< Program-image region index this proc runs in. */
-	int mm_ref;	  /**< This task holds one reference to @c region's shared address space. */
-	/* access_ok validation ranges — the program's OWN writable memory. region_lo/hi = its image
-	 * region [base, base+512K); pool_lo/hi = its dynamic-link arena (== region for a static proc).
-	 * A syscall rejects (-EFAULT) any user pointer+len not wholly inside these (a READ source may
-	 * also point into the shared read-only rootfs). Filled at launch; a vfork child / thread inherits
-	 * its parent's. Guards the confused-deputy vector (the syscall handlers run PRIVILEGED). */
-	uintptr_t region_lo, region_hi, pool_lo, pool_hi;
 	int vfork_parent_slot; /**< Slot of a parent suspended awaiting this child's exec/exit, or -1. */
 	/* vfork data isolation (NOMMU has no copy-on-write): a vfork child SHARES the parent's region,
 	 * so its pre-exec writes (e.g. a libc signal-disposition reset) would corrupt the suspended
@@ -684,7 +691,6 @@ typedef struct lxp_proc {
 	 * and restores it before the parent resumes (EV_EXEC/EV_EXIT). See vfork_snapshot/vfork_restore. */
 	int snap_region;    /**< Scratch region index holding the parent's data snapshot, or -1 (none). */
 	uintptr_t stack_lo; /**< Boundary between this proc's in-region writable data and its stack. */
-	int is_dynamic;	    /**< FDPIC dynamic exec: its arena (libc RW data + heap) lives in the dyn_pool. */
 	int fork_pending; /**< This proc issued vfork/fork/clone; coordinator spawns a child. */
 	int is_thread;	  /**< This proc is a pthread: shares its creator's region for life. */
 	int is_fdpic;	  /**< Program is FDPIC: signal handlers/restorers are funcdescs {entry,GOT}. */
@@ -735,7 +741,6 @@ typedef struct lxp_proc {
 	uint64_t dev_deadline_us; /**< 0 = infinite (poll timeout / read VTIME). */
 	/* Device mmap ranges (P3): a successful /dev mmap records its [lo,hi) here so
 	 * user_ok accepts the mapped framebuffer (two mappings max). */
-	uintptr_t dev_map_lo[2], dev_map_hi[2];
 	/* Blocking socket I/O (P0 socket layer): a connect/send/recv on a socket that
 	 * would block parks the proc; the coordinator retries via lxp_sock_retry
 	 * (the same park/retry as dev_wait) and resumes it on completion. */
@@ -817,6 +822,11 @@ int lxp_fd_fork_inherit(lxp_proc_t *child);
 /** Acquire fork/clone resource ownership after a shallow task-state copy. */
 int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent,
 			    uint32_t clone_flags);
+/** Acquire a shared or copied address-space object after a task-state copy. */
+int lxp_proc_mm_fork(lxp_proc_t *child, const lxp_proc_t *parent,
+		     uint32_t clone_flags);
+/** Drop only the address-space object reference (the coordinator owns region refs). */
+void lxp_proc_mm_put(lxp_proc_t *proc);
 /** Drop one task's files/fs/sighand ownership, closing descriptors at the last table user. */
 void lxp_proc_resources_put(lxp_proc_t *proc);
 /** Make a shared descriptor table private while retaining its open descriptions. */

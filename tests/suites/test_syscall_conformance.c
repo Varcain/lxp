@@ -221,9 +221,9 @@ static void test_conf_mem(void **state)
 
 	/* brk(0) reports the break; a valid grow moves it; an over-reservation leaves it. */
 	long base = SC(&p, LXP_NR_brk, 0, 0, 0, 0, 0, 0);
-	assert_int_equal((uintptr_t)base, p.brk_base);
+	assert_int_equal((uintptr_t)base, p.mm->brk_base);
 	assert_int_equal(SC(&p, LXP_NR_brk, base + 4096, 0, 0, 0, 0, 0), base + 4096);
-	assert_int_equal(SC(&p, LXP_NR_brk, (long)(p.brk_max + 4096), 0, 0, 0, 0, 0), base + 4096);
+	assert_int_equal(SC(&p, LXP_NR_brk, (long)(p.mm->brk_max + 4096), 0, 0, 0, 0, 0), base + 4096);
 
 	/* anonymous mmap: usable, zeroed, writable memory. */
 	long m = SC(&p, LXP_NR_mmap2, 0, 4096, 0x3 /*PROT_RW*/, LXP_MAP_ANONYMOUS, -1, 0);

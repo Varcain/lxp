@@ -55,9 +55,9 @@ static void setup_proc(lxp_proc_t *p, lxp_arena_t *arena)
 	/* The host test uses ordinary host buffers, not a bounded program region, so give this proc an
 	 * all-permitting access_ok range (NULL is still rejected via region_lo=1). On-target the run loop
 	 * restricts region_lo/hi to the real image region. */
-	p->region_lo = 1;
-	p->region_hi = UINTPTR_MAX;
-	p->pool_lo = p->pool_hi = 0;
+	p->mm->region_lo = 1;
+	p->mm->region_hi = UINTPTR_MAX;
+	p->mm->pool_lo = p->mm->pool_hi = 0;
 	p->write_fn = cap_write;
 	g_cap_len = 0;
 	g_lxp_test_cache_clean_calls = 0;
@@ -116,15 +116,15 @@ static void test_lnx_brk(void **state)
 
 	/* brk(0) reports the current break without moving it. */
 	long base = lxp_syscall(&p, LXP_NR_brk, 0, 0, 0, 0, 0, 0);
-	assert_int_equal((uintptr_t)base, p.brk_base);
+	assert_int_equal((uintptr_t)base, p.mm->brk_base);
 
 	/* A valid grow moves the break and returns the new value. */
 	long grown = lxp_syscall(&p, LXP_NR_brk, base + 100, 0, 0, 0, 0, 0);
 	assert_int_equal(grown, base + 100);
-	assert_int_equal(p.brk_cur, (uintptr_t)base + 100);
+	assert_int_equal(p.mm->brk_cur, (uintptr_t)base + 100);
 
 	/* A request beyond the arena reservation leaves the break unchanged. */
-	long over = lxp_syscall(&p, LXP_NR_brk, (long)(p.brk_max + 4096), 0, 0, 0, 0, 0);
+	long over = lxp_syscall(&p, LXP_NR_brk, (long)(p.mm->brk_max + 4096), 0, 0, 0, 0, 0);
 	assert_int_equal(over, base + 100);
 }
 
@@ -151,7 +151,7 @@ static void test_lnx_mmap(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, m + 16, 240, 0, 0, 0, 0),
 			 -LXP_EINVAL);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, m, 255, 0, 0, 0, 0), -LXP_EINVAL);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, (long)p.brk_base, 4096, 0, 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, (long)p.mm->brk_base, 4096, 0, 0, 0, 0),
 			 -LXP_EINVAL);
 	assert_int_equal(lxp_arena_used(&arena), mapped_used);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_munmap, m, 256, 0, 0, 0, 0), 0);
@@ -473,8 +473,8 @@ static void test_lnx_exec_script_symlink_interp(void **state)
 	memcpy(gmem.path, "/etc/init.d/rcS", sizeof("/etc/init.d/rcS"));
 	gmem.vec[0] = gmem.path;
 	gmem.vec[1] = NULL;
-	p.region_lo = (uintptr_t)&gmem;
-	p.region_hi = p.region_lo + sizeof(gmem);
+	p.mm->region_lo = (uintptr_t)&gmem;
+	p.mm->region_hi = p.mm->region_lo + sizeof(gmem);
 
 	long rc = lxp_syscall(&p, LXP_NR_execve, (long)(uintptr_t)gmem.path,
 			      (long)(uintptr_t)gmem.vec, 0, 0, 0, 0);
@@ -619,8 +619,24 @@ static void test_clone_resource_sharing_flags(void **state)
 	assert_int_equal(lxp_fd_close(&copied, 1), 0);
 	assert_int_equal(lxp_fd_kind(&parent, 1), LXP_FD_CONSOLE);
 
+	lxp_proc_t shared_mm = parent;
+	assert_int_equal(lxp_proc_mm_fork(&shared_mm, &parent, LXP_CLONE_VM), 0);
+	assert_ptr_equal(shared_mm.mm, parent.mm);
+	shared_mm.mm->brk_cur += 16;
+	assert_int_equal(parent.mm->brk_cur, shared_mm.mm->brk_cur);
+	lxp_proc_mm_put(&shared_mm);
+
+	lxp_proc_t copied_mm = parent;
+	assert_int_equal(lxp_proc_mm_fork(&copied_mm, &parent, 0), 0);
+	assert_ptr_not_equal(copied_mm.mm, parent.mm);
+	uintptr_t parent_brk = parent.mm->brk_cur;
+	copied_mm.mm->brk_cur += 16;
+	assert_int_equal(parent.mm->brk_cur, parent_brk);
+	lxp_proc_mm_put(&copied_mm);
+
 	lxp_proc_resources_put(&copied);
 	lxp_proc_resources_put(&parent);
+	lxp_proc_mm_put(&parent);
 }
 
 static void test_eventfd_alias_survives_peer_close(void **state)
@@ -932,9 +948,9 @@ static void test_lnx_user_ok(void **state)
 	/* Bound the proc to a concrete host buffer so access_ok has a real [lo,hi) to police. */
 	static char rgn[4096] __attribute__((aligned(16)));
 	uintptr_t lo = (uintptr_t)rgn, hi = lo + sizeof(rgn);
-	p.region_lo = lo;
-	p.region_hi = hi;
-	p.pool_lo = p.pool_hi = 0;
+	p.mm->region_lo = lo;
+	p.mm->region_hi = hi;
+	p.mm->pool_lo = p.mm->pool_hi = 0;
 
 	/* good: wholly inside, both read and write */
 	assert_true(user_ok(&p, rgn, sizeof(rgn), 0));
@@ -959,8 +975,8 @@ static void test_lnx_user_ok(void **state)
 
 	/* a separate dynamic-pool range is honoured too */
 	static char pool[512] __attribute__((aligned(16)));
-	p.pool_lo = (uintptr_t)pool;
-	p.pool_hi = (uintptr_t)pool + sizeof(pool);
+	p.mm->pool_lo = (uintptr_t)pool;
+	p.mm->pool_hi = (uintptr_t)pool + sizeof(pool);
 	assert_true(user_ok(&p, pool, sizeof(pool), 1));
 	assert_false(user_ok(&p, pool, sizeof(pool) + 1, 1));
 }
@@ -975,9 +991,9 @@ static void test_lnx_user_strnlen(void **state)
 
 	static char rgn[256] __attribute__((aligned(16)));
 	uintptr_t lo = (uintptr_t)rgn, hi = lo + sizeof(rgn);
-	p.region_lo = lo;
-	p.region_hi = hi;
-	p.pool_lo = p.pool_hi = 0;
+	p.mm->region_lo = lo;
+	p.mm->region_hi = hi;
+	p.mm->pool_lo = p.mm->pool_hi = 0;
 
 	/* terminated inside the region → its length */
 	memset(rgn, 'x', sizeof(rgn));

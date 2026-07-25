@@ -28,6 +28,10 @@
  * OS-service symbols, and exposes the static helpers (reap_to_parent, region_free). */
 #include "lxp_run.c"
 
+/* A real engine publishes this pointer before lxp_run(). The coordinator tests
+ * exercise only the mmap seam and do not need a framebuffer backend. */
+const lxp_display_ops_t *g_lxp_disp_ops;
+
 /* ---- mock engine ------------------------------------------------------------ */
 static struct {
 	int resume_calls;
@@ -51,11 +55,18 @@ static struct {
 	size_t cache_invalidate_len[8];
 	int exit_notify_calls;
 	lxp_guest_exit_info_t exit_info;
+	int map_calls;
+	int map_sidx[16];
+	uintptr_t map_addr[16];
+	size_t map_size[16];
+	unsigned map_attrs[16];
+	int map_fail_slot;
 } g_mock;
 
 static uint8_t g_mock_regions[LXP_NREG][256];
 static uint8_t g_mock_dyn_pools[LXP_NREG][64];
 static lxp_exec_capture_t g_mock_exec_captures[LXP_NSLOT];
+static lxp_arena_t g_mock_arenas[LXP_NSLOT];
 
 static uint8_t *mock_region(int ridx)
 {
@@ -124,6 +135,21 @@ static void mock_event_post(void)
 {
 	g_mock.event_posts++;
 }
+static int mock_map_device(int sidx, uintptr_t addr, size_t size, unsigned attrs)
+{
+	int i = g_mock.map_calls++;
+	if (i < 16) {
+		g_mock.map_sidx[i] = sidx;
+		g_mock.map_addr[i] = addr;
+		g_mock.map_size[i] = size;
+		g_mock.map_attrs[i] = attrs;
+	}
+	if (size && g_mock.map_fail_slot == sidx) {
+		g_mock.map_fail_slot = -1;
+		return -1;
+	}
+	return 0;
+}
 static const char *mock_system_version(void)
 {
 	return "MockRTOS 9.8.7 ove-fedcba9 lxp-7654321";
@@ -138,6 +164,7 @@ static const lxp_os_ops_t g_mock_eng = {
 	.park_prepare = mock_park_prepare,
 	.park_slot = mock_park_slot,
 	.event_post = mock_event_post,
+	.map_device = mock_map_device,
 	.cache_clean = mock_cache_clean,
 	.cache_invalidate = mock_cache_invalidate,
 	.system_version = mock_system_version,
@@ -158,6 +185,11 @@ static int reset_state(void **state)
 	(void)state;
 	lxp_fd_runtime_reset();
 	memset(g_lxp_proc, 0, sizeof(g_lxp_proc));
+	memset(g_mock_arenas, 0, sizeof(g_mock_arenas));
+	for (int s = 0; s < LXP_NSLOT; s++) {
+		assert_int_equal(lxp_proc_init(&g_lxp_proc[s], &g_mock_arenas[s], 0), LXP_OK);
+		g_lxp_proc[s].alive = 0;
+	}
 	memset(g_lxp_used, 0, sizeof(g_lxp_used));
 	memset(g_deferred, 0, sizeof(g_deferred));
 	memset(g_primary_pending, 0, sizeof(g_primary_pending));
@@ -170,6 +202,7 @@ static int reset_state(void **state)
 	memset(g_mock_regions, 0, sizeof(g_mock_regions));
 	memset(g_mock_dyn_pools, 0, sizeof(g_mock_dyn_pools));
 	memset(&g_mock, 0, sizeof(g_mock));
+	g_mock.map_fail_slot = -1;
 	for (int r = 0; r < LXP_NREG; r++)
 		g_region_owner[r] = -1;
 	for (int s = 0; s < LXP_NSLOT; s++)
@@ -201,9 +234,9 @@ static void test_resource_stats_track_slots_and_reserved_regions(void **state)
 	g_region_owner[0] = 0; /* live init region */
 	g_region_owner[2] = 1; /* reserved vfork snapshot/exec region */
 	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].region = 0;
+	g_lxp_proc[0].mm->region = 0;
 	g_lxp_proc[1].alive = 1;
-	g_lxp_proc[1].region = 0; /* thread shares region 0 but consumes a slot */
+	g_lxp_proc[1].mm->region = 0; /* thread shares region 0 but consumes a slot */
 
 	struct lxp_resource_stats resources;
 	lxp_get_resource_stats(&resources);
@@ -221,7 +254,7 @@ static void test_resource_stats_track_slots_and_reserved_regions(void **state)
 	/* Clone-style processes can share a region but still exhaust process slots. */
 	for (int s = 2; s < LXP_NSLOT; s++) {
 		g_lxp_proc[s].alive = 1;
-		g_lxp_proc[s].region = 0;
+		g_lxp_proc[s].mm->region = 0;
 	}
 	lxp_get_resource_stats(&resources);
 	assert_int_equal(resources.slots_free, 0);
@@ -493,10 +526,10 @@ static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
 	(void)state;
 	lxp_proc_t *p = &g_lxp_proc[0];
 	p->alive = 1;
-	p->region = 0;
+	p->mm->region = 0;
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
-	p->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
-	p->is_dynamic = 1;
+	p->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	p->mm->is_dynamic = 1;
 	uintptr_t sp = (uintptr_t)g_mock_regions[0] + 192u;
 	for (size_t i = 0; i < 128u; i++)
 		g_mock_regions[0][i] = (uint8_t)(i ^ 0x5au);
@@ -541,10 +574,10 @@ static void test_vfork_restore_publishes_cacheable_parent(void **state)
 	(void)state;
 	lxp_proc_t *p = &g_lxp_proc[0];
 	p->alive = 1;
-	p->region = 0;
+	p->mm->region = 0;
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
-	p->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
-	p->is_dynamic = 1;
+	p->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	p->mm->is_dynamic = 1;
 	uintptr_t sp = (uintptr_t)g_mock_regions[0] + 192u;
 	for (size_t i = 0; i < 128u; i++)
 		g_mock_regions[1][i] = (uint8_t)(i ^ 0x5au);
@@ -588,9 +621,9 @@ static void test_vfork_snapshot_refuses_no_spare_region(void **state)
 	(void)state;
 	lxp_proc_t *p = &g_lxp_proc[0];
 	p->alive = 1;
-	p->region = 0;
+	p->mm->region = 0;
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
-	p->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	p->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
 	for (int r = 0; r < LXP_NREG; r++)
 		(void)region_reserve(r, r);
 
@@ -605,9 +638,9 @@ static void test_vfork_restore_rejects_recycled_snapshot(void **state)
 	(void)state;
 	lxp_proc_t *p = &g_lxp_proc[0];
 	p->alive = 1;
-	p->region = 0;
+	p->mm->region = 0;
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
-	p->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	p->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
 	(void)region_reserve(0, 0);
 	uintptr_t sp = (uintptr_t)g_mock_regions[0] + 192u;
 	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, sp), 1);
@@ -625,9 +658,9 @@ static void test_vfork_restore_rejects_recycled_parent(void **state)
 	(void)state;
 	lxp_proc_t *p = &g_lxp_proc[0];
 	p->alive = 1;
-	p->region = 0;
+	p->mm->region = 0;
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
-	p->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	p->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
 	(void)region_reserve(0, 0);
 	uintptr_t sp = (uintptr_t)g_mock_regions[0] + 192u;
 	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, sp), 1);
@@ -658,7 +691,7 @@ static void test_region_free(void **state)
 	/* Owner table says free (rowner<0), but a live proc still runs there → NOT free.
 	 * This is the anti-trample guard against vfork accounting drift. */
 	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].region = 2;
+	g_lxp_proc[0].mm->region = 2;
 	assert_false(region_free(2, rowner));
 
 	/* A dead proc's stale region entry does not hold the region. */
@@ -674,12 +707,12 @@ static void test_shared_region_lives_until_last_task_reference(void **state)
 
 	assert_true(region_reserve(2, 0) != 0);
 	leader->alive = 1;
-	leader->region = 2;
-	leader->mm_ref = 1;
+	leader->mm->region = 2;
 	assert_int_equal(region_get(2), 0);
+	lxp_proc_mm_put(thread);
+	assert_int_equal(lxp_proc_mm_fork(thread, leader, LXP_CLONE_VM), 0);
 	thread->alive = 1;
-	thread->region = 2;
-	thread->mm_ref = 1;
+	assert_ptr_equal(thread->mm, leader->mm);
 
 	proc_mm_put(leader);
 	leader->alive = 0;
@@ -737,17 +770,65 @@ static void test_device_map_index_tracks_both_ranges(void **state)
 	lxp_proc_t *p = &g_lxp_proc[0];
 
 	assert_int_equal(device_map_index(p, 0x1000u, 0x100u), 0);
-	p->dev_map_lo[0] = 0x1000u;
-	p->dev_map_hi[0] = 0x1100u;
+	p->mm->dev_map_lo[0] = 0x1000u;
+	p->mm->dev_map_hi[0] = 0x1100u;
 	assert_int_equal(device_map_index(p, 0x1000u, 0x200u), 0);
 
 	assert_int_equal(device_map_index(p, 0x2000u, 0x100u), 1);
-	p->dev_map_lo[1] = 0x2000u;
-	p->dev_map_hi[1] = 0x2100u;
+	p->mm->dev_map_lo[1] = 0x2000u;
+	p->mm->dev_map_hi[1] = 0x2100u;
 	assert_int_equal(device_map_index(p, 0x3000u, 0x100u), -LXP_ENOMEM);
 
 	assert_int_equal(device_map_index(p, 0x3000u, 0), -LXP_EINVAL);
 	assert_int_equal(device_map_index(p, UINTPTR_MAX - 7u, 8u), -LXP_EINVAL);
+}
+
+static void test_device_maps_follow_shared_address_space(void **state)
+{
+	(void)state;
+	lxp_proc_t *leader = &g_lxp_proc[0];
+	lxp_proc_t *thread = &g_lxp_proc[1];
+	leader->alive = 1;
+	thread->alive = 1;
+	lxp_proc_mm_put(thread);
+	assert_int_equal(lxp_proc_mm_fork(thread, leader, LXP_CLONE_VM), 0);
+
+	leader->mm->dev_map_lo[0] = 0x1000u;
+	leader->mm->dev_map_hi[0] = 0x1100u;
+	leader->mm->dev_map_attrs[0] = LXP_MAP_WT;
+
+	/* A newly-created engine task reconstructs every inherited logical map. */
+	assert_int_equal(coordinator_restore_mm_maps(&g_mock_eng, 1, thread->mm), 0);
+	assert_int_equal(g_mock.map_calls, 2);
+	assert_int_equal(g_mock.map_sidx[0], 1);
+	assert_int_equal(g_mock.map_size[0], 0);
+	assert_int_equal(g_mock.map_addr[1], 0x1000u);
+	assert_int_equal(g_mock.map_size[1], 0x100u);
+	assert_int_equal(g_mock.map_attrs[1], LXP_MAP_WT);
+
+	/* A partial peer update rolls every task back to the committed mm. */
+	g_mock.map_calls = 0;
+	g_mock.map_fail_slot = 1;
+	assert_int_equal(coordinator_map_mm_range(&g_mock_eng, leader->mm, 0x2000u,
+						  0x80u, LXP_MAP_NC),
+			 -LXP_ENOMEM);
+	assert_int_equal(g_mock.map_calls, 6);
+	assert_int_equal(g_mock.map_sidx[0], 0);
+	assert_int_equal(g_mock.map_sidx[1], 1);
+	assert_int_equal(g_mock.map_size[2], 0);
+	assert_int_equal(g_mock.map_addr[3], 0x1000u);
+	assert_int_equal(g_mock.map_size[4], 0);
+	assert_int_equal(g_mock.map_addr[5], 0x1000u);
+	assert_int_equal(leader->mm->dev_map_lo[1], 0);
+
+	/* Once every task accepts it, the caller can commit the logical range. */
+	g_mock.map_calls = 0;
+	assert_int_equal(coordinator_map_mm_range(&g_mock_eng, leader->mm, 0x2000u,
+						  0x80u, LXP_MAP_NC),
+			 0);
+	assert_int_equal(g_mock.map_calls, 2);
+	assert_int_equal(g_mock.map_sidx[0], 0);
+	assert_int_equal(g_mock.map_sidx[1], 1);
 }
 
 static void test_teardown_releases_every_slot_resource(void **state)
@@ -755,11 +836,8 @@ static void test_teardown_releases_every_slot_resource(void **state)
 	(void)state;
 	const int s = 2;
 	lxp_proc_t *p = &g_lxp_proc[s];
-	static lxp_arena_t arena;
-	assert_int_equal(lxp_proc_init(p, &arena, 0), LXP_OK);
 	p->alive = 1;
-	p->region = 1;
-	p->mm_ref = 1;
+	p->mm->region = 1;
 	p->snap_region = 2;
 	p->netfs_req = -1;
 	g_lxp_used[s] = 1;
@@ -786,16 +864,17 @@ static void test_futex_has_corunner(void **state)
 {
 	(void)state;
 	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].region = 2;
+	g_lxp_proc[0].mm->region = 2;
 	assert_false(futex_has_corunner(&g_lxp_proc[0])); /* alone in region 2 */
 
 	g_lxp_proc[1].alive = 1;
-	g_lxp_proc[1].region = 3;
+	g_lxp_proc[1].mm->region = 3;
 	assert_false(futex_has_corunner(&g_lxp_proc[0])); /* a live proc, but a different region */
 
+	lxp_proc_mm_put(&g_lxp_proc[2]);
+	assert_int_equal(lxp_proc_mm_fork(&g_lxp_proc[2], &g_lxp_proc[0], LXP_CLONE_VM), 0);
 	g_lxp_proc[2].alive = 1;
-	g_lxp_proc[2].region = 2;
-	assert_true(futex_has_corunner(&g_lxp_proc[0])); /* a co-runner shares region 2 */
+	assert_true(futex_has_corunner(&g_lxp_proc[0])); /* a co-runner shares the mm */
 
 	g_lxp_proc[2].alive = 0;
 	assert_false(futex_has_corunner(&g_lxp_proc[0])); /* it exited -> no longer a co-runner */
@@ -879,9 +958,9 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 	lxp_proc_t *proc = &g_lxp_proc[0];
 	assert_int_equal(lxp_proc_init(proc, &arena, 0), LXP_OK);
 	proc->alive = 1;
-	proc->region_lo = 0x1000u;
-	proc->region_hi = 0x2000u;
-	proc->pool_lo = proc->pool_hi = 0;
+	proc->mm->region_lo = 0x1000u;
+	proc->mm->region_hi = 0x2000u;
+	proc->mm->pool_lo = proc->mm->pool_hi = 0;
 	deferred_slot_reassign(0);
 
 	const uint32_t cmds[] = {LXP_TCSETS, LXP_TCSETSW, LXP_TCSETSF};
@@ -1092,8 +1171,8 @@ static void test_console_icrnl_immediate_read(void **state)
 	assert_int_equal(lxp_arena_init(&arena, g_mock_regions[0], sizeof(g_mock_regions[0])),
 			 LXP_OK);
 	assert_int_equal(lxp_proc_init(&p, &arena, 0), LXP_OK);
-	p.region_lo = 1;
-	p.region_hi = UINTPTR_MAX;
+	p.mm->region_lo = 1;
+	p.mm->region_hi = UINTPTR_MAX;
 	p.read_fn = console_read_cr;
 	p.console_poll = console_ready;
 
@@ -1397,6 +1476,8 @@ int main(void)
 		cmocka_unit_test_setup(test_thread_group_exit_marks_every_peer, reset_state),
 		cmocka_unit_test_setup(test_exec_stops_only_thread_group_peers, reset_state),
 		cmocka_unit_test_setup(test_device_map_index_tracks_both_ranges,
+				       reset_state),
+		cmocka_unit_test_setup(test_device_maps_follow_shared_address_space,
 				       reset_state),
 		cmocka_unit_test_setup(test_teardown_releases_every_slot_resource,
 				       reset_state),

@@ -104,10 +104,10 @@ static inline lxp_conf_t *lxp_conf_begin(lxp_proc_t *p, const lxp_file_t *rootfs
 		return NULL;
 	}
 	/* Bound user_ok to the whole low region; a static proc's pool == its region. */
-	p->region_lo = (uintptr_t)g_conf.low.base;
-	p->region_hi = (uintptr_t)g_conf.low.base + g_conf.low.cap;
-	p->pool_lo = p->region_lo;
-	p->pool_hi = p->region_hi;
+	p->mm->region_lo = (uintptr_t)g_conf.low.base;
+	p->mm->region_hi = (uintptr_t)g_conf.low.base + g_conf.low.cap;
+	p->mm->pool_lo = p->mm->region_lo;
+	p->mm->pool_hi = p->mm->region_hi;
 	p->write_fn = lxp_conf_cap_write;
 	g_conf_cap_len = 0;
 	if (rootfs)

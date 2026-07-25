@@ -84,6 +84,7 @@ LXP_STATIC_ASSERT(LXP_RESOURCE_POOL_COUNT >= LXP_NSLOT,
 static lxp_files_t g_files[LXP_RESOURCE_POOL_COUNT];
 static lxp_fs_context_t g_fs_context[LXP_RESOURCE_POOL_COUNT];
 static lxp_sighand_t g_sighand[LXP_RESOURCE_POOL_COUNT];
+static lxp_mm_t g_mm[LXP_RESOURCE_POOL_COUNT];
 
 static lxp_files_t *files_new(void)
 {
@@ -116,6 +117,18 @@ static lxp_sighand_t *sighand_new(void)
 			memset(&g_sighand[i], 0, sizeof(g_sighand[i]));
 			g_sighand[i].refs = 1;
 			return &g_sighand[i];
+		}
+	return NULL;
+}
+
+static lxp_mm_t *mm_new(void)
+{
+	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
+		if (g_mm[i].refs == 0) {
+			memset(&g_mm[i], 0, sizeof(g_mm[i]));
+			g_mm[i].refs = 1;
+			g_mm[i].region = -1;
+			return &g_mm[i];
 		}
 	return NULL;
 }
@@ -162,16 +175,18 @@ __attribute__((weak)) void lxp_rootfs_bounds(uintptr_t *lo, uintptr_t *hi)
 /* Upper bound of the valid range that CONTAINS `a`, or 0 if `a` is in none. */
 static uintptr_t user_range_hi(const lxp_proc_t *p, uintptr_t a, int write)
 {
-	if (a >= p->region_lo && a < p->region_hi)
-		return p->region_hi;
-	if (p->pool_hi > p->pool_lo && a >= p->pool_lo && a < p->pool_hi)
-		return p->pool_hi;
+	if (!p || !p->mm)
+		return 0;
+	if (a >= p->mm->region_lo && a < p->mm->region_hi)
+		return p->mm->region_hi;
+	if (p->mm->pool_hi > p->mm->pool_lo && a >= p->mm->pool_lo && a < p->mm->pool_hi)
+		return p->mm->pool_hi;
 #if LXP_ENABLE_DEV
 	/* A mapped device buffer (framebuffer, P3) is RW-valid for the program. */
 	for (int i = 0; i < 2; i++)
-		if (p->dev_map_hi[i] > p->dev_map_lo[i] && a >= p->dev_map_lo[i] &&
-		    a < p->dev_map_hi[i])
-			return p->dev_map_hi[i];
+		if (p->mm->dev_map_hi[i] > p->mm->dev_map_lo[i] && a >= p->mm->dev_map_lo[i] &&
+		    a < p->mm->dev_map_hi[i])
+			return p->mm->dev_map_hi[i];
 #endif
 	if (!write) {
 		uintptr_t rlo, rhi;
@@ -301,14 +316,16 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 		return LXP_ERR_INVALID_PARAM;
 
 	memset(proc, 0, sizeof(*proc));
+	proc->mm = mm_new();
 	proc->files = files_new();
 	proc->fs_context = fs_context_new();
 	proc->sighand = sighand_new();
-	if (!proc->files || !proc->fs_context || !proc->sighand) {
+	if (!proc->mm || !proc->files || !proc->fs_context || !proc->sighand) {
 		lxp_proc_resources_put(proc);
+		lxp_proc_mm_put(proc);
 		return LXP_ERR_NO_MEMORY;
 	}
-	proc->arena = arena;
+	proc->mm->arena = arena;
 	proc->pid = 1;	    /* the initial task is tid/tgid 1 (ppid 0); fork assigns the rest */
 	proc->tgid = 1;
 	/* fd 0/1/2 are the standard streams, routed to the caller's callbacks.
@@ -319,17 +336,19 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 	    fd_alloc(proc, LXP_FD_CONSOLE, 1, 0) != 1 ||
 	    fd_alloc(proc, LXP_FD_CONSOLE, 1, 0) != 2) {
 		lxp_proc_resources_put(proc);
+		lxp_proc_mm_put(proc);
 		return LXP_ERR_NO_MEMORY;
 	}
 	if (brk_bytes) {
 		void *brk = lxp_arena_alloc(arena, brk_bytes);
 		if (!brk) {
 			lxp_proc_resources_put(proc);
+			lxp_proc_mm_put(proc);
 			return LXP_ERR_NO_MEMORY;
 		}
-		proc->brk_base = (uintptr_t)brk;
-		proc->brk_cur = proc->brk_base;
-		proc->brk_max = proc->brk_base + brk_bytes;
+		proc->mm->brk_base = (uintptr_t)brk;
+		proc->mm->brk_cur = proc->mm->brk_base;
+		proc->mm->brk_max = proc->mm->brk_base + brk_bytes;
 	}
 	return LXP_OK;
 }
@@ -1475,9 +1494,11 @@ static long sys_brk(lxp_proc_t *p, uintptr_t addr)
 {
 	/* Linux brk: move the break to addr if valid, then return the (possibly
 	 * unchanged) break. uClibc's sbrk detects failure by ret != requested. */
-	if (addr >= p->brk_base && addr <= p->brk_max)
-		p->brk_cur = addr;
-	return (long)p->brk_cur;
+	if (!p || !p->mm)
+		return 0;
+	if (addr >= p->mm->brk_base && addr <= p->mm->brk_max)
+		p->mm->brk_cur = addr;
+	return (long)p->mm->brk_cur;
 }
 
 static long sys_exit(lxp_proc_t *p, int status, int group)
@@ -1500,7 +1521,7 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 		      uint32_t pgoff)
 {
 	(void)addr;
-	if (len == 0)
+	if (!p || !p->mm || !p->mm->arena || len == 0)
 		return -LXP_EINVAL;
 
 	/* Text-sharing: a read-only file map of a rootfs file whose whole extent lies within the file
@@ -1534,7 +1555,7 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 	}
 #endif
 
-	void *m = lxp_arena_alloc_tracked(p->arena, len);
+	void *m = lxp_arena_alloc_tracked(p->mm->arena, len);
 	if (!m)
 		return -LXP_ENOMEM;
 	memset(m, 0, len); /* anon reads as zero; also zero-fills a file map's bss tail */
@@ -1544,7 +1565,7 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 		 * freshly-allocated block. (Anonymous maps ignore the fd.) */
 		long r = sys_pread(p, fd, m, len, pgoff * 4096u);
 		if (r < 0) {
-			(void)lxp_arena_free_tracked(p->arena, m, len);
+			(void)lxp_arena_free_tracked(p->mm->arena, m, len);
 			return r;
 		}
 	}
@@ -1560,11 +1581,11 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
  */
 static long sys_munmap(lxp_proc_t *p, uintptr_t addr, size_t len)
 {
-	if (!p || !p->arena || len == 0)
+	if (!p || !p->mm || !p->mm->arena || len == 0)
 		return -LXP_EINVAL;
-	if (!lxp_arena_owns(p->arena, (void *)addr))
+	if (!lxp_arena_owns(p->mm->arena, (void *)addr))
 		return 0;
-	return lxp_arena_free_tracked(p->arena, (void *)addr, len) ? 0 : -LXP_EINVAL;
+	return lxp_arena_free_tracked(p->mm->arena, (void *)addr, len) ? 0 : -LXP_EINVAL;
 }
 
 /* open a rootfs file read-only; the fs is immutable, so writes are refused. */
@@ -1850,6 +1871,7 @@ void lxp_fd_runtime_reset(void)
 	memset(g_files, 0, sizeof(g_files));
 	memset(g_fs_context, 0, sizeof(g_fs_context));
 	memset(g_sighand, 0, sizeof(g_sighand));
+	memset(g_mm, 0, sizeof(g_mm));
 }
 
 int lxp_fd_fork_inherit(lxp_proc_t *child)
@@ -1981,6 +2003,38 @@ int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent,
 fail:
 	lxp_proc_resources_put(child);
 	return -1;
+}
+
+int lxp_proc_mm_fork(lxp_proc_t *child, const lxp_proc_t *parent,
+		     uint32_t clone_flags)
+{
+	if (!child || !parent || !parent->mm)
+		return -1;
+	child->mm = NULL;
+	if (clone_flags & LXP_CLONE_VM) {
+		if (parent->mm->refs == UINT16_MAX)
+			return -1;
+		child->mm = parent->mm;
+		child->mm->refs++;
+		return 0;
+	}
+	lxp_mm_t *copy = mm_new();
+	if (!copy)
+		return -1;
+	uint16_t refs = copy->refs;
+	*copy = *parent->mm;
+	copy->refs = refs;
+	child->mm = copy;
+	return 0;
+}
+
+void lxp_proc_mm_put(lxp_proc_t *p)
+{
+	if (!p || !p->mm)
+		return;
+	if (p->mm->refs > 0 && --p->mm->refs == 0)
+		memset(p->mm, 0, sizeof(*p->mm));
+	p->mm = NULL;
 }
 
 /* pipe(2)/pipe2(2): allocate a pipe object + a read-end / write-end fd pair. @p flags

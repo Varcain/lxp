@@ -339,9 +339,9 @@ static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 {
 	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), OVE_OK);
 	assert_int_equal(lxp_test_proc_init(p, arena, 4096), OVE_OK);
-	p->region_lo = 1;
-	p->region_hi = UINTPTR_MAX;
-	p->pool_lo = p->pool_hi = 0;
+	p->mm->region_lo = 1;
+	p->mm->region_hi = UINTPTR_MAX;
+	p->mm->pool_lo = p->mm->pool_hi = 0;
 	p->netfs_req = -1;
 }
 
