@@ -161,6 +161,7 @@ static int reset_state(void **state)
 	memset(g_deferred, 0, sizeof(g_deferred));
 	memset(g_primary_pending, 0, sizeof(g_primary_pending));
 	memset(g_slot_generation, 0, sizeof(g_slot_generation));
+	memset(g_region_refs, 0, sizeof(g_region_refs));
 	memset(g_region_generation, 0, sizeof(g_region_generation));
 	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
 	memset(g_ctx, 0, sizeof(g_ctx));
@@ -662,6 +663,34 @@ static void test_region_free(void **state)
 	/* A dead proc's stale region entry does not hold the region. */
 	g_lxp_proc[0].alive = 0;
 	assert_true(region_free(2, rowner));
+}
+
+static void test_shared_region_lives_until_last_task_reference(void **state)
+{
+	(void)state;
+	lxp_proc_t *leader = &g_lxp_proc[0];
+	lxp_proc_t *thread = &g_lxp_proc[1];
+
+	assert_true(region_reserve(2, 0) != 0);
+	leader->alive = 1;
+	leader->region = 2;
+	leader->mm_ref = 1;
+	assert_int_equal(region_get(2), 0);
+	thread->alive = 1;
+	thread->region = 2;
+	thread->mm_ref = 1;
+
+	proc_mm_put(leader);
+	leader->alive = 0;
+	assert_int_equal(g_region_refs[2], 1);
+	assert_int_equal(g_region_owner[2], 0);
+	assert_false(region_free(2, g_region_owner));
+
+	proc_mm_put(thread);
+	thread->alive = 0;
+	assert_int_equal(g_region_refs[2], 0);
+	assert_int_equal(g_region_owner[2], -1);
+	assert_true(region_free(2, g_region_owner));
 }
 
 /* ---- device mappings: each process owns two independently tracked ranges --- */
@@ -1292,6 +1321,8 @@ int main(void)
 		cmocka_unit_test_setup(test_vfork_restore_rejects_recycled_parent,
 				       reset_state),
 		cmocka_unit_test_setup(test_region_free, reset_state),
+		cmocka_unit_test_setup(test_shared_region_lives_until_last_task_reference,
+				       reset_state),
 		cmocka_unit_test_setup(test_device_map_index_tracks_both_ranges,
 				       reset_state),
 	};

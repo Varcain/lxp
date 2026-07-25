@@ -154,10 +154,12 @@ static volatile uint32_t g_coord_iters;
  * host syscall tests link without the run loop; the run loop only observes it. */
 
 static lxp_arena_t g_arenas[LXP_NREG];
-/* Exact region reservations, including vfork snapshot/exec handoff regions that
- * do not yet appear as a distinct live process region. Kept outside the run-loop
- * stack so sysinfo/procfs can report current NREG pressure. */
+/* Exact region reservations, including shared address spaces and vfork
+ * snapshot/exec handoff regions that do not yet appear as a distinct live task.
+ * owner identifies the reservation incarnation; refs keeps a shared CLONE_VM or
+ * vfork address space reserved until its last task releases it. */
 static int g_region_owner[LXP_NREG];
+static uint16_t g_region_refs[LXP_NREG];
 /* Every reservation/release changes the generation as well as the owner. A
  * vfork snapshot records both generations so a delayed restore cannot copy
  * stale bytes after either slot or region has been recycled. */
@@ -1068,7 +1070,7 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	/* Concurrent model: this slot is now a live process owning region ridx. */
 	g_lxp_proc[sidx].alive = 1;
 	g_lxp_proc[sidx].region = ridx;
-	g_lxp_proc[sidx].region_owner = 1;
+	g_lxp_proc[sidx].mm_ref = 1;
 	/* access_ok bounds: this proc's own writable memory (image region + dynamic arena). The syscall
 	 * layer rejects any user pointer outside these (+ the shared RO rootfs for reads). */
 	g_lxp_proc[sidx].region_lo = (uintptr_t)region;
@@ -1432,13 +1434,13 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
  * live daemon's region reading rowner<0 — reusing it then memcpy's a foreign image straight over that
  * daemon's live libc data (the inetd flap: init's snapshot trampling inetd's __pthread thread block →
  * a garbage descriptor → p_errnop=0xffffffff → DACCVIOL). So gate every region pick on BOTH the owner
- * table AND actual process liveness. In the consistent state an owner's region always has rowner>=0,
- * so this is redundant and never refuses a genuinely-free region — it only refuses to trample a live
- * one (worst case a clean -ENOMEM fork refusal instead of a corruption), and it self-heals: once the
- * occupant exits, both the liveness scan and rowner agree the region is free again. */
+ * table, the shared-mm refcount, AND actual task liveness. In the consistent state
+ * a referenced region always has rowner>=0, so the latter checks are redundant
+ * and never refuse a genuinely-free region — they only refuse to trample a live
+ * one (worst case a clean -ENOMEM fork refusal instead of a corruption). */
 static int region_free(int r, const int *rowner)
 {
-	if (rowner[r] >= 0)
+	if (rowner[r] >= 0 || g_region_refs[r] != 0)
 		return 0;
 	for (int s = 0; s < LXP_NSLOT; s++)
 		if (g_lxp_proc[s].alive && g_lxp_proc[s].region == r)
@@ -1456,16 +1458,45 @@ static uint32_t region_generation_next(int r)
 
 static uint32_t region_reserve(int r, int slot)
 {
+	if (r < 0 || r >= LXP_NREG || g_region_refs[r] != 0)
+		return 0;
 	g_region_owner[r] = slot;
+	g_region_refs[r] = 1;
 	return region_generation_next(r);
+}
+
+static int region_get(int r)
+{
+	if (r < 0 || r >= LXP_NREG || g_region_owner[r] < 0 ||
+	    g_region_refs[r] == 0 || g_region_refs[r] >= LXP_NSLOT)
+		return -1;
+	g_region_refs[r]++;
+	return 0;
+}
+
+static void region_put(int r)
+{
+	if (r < 0 || r >= LXP_NREG || g_region_refs[r] == 0)
+		return;
+	if (--g_region_refs[r] == 0) {
+		g_region_owner[r] = -1;
+		(void)region_generation_next(r);
+	}
+}
+
+static void proc_mm_put(lxp_proc_t *p)
+{
+	if (!p || !p->mm_ref)
+		return;
+	region_put(p->region);
+	p->mm_ref = 0;
 }
 
 static void region_release_if_owned(int r, int slot)
 {
-	if (r >= 0 && r < LXP_NREG && g_region_owner[r] == slot) {
-		g_region_owner[r] = -1;
-		(void)region_generation_next(r);
-	}
+	if (r >= 0 && r < LXP_NREG && g_region_owner[r] == slot &&
+	    g_region_refs[r] == 1)
+		region_put(r);
 }
 
 /* Copy into storage that may retain cache lines from an earlier tenant. The
@@ -1558,6 +1589,7 @@ static int vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *par, int rsnap,
 	    g_region_generation[par->region] != guard->parent_region_generation ||
 	    rsnap != guard->snapshot_region || rsnap < 0 || rsnap >= LXP_NREG ||
 	    g_region_owner[rsnap] != child_slot ||
+	    g_region_refs[rsnap] != 1 ||
 	    g_region_generation[rsnap] != guard->snapshot_region_generation)
 		return -1;
 	uint8_t *pr = eng->region(par->region);
@@ -1646,6 +1678,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		deferred_slot_reassign(i);
 	}
 	memset(g_primary_pending, 0, sizeof(g_primary_pending));
+	memset(g_region_refs, 0, sizeof(g_region_refs));
 	memset(g_region_generation, 0, sizeof(g_region_generation));
 	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
 	for (int i = 0; i < LXP_NSLOT; i++)
@@ -1681,8 +1714,9 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	/* Concurrent process model: the run loop COORDINATES the live process SET
 	 * (g_lxp_proc[*].alive). Each live proc owns a region + an RTOS thread for
 	 * its lifetime; a vfork parent resumes the instant its child execs into its own
-	 * region (or exits) so the two co-run. g_region_owner[r] is the slot owning
-	 * region r, including a reserved vfork snapshot/exec-handoff region. */
+	 * region (or exits) so the two co-run. The region table holds one reference
+	 * per live task sharing an address space, plus reserved vfork
+	 * snapshot/exec-handoff regions. */
 	for (int r = 0; r < LXP_NREG; r++)
 		g_region_owner[r] = -1;
 
@@ -1792,6 +1826,13 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			g_vfork_guard[c].parent_slot = g_vfork_guard[c].parent_region =
 				g_vfork_guard[c].snapshot_region = -1;
 			*ch = *par; /* vfork shares the image + region */
+			if (region_get(par->region) != 0) {
+				memset(ch, 0, sizeof(*ch));
+				coordinator_park_slot(eng, es);
+				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_EAGAIN);
+				idle = 0;
+				continue;
+			}
 			/* The struct copy inherits the parent's pointer, but every slot owns an
 			 * independent transient exec capture. The child has no pending exec yet. */
 			lxp_proc_bind_exec_capture(ch, eng->exec_capture(c));
@@ -1833,7 +1874,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			ch->snap_region = -1; /* set by vfork_snapshot below for a non-thread fork */
 			ch->alive = 1;
 			ch->region = par->region;
-			ch->region_owner = 0; /* shares the parent's region */
+			ch->mm_ref = 1; /* shares the parent's refcounted address space */
 			par->live_children++; /* the creator can waitpid()/join this child */
 			if (par->clone_is_thread) {
 				/* pthread: the child shares the region for LIFE and runs on its own
@@ -1874,6 +1915,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 #if LXP_ENABLE_NETFS
 				lxp_netfs_proc_exit(ch);
 #endif
+				proc_mm_put(ch);
 				ch->alive = 0;
 				g_lxp_used[c] = 0;
 				if (par->live_children > 0)
@@ -1924,8 +1966,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			if (nr <
 			    0) { /* region exhaustion: kill THIS proc, do NOT tear down init. */
 				eng->abort_slot(es);
-				if (p->region_owner)
-					region_release_if_owned(p->region, es);
+				proc_mm_put(p);
 				p->exit_status = 127;
 				p->exit_reason = LXP_EXIT_REASON_EXEC_RESOURCE;
 				p->exit_signal = 0;
@@ -1961,9 +2002,12 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			int saved_pgid = p->pgid;	      /* the process group survives execve (POSIX) */
 			memcpy(saved_fds, p->fds, sizeof(saved_fds));
 			memcpy(saved_cwd, p->cwd, sizeof(saved_cwd));
-			if (p->region_owner) /* free the old owned region */
-				region_release_if_owned(p->region, es);
-			(void)region_reserve(nr, es);
+			int exec_region_reserved =
+				p->snap_region == nr && g_region_owner[nr] == es &&
+				g_region_refs[nr] == 1;
+			proc_mm_put(p);
+			if (!exec_region_reserved)
+				(void)region_reserve(nr, es);
 			eng->abort_slot(es);
 			const uint8_t *img_data = cfg->rootfs[idx].data;
 			size_t img_size = cfg->rootfs[idx].size;
@@ -1980,6 +2024,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			    launch(eng, es, nr, img_data, img_size, pid, ppid, eargc, ptrs, eptrs,
 				   rexec) != 0) {
 				region_release_if_owned(nr, es);
+				g_lxp_proc[es].mm_ref = 0;
 				g_lxp_proc[es].exit_status = 127;
 				g_lxp_proc[es].exit_reason = LXP_EXIT_REASON_EXEC_LOAD;
 				g_lxp_proc[es].exit_signal = 0;
@@ -2030,8 +2075,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				}
 			}
 			notify_guest_exit(es, p);
-			if (p->region_owner)
-				region_release_if_owned(p->region, es);
+			proc_mm_put(p);
 			p->alive = 0;
 			g_lxp_used[es] = 0;
 			if (es == 0) { /* init exited → the system is done */

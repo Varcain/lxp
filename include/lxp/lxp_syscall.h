@@ -635,7 +635,7 @@ typedef struct lxp_proc {
 	 * vctx[]; the per-slot resume contexts live in lxp_run.c. */
 	int alive;	  /**< This slot holds a live process. */
 	int region;	  /**< Program-image region index this proc runs in. */
-	int region_owner; /**< 1 = owns/must-free its region; 0 = shares a parent's (vfork window). */
+	int mm_ref;	  /**< This task holds one reference to @c region's shared address space. */
 	/* access_ok validation ranges — the program's OWN writable memory. region_lo/hi = its image
 	 * region [base, base+512K); pool_lo/hi = its dynamic-link arena (== region for a static proc).
 	 * A syscall rejects (-EFAULT) any user pointer+len not wholly inside these (a READ source may
