@@ -693,6 +693,42 @@ static void test_shared_region_lives_until_last_task_reference(void **state)
 	assert_true(region_free(2, g_region_owner));
 }
 
+static void test_thread_group_exit_marks_every_peer(void **state)
+{
+	(void)state;
+	for (int s = 0; s < 3; s++) {
+		g_lxp_proc[s].alive = 1;
+		g_lxp_proc[s].pid = 10 + s;
+		g_lxp_proc[s].tgid = s < 2 ? 10 : 12;
+	}
+
+	assert_int_equal(thread_group_live_count(10), 2);
+	thread_group_request_exit(1, 37);
+	assert_true(g_lxp_proc[0].exited);
+	assert_true(g_lxp_proc[1].exited);
+	assert_true(g_lxp_proc[0].exit_group);
+	assert_int_equal(g_lxp_proc[0].exit_status, 37);
+	assert_false(g_lxp_proc[2].exited);
+}
+
+static void test_exec_stops_only_thread_group_peers(void **state)
+{
+	(void)state;
+	for (int s = 0; s < 3; s++) {
+		g_lxp_proc[s].alive = 1;
+		g_lxp_proc[s].tgid = s < 2 ? 10 : 12;
+		g_lxp_used[s] = 1;
+	}
+
+	thread_group_stop_exec_peers(&g_mock_eng, 0, 127);
+	assert_int_equal(g_mock.abort_calls, 1);
+	assert_true(g_lxp_proc[1].exited);
+	assert_int_equal(g_lxp_proc[1].exit_status, 127);
+	assert_int_equal(g_lxp_used[1], 0);
+	assert_false(g_lxp_proc[0].exited);
+	assert_false(g_lxp_proc[2].exited);
+}
+
 /* ---- device mappings: each process owns two independently tracked ranges --- */
 static void test_device_map_index_tracks_both_ranges(void **state)
 {
@@ -865,6 +901,7 @@ static void test_dispatch_class_defaults_deferred(void **state)
 	lxp_proc_t *p = &g_lxp_proc[0];
 	p->alive = 1;
 	p->pid = 42;
+	p->tgid = 42;
 	deferred_slot_reassign(0);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
@@ -1323,6 +1360,8 @@ int main(void)
 		cmocka_unit_test_setup(test_region_free, reset_state),
 		cmocka_unit_test_setup(test_shared_region_lives_until_last_task_reference,
 				       reset_state),
+		cmocka_unit_test_setup(test_thread_group_exit_marks_every_peer, reset_state),
+		cmocka_unit_test_setup(test_exec_stops_only_thread_group_peers, reset_state),
 		cmocka_unit_test_setup(test_device_map_index_tracks_both_ranges,
 				       reset_state),
 	};

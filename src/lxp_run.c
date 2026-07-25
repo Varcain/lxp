@@ -912,11 +912,12 @@ void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	 * to spawn a child. The parent is suspended (no thread) through the vfork window
 	 * (NOMMU shares the image) until the child execs into its own region or exits. */
 	if (nr == LXP_NR_vfork || nr == LXP_NR_fork || nr == LXP_NR_clone) {
-		/* clone(CLONE_VM) is a pthread: the child shares the parent's region for life and
-		 * runs on its own stack (clone arg r1), and the parent CO-RUNS (gets the child tid)
-		 * — unlike fork/vfork, which suspend the parent until the child execs/exits. */
-		if (nr == LXP_NR_clone && ((uint32_t)f->r[0] & LXP_CLONE_VM)) {
-			proc->clone_is_thread = 1;
+		/* CLONE_VM shares the address space for life and therefore co-runs on
+		 * the supplied child stack. CLONE_THREAD additionally joins the
+		 * caller's thread group; legacy LinuxThreads-style CLONE_VM children
+		 * remain distinct, waitable processes. */
+		proc->clone_flags = nr == LXP_NR_clone ? (uint32_t)f->r[0] : 0;
+		if (proc->clone_flags & LXP_CLONE_VM) {
 			proc->clone_child_stack = f->r[1];
 		}
 		proc->fork_pending = 1;
@@ -1065,6 +1066,7 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	g_lxp_proc[sidx].console_poll = g_cfg->console_poll;
 	g_lxp_proc[sidx].io_ctx = g_cfg->io_ctx;
 	g_lxp_proc[sidx].pid = pid;
+	g_lxp_proc[sidx].tgid = pid;
 	g_lxp_proc[sidx].ppid = ppid;
 	g_lxp_proc[sidx].pgid = pid; /* a fresh proc leads its own group; fork inherits via *ch=*par, execve restores the saved pgid below */
 	/* Concurrent model: this slot is now a live process owning region ridx. */
@@ -1258,6 +1260,58 @@ static int fork_capacity_available(const lxp_proc_t *proc)
 {
 	return proc->child_count >= 0 && proc->child_count < LXP_MAX_CHILD &&
 	       proc->live_children >= 0 && proc->live_children < LXP_MAX_CHILD - proc->child_count;
+}
+
+static int thread_group_live_count(int tgid)
+{
+	int live = 0;
+	for (int s = 0; s < LXP_NSLOT; s++)
+		if (g_lxp_proc[s].alive && g_lxp_proc[s].tgid == tgid)
+			live++;
+	return live;
+}
+
+static void thread_group_request_exit(int source_slot, int status)
+{
+	if (source_slot < 0 || source_slot >= LXP_NSLOT)
+		return;
+	int tgid = g_lxp_proc[source_slot].tgid;
+	for (int s = 0; s < LXP_NSLOT; s++) {
+		lxp_proc_t *p = &g_lxp_proc[s];
+		if (!p->alive || p->tgid != tgid)
+			continue;
+		p->exit_status = status & 0xff;
+		p->exit_reason = LXP_EXIT_REASON_NORMAL;
+		p->exit_signal = 0;
+		p->exit_detail = 0;
+		p->exit_address = 0;
+		p->exit_group = 1;
+		p->exited = 1;
+		primary_slot_mark(s);
+	}
+}
+
+/* execve replaces the entire process image. Once the coordinator reaches the
+ * commit point, peer threads may no longer execute in the old shared address
+ * space. Stop their host tasks immediately; their normal EV_EXIT teardown
+ * releases per-task references on subsequent coordinator passes. */
+static void thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slot,
+					 int failure_status)
+{
+	int tgid = g_lxp_proc[source_slot].tgid;
+	for (int s = 0; s < LXP_NSLOT; s++) {
+		lxp_proc_t *p = &g_lxp_proc[s];
+		if (s == source_slot || !p->alive || p->tgid != tgid)
+			continue;
+		eng->abort_slot(s);
+		g_lxp_used[s] = 0;
+		p->exit_status = failure_status & 0xff;
+		p->exit_reason = LXP_EXIT_REASON_NORMAL;
+		p->exit_signal = 0;
+		p->exit_group = 0;
+		p->exited = 1;
+		primary_slot_mark(s);
+	}
 }
 
 /* Deliver `sig` to a proc PARKED in rt_sigsuspend (the LinuxThreads restart). There is no live
@@ -1850,8 +1904,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			lxp_netfs_fork_inherit(ch); /* the child shares the parent's remote-fs opens */
 #endif
 			ch->pid = next_pid++;
-			ch->ppid = par->pid;
-			ch->exited = ch->exec_pending = ch->fork_pending = 0;
+			ch->ppid = par->tgid;
+			ch->exited = ch->exit_group = ch->exec_pending = ch->fork_pending = 0;
 			ch->sleep_pending = ch->wait_pending = ch->sleeping = 0;
 			ch->pipe_wait = 0;
 			ch->dev_wait = 0;
@@ -1870,18 +1924,21 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			ch->child_count = ch->live_children = 0;
 			ch->stopped = 0; /* a forked child is never born stopped */
 			ch->stop_kind = LXP_STOP_NONE;
-			ch->clone_is_thread = 0;
+			ch->clone_flags = 0;
 			ch->snap_region = -1; /* set by vfork_snapshot below for a non-thread fork */
 			ch->alive = 1;
 			ch->region = par->region;
 			ch->mm_ref = 1; /* shares the parent's refcounted address space */
-			par->live_children++; /* the creator can waitpid()/join this child */
-			if (par->clone_is_thread) {
-				/* pthread: the child shares the region for LIFE and runs on its own
-				 * stack; the parent CO-RUNS (gets the child tid). No vfork suspend —
-				 * a thread never execs, so it co-runs with its creator immediately. */
-				par->clone_is_thread = 0;
-				ch->is_thread = 1;
+			if (par->clone_flags & LXP_CLONE_VM) {
+				/* A shared-mm clone runs on its own stack while the parent
+				 * co-runs. CLONE_THREAD controls thread-group membership;
+				 * CLONE_VM alone is a distinct waitable process. */
+				uint32_t clone_flags = par->clone_flags;
+				par->clone_flags = 0;
+				ch->is_thread = (clone_flags & LXP_CLONE_THREAD) != 0;
+				ch->tgid = ch->is_thread ? par->tgid : ch->pid;
+				if (!ch->is_thread)
+					par->live_children++;
 				ch->vfork_parent_slot = -1;
 				g_ctx[c] = g_ctx[es]; /* clone resumes from the parent's ctx... */
 				g_ctx[c].sp =
@@ -1895,6 +1952,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				continue;
 			}
 			ch->is_thread = 0;
+			ch->tgid = ch->pid;
+			par->live_children++; /* a new process is waitable; a thread is not */
 			ch->vfork_parent_slot =
 				es; /* resume the parent when this child execs/exits */
 			/* NOMMU vfork isolation: snapshot the parent's writable data so the child's
@@ -1963,6 +2022,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 						break;
 					}
 			int pid = p->pid, ppid = p->ppid, vp = p->vfork_parent_slot;
+			int tgid = p->tgid;
 			if (nr <
 			    0) { /* region exhaustion: kill THIS proc, do NOT tear down init. */
 				eng->abort_slot(es);
@@ -2005,6 +2065,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			int exec_region_reserved =
 				p->snap_region == nr && g_region_owner[nr] == es &&
 				g_region_refs[nr] == 1;
+			thread_group_stop_exec_peers(eng, es, 127);
 			proc_mm_put(p);
 			if (!exec_region_reserved)
 				(void)region_reserve(nr, es);
@@ -2038,6 +2099,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			memcpy(g_lxp_proc[es].fds, saved_fds, sizeof(saved_fds));
 			memcpy(g_lxp_proc[es].cwd, saved_cwd, sizeof(saved_cwd));
 			g_lxp_proc[es].sig_blocked = saved_mask;
+			g_lxp_proc[es].tgid = tgid;
 			g_lxp_proc[es].pgid = saved_pgid;
 			g_lxp_proc[es].exec_file_idx = idx; /* remember the running image so a
 								   later execv("/proc/self/exe") re-runs it */
@@ -2048,9 +2110,11 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		if (et ==
 		    LXP_EV_EXIT) { /* reap: abort thread, free region, wake parent/queue zombie. */
 			lxp_proc_t *p = &g_lxp_proc[es];
+			if (p->exit_group)
+				thread_group_request_exit(es, p->exit_status);
 			deferred_slot_reassign(es); /* cancel anything tied to the dying slot identity */
-			int cpid = p->pid, status = p->exit_status, vp = p->vfork_parent_slot,
-			    ppid = p->ppid;
+			int cpid = p->pid, tgid = p->tgid, status = p->exit_status,
+			    vp = p->vfork_parent_slot, ppid = p->ppid;
 #if LXP_ENABLE_DEV
 			lxp_dev_proc_exit(p); /* release the exiting process's device opens */
 #endif
@@ -2078,14 +2142,16 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			proc_mm_put(p);
 			p->alive = 0;
 			g_lxp_used[es] = 0;
-			if (es == 0) { /* init exited → the system is done */
+			int group_is_dead = thread_group_live_count(tgid) == 0;
+			if (tgid == 1 && group_is_dead) { /* init's final task exited */
 				rc = status;
 				break;
 			}
 			if (vp >=
 			    0) /* fork-without-exec: the suspended parent resumes (vfork returns) */
 				eng->spawn_resume(vp, g_lxp_proc[vp].region, &g_ctx[vp], cpid);
-			reap_to_parent(eng, ppid, cpid, status, /*sigchld=*/vp < 0);
+			if (group_is_dead)
+				reap_to_parent(eng, ppid, tgid, status, /*sigchld=*/vp < 0);
 			idle = 0;
 			continue;
 		}

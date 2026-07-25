@@ -252,7 +252,8 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 
 	memset(proc, 0, sizeof(*proc));
 	proc->arena = arena;
-	proc->pid = 1;	    /* the initial program is pid 1 (ppid 0); fork assigns the rest */
+	proc->pid = 1;	    /* the initial task is tid/tgid 1 (ppid 0); fork assigns the rest */
+	proc->tgid = 1;
 	proc->cwd[0] = '/'; /* start at the root directory */
 	proc->cwd[1] = '\0';
 	/* fd 0/1/2 are the standard streams, routed to the caller's callbacks.
@@ -1394,9 +1395,10 @@ static long sys_brk(lxp_proc_t *p, uintptr_t addr)
 	return (long)p->brk_cur;
 }
 
-static long sys_exit(lxp_proc_t *p, int status)
+static long sys_exit(lxp_proc_t *p, int status, int group)
 {
 	p->exited = 1;
+	p->exit_group = group;
 	p->exit_status = status & 0xff;
 	p->exit_reason = LXP_EXIT_REASON_NORMAL;
 	p->exit_signal = 0;
@@ -3371,11 +3373,12 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return sys_statx(proc, (int)a0, (const char *)(uintptr_t)a1, (int)a2,
 				 (void *)(uintptr_t)a4);
 	case LXP_NR_exit:
+		return sys_exit(proc, (int)a0, 0);
 	case LXP_NR_exit_group:
-		return sys_exit(proc, (int)a0);
+		return sys_exit(proc, (int)a0, 1);
 	/* libc-init / identity stubs: enough for a static uClibc program to start. */
 	case LXP_NR_getpid:
-		return proc->pid;
+		return proc->tgid;
 	case LXP_NR_getppid:
 		return proc->ppid;
 	case LXP_NR_getcwd: {
@@ -3550,7 +3553,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return 0;
 	}
 	case LXP_NR_gettid:
-		return proc->pid;	 /* single-threaded: tid == pid */
+		return proc->pid;
 	case LXP_NR_clock_gettime: { /* (clockid, struct timespec*) — 32-bit time_t */
 		int32_t *ts = (int32_t *)(uintptr_t)a1;
 		if (!user_ok(proc, ts, 2 * sizeof(int32_t), 1))

@@ -237,8 +237,12 @@ static void test_lnx_init_stubs(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_set_tid_address, 0, 0, 0, 0, 0, 0), 1);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_set_robust_list, 0, 0, 0, 0, 0, 0), 0);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_rt_sigprocmask, 0, 0, 0, 0, 0, 0), 0);
-	/* gettid == pid (single-threaded); prctl is accepted (inert). */
+	/* A thread reports its task id through gettid and its group id through getpid. */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_gettid, 0, 0, 0, 0, 0, 0), 1);
+	p.pid = 7;
+	p.tgid = 3;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_gettid, 0, 0, 0, 0, 0, 0), 7);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getpid, 0, 0, 0, 0, 0, 0), 3);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_prctl, 0, 0, 0, 0, 0, 0), 0);
 	/* rt_sigaction records the per-signal disposition (sa_handler@0, sa_restorer@8)
 	 * for the engine seam to deliver; the old disposition is reported via oact. */

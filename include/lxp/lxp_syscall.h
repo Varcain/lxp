@@ -159,9 +159,12 @@ extern "C" {
 #define LXP_NR_setitimer 104
 #define LXP_NR_clone 120
 
-/* clone(2) flags. CLONE_VM => the child shares the caller's address space — a pthread,
- * not a fork. The run loop co-runs such a child in the parent's region (see EV_FORK). */
+/* clone(2) resource-sharing flags used by the bounded NOMMU task model. */
 #define LXP_CLONE_VM 0x00000100u
+#define LXP_CLONE_FS 0x00000200u
+#define LXP_CLONE_FILES 0x00000400u
+#define LXP_CLONE_SIGHAND 0x00000800u
+#define LXP_CLONE_THREAD 0x00010000u
 #define LXP_NR_setgroups32 206
 #define LXP_NR_fchown32 207
 #define LXP_NR_chown32 212
@@ -572,12 +575,14 @@ typedef struct lxp_proc {
 	const lxp_file_t *fs;	/**< Read-only rootfs table (NULL → no files). */
 	int fs_count;			/**< Number of entries in @c fs. */
 	lxp_fd_t fds[LXP_MAX_FDS]; /**< fd table; 0/1/2 are the std streams. */
-	int pid;			   /**< This process's id (1 for the initial program). */
-	int ppid;			   /**< Parent process id (0 for the initial program). */
+	int pid;			   /**< Linux task id (TID; 1 for the initial task). */
+	int tgid;			   /**< Linux thread-group/process id returned by getpid(). */
+	int ppid;			   /**< Parent process TGID (0 for the initial program). */
 	int pgid;			   /**< Process-group id (job control): pid at launch, inherited on fork, preserved across execve, set by setpgid/setsid. */
 	char comm[16];			   /**< Program name (argv[0] basename) for ps/top. */
 	char cwd[LXP_PATH_MAX];	   /**< Current working directory (absolute, normalized). */
 	int exited;			   /**< Set once @c exit / @c exit_group is called. */
+	int exit_group;		   /**< The pending exit was exit_group(), so all peer tasks exit. */
 	int exit_status;		   /**< Low 8 bits of the exit code. */
 	uint8_t exit_reason; /**< @c LXP_EXIT_REASON_* host-side termination attribution. */
 	uint8_t exit_signal; /**< Signal number for SIGNAL / SIGNAL_DEPTH / MEMORY_FAULT. */
@@ -654,8 +659,7 @@ typedef struct lxp_proc {
 	int is_thread;	  /**< This proc is a pthread: shares its creator's region for life. */
 	int is_fdpic;	  /**< Program is FDPIC: signal handlers/restorers are funcdescs {entry,GOT}. */
 	unsigned short umask; /**< umask(2) file-creation mask; 022 at launch, inherited on fork. */
-	int clone_is_thread;	     /**< Pending fork is a clone(CLONE_VM) thread (set at the
-				      *   syscall, consumed by the coordinator's EV_FORK). */
+	uint32_t clone_flags;	     /**< Pending clone resource-sharing flags. */
 	uintptr_t clone_child_stack; /**< clone(2) child_stack arg: the new thread runs on this. */
 	int sigsuspend_pending;	     /**< Parked in rt_sigsuspend; woken by a delivered signal (the
 				      *   LinuxThreads restart) — the coordinator runs the handler. */
