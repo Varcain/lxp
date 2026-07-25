@@ -159,7 +159,7 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 									: "busybox";
 			for (const char *s = c; *s && ci < sizeof(comm) - 1; s++)
 				comm[ci++] = *s;
-			ppid = (pid == 1) ? 0 : (pid == p->pid) ? p->ppid : 1;
+			ppid = (pid == 1) ? 0 : (pid == p->pid) ? p->group->ppid : 1;
 			state = (pid == p->pid) ? 'R' : 'S';
 			cpu_us = lxp_proc_cpu_us(pid);
 			is_kernel = 0;

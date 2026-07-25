@@ -541,6 +541,24 @@ typedef struct lxp_mm {
 
 /** Max exited children queued for wait4 (a pipeline forks several). */
 #define LXP_MAX_CHILD 8
+
+/** Process-wide identity, job-control and child-reaping state. Tasks created
+ * with CLONE_THREAD share this object; a new process gets a fresh object whose
+ * parent and process-group identity are derived from its creator. */
+typedef struct lxp_thread_group {
+	uint16_t refs;
+	uint16_t _pad;
+	int tgid;
+	int ppid;
+	int pgid;
+	int exiting;
+	int exit_status;
+	int child_pid[LXP_MAX_CHILD];
+	int child_status[LXP_MAX_CHILD];
+	uint8_t child_kind[LXP_MAX_CHILD];
+	int child_count;
+	int live_children;
+} lxp_thread_group_t;
 /** Bounds for an execve() argument vector captured for the engine to relaunch.
  * Overridable by the consumer: entries cost 2 bytes each per slot, the payload
  * buffer costs its full width per slot. Sized for a flag-heavy `curl`/`ssh`
@@ -605,12 +623,12 @@ typedef struct lxp_exec_capture {
 } lxp_exec_capture_t;
 
 /**
- * @brief A Linux process context — the state syscalls act on.
+ * @brief A Linux task context — the per-slot state syscalls act on.
  *
  * NOMMU model: a bounded program break + anonymous mmap carved from an
  * @c ove_arena, a small fd table over standard streams (caller callbacks) and a
- * read-only in-memory rootfs, and an exit latch. Signals / a writable VFS /
- * fork+exec land in later phases.
+ * read-only in-memory rootfs, and an exit latch. Process-wide state is held by
+ * the refcounted mm, files, fs-context, sighand and thread-group objects.
  */
 typedef struct lxp_proc {
 	lxp_mm_t *mm;			/**< Refcounted address space, arena and mappings. */
@@ -622,9 +640,7 @@ typedef struct lxp_proc {
 	int fs_count;			/**< Number of entries in @c fs. */
 	lxp_files_t *files;	   /**< Refcounted descriptor table; 0/1/2 are std streams. */
 	int pid;			   /**< Linux task id (TID; 1 for the initial task). */
-	int tgid;			   /**< Linux thread-group/process id returned by getpid(). */
-	int ppid;			   /**< Parent process TGID (0 for the initial program). */
-	int pgid;			   /**< Process-group id (job control): pid at launch, inherited on fork, preserved across execve, set by setpgid/setsid. */
+	lxp_thread_group_t *group; /**< Refcounted process identity, children and job control. */
 	char comm[16];			   /**< Program name (argv[0] basename) for ps/top. */
 	lxp_fs_context_t *fs_context; /**< Refcounted cwd + umask context. */
 	int exited;			   /**< Set once @c exit / @c exit_group is called. */
@@ -635,14 +651,6 @@ typedef struct lxp_proc {
 	uint16_t _exit_pad;
 	uint32_t exit_detail;	/**< Port-defined fault status (0 for core-originated exits). */
 	uintptr_t exit_address; /**< Port-defined fault address, when one is valid. */
-	/* Queue of child state-changes awaiting wait4, FIFO. A pipeline forks more than
-	 * one child, so a single slot is not enough. Each entry is an exited zombie
-	 * (LXP_CHILD_EXITED, status = exit code) or a stop notification for job control
-	 * (LXP_CHILD_STOPPED, status = the stop signal; the child stays alive). */
-	int child_pid[LXP_MAX_CHILD];    /**< pids of the children. */
-	int child_status[LXP_MAX_CHILD]; /**< exit code, or stop signal for a STOPPED entry. */
-	uint8_t child_kind[LXP_MAX_CHILD]; /**< LXP_CHILD_EXITED / LXP_CHILD_STOPPED. */
-	int child_count;		     /**< number queued. */
 	/* Job control: a stopped process is alive but has no RTOS thread and is not
 	 * scheduled until it takes SIGCONT. stop_kind picks the resume path (see the
 	 * LXP_STOP_* constants); stop_r0 is the syscall result to hand back on a
@@ -692,7 +700,6 @@ typedef struct lxp_proc {
 	int snap_region;    /**< Scratch region index holding the parent's data snapshot, or -1 (none). */
 	uintptr_t stack_lo; /**< Boundary between this proc's in-region writable data and its stack. */
 	int fork_pending; /**< This proc issued vfork/fork/clone; coordinator spawns a child. */
-	int is_thread;	  /**< This proc is a pthread: shares its creator's region for life. */
 	int is_fdpic;	  /**< Program is FDPIC: signal handlers/restorers are funcdescs {entry,GOT}. */
 	uint32_t clone_flags;	     /**< Pending clone resource-sharing flags. */
 	uintptr_t clone_child_stack; /**< clone(2) child_stack arg: the new thread runs on this. */
@@ -704,7 +711,6 @@ typedef struct lxp_proc {
 	int wait_nohang;  /**< WNOHANG was set. */
 	int wait_options; /**< wait4 options (WUNTRACED etc.), so a parked waiter can accept a stop. */
 	uintptr_t wait_status_p; /**< User int* to fill with the wait status on wake. */
-	int live_children;	 /**< Count of live (un-reaped) children, for wait4. */
 	/* futex(2) uaddr-keyed wait/wake for co-running CLONE_VM threads. A FUTEX_WAIT whose
 	 * word still holds the expected value parks (only when a co-runner shares the region —
 	 * else no one could wake it, so it returns -EAGAIN); a peer's FUTEX_WAKE marks matching
@@ -827,6 +833,11 @@ int lxp_proc_mm_fork(lxp_proc_t *child, const lxp_proc_t *parent,
 		     uint32_t clone_flags);
 /** Drop only the address-space object reference (the coordinator owns region refs). */
 void lxp_proc_mm_put(lxp_proc_t *proc);
+/** Acquire a shared thread group for CLONE_THREAD, or a fresh child process group. */
+int lxp_proc_group_fork(lxp_proc_t *child, const lxp_proc_t *parent,
+			uint32_t clone_flags, int child_pid);
+/** Drop one task's thread-group reference. */
+void lxp_proc_group_put(lxp_proc_t *proc);
 /** Drop one task's files/fs/sighand ownership, closing descriptors at the last table user. */
 void lxp_proc_resources_put(lxp_proc_t *proc);
 /** Make a shared descriptor table private while retaining its open descriptions. */

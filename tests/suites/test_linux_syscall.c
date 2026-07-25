@@ -183,11 +183,11 @@ static void test_lnx_init_stubs(void **state)
 	/* wait4: -ECHILD with no child; reaps queued zombies oldest-first (FIFO),
 	 * so a pipeline's two children both get reaped. */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_wait4, -1, 0, 0, 0, 0, 0), -LXP_ECHILD);
-	p.child_pid[0] = 2;
-	p.child_status[0] = 7;
-	p.child_pid[1] = 3;
-	p.child_status[1] = 0;
-	p.child_count = 2;
+	p.group->child_pid[0] = 2;
+	p.group->child_status[0] = 7;
+	p.group->child_pid[1] = 3;
+	p.group->child_status[1] = 0;
+	p.group->child_count = 2;
 	int wstatus = -1;
 	assert_int_equal(lxp_syscall(&p, LXP_NR_wait4, -1, (long)(uintptr_t)&wstatus, 0, 0,
 					 0, 0),
@@ -240,7 +240,7 @@ static void test_lnx_init_stubs(void **state)
 	/* A thread reports its task id through gettid and its group id through getpid. */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_gettid, 0, 0, 0, 0, 0, 0), 1);
 	p.pid = 7;
-	p.tgid = 3;
+	p.group->tgid = 3;
 	assert_int_equal(lxp_syscall(&p, LXP_NR_gettid, 0, 0, 0, 0, 0, 0), 7);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_getpid, 0, 0, 0, 0, 0, 0), 3);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_prctl, 0, 0, 0, 0, 0, 0), 0);
@@ -634,9 +634,33 @@ static void test_clone_resource_sharing_flags(void **state)
 	assert_int_equal(parent.mm->brk_cur, parent_brk);
 	lxp_proc_mm_put(&copied_mm);
 
+	parent.group->tgid = 10;
+	parent.group->ppid = 2;
+	parent.group->pgid = 7;
+	parent.group->live_children = 1;
+	lxp_proc_t thread_group = parent;
+	assert_int_equal(lxp_proc_group_fork(&thread_group, &parent,
+					     LXP_CLONE_THREAD, 11),
+			 0);
+	assert_ptr_equal(thread_group.group, parent.group);
+	thread_group.group->pgid = 8;
+	assert_int_equal(parent.group->pgid, 8);
+	lxp_proc_group_put(&thread_group);
+
+	lxp_proc_t child_group = parent;
+	assert_int_equal(lxp_proc_group_fork(&child_group, &parent, 0, 20), 0);
+	assert_ptr_not_equal(child_group.group, parent.group);
+	assert_int_equal(child_group.group->tgid, 20);
+	assert_int_equal(child_group.group->ppid, 10);
+	assert_int_equal(child_group.group->pgid, 8);
+	assert_int_equal(child_group.group->live_children, 0);
+	assert_int_equal(child_group.group->child_count, 0);
+	lxp_proc_group_put(&child_group);
+
 	lxp_proc_resources_put(&copied);
 	lxp_proc_resources_put(&parent);
 	lxp_proc_mm_put(&parent);
+	lxp_proc_group_put(&parent);
 }
 
 static void test_eventfd_alias_survives_peer_close(void **state)
@@ -1137,11 +1161,11 @@ static void test_lnx_wait4_wuntraced_stopped(void **state)
 	lxp_arena_t arena;
 	setup_proc(&p, &arena);
 	/* One live child with a queued STOPPED notification (status = the stop signal). */
-	p.live_children = 1;
-	p.child_pid[0] = 7;
-	p.child_status[0] = LXP_SIGTSTP;
-	p.child_kind[0] = LXP_CHILD_STOPPED;
-	p.child_count = 1;
+	p.group->live_children = 1;
+	p.group->child_pid[0] = 7;
+	p.group->child_status[0] = LXP_SIGTSTP;
+	p.group->child_kind[0] = LXP_CHILD_STOPPED;
+	p.group->child_count = 1;
 
 	/* Without WUNTRACED the stop is not reported; the child is still live, so wait4 blocks
 	 * (returns 0, wait_pending set) and the notice stays queued. */
@@ -1149,7 +1173,7 @@ static void test_lnx_wait4_wuntraced_stopped(void **state)
 	long r = lxp_syscall(&p, LXP_NR_wait4, -1, (long)(uintptr_t)&status, 0, 0, 0, 0);
 	assert_int_equal(r, 0);
 	assert_int_equal(p.wait_pending, 1);
-	assert_int_equal(p.child_count, 1);
+	assert_int_equal(p.group->child_count, 1);
 
 	/* With WUNTRACED it is reported as WIFSTOPPED(SIGTSTP); the child stays alive. */
 	p.wait_pending = 0;
@@ -1157,8 +1181,8 @@ static void test_lnx_wait4_wuntraced_stopped(void **state)
 	r = lxp_syscall(&p, LXP_NR_wait4, -1, (long)(uintptr_t)&status, LXP_WUNTRACED, 0, 0, 0);
 	assert_int_equal(r, 7);
 	assert_int_equal(status, ((LXP_SIGTSTP & 0xff) << 8) | 0x7f); /* WIFSTOPPED */
-	assert_int_equal(p.child_count, 0);   /* notice consumed */
-	assert_int_equal(p.live_children, 1); /* child is still alive */
+	assert_int_equal(p.group->child_count, 0);   /* notice consumed */
+	assert_int_equal(p.group->live_children, 1); /* child is still alive */
 }
 
 int test_linux_syscall_run(void)

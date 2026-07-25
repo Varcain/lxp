@@ -341,7 +341,7 @@ static void test_reap_wakes_blocking_parent(void **state)
 	/* slot 0 = parent pid 1, blocked in wait4 for any child, with one live child. */
 	g_lxp_proc[0].alive = 1;
 	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].live_children = 1;
+	g_lxp_proc[0].group->live_children = 1;
 	g_lxp_proc[0].wait_pending = 1;
 	g_lxp_proc[0].wait_pid = -1; /* any child */
 	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
@@ -354,9 +354,37 @@ static void test_reap_wakes_blocking_parent(void **state)
 	assert_int_equal(g_mock.resume_r0, 7);
 	assert_int_equal(status, 42 << 8);
 	assert_int_equal(g_lxp_proc[0].wait_pending, 0);
-	assert_int_equal(g_lxp_proc[0].live_children, 0);
-	assert_int_equal(g_lxp_proc[0].child_count, 0); /* woken, not queued */
+	assert_int_equal(g_lxp_proc[0].group->live_children, 0);
+	assert_int_equal(g_lxp_proc[0].group->child_count, 0); /* woken, not queued */
 	assert_int_equal(g_mock.abort_calls, 0);	/* g_lxp_used[0]==0: no spin thread */
+}
+
+static void test_reap_wakes_waiter_in_parent_thread_group(void **state)
+{
+	(void)state;
+	int status = -1;
+	g_lxp_proc[0].alive = 1;
+	g_lxp_proc[0].pid = 10;
+	g_lxp_proc[0].group->tgid = 10;
+	lxp_proc_group_put(&g_lxp_proc[1]);
+	assert_int_equal(lxp_proc_group_fork(&g_lxp_proc[1], &g_lxp_proc[0],
+					     LXP_CLONE_THREAD, 11),
+			 0);
+	g_lxp_proc[1].alive = 1;
+	g_lxp_proc[1].pid = 11;
+	g_lxp_proc[1].group->live_children = 1;
+	g_lxp_proc[1].wait_pending = 1;
+	g_lxp_proc[1].wait_pid = -1;
+	g_lxp_proc[1].wait_status_p = (uintptr_t)&status;
+
+	reap_to_parent(&g_mock_eng, 10, 17, 9, /*sigchld=*/1);
+
+	assert_int_equal(g_mock.resume_calls, 1);
+	assert_int_equal(g_mock.resume_sidx, 1);
+	assert_int_equal(g_mock.resume_r0, 17);
+	assert_int_equal(status, 9 << 8);
+	assert_int_equal(g_lxp_proc[0].group->live_children, 0);
+	assert_int_equal(g_lxp_proc[0].group->child_count, 0);
 }
 
 /* A signal-killed child (128 + signo) wakes the waiter as WIFSIGNALED. */
@@ -366,7 +394,7 @@ static void test_reap_signaled_child_status(void **state)
 	int status = -1;
 	g_lxp_proc[0].alive = 1;
 	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].live_children = 1;
+	g_lxp_proc[0].group->live_children = 1;
 	g_lxp_proc[0].wait_pending = 1;
 	g_lxp_proc[0].wait_pid = -1;
 	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
@@ -388,7 +416,7 @@ static void test_reap_specific_pid_not_woken(void **state)
 	int status = -1;
 	g_lxp_proc[0].alive = 1;
 	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].live_children = 2;
+	g_lxp_proc[0].group->live_children = 2;
 	g_lxp_proc[0].wait_pending = 1;
 	g_lxp_proc[0].wait_pid = 9; /* waiting specifically for pid 9 */
 	g_lxp_proc[0].wait_status_p = (uintptr_t)&status;
@@ -398,9 +426,9 @@ static void test_reap_specific_pid_not_woken(void **state)
 	/* Not resumed; the zombie is queued and SIGCHLD raised; still one live child left. */
 	assert_int_equal(g_mock.resume_calls, 0);
 	assert_int_equal(g_lxp_proc[0].wait_pending, 1);
-	assert_int_equal(g_lxp_proc[0].child_count, 1);
-	assert_int_equal(g_lxp_proc[0].child_pid[0], 7);
-	assert_int_equal(g_lxp_proc[0].live_children, 1);
+	assert_int_equal(g_lxp_proc[0].group->child_count, 1);
+	assert_int_equal(g_lxp_proc[0].group->child_pid[0], 7);
+	assert_int_equal(g_lxp_proc[0].group->live_children, 1);
 	assert_true((g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) != 0);
 }
 
@@ -410,16 +438,16 @@ static void test_reap_queues_zombie(void **state)
 	(void)state;
 	g_lxp_proc[0].alive = 1;
 	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].live_children = 1;
+	g_lxp_proc[0].group->live_children = 1;
 	/* wait_pending == 0: the parent is off in select()/poll(), not blocking in wait4. */
 
 	reap_to_parent(&g_mock_eng, 1, 7, 3, /*sigchld=*/1);
 
 	assert_int_equal(g_mock.resume_calls, 0);
-	assert_int_equal(g_lxp_proc[0].child_count, 1);
-	assert_int_equal(g_lxp_proc[0].child_pid[0], 7);
-	assert_int_equal(g_lxp_proc[0].child_status[0], 3); /* raw code; wait4 encodes on reap */
-	assert_int_equal(g_lxp_proc[0].live_children, 0);
+	assert_int_equal(g_lxp_proc[0].group->child_count, 1);
+	assert_int_equal(g_lxp_proc[0].group->child_pid[0], 7);
+	assert_int_equal(g_lxp_proc[0].group->child_status[0], 3); /* raw code; wait4 encodes on reap */
+	assert_int_equal(g_lxp_proc[0].group->live_children, 0);
 	assert_true((g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) != 0);
 }
 
@@ -434,16 +462,16 @@ static void test_reap_vfork_parent_suppresses_sigchld(void **state)
 	(void)state;
 	g_lxp_proc[0].alive = 1;
 	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].live_children = 1;
+	g_lxp_proc[0].group->live_children = 1;
 	/* wait_pending == 0: just resumed from vfork, about to wait4() the child. */
 
 	reap_to_parent(&g_mock_eng, 1, 7, 127, /*sigchld=*/0);
 
 	assert_int_equal(g_mock.resume_calls, 0);
-	assert_int_equal(g_lxp_proc[0].child_count, 1);	   /* queued for the imminent wait4 */
-	assert_int_equal(g_lxp_proc[0].child_pid[0], 7);
-	assert_int_equal(g_lxp_proc[0].child_status[0], 127); /* exit code preserved */
-	assert_int_equal(g_lxp_proc[0].live_children, 0);
+	assert_int_equal(g_lxp_proc[0].group->child_count, 1);	   /* queued for the imminent wait4 */
+	assert_int_equal(g_lxp_proc[0].group->child_pid[0], 7);
+	assert_int_equal(g_lxp_proc[0].group->child_status[0], 127); /* exit code preserved */
+	assert_int_equal(g_lxp_proc[0].group->live_children, 0);
 	assert_true((g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) == 0); /* NOT signalled */
 }
 
@@ -453,13 +481,13 @@ static void test_reap_zombie_queue_full(void **state)
 	(void)state;
 	g_lxp_proc[0].alive = 1;
 	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].live_children = LXP_MAX_CHILD + 1;
-	g_lxp_proc[0].child_count = LXP_MAX_CHILD; /* already full */
+	g_lxp_proc[0].group->live_children = LXP_MAX_CHILD + 1;
+	g_lxp_proc[0].group->child_count = LXP_MAX_CHILD; /* already full */
 
 	reap_to_parent(&g_mock_eng, 1, 99, 0, /*sigchld=*/1);
 
-	assert_int_equal(g_lxp_proc[0].child_count, LXP_MAX_CHILD); /* clamped, no overrun */
-	assert_int_equal(g_lxp_proc[0].live_children, LXP_MAX_CHILD); /* still decremented */
+	assert_int_equal(g_lxp_proc[0].group->child_count, LXP_MAX_CHILD); /* clamped, no overrun */
+	assert_int_equal(g_lxp_proc[0].group->live_children, LXP_MAX_CHILD); /* still decremented */
 }
 
 /* An exit reported for a parent that no longer exists is a safe no-op. */
@@ -473,7 +501,7 @@ static void test_reap_unknown_parent(void **state)
 
 	assert_int_equal(g_mock.resume_calls, 0);
 	assert_int_equal(g_mock.abort_calls, 0);
-	assert_int_equal(g_lxp_proc[0].child_count, 0);
+	assert_int_equal(g_lxp_proc[0].group->child_count, 0);
 }
 
 static void test_notify_guest_exit_preserves_attribution(void **state)
@@ -481,7 +509,7 @@ static void test_notify_guest_exit_preserves_attribution(void **state)
 	(void)state;
 	lxp_proc_t *p = &g_lxp_proc[3];
 	p->pid = 27;
-	p->ppid = 7;
+	p->group->ppid = 7;
 	p->exit_status = 139;
 	p->exit_reason = LXP_EXIT_REASON_MEMORY_FAULT;
 	p->exit_signal = LXP_SIGSEGV;
@@ -507,18 +535,17 @@ static void test_notify_guest_exit_preserves_attribution(void **state)
 static void test_fork_capacity_accounts_live_and_zombie_children(void **state)
 {
 	(void)state;
-	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
-	assert_true(fork_capacity_available(&p));
-	p.child_count = LXP_MAX_CHILD - 1;
-	assert_true(fork_capacity_available(&p));
-	p.live_children = 1;
-	assert_false(fork_capacity_available(&p));
-	p.child_count = 0;
-	p.live_children = LXP_MAX_CHILD;
-	assert_false(fork_capacity_available(&p));
-	p.live_children = -1;
-	assert_false(fork_capacity_available(&p));
+	lxp_proc_t *p = &g_lxp_proc[0];
+	assert_true(fork_capacity_available(p));
+	p->group->child_count = LXP_MAX_CHILD - 1;
+	assert_true(fork_capacity_available(p));
+	p->group->live_children = 1;
+	assert_false(fork_capacity_available(p));
+	p->group->child_count = 0;
+	p->group->live_children = LXP_MAX_CHILD;
+	assert_false(fork_capacity_available(p));
+	p->group->live_children = -1;
+	assert_false(fork_capacity_available(p));
 }
 
 static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
@@ -733,10 +760,14 @@ static void test_thread_group_exit_marks_every_peer(void **state)
 	for (int s = 0; s < 3; s++) {
 		g_lxp_proc[s].alive = 1;
 		g_lxp_proc[s].pid = 10 + s;
-		g_lxp_proc[s].tgid = s < 2 ? 10 : 12;
+		g_lxp_proc[s].group->tgid = s < 2 ? 10 : 12;
 	}
+	lxp_proc_group_put(&g_lxp_proc[1]);
+	assert_int_equal(lxp_proc_group_fork(&g_lxp_proc[1], &g_lxp_proc[0],
+					     LXP_CLONE_THREAD, 11),
+			 0);
 
-	assert_int_equal(thread_group_live_count(10), 2);
+	assert_int_equal(thread_group_live_count(g_lxp_proc[0].group), 2);
 	thread_group_request_exit(1, 37);
 	assert_true(g_lxp_proc[0].exited);
 	assert_true(g_lxp_proc[1].exited);
@@ -750,9 +781,14 @@ static void test_exec_stops_only_thread_group_peers(void **state)
 	(void)state;
 	for (int s = 0; s < 3; s++) {
 		g_lxp_proc[s].alive = 1;
-		g_lxp_proc[s].tgid = s < 2 ? 10 : 12;
+		g_lxp_proc[s].pid = 10 + s;
+		g_lxp_proc[s].group->tgid = s < 2 ? 10 : 12;
 		g_lxp_used[s] = 1;
 	}
+	lxp_proc_group_put(&g_lxp_proc[1]);
+	assert_int_equal(lxp_proc_group_fork(&g_lxp_proc[1], &g_lxp_proc[0],
+					     LXP_CLONE_THREAD, 11),
+			 0);
 
 	thread_group_stop_exec_peers(&g_mock_eng, 0, 127);
 	assert_int_equal(g_mock.abort_calls, 1);
@@ -1010,7 +1046,7 @@ static void test_dispatch_class_defaults_deferred(void **state)
 	lxp_proc_t *p = &g_lxp_proc[0];
 	p->alive = 1;
 	p->pid = 42;
-	p->tgid = 42;
+	p->group->tgid = 42;
 	deferred_slot_reassign(0);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
@@ -1227,7 +1263,7 @@ static void test_kill_targets_process_group(void **state)
 	for (int i = 0; i < 5; i++) {
 		g_lxp_proc[i].alive = 1;
 		g_lxp_proc[i].pid = pid[i];
-		g_lxp_proc[i].pgid = pgid[i];
+		g_lxp_proc[i].group->pgid = pgid[i];
 	}
 	lxp_proc_t *shell = &g_lxp_proc[1]; /* the sender */
 	const uint64_t bit = lxp_sig_bit(LXP_SIGTERM);
@@ -1249,7 +1285,7 @@ static void test_kill_targets_process_group(void **state)
 	/* kill(0, SIGTERM) targets the SENDER's own group (pgid 2); put inetd in it. */
 	for (int i = 0; i < 5; i++)
 		g_lxp_proc[i].pending_sigs = 0;
-	g_lxp_proc[4].pgid = 2;
+	g_lxp_proc[4].group->pgid = 2;
 	memset(&f, 0, sizeof(f));
 	f.r[7] = LXP_NR_kill;
 	f.r[0] = 0; /* caller's process group */
@@ -1266,7 +1302,7 @@ static void test_setpgid_getpgrp_track_group(void **state)
 	lxp_proc_t *p = &g_lxp_proc[0];
 	p->alive = 1;
 	p->pid = 7;
-	p->pgid = 7;
+	p->group->pgid = 7;
 	struct lxp_frame f;
 
 	memset(&f, 0, sizeof(f));
@@ -1280,7 +1316,7 @@ static void test_setpgid_getpgrp_track_group(void **state)
 	f.r[1] = 42; /* pgid */
 	lxp_dispatch(&f, p);
 	assert_int_equal((int32_t)f.r[0], 0);
-	assert_int_equal(p->pgid, 42); /* setpgid(0,42) joined group 42 */
+	assert_int_equal(p->group->pgid, 42); /* setpgid(0,42) joined group 42 */
 
 	memset(&f, 0, sizeof(f));
 	f.r[7] = LXP_NR_getpgrp;
@@ -1291,7 +1327,7 @@ static void test_setpgid_getpgrp_track_group(void **state)
 	f.r[7] = LXP_NR_setsid;
 	lxp_dispatch(&f, p);
 	assert_int_equal((int32_t)f.r[0], 7); /* setsid -> new session, pgid = pid */
-	assert_int_equal(p->pgid, 7);
+	assert_int_equal(p->group->pgid, 7);
 }
 
 /* A console ^C raises SIGINT on the console's FOREGROUND process group only (the group
@@ -1307,7 +1343,7 @@ static void test_console_sigint_targets_fg_group(void **state)
 	for (int i = 0; i < 5; i++) {
 		g_lxp_proc[i].alive = 1;
 		g_lxp_proc[i].pid = pid[i];
-		g_lxp_proc[i].pgid = pgid[i];
+		g_lxp_proc[i].group->pgid = pgid[i];
 	}
 	const uint64_t bit = lxp_sig_bit(LXP_SIGINT);
 
@@ -1338,7 +1374,7 @@ static void test_console_sigtstp_targets_fg_group(void **state)
 	for (int i = 0; i < 3; i++) {
 		g_lxp_proc[i].alive = 1;
 		g_lxp_proc[i].pid = pid[i];
-		g_lxp_proc[i].pgid = pgid[i];
+		g_lxp_proc[i].group->pgid = pgid[i];
 	}
 	const uint64_t bit = lxp_sig_bit(LXP_SIGTSTP);
 	lxp_console_set_fg_pgrp(3);
@@ -1378,7 +1414,7 @@ static void test_stop_notify_wakes_wuntraced_waiter(void **state)
 	int status = -1;
 	g_lxp_proc[0].alive = 1;
 	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].live_children = 1;
+	g_lxp_proc[0].group->live_children = 1;
 	g_lxp_proc[0].wait_pending = 1;
 	g_lxp_proc[0].wait_pid = -1;
 	g_lxp_proc[0].wait_options = LXP_WUNTRACED;
@@ -1390,8 +1426,8 @@ static void test_stop_notify_wakes_wuntraced_waiter(void **state)
 	assert_int_equal(g_mock.resume_r0, 7);
 	assert_int_equal(status, ((LXP_SIGTSTP & 0xff) << 8) | 0x7f); /* WIFSTOPPED */
 	assert_int_equal(g_lxp_proc[0].wait_pending, 0);
-	assert_int_equal(g_lxp_proc[0].live_children, 1); /* NOT decremented — the child lives */
-	assert_int_equal(g_lxp_proc[0].child_count, 0);
+	assert_int_equal(g_lxp_proc[0].group->live_children, 1); /* NOT decremented — the child lives */
+	assert_int_equal(g_lxp_proc[0].group->child_count, 0);
 }
 
 /* A stopped child whose parent is NOT waiting (or waits without WUNTRACED) queues a STOPPED
@@ -1402,7 +1438,7 @@ static void test_stop_notify_queues_without_wuntraced(void **state)
 	/* Parent blocked in wait4 but WITHOUT WUNTRACED → cannot take the stop → queue it. */
 	g_lxp_proc[0].alive = 1;
 	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].live_children = 1;
+	g_lxp_proc[0].group->live_children = 1;
 	g_lxp_proc[0].wait_pending = 1;
 	g_lxp_proc[0].wait_pid = -1;
 	g_lxp_proc[0].wait_options = 0;
@@ -1411,11 +1447,11 @@ static void test_stop_notify_queues_without_wuntraced(void **state)
 
 	assert_int_equal(g_mock.resume_calls, 0);	 /* the waiter is not woken */
 	assert_int_equal(g_lxp_proc[0].wait_pending, 1); /* still blocked */
-	assert_int_equal(g_lxp_proc[0].child_count, 1);
-	assert_int_equal(g_lxp_proc[0].child_pid[0], 7);
-	assert_int_equal(g_lxp_proc[0].child_status[0], LXP_SIGTSTP);
-	assert_int_equal(g_lxp_proc[0].child_kind[0], LXP_CHILD_STOPPED);
-	assert_int_equal(g_lxp_proc[0].live_children, 1); /* NOT decremented */
+	assert_int_equal(g_lxp_proc[0].group->child_count, 1);
+	assert_int_equal(g_lxp_proc[0].group->child_pid[0], 7);
+	assert_int_equal(g_lxp_proc[0].group->child_status[0], LXP_SIGTSTP);
+	assert_int_equal(g_lxp_proc[0].group->child_kind[0], LXP_CHILD_STOPPED);
+	assert_int_equal(g_lxp_proc[0].group->live_children, 1); /* NOT decremented */
 	assert_true(g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD));
 }
 
@@ -1451,6 +1487,8 @@ int main(void)
 		cmocka_unit_test_setup(test_futex_has_corunner, reset_state),
 		cmocka_unit_test_setup(test_futex_wake_marks_waiters, reset_state),
 		cmocka_unit_test_setup(test_reap_wakes_blocking_parent, reset_state),
+		cmocka_unit_test_setup(test_reap_wakes_waiter_in_parent_thread_group,
+				       reset_state),
 		cmocka_unit_test_setup(test_reap_signaled_child_status, reset_state),
 		cmocka_unit_test_setup(test_reap_specific_pid_not_woken, reset_state),
 		cmocka_unit_test_setup(test_reap_queues_zombie, reset_state),

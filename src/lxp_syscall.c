@@ -85,6 +85,7 @@ static lxp_files_t g_files[LXP_RESOURCE_POOL_COUNT];
 static lxp_fs_context_t g_fs_context[LXP_RESOURCE_POOL_COUNT];
 static lxp_sighand_t g_sighand[LXP_RESOURCE_POOL_COUNT];
 static lxp_mm_t g_mm[LXP_RESOURCE_POOL_COUNT];
+static lxp_thread_group_t g_groups[LXP_RESOURCE_POOL_COUNT];
 
 static lxp_files_t *files_new(void)
 {
@@ -129,6 +130,17 @@ static lxp_mm_t *mm_new(void)
 			g_mm[i].refs = 1;
 			g_mm[i].region = -1;
 			return &g_mm[i];
+		}
+	return NULL;
+}
+
+static lxp_thread_group_t *group_new(void)
+{
+	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
+		if (g_groups[i].refs == 0) {
+			memset(&g_groups[i], 0, sizeof(g_groups[i]));
+			g_groups[i].refs = 1;
+			return &g_groups[i];
 		}
 	return NULL;
 }
@@ -317,17 +329,21 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 
 	memset(proc, 0, sizeof(*proc));
 	proc->mm = mm_new();
+	proc->group = group_new();
 	proc->files = files_new();
 	proc->fs_context = fs_context_new();
 	proc->sighand = sighand_new();
-	if (!proc->mm || !proc->files || !proc->fs_context || !proc->sighand) {
+	if (!proc->mm || !proc->group || !proc->files || !proc->fs_context ||
+	    !proc->sighand) {
 		lxp_proc_resources_put(proc);
 		lxp_proc_mm_put(proc);
+		lxp_proc_group_put(proc);
 		return LXP_ERR_NO_MEMORY;
 	}
 	proc->mm->arena = arena;
 	proc->pid = 1;	    /* the initial task is tid/tgid 1 (ppid 0); fork assigns the rest */
-	proc->tgid = 1;
+	proc->group->tgid = 1;
+	proc->group->pgid = 1;
 	/* fd 0/1/2 are the standard streams, routed to the caller's callbacks.
 	 * For console fds, file_idx marks the direction: 0 = readable (stdin),
 	 * 1 = writable (stdout/stderr); this survives F_DUPFD so a dup of stdin
@@ -337,6 +353,7 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 	    fd_alloc(proc, LXP_FD_CONSOLE, 1, 0) != 2) {
 		lxp_proc_resources_put(proc);
 		lxp_proc_mm_put(proc);
+		lxp_proc_group_put(proc);
 		return LXP_ERR_NO_MEMORY;
 	}
 	if (brk_bytes) {
@@ -344,6 +361,7 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 		if (!brk) {
 			lxp_proc_resources_put(proc);
 			lxp_proc_mm_put(proc);
+			lxp_proc_group_put(proc);
 			return LXP_ERR_NO_MEMORY;
 		}
 		proc->mm->brk_base = (uintptr_t)brk;
@@ -1506,6 +1524,10 @@ static long sys_exit(lxp_proc_t *p, int status, int group)
 	p->exited = 1;
 	p->exit_group = group;
 	p->exit_status = status & 0xff;
+	if (group && p->group) {
+		p->group->exiting = 1;
+		p->group->exit_status = p->exit_status;
+	}
 	p->exit_reason = LXP_EXIT_REASON_NORMAL;
 	p->exit_signal = 0;
 	p->exit_detail = 0;
@@ -1872,6 +1894,7 @@ void lxp_fd_runtime_reset(void)
 	memset(g_fs_context, 0, sizeof(g_fs_context));
 	memset(g_sighand, 0, sizeof(g_sighand));
 	memset(g_mm, 0, sizeof(g_mm));
+	memset(g_groups, 0, sizeof(g_groups));
 }
 
 int lxp_fd_fork_inherit(lxp_proc_t *child)
@@ -2035,6 +2058,38 @@ void lxp_proc_mm_put(lxp_proc_t *p)
 	if (p->mm->refs > 0 && --p->mm->refs == 0)
 		memset(p->mm, 0, sizeof(*p->mm));
 	p->mm = NULL;
+}
+
+int lxp_proc_group_fork(lxp_proc_t *child, const lxp_proc_t *parent,
+			uint32_t clone_flags, int child_pid)
+{
+	if (!child || !parent || !parent->group || child_pid <= 0)
+		return -1;
+	child->group = NULL;
+	if (clone_flags & LXP_CLONE_THREAD) {
+		if (parent->group->refs == UINT16_MAX)
+			return -1;
+		child->group = parent->group;
+		child->group->refs++;
+		return 0;
+	}
+	lxp_thread_group_t *group = group_new();
+	if (!group)
+		return -1;
+	group->tgid = child_pid;
+	group->ppid = parent->group->tgid;
+	group->pgid = parent->group->pgid;
+	child->group = group;
+	return 0;
+}
+
+void lxp_proc_group_put(lxp_proc_t *p)
+{
+	if (!p || !p->group)
+		return;
+	if (p->group->refs > 0 && --p->group->refs == 0)
+		memset(p->group, 0, sizeof(*p->group));
+	p->group = NULL;
 }
 
 /* pipe(2)/pipe2(2): allocate a pipe object + a read-end / write-end fd pair. @p flags
@@ -3671,9 +3726,9 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return sys_exit(proc, (int)a0, 1);
 	/* libc-init / identity stubs: enough for a static uClibc program to start. */
 	case LXP_NR_getpid:
-		return proc->tgid;
+		return proc->group ? proc->group->tgid : proc->pid;
 	case LXP_NR_getppid:
-		return proc->ppid;
+		return proc->group ? proc->group->ppid : 0;
 	case LXP_NR_getcwd: {
 		/* getcwd(buf, size): write the cwd; the raw syscall returns the length
 		 * including the NUL terminator. */
@@ -3725,7 +3780,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		 * pid" (become group leader). A child sets its OWN group via setpgid(0, …) after
 		 * fork, so a cross-proc setpgid is accepted inert (no proc table at this layer). */
 		if (tpid == 0 || tpid == proc->pid)
-			proc->pgid = (tpgid == 0) ? proc->pid : tpgid;
+			proc->group->pgid = (tpgid == 0) ? proc->pid : tpgid;
 		return 0;
 	}
 	case LXP_NR_prctl:
@@ -3828,9 +3883,9 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return 0;
 	}
 	case LXP_NR_getpgrp: /* shell job control: the caller's process group */
-		return proc->pgid;
+		return proc->group->pgid;
 	case LXP_NR_setsid: /* getty/login start a new session: the caller leads its own group */
-		proc->pgid = proc->pid;
+		proc->group->pgid = proc->pid;
 		return proc->pid;
 	case LXP_NR_reboot: {  /* reboot(magic1, magic2, cmd, arg) — cmd is a2 */
 		unsigned cmd = (unsigned)a2;
@@ -3974,26 +4029,30 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		 * A pid filter (wpid > 0) must match. A STOPPED entry leaves live_children intact —
 		 * the child is alive, only the notice is consumed. Else, if children are still live,
 		 * BLOCK (wait_pending; the coordinator resumes us on the next change). None → -ECHILD. */
-		for (int i = 0; i < proc->child_count; i++) {
-			if (wpid > 0 && proc->child_pid[i] != wpid)
+		lxp_thread_group_t *group = proc->group;
+		if (!group)
+			return -LXP_ECHILD;
+		for (int i = 0; i < group->child_count; i++) {
+			if (wpid > 0 && group->child_pid[i] != wpid)
 				continue;
-			if (proc->child_kind[i] == LXP_CHILD_STOPPED && !(options & LXP_WUNTRACED))
+			if (group->child_kind[i] == LXP_CHILD_STOPPED &&
+			    !(options & LXP_WUNTRACED))
 				continue;
-			int pid = proc->child_pid[i];
-			int code = proc->child_status[i];
-			int kind = proc->child_kind[i];
-			for (int j = i + 1; j < proc->child_count; j++) {
-				proc->child_pid[j - 1] = proc->child_pid[j];
-				proc->child_status[j - 1] = proc->child_status[j];
-				proc->child_kind[j - 1] = proc->child_kind[j];
+			int pid = group->child_pid[i];
+			int code = group->child_status[i];
+			int kind = group->child_kind[i];
+			for (int j = i + 1; j < group->child_count; j++) {
+				group->child_pid[j - 1] = group->child_pid[j];
+				group->child_status[j - 1] = group->child_status[j];
+				group->child_kind[j - 1] = group->child_kind[j];
 			}
-			proc->child_count--;
+			group->child_count--;
 			if (status)
 				*status = (kind == LXP_CHILD_STOPPED) ? lxp_encode_wstopped(code)
 								      : lxp_encode_wstatus(code);
 			return pid;
 		}
-		if (proc->live_children == 0)
+		if (group->live_children == 0)
 			return -LXP_ECHILD;
 		if (options & LXP_WNOHANG) /* children live but none ready */
 			return 0;
