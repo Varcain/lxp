@@ -1131,6 +1131,23 @@ static void coordinator_park_slot(const lxp_os_ops_t *eng, int sidx)
 		eng->abort_slot(sidx);
 }
 
+/* Select one of the two device ranges represented in lxp_proc_t without
+ * changing it. The backend map is installed first; only a successful host
+ * transition commits the matching access_ok range below. */
+static int device_map_index(const lxp_proc_t *p, uintptr_t addr, size_t len)
+{
+	if (len == 0 || addr > UINTPTR_MAX - len)
+		return -LXP_EINVAL;
+	int free_map = -1;
+	for (int i = 0; i < 2; i++) {
+		if (p->dev_map_lo[i] == addr)
+			return i;
+		if (p->dev_map_lo[i] == 0 && free_map < 0)
+			free_map = i;
+	}
+	return free_map >= 0 ? free_map : -LXP_ENOMEM;
+}
+
 /* A child (cpid, status) exited: hand it to its parent (ppid). Wake a parent blocked
  * in wait4 (resume returning cpid + write *status), else queue the zombie for a later
  * wait4. Decrements the parent's live-children count either way. */
@@ -2344,15 +2361,16 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				 * device buffer on THIS (coordinator) thread — domain/TCB edits are
 				 * not svc-exception-safe — record it for user_ok, and resume the proc
 				 * with r0 = the mapped address (or -errno if the engine can't map). */
-				long r = eng->map_device
-						 ? (eng->map_device(s, (uintptr_t)p->dev_buf, p->dev_len,
-								    (unsigned)p->dev_cmd) == 0
-							    ? (long)p->dev_buf
-							    : -LXP_ENOMEM)
-						 : -LXP_ENODEV;
+				int map = device_map_index(p, (uintptr_t)p->dev_buf, p->dev_len);
+				long r = map < 0	    ? map
+					 : !eng->map_device ? -LXP_ENODEV
+					 : eng->map_device(s, (uintptr_t)p->dev_buf, p->dev_len,
+							   (unsigned)p->dev_cmd) == 0
+						 ? (long)p->dev_buf
+						 : -LXP_ENOMEM;
 				if (r >= 0) {
-					p->dev_map_lo[0] = (uintptr_t)p->dev_buf;
-					p->dev_map_hi[0] = (uintptr_t)p->dev_buf + p->dev_len;
+					p->dev_map_lo[map] = (uintptr_t)p->dev_buf;
+					p->dev_map_hi[map] = (uintptr_t)p->dev_buf + p->dev_len;
 				}
 				p->dev_wait = 0;
 				eng->spawn_resume(s, p->region, &g_ctx[s], r);

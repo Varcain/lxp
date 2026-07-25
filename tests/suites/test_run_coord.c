@@ -664,6 +664,26 @@ static void test_region_free(void **state)
 	assert_true(region_free(2, rowner));
 }
 
+/* ---- device mappings: each process owns two independently tracked ranges --- */
+static void test_device_map_index_tracks_both_ranges(void **state)
+{
+	(void)state;
+	lxp_proc_t *p = &g_lxp_proc[0];
+
+	assert_int_equal(device_map_index(p, 0x1000u, 0x100u), 0);
+	p->dev_map_lo[0] = 0x1000u;
+	p->dev_map_hi[0] = 0x1100u;
+	assert_int_equal(device_map_index(p, 0x1000u, 0x200u), 0);
+
+	assert_int_equal(device_map_index(p, 0x2000u, 0x100u), 1);
+	p->dev_map_lo[1] = 0x2000u;
+	p->dev_map_hi[1] = 0x2100u;
+	assert_int_equal(device_map_index(p, 0x3000u, 0x100u), -LXP_ENOMEM);
+
+	assert_int_equal(device_map_index(p, 0x3000u, 0), -LXP_EINVAL);
+	assert_int_equal(device_map_index(p, UINTPTR_MAX - 7u, 8u), -LXP_EINVAL);
+}
+
 /* ---- futex: co-runner gate + FUTEX_WAKE bookkeeping ------------------------- */
 /* futex_has_corunner: a FUTEX_WAIT only parks when another live thread shares the region
  * (else nobody could ever wake it). */
@@ -1272,6 +1292,8 @@ int main(void)
 		cmocka_unit_test_setup(test_vfork_restore_rejects_recycled_parent,
 				       reset_state),
 		cmocka_unit_test_setup(test_region_free, reset_state),
+		cmocka_unit_test_setup(test_device_map_index_tracks_both_ranges,
+				       reset_state),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
