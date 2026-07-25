@@ -9,7 +9,8 @@
  * single non-blocking TCP connection to a 9P server (diod), exposed as an FD_NET
  * provider the syscall handlers route /mnt/pi opens to. Read-only browse (+ exec
  * off the mount, Phase B). Mirrors linux/net/lxp_net.c: a refcounted per-open
- * pool (each = a 9P fid + cursor), fork/dup share, the last close clunks.
+ * pool (each = a 9P fid); a generic open-file description owns fork/dup
+ * aliases and the last close clunks.
  *
  * Blocking is deferred, never inline: every op that needs a Pi round-trip submits a
  * 9P request, sets proc->netfs_wait, and returns 0 (parked); the run-loop coordinator
@@ -114,7 +115,7 @@ static void fid_free(int f)
 /* ---- open pool ------------------------------------------------------------- */
 struct netfs_open {
 	uint8_t used;
-	uint8_t refs;	/* fork/dup share; last drop enqueues a clunk. */
+	uint16_t refs;	/* distinct open-file descriptions; last drop enqueues a clunk. */
 	uint8_t is_dir;
 	uint8_t stale;	/* fid invalidated by a reconnect → read/getdents give -ESTALE. */
 	int fid;
@@ -1204,13 +1205,6 @@ int lxp_netfs_fstat(int oi, uint32_t *mode, uint64_t *size, uint64_t *mtime, uin
 	return 0;
 }
 
-void lxp_netfs_get(int oi)
-{
-	struct netfs_open *op = open_slot(oi);
-	if (op)
-		lxp_pool_get(&op->refs);
-}
-
 void lxp_netfs_close(int oi)
 {
 	struct netfs_open *op = open_slot(oi);
@@ -1339,18 +1333,11 @@ int lxp_netfs_busy(void)
 }
 
 /* ---- fork / exit fd lifecycle ---------------------------------------------- */
-void lxp_netfs_fork_inherit(lxp_proc_t *child)
-{
-	lxp_pool_fork_inherit(child, LXP_FD_NET, lxp_netfs_get);
-}
-
 void lxp_netfs_proc_exit(lxp_proc_t *p)
 {
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (p->fds[fd].kind == LXP_FD_NET) {
-			lxp_netfs_close(p->fds[fd].file_idx);
-			p->fds[fd].kind = 0; /* FD_FREE */
-		}
+		if (lxp_fd_kind(p, fd) == LXP_FD_NET)
+			(void)lxp_fd_close(p, fd);
 }
 
 #ifdef LXP_FUZZ

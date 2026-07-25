@@ -204,7 +204,7 @@ static void test_dev_open_close(void **state)
 
 	long fd = dev_open(&p, LXP_O_RDWR);
 	assert_true(fd >= 3); /* a fresh fd past the std streams */
-	assert_int_equal(p.fds[fd].kind, LXP_FD_DEV);
+	assert_int_equal(lxp_fd_kind(&p, fd), LXP_FD_DEV);
 	assert_int_equal(g_mock_opened, 1);
 
 	/* Opening a non-registered /dev path falls through to ENOENT. */
@@ -214,7 +214,7 @@ static void test_dev_open_close(void **state)
 
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
 	assert_int_equal(g_mock_released, 1);
-	assert_int_equal(p.fds[fd].kind, 0 /* FD_FREE */);
+	assert_int_equal(lxp_fd_kind(&p, fd), LXP_FD_FREE);
 }
 
 static void test_dev_read_write(void **state)
@@ -669,8 +669,8 @@ static void test_dev_dup_refcount(void **state)
 	assert_true(fd >= 3);
 	long fd2 = lxp_syscall(&p, LXP_NR_dup, fd, 0, 0, 0, 0, 0);
 	assert_true(fd2 >= 3 && fd2 != fd);
-	assert_int_equal(p.fds[fd2].kind, LXP_FD_DEV);
-	assert_int_equal(p.fds[fd2].file_idx, p.fds[fd].file_idx); /* share the open */
+	assert_int_equal(lxp_fd_kind(&p, fd2), LXP_FD_DEV);
+	assert_int_equal(lxp_fd_backing(&p, fd2), lxp_fd_backing(&p, fd)); /* share the open */
 
 	/* Closing one dup keeps the open alive (refs 2 → 1, no release). */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);

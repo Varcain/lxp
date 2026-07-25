@@ -114,12 +114,13 @@ static void test_syscall_payload_quantum(void **st)
 
 	/* A potentially blocking fd stops at one segment: its retry state can hold
 	 * only one buffer, so returning a short write preserves the remaining iovec. */
-	p.fds[1].kind = LXP_FD_SOCKET; /* retain the test console ops, change park capability */
+	lxp_fd_description(&p, 1)->kind =
+		LXP_FD_SOCKET; /* retain the test console ops, change park capability */
 	g_write_calls = 0;
 	assert_int_equal(lxp_syscall(&p, LXP_NR_writev, 1, (long)(uintptr_t)iov, 2, 0, 0, 0),
 			 first);
 	assert_int_equal(g_write_calls, 1);
-	p.fds[1].kind = LXP_FD_CONSOLE;
+	lxp_fd_description(&p, 1)->kind = LXP_FD_CONSOLE;
 
 	payload[LXP_SYSCALL_QUANTUM_BYTES] = 0xa5;
 	g_lxp_test_random_result = LXP_OK;

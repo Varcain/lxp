@@ -137,8 +137,6 @@ typedef struct lxp_rtentry {
 long lxp_sock_new(int domain, int type, int protocol);
 /** Drop a reference on open @p oi (close/exit); @c ove_socket_close at the last. */
 void lxp_sock_close(int oi);
-/** Add a reference on open @p oi (dup/fork inheritance). */
-void lxp_sock_get(int oi);
 /** fcntl F_SETFL / F_GETFL: the open's status flags (O_NONBLOCK gates parking). */
 void lxp_sock_setfl(int oi, int flags);
 int lxp_sock_getfl(int oi);
@@ -207,8 +205,6 @@ void lxp_sock_kick(void);
  * for LXP_SOCKW_POLL). Implemented in the syscall TU, which owns the fd table + the
  * per-kind readiness probes. Returns the ready count (>0), 0 at the deadline, or -EAGAIN. */
 long lxp_poll_retry(lxp_proc_t *p);
-/** fork: the child inherited the parent's FD_SOCKET fds — add a reference to each. */
-void lxp_sock_fork_inherit(lxp_proc_t *child);
 /** exit: release every FD_SOCKET open the process still holds. */
 void lxp_sock_proc_exit(lxp_proc_t *p);
 

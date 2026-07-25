@@ -9,7 +9,8 @@
  * engine-neutral ove_net HAL (lwIP / NuttX net / Zephyr net), and the routing the
  * FD_SOCKET branches of the syscall handlers call into. It mirrors the /dev device
  * layer (linux/dev/lxp_dev.c): the fd's file_idx indexes a refcounted open
- * pool, fork/dup share an open, and the last close closes the socket.
+ * pool; a generic open-file description owns fork/dup aliases, and its last
+ * close closes the socket.
  *
  * Blocking is deferred, never inline: the backing ove_socket is kept non-blocking,
  * so every op returns at once; a would-block (LXP_ERR_TIMEOUT) parks the caller
@@ -35,11 +36,11 @@
 #define LXP_FD_SOCKET 7
 #endif
 
-/** Per-open socket state (the 4-field fd slot is too small). fork/dup share an
- *  open (refcounted); the last close closes the backing ove_socket. */
+/** Per-open socket state. A generic open-file description owns descriptor
+ * aliases; its last close closes the backing socket. */
 struct sock_open {
 	uint8_t used;
-	uint8_t refs;
+	uint16_t refs;
 	uint8_t connecting;  /* a non-blocking connect is in flight */
 	uint8_t type;	     /* lxp_sock_type_t: STREAM / DGRAM / RAW (for sendmsg gathering) */
 	uint16_t oflags;     /* guest fd status flags (O_NONBLOCK gates parking) */
@@ -184,13 +185,6 @@ int lxp_sock_is_dgram(int oi)
 {
 	struct sock_open *o = open_slot(oi);
 	return o && o->type == LXP_SOCK_DGRAM;
-}
-
-void lxp_sock_get(int oi)
-{
-	struct sock_open *o = open_slot(oi);
-	if (o)
-		lxp_pool_get(&o->refs);
 }
 
 void lxp_sock_close(int oi)
@@ -816,18 +810,11 @@ long lxp_sock_retry(lxp_proc_t *p)
 
 /* ---- fork / exit fd lifecycle ---------------------------------------------- */
 
-void lxp_sock_fork_inherit(lxp_proc_t *child)
-{
-	lxp_pool_fork_inherit(child, LXP_FD_SOCKET, lxp_sock_get);
-}
-
 void lxp_sock_proc_exit(lxp_proc_t *p)
 {
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (p->fds[fd].kind == LXP_FD_SOCKET) {
-			lxp_sock_close(p->fds[fd].file_idx);
-			p->fds[fd].kind = 0; /* FD_FREE */
-		}
+		if (lxp_fd_kind(p, fd) == LXP_FD_SOCKET)
+			(void)lxp_fd_close(p, fd);
 }
 
 #endif /* LXP_ENABLE_NET */

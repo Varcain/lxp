@@ -69,6 +69,13 @@ static long random_fill(void *buf, size_t count, int unavailable_errno);
 /* fd-kind → file-operation vtable resolver (defined with the fops below); used by
  * proc_init to seed the std streams before the fops block appears in the file. */
 static const struct lxp_file_ops *ops_for_kind(uint8_t kind);
+static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off);
+
+/* One distinct open-file description per possible descriptor. Fork and dup
+ * increase refs without allocating another object. The compact descriptor
+ * entries in lxp_proc_t recover most of this pool's target-side footprint. */
+#define LXP_MAX_OFD (LXP_NSLOT * LXP_MAX_FDS)
+static lxp_ofd_t g_ofd[LXP_MAX_OFD];
 
 #if LXP_ENABLE_NET
 /* pselect6(2): select() over the poll machinery (busybox inetd + dropbear are
@@ -260,19 +267,18 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 	 * For console fds, file_idx marks the direction: 0 = readable (stdin),
 	 * 1 = writable (stdout/stderr); this survives F_DUPFD so a dup of stdin
 	 * stays readable (the shell dups stdin for its interactive fd). */
-	proc->fds[0].kind = LXP_FD_CONSOLE;
-	proc->fds[0].file_idx = 0;
-	proc->fds[0].ops = ops_for_kind(LXP_FD_CONSOLE);
-	proc->fds[1].kind = LXP_FD_CONSOLE;
-	proc->fds[1].file_idx = 1;
-	proc->fds[1].ops = ops_for_kind(LXP_FD_CONSOLE);
-	proc->fds[2].kind = LXP_FD_CONSOLE;
-	proc->fds[2].file_idx = 1;
-	proc->fds[2].ops = ops_for_kind(LXP_FD_CONSOLE);
+	if (fd_alloc(proc, LXP_FD_CONSOLE, 0, 0) != 0 ||
+	    fd_alloc(proc, LXP_FD_CONSOLE, 1, 0) != 1 ||
+	    fd_alloc(proc, LXP_FD_CONSOLE, 1, 0) != 2) {
+		lxp_fd_close_all(proc);
+		return LXP_ERR_NO_MEMORY;
+	}
 	if (brk_bytes) {
 		void *brk = lxp_arena_alloc(arena, brk_bytes);
-		if (!brk)
+		if (!brk) {
+			lxp_fd_close_all(proc);
 			return LXP_ERR_NO_MEMORY;
+		}
 		proc->brk_base = (uintptr_t)brk;
 		proc->brk_cur = proc->brk_base;
 		proc->brk_max = proc->brk_base + brk_bytes;
@@ -487,11 +493,41 @@ void *lxp_setup_stack(void *stack, size_t stack_size, int argc, const char *cons
 }
 
 /* Validate an fd index and return its slot, or NULL. */
-static lxp_fd_t *fd_slot(lxp_proc_t *p, int fd)
+static lxp_ofd_t *fd_slot(lxp_proc_t *p, int fd)
 {
-	if (fd < 0 || fd >= LXP_MAX_FDS || p->fds[fd].kind == LXP_FD_FREE)
+	if (!p || fd < 0 || fd >= LXP_MAX_FDS || p->fds[fd].ofd == 0 ||
+	    p->fds[fd].ofd > LXP_MAX_OFD)
 		return NULL;
-	return &p->fds[fd];
+	lxp_ofd_t *ofd = &g_ofd[p->fds[fd].ofd - 1u];
+	return ofd->refs ? ofd : NULL;
+}
+
+static const lxp_ofd_t *fd_slot_const(const lxp_proc_t *p, int fd)
+{
+	return fd_slot((lxp_proc_t *)p, fd);
+}
+
+lxp_ofd_t *lxp_fd_description(lxp_proc_t *p, int fd)
+{
+	return fd_slot(p, fd);
+}
+
+uint8_t lxp_fd_kind(const lxp_proc_t *p, int fd)
+{
+	const lxp_ofd_t *ofd = fd_slot_const(p, fd);
+	return ofd ? ofd->kind : LXP_FD_FREE;
+}
+
+int lxp_fd_backing(const lxp_proc_t *p, int fd)
+{
+	const lxp_ofd_t *ofd = fd_slot_const(p, fd);
+	return ofd ? ofd->file_idx : -1;
+}
+
+int lxp_fd_direction(const lxp_proc_t *p, int fd)
+{
+	const lxp_ofd_t *ofd = fd_slot_const(p, fd);
+	return ofd ? ofd->rw : -1;
 }
 
 #if LXP_ENABLE_NET
@@ -499,7 +535,7 @@ static lxp_fd_t *fd_slot(lxp_proc_t *p, int fd)
  * the fd_slot + kind check that the socket syscalls all repeat. */
 static int sock_slot(lxp_proc_t *p, int fd)
 {
-	lxp_fd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = fd_slot(p, fd);
 	return (s && s->kind == LXP_FD_SOCKET) ? s->file_idx : -1;
 }
 
@@ -614,7 +650,7 @@ static void fill_kstat64(struct lxp_kstat64 *st, uint32_t ino, uint32_t mode, ui
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* ---- read fops ---- */
-static long fop_read_console(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+static long fop_read_console(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	if (s->file_idx == 1) /* output consoles (stdout/stderr) are not readable */
 		return -LXP_EBADF;
@@ -638,7 +674,7 @@ static long fop_read_console(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 		p->console_len = len;
 		return 0; /* parked; the coordinator resumes it when a key arrives */
 	}
-	long r = p->read_fn(p->io_ctx, (int)(s - p->fds), buf, len);
+	long r = p->read_fn(p->io_ctx, s->file_idx, buf, len);
 	/* A byte that was already ready bypasses the coordinator's parked-read path,
 	 * so apply the same tty input translation here as that path does. */
 	if (r == 1)
@@ -648,7 +684,7 @@ static long fop_read_console(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 
 /* A pipe read end drains the shared ring; blocks while empty + a writer is open,
  * EOF (0) once all writers have closed. */
-static long fop_read_pipe(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+static long fop_read_pipe(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	if (s->rw != 0)
 		return -LXP_EBADF;
@@ -666,7 +702,7 @@ static long fop_read_pipe(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 }
 
 /* A writable-node file read returns bytes from its buffer at the fd offset. */
-static long fop_read_tmpfs(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+static long fop_read_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	(void)p;
 	lxp_wnode_t *t = wnode_at(s->file_idx);
@@ -683,7 +719,7 @@ static long fop_read_tmpfs(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 }
 
 /* A /proc file read returns bytes from the content generated at open. */
-static long fop_read_proc(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+static long fop_read_proc(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	(void)p;
 	if (g_procf[s->file_idx].is_dir)
@@ -700,7 +736,7 @@ static long fop_read_proc(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 }
 
 /* Read from a read-only rootfs file at the current offset. */
-static long fop_read_rootfs(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+static long fop_read_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	const lxp_file_t *f = &p->fs[s->file_idx];
 	if ((file_mode(f) & LXP_S_IFMT) == LXP_S_IFDIR)
@@ -715,25 +751,25 @@ static long fop_read_rootfs(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 	return (long)n;
 }
 
-static long fop_read_eventfd(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+static long fop_read_eventfd(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	return efd_read(p, s->file_idx, buf, len);
 }
 
 #if LXP_ENABLE_DEV
-static long fop_read_dev(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+static long fop_read_dev(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	return lxp_dev_read(p, s->file_idx, buf, len);
 }
 #endif
 #if LXP_ENABLE_NET
-static long fop_read_socket(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+static long fop_read_socket(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	return lxp_sock_recv(p, s->file_idx, buf, len, 0, NULL, NULL);
 }
 #endif
 #if LXP_ENABLE_NETFS
-static long fop_read_netfs(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+static long fop_read_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	return lxp_netfs_read(p, s->file_idx, buf, len);
 }
@@ -741,7 +777,7 @@ static long fop_read_netfs(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 #if LXP_ENABLE_PTY
 /* A pty end drains its ring (master reads program output, slave reads program input);
  * blocks while empty + the peer end is open, EOF (0) once the peer closes. */
-static long fop_read_pty(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
+static long fop_read_pty(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	long r = lxp_pty_read(p, s->file_idx, s->rw, buf, len);
 	if (r == -LXP_EAGAIN && !lxp_pty_nonblock(s->file_idx, s->rw)) {
@@ -756,17 +792,17 @@ static long fop_read_pty(lxp_proc_t *p, lxp_fd_t *s, void *buf, size_t len)
 #endif
 
 /* ---- write fops ---- */
-static long fop_write_console(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+static long fop_write_console(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
 {
 	if (s->file_idx == 3 || s->file_idx == 4 || s->file_idx == 5)
 		return (long)len; /* /dev/null + /dev/urandom + /dev/zero: discard writes */
 	if (s->file_idx == 0 || !p->write_fn) /* stdin is not writable; no sink → EBADF */
 		return -LXP_EBADF;
-	return p->write_fn(p->io_ctx, (int)(s - p->fds), buf, len);
+	return p->write_fn(p->io_ctx, s->file_idx, buf, len);
 }
 
 /* A pipe write end appends to the shared ring; blocks when full (reader open). */
-static long fop_write_pipe(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+static long fop_write_pipe(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
 {
 	if (s->rw != 1)
 		return -LXP_EBADF;
@@ -791,7 +827,7 @@ static long fop_write_pipe(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t l
 }
 
 /* A writable-node file write copies into its (growable) buffer at the offset. */
-static long fop_write_tmpfs(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+static long fop_write_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
 {
 	(void)p;
 	lxp_wnode_t *t = wnode_at(s->file_idx);
@@ -808,25 +844,25 @@ static long fop_write_tmpfs(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t 
 	return (long)len;
 }
 
-static long fop_write_eventfd(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+static long fop_write_eventfd(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
 {
 	return efd_write(p, s->file_idx, buf, len);
 }
 
 #if LXP_ENABLE_DEV
-static long fop_write_dev(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+static long fop_write_dev(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
 {
 	return lxp_dev_write(p, s->file_idx, buf, len);
 }
 #endif
 #if LXP_ENABLE_NET
-static long fop_write_socket(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+static long fop_write_socket(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
 {
 	return lxp_sock_send(p, s->file_idx, buf, len, 0, NULL, 0);
 }
 #endif
 #if LXP_ENABLE_NETFS
-static long fop_write_netfs(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+static long fop_write_netfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
 {
 	(void)p;
 	(void)s;
@@ -839,7 +875,7 @@ static long fop_write_netfs(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t 
 /* A pty write feeds the peer's ring through the line discipline (master write runs
  * input processing toward the slave; slave write runs output/ONLCR toward the master).
  * Blocks (backpressure) when the destination ring is full and the peer is open. */
-static long fop_write_pty(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t len)
+static long fop_write_pty(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
 {
 	long r = lxp_pty_write(p, s->file_idx, s->rw, buf, len);
 	if (r == -LXP_EAGAIN && !lxp_pty_nonblock(s->file_idx, s->rw)) {
@@ -855,7 +891,7 @@ static long fop_write_pty(lxp_proc_t *p, lxp_fd_t *s, const void *buf, size_t le
 
 /* ---- lseek fops ---- */
 /* Shared SEEK_SET/CUR/END arithmetic against a file of logical size @p end. */
-static long lseek_within(lxp_fd_t *s, long end, long off, int whence)
+static long lseek_within(lxp_ofd_t *s, long end, long off, int whence)
 {
 	long base;
 	switch (whence) {
@@ -878,26 +914,26 @@ static long lseek_within(lxp_fd_t *s, long end, long off, int whence)
 	return pos;
 }
 
-static long fop_lseek_rootfs(lxp_proc_t *p, lxp_fd_t *s, long off, int whence)
+static long fop_lseek_rootfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 {
 	return lseek_within(s, (long)p->fs[s->file_idx].size, off, whence);
 }
 
-static long fop_lseek_tmpfs(lxp_proc_t *p, lxp_fd_t *s, long off, int whence)
+static long fop_lseek_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 {
 	(void)p;
 	return lseek_within(s, (long)wnode_at(s->file_idx)->size, off, whence);
 }
 
 #if LXP_ENABLE_DEV
-static long fop_lseek_dev(lxp_proc_t *p, lxp_fd_t *s, long off, int whence)
+static long fop_lseek_dev(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 {
 	(void)p;
 	return lxp_dev_lseek(s->file_idx, off, whence);
 }
 #endif
 #if LXP_ENABLE_NETFS
-static long fop_lseek_netfs(lxp_proc_t *p, lxp_fd_t *s, long off, int whence)
+static long fop_lseek_netfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 {
 	(void)p;
 	return lxp_netfs_lseek(s->file_idx, off, whence);
@@ -905,14 +941,14 @@ static long fop_lseek_netfs(lxp_proc_t *p, lxp_fd_t *s, long off, int whence)
 #endif
 
 /* ---- fstat fops (each kind reports its own mode/size + a unique inode base) ---- */
-static long fop_fstat_rootfs(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+static long fop_fstat_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	fill_kstat64(statbuf, 1u + (uint32_t)s->file_idx, file_mode(&p->fs[s->file_idx]),
 		     p->fs[s->file_idx].size);
 	return 0;
 }
 
-static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	(void)p;
 	fill_kstat64(statbuf, 0x100000u + (uint32_t)s->file_idx, wnode_at(s->file_idx)->mode,
@@ -920,7 +956,7 @@ static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
 	return 0;
 }
 
-static long fop_fstat_proc(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+static long fop_fstat_proc(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	(void)p;
 	fill_kstat64(statbuf, 0x200000u + (uint32_t)s->file_idx,
@@ -930,7 +966,7 @@ static long fop_fstat_proc(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
 }
 
 #if LXP_ENABLE_DEV
-static long fop_fstat_dev(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+static long fop_fstat_dev(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	(void)p;
 	uint32_t mode;
@@ -942,7 +978,7 @@ static long fop_fstat_dev(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
 }
 #endif
 #if LXP_ENABLE_NET
-static long fop_fstat_socket(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+static long fop_fstat_socket(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	(void)p;
 	uint32_t mode;
@@ -953,7 +989,7 @@ static long fop_fstat_socket(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
 }
 #endif
 #if LXP_ENABLE_NETFS
-static long fop_fstat_netfs(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+static long fop_fstat_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	uint32_t mode;
 	uint64_t size, mtime, ino;
@@ -963,7 +999,7 @@ static long fop_fstat_netfs(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
 }
 #endif
 #if LXP_ENABLE_PTY
-static long fop_fstat_pty(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
+static long fop_fstat_pty(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	(void)p;
 	uint32_t mode;
@@ -975,34 +1011,34 @@ static long fop_fstat_pty(lxp_proc_t *p, lxp_fd_t *s, void *statbuf)
 #endif
 
 /* ---- close fops (release the backing object; kinds with no backing omit it) ---- */
-static void fop_close_proc(lxp_proc_t *p, lxp_fd_t *s)
+static void fop_close_proc(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	g_procf[s->file_idx].used = 0; /* release the generated-content slot */
 }
 
-static void fop_close_eventfd(lxp_proc_t *p, lxp_fd_t *s)
+static void fop_close_eventfd(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
-	efd_close(s->file_idx); /* threads share the fd table → one close frees it */
+	efd_close(s->file_idx); /* called only after the final descriptor alias closes */
 }
 
 #if LXP_ENABLE_DEV
-static void fop_close_dev(lxp_proc_t *p, lxp_fd_t *s)
+static void fop_close_dev(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	lxp_dev_close(s->file_idx); /* refs--, ops->release at the last close */
 }
 #endif
 #if LXP_ENABLE_NET
-static void fop_close_socket(lxp_proc_t *p, lxp_fd_t *s)
+static void fop_close_socket(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	lxp_sock_close(s->file_idx); /* refs--, socket close at the last close */
 }
 #endif
 #if LXP_ENABLE_NETFS
-static void fop_close_netfs(lxp_proc_t *p, lxp_fd_t *s)
+static void fop_close_netfs(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	lxp_netfs_close(s->file_idx); /* refs--, enqueue a Tclunk at the last close */
@@ -1010,7 +1046,7 @@ static void fop_close_netfs(lxp_proc_t *p, lxp_fd_t *s)
 #endif
 
 /* ---- ioctl fops (dev/socket/pty delegate to their layers; console is the tty) ---- */
-static long fop_ioctl_console(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, unsigned long arg)
+static long fop_ioctl_console(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsigned long arg)
 {
 	/* Make the console fds look like a tty so the shell goes interactive
 	 * (isatty → prompt + line editing). */
@@ -1079,61 +1115,61 @@ static long fop_ioctl_console(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, uns
 }
 
 #if LXP_ENABLE_DEV
-static long fop_ioctl_dev(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, unsigned long arg)
+static long fop_ioctl_dev(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsigned long arg)
 {
 	return lxp_dev_ioctl(p, s->file_idx, cmd, arg);
 }
 #endif
 #if LXP_ENABLE_NET
-static long fop_ioctl_socket(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, unsigned long arg)
+static long fop_ioctl_socket(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsigned long arg)
 {
 	(void)s;
 	return lxp_sock_ioctl(p, cmd, arg); /* SIOC* interface config (ifconfig/route) */
 }
 #endif
 #if LXP_ENABLE_PTY
-static long fop_ioctl_pty(lxp_proc_t *p, lxp_fd_t *s, unsigned long cmd, unsigned long arg)
+static long fop_ioctl_pty(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsigned long arg)
 {
 	return lxp_pty_ioctl(p, s->file_idx, s->rw, cmd, arg);
 }
 #endif
 
 /* ---- poll fops (readiness bits; a kind with no poll fop is always ready) ---- */
-static unsigned fop_poll_console(lxp_proc_t *p, lxp_fd_t *s)
+static unsigned fop_poll_console(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)s;
 	int key = (p->console_poll && p->console_poll(p->io_ctx) > 0);
 	return (unsigned)((p->console_poll ? (key ? LXP_POLLIN : 0) : LXP_POLLIN) | LXP_POLLOUT);
 }
 
-static unsigned fop_poll_eventfd(lxp_proc_t *p, lxp_fd_t *s)
+static unsigned fop_poll_eventfd(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	return (unsigned)LXP_POLLOUT | (efd_readable(s->file_idx) ? (unsigned)LXP_POLLIN : 0u);
 }
 
-static unsigned fop_poll_pipe(lxp_proc_t *p, lxp_fd_t *s)
+static unsigned fop_poll_pipe(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	return (unsigned)pipe_poll(s->file_idx, s->rw); /* real readiness (empty self-pipe!) */
 }
 
 #if LXP_ENABLE_DEV
-static unsigned fop_poll_dev(lxp_proc_t *p, lxp_fd_t *s)
+static unsigned fop_poll_dev(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	return (unsigned)lxp_dev_poll(s->file_idx);
 }
 #endif
 #if LXP_ENABLE_NET
-static unsigned fop_poll_socket(lxp_proc_t *p, lxp_fd_t *s)
+static unsigned fop_poll_socket(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	return (unsigned)lxp_sock_poll(s->file_idx);
 }
 #endif
 #if LXP_ENABLE_PTY
-static unsigned fop_poll_pty(lxp_proc_t *p, lxp_fd_t *s)
+static unsigned fop_poll_pty(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	return (unsigned)lxp_pty_poll(s->file_idx, s->rw);
@@ -1220,7 +1256,7 @@ static const struct lxp_file_ops *ops_for_kind(uint8_t kind)
 
 static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 {
-	lxp_fd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!user_ok(p, buf, len, 0)) /* the kernel READS buf → reject a bad source pointer */
@@ -1249,7 +1285,7 @@ static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
 	 * publishes each referenced payload independently. */
 	if (iovcnt)
 		lxp_cache_clean(iov, (size_t)iovcnt * sizeof(*iov));
-	lxp_fd_t *slot = fd_slot(p, fd);
+	lxp_ofd_t *slot = fd_slot(p, fd);
 	if (!slot)
 		return -LXP_EBADF;
 	/* The retry records describe one buffer, not an iovec cursor. Stop after one
@@ -1280,7 +1316,7 @@ static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
 
 static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
 {
-	lxp_fd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!user_ok(p, buf, len, 1)) /* the kernel WRITES buf → reject a bad destination pointer */
@@ -1298,7 +1334,7 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
  */
 static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off)
 {
-	lxp_fd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!user_ok(p, buf, len, 1))
@@ -1347,7 +1383,7 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off
  */
 static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint32_t off)
 {
-	lxp_fd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!user_ok(p, buf, len, 0))
@@ -1425,7 +1461,7 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 	 * backing span to its unprivileged guest as RO+X: a static or per-task window on FreeRTOS,
 	 * Zephyr's user-RX text/QSPI region, or the NuttX seam's raw MPU region. */
 	if (!(flags & LXP_MAP_ANONYMOUS) && fd >= 0 && !(prot & 0x2 /* PROT_WRITE */)) {
-		lxp_fd_t *s = fd_slot(p, fd);
+		lxp_ofd_t *s = fd_slot(p, fd);
 		if (s && s->kind == LXP_FD_FILE) {
 			const lxp_file_t *f = &p->fs[s->file_idx];
 			size_t foff = (size_t)pgoff * 4096u; /* guard the *4096 and +len wraps (32-bit) */
@@ -1440,7 +1476,7 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 	 * installs the unprivileged MPU region + resumes with the mapped address. Devices
 	 * without an .mmap op return -ENODEV and fall through to the anonymous-arena copy. */
 	if (fd >= 0 && !(flags & LXP_MAP_ANONYMOUS)) {
-		lxp_fd_t *s = fd_slot(p, fd);
+		lxp_ofd_t *s = fd_slot(p, fd);
 		if (s && s->kind == LXP_FD_DEV) {
 			long r = lxp_dev_mmap(p, s->file_idx, len, pgoff);
 			if (r != -LXP_ENODEV)
@@ -1486,15 +1522,25 @@ static long sys_munmap(lxp_proc_t *p, uintptr_t addr, size_t len)
 /* Claim the lowest free fd for (kind, idx, off); -EMFILE if the table is full. */
 static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
 {
+	int oi = -1;
+	for (int i = 0; i < LXP_MAX_OFD; i++)
+		if (g_ofd[i].refs == 0) {
+			oi = i;
+			break;
+		}
+	if (oi < 0)
+		return -LXP_EMFILE;
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-		if (p->fds[fd].kind == LXP_FD_FREE) {
-			p->fds[fd].kind = kind;
-			p->fds[fd].rw = 0;
+		if (p->fds[fd].ofd == 0) {
+			g_ofd[oi].refs = 1;
+			g_ofd[oi].kind = kind;
+			g_ofd[oi].rw = 0;
+			g_ofd[oi].nonblock = 0;
+			g_ofd[oi].file_idx = idx;
+			g_ofd[oi].offset = off;
+			g_ofd[oi].ops = ops_for_kind(kind);
+			p->fds[fd].ofd = (uint16_t)(oi + 1);
 			p->fds[fd].cloexec = 0;
-			p->fds[fd].nonblock = 0; /* else stale from the slot's prior occupant */
-			p->fds[fd].file_idx = idx;
-			p->fds[fd].offset = off;
-			p->fds[fd].ops = ops_for_kind(kind);
 			return fd;
 		}
 	}
@@ -1509,8 +1555,8 @@ int lxp_fd_install(lxp_proc_t *p, uint8_t kind, int idx)
 }
 
 /* eventfd(2): a 64-bit counter fd used to wake a poller from another thread — curl's
- * threaded resolver (AsynchDNS) writes it when a name resolves. Threads share the fd
- * table (CLONE_VM), so both ends address the same counter by its pool index. */
+ * threaded resolver (AsynchDNS) writes it when a name resolves. Descriptor aliases
+ * share the refcounted open-file description and counter pool index. */
 #define LXP_NEVENTFD 8
 static struct {
 	uint64_t ctr;
@@ -1530,8 +1576,7 @@ static long efd_new(unsigned initval, int flags)
 	return -LXP_EMFILE;
 }
 
-/* Release an eventfd pool slot at close(2). Any close frees it — threads share the
- * fd table, so one close is enough (matches the pre-vtable close semantics). */
+/* Release an eventfd pool slot after the open-file description's last close. */
 static void efd_close(int ei)
 {
 	if (ei >= 0 && ei < LXP_NEVENTFD)
@@ -1645,7 +1690,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 			return idx;
 		int fd = fd_alloc(p, LXP_FD_PTY, (int)idx, 0);
 		if (fd >= 0)
-			p->fds[fd].rw = 1; /* master end */
+			fd_slot(p, fd)->rw = 1; /* master end */
 		return fd;
 	}
 	if (strncmp(path, "/dev/pts/", 9) == 0) {
@@ -1722,12 +1767,51 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 
 static long sys_close(lxp_proc_t *p, int fd)
 {
-	lxp_fd_t *s = fd_slot(p, fd);
+	return lxp_fd_close(p, fd);
+}
+
+int lxp_fd_close(lxp_proc_t *p, int fd)
+{
+	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-	if (s->ops && s->ops->close)
-		s->ops->close(p, s); /* release the backing object (refcount-- / pool slot) */
-	s->kind = LXP_FD_FREE;
+	p->fds[fd] = (lxp_fd_t){0};
+	if (--s->refs == 0) {
+		if (s->ops && s->ops->close)
+			s->ops->close(p, s);
+		memset(s, 0, sizeof(*s));
+	}
+	return 0;
+}
+
+void lxp_fd_close_all(lxp_proc_t *p)
+{
+	if (!p)
+		return;
+	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
+		if (p->fds[fd].ofd)
+			(void)lxp_fd_close(p, fd);
+}
+
+void lxp_fd_runtime_reset(void)
+{
+	memset(g_ofd, 0, sizeof(g_ofd));
+}
+
+int lxp_fd_fork_inherit(lxp_proc_t *child)
+{
+	if (!child)
+		return -1;
+	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
+		lxp_ofd_t *s = fd_slot(child, fd);
+		if (s && s->refs == UINT16_MAX)
+			return -1;
+	}
+	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
+		lxp_ofd_t *s = fd_slot(child, fd);
+		if (s)
+			s->refs++;
+	}
 	return 0;
 }
 
@@ -1746,7 +1830,7 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 		return -LXP_EMFILE;
 	int rfd = -1, wfd = -1;
 	for (int fd = 0; fd < LXP_MAX_FDS && wfd < 0; fd++) {
-		if (p->fds[fd].kind != LXP_FD_FREE)
+		if (p->fds[fd].ofd != 0)
 			continue;
 		if (rfd < 0)
 			rfd = fd;
@@ -1755,10 +1839,19 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 	}
 	if (wfd < 0)
 		return -LXP_EMFILE;
-	p->fds[rfd] = (lxp_fd_t){.kind = LXP_FD_PIPE, .rw = 0, .cloexec = cx, .nonblock = nb,
-				 .file_idx = pi, .ops = ops_for_kind(LXP_FD_PIPE)};
-	p->fds[wfd] = (lxp_fd_t){.kind = LXP_FD_PIPE, .rw = 1, .cloexec = cx, .nonblock = nb,
-				 .file_idx = pi, .ops = ops_for_kind(LXP_FD_PIPE)};
+	rfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
+	wfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
+	if (rfd < 0 || wfd < 0) {
+		if (rfd >= 0)
+			(void)sys_close(p, rfd);
+		return -LXP_EMFILE;
+	}
+	fd_slot(p, rfd)->rw = 0;
+	fd_slot(p, rfd)->nonblock = nb;
+	fd_slot(p, wfd)->rw = 1;
+	fd_slot(p, wfd)->nonblock = nb;
+	p->fds[rfd].cloexec = cx;
+	p->fds[wfd].cloexec = cx;
 	fds[0] = rfd;
 	fds[1] = wfd;
 	return 0;
@@ -1767,54 +1860,30 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 /* dup/dup2/F_DUPFD: the new fd aliases oldfd's backing object, so take a reference on the
  * refcounted-backend kinds. Consolidates the get all three call sites open-coded (F_DUPFD
  * had previously omitted netfs — now consistent). */
-static void fd_dup_backing(const lxp_fd_t *s)
+static int fd_get(lxp_ofd_t *s)
 {
-	(void)s;
-#if LXP_ENABLE_DEV
-	if (s->kind == LXP_FD_DEV)
-		lxp_dev_get(s->file_idx);
-#endif
-#if LXP_ENABLE_NET
-	if (s->kind == LXP_FD_SOCKET)
-		lxp_sock_get(s->file_idx);
-#endif
-#if LXP_ENABLE_NETFS
-	if (s->kind == LXP_FD_NET)
-		lxp_netfs_get(s->file_idx);
-#endif
-}
-
-/* dup2 replaces its target fd: release the replaced fd's backing (dev/socket/netfs) first. */
-static void fd_release_backing(const lxp_fd_t *s)
-{
-	(void)s;
-#if LXP_ENABLE_DEV
-	if (s->kind == LXP_FD_DEV)
-		lxp_dev_close(s->file_idx);
-#endif
-#if LXP_ENABLE_NET
-	if (s->kind == LXP_FD_SOCKET)
-		lxp_sock_close(s->file_idx);
-#endif
-#if LXP_ENABLE_NETFS
-	if (s->kind == LXP_FD_NET)
-		lxp_netfs_close(s->file_idx);
-#endif
+	if (!s || s->refs == UINT16_MAX)
+		return -1;
+	s->refs++;
+	return 0;
 }
 
 /* dup2/dup3: make newfd alias oldfd's target (the pipe wiring the shell does). */
 static long sys_dup2(lxp_proc_t *p, int oldfd, int newfd)
 {
-	lxp_fd_t *s = fd_slot(p, oldfd);
+	lxp_ofd_t *s = fd_slot(p, oldfd);
 	if (!s)
 		return -LXP_EBADF;
 	if (newfd < 0 || newfd >= LXP_MAX_FDS)
 		return -LXP_EBADF;
 	if (oldfd != newfd) {
-		fd_release_backing(&p->fds[newfd]); /* dup2 closes the target first */
-		p->fds[newfd] = *s;
+		uint16_t old_ofd = p->fds[oldfd].ofd;
+		if (fd_get(s) != 0)
+			return -LXP_EMFILE;
+		if (p->fds[newfd].ofd)
+			(void)sys_close(p, newfd);
+		p->fds[newfd].ofd = old_ofd;
 		p->fds[newfd].cloexec = 0; /* dup2/dup3 clear FD_CLOEXEC; dup3(O_CLOEXEC) re-sets it */
-		fd_dup_backing(s);	   /* the new fd shares oldfd's backing */
 	}
 	return newfd;
 }
@@ -1822,14 +1891,15 @@ static long sys_dup2(lxp_proc_t *p, int oldfd, int newfd)
 /* dup(2): alias oldfd onto the lowest free fd. */
 static long sys_dup(lxp_proc_t *p, int oldfd)
 {
-	lxp_fd_t *s = fd_slot(p, oldfd);
+	lxp_ofd_t *s = fd_slot(p, oldfd);
 	if (!s)
 		return -LXP_EBADF;
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-		if (p->fds[fd].kind == LXP_FD_FREE) {
-			p->fds[fd] = *s;
+		if (p->fds[fd].ofd == 0) {
+			if (fd_get(s) != 0)
+				return -LXP_EMFILE;
+			p->fds[fd].ofd = p->fds[oldfd].ofd;
 			p->fds[fd].cloexec = 0; /* dup(2) clears FD_CLOEXEC on the new fd */
-			fd_dup_backing(s);	/* the dup shares oldfd's backing */
 			return fd;
 		}
 	}
@@ -1838,7 +1908,7 @@ static long sys_dup(lxp_proc_t *p, int oldfd)
 
 static long sys_lseek(lxp_proc_t *p, int fd, long off, int whence)
 {
-	lxp_fd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (s->ops && s->ops->lseek)
@@ -1868,7 +1938,7 @@ static long sys_llseek(lxp_proc_t *p, int fd, unsigned long off_hi, unsigned lon
  * length, so editing an existing file shorter drops the old trailing bytes. */
 static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 {
-	lxp_fd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (s->kind != LXP_FD_TMPFS)
@@ -1905,7 +1975,7 @@ static void fill_kstat64(struct lxp_kstat64 *st, uint32_t ino, uint32_t mode, ui
 
 static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 {
-	lxp_fd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!user_ok(p, statbuf, sizeof(struct lxp_kstat64), 1))
@@ -2293,7 +2363,7 @@ static int s_dirent_is64 = 1;
 /* Append one dirent record in the s_dirent_is64 format (the 32-bit linux_dirent puts d_type
  * as a trailing byte at d_reclen-1). Skips entries already emitted (pos < s->offset);
  * returns 0 if the record does not fit, else 1 (and advances). */
-static int dirent_emit(uint8_t *out, size_t count, size_t *filled, long *pos, lxp_fd_t *s,
+static int dirent_emit(uint8_t *out, size_t count, size_t *filled, long *pos, lxp_ofd_t *s,
 		       uint64_t ino, const char *name, uint32_t mode)
 {
 	int is64 = s_dirent_is64;
@@ -2346,7 +2416,7 @@ static int dirent_emit(uint8_t *out, size_t count, size_t *filled, long *pos, lx
 static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int is64)
 {
 	s_dirent_is64 = is64;
-	lxp_fd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!user_ok(p, buf, count, 1))
@@ -2550,7 +2620,7 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 			ino = 1u + (uint32_t)idx;
 		}
 	} else {
-		lxp_fd_t *s = fd_slot(p, dirfd);
+		lxp_ofd_t *s = fd_slot(p, dirfd);
 		if (!s)
 			return -LXP_EBADF;
 		if (s->kind == LXP_FD_FILE) {
@@ -2780,7 +2850,7 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	 * on completion, and the run loop's EV_EXEC launches it from the RAM staging buffer. */
 	if (lxp_netfs_lookup(execabs) >= 0) {
 		for (int cfd = 0; cfd < LXP_MAX_FDS; cfd++)
-			if (p->fds[cfd].kind != LXP_FD_FREE && p->fds[cfd].cloexec)
+			if (p->fds[cfd].ofd != 0 && p->fds[cfd].cloexec)
 				sys_close(p, cfd);
 		cap->argc = raw_argc;
 		return lxp_netfs_exec_fetch(p, execabs); /* parks, or a negative errno inline */
@@ -2859,7 +2929,7 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	 * FD_CLOEXEC fds here — the exec is committed past every error check. dropbear confirms
 	 * the shell exec'd by its exec-status pipe (FD_CLOEXEC) closing this way. */
 	for (int cfd = 0; cfd < LXP_MAX_FDS; cfd++)
-		if (p->fds[cfd].kind != LXP_FD_FREE && p->fds[cfd].cloexec)
+		if (p->fds[cfd].ofd != 0 && p->fds[cfd].cloexec)
 			sys_close(p, cfd);
 	cap->argc = argc;
 	p->exec_file_idx = idx;
@@ -2886,10 +2956,10 @@ static void now_sec_nsec(int clockid, uint64_t *sec, uint32_t *nsec)
  *    are byte-for-byte the former switch-arm bodies. ── */
 static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 {
-		lxp_fd_t *s = fd_slot(proc, (int)a0);
-		if (!s)
-			return -LXP_EBADF;
-		if ((int)a1 == LXP_F_DUPFD || (int)a1 == LXP_F_DUPFD_CLOEXEC) {
+	lxp_ofd_t *s = fd_slot(proc, (int)a0);
+	if (!s)
+		return -LXP_EBADF;
+	if ((int)a1 == LXP_F_DUPFD || (int)a1 == LXP_F_DUPFD_CLOEXEC) {
 			/* Duplicate to the lowest free fd >= arg. The shell asks for a high
 			 * fd (>=255) for its interactive fd; our table is small, so a too-high
 			 * arg falls back to any free fd (the shell tolerates a low one and
@@ -2898,11 +2968,12 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 			if (from < 0 || from >= LXP_MAX_FDS)
 				from = 0;
 			for (int nfd = from; nfd < LXP_MAX_FDS; nfd++) {
-				if (proc->fds[nfd].kind == LXP_FD_FREE) {
-					proc->fds[nfd] = *s;
+				if (proc->fds[nfd].ofd == 0) {
+					if (fd_get(s) != 0)
+						return -LXP_EMFILE;
+					proc->fds[nfd].ofd = proc->fds[(int)a0].ofd;
 					proc->fds[nfd].cloexec =
 						((int)a1 == LXP_F_DUPFD_CLOEXEC) ? 1 : 0;
-					fd_dup_backing(s); /* share the backing (now incl. netfs) */
 					return nfd;
 				}
 			}
@@ -2957,11 +3028,12 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 		/* F_SETFD/F_GETFD track close-on-exec (dropbear sets FD_CLOEXEC on its exec-status
 		 * pipe and detects a successful shell exec by that fd closing on execve). */
 		if ((int)a1 == LXP_F_SETFD) {
-			s->cloexec = ((int)a2 & LXP_FD_CLOEXEC) ? 1 : 0;
+			proc->fds[(int)a0].cloexec =
+				((int)a2 & LXP_FD_CLOEXEC) ? 1 : 0;
 			return 0;
 		}
 		if ((int)a1 == LXP_F_GETFD)
-			return s->cloexec ? LXP_FD_CLOEXEC : 0;
+			return proc->fds[(int)a0].cloexec ? LXP_FD_CLOEXEC : 0;
 		/* F_GETFL must report a truthful access mode. uClibc's fdopen() validates
 		 * the FILE* mode against it, so answering O_RDONLY (0) for a writable fd
 		 * fails fdopen(fd, "w") with EINVAL — which is how dropbearkey's .pub
@@ -3026,7 +3098,7 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 #endif
 		for (unsigned i = 0; i < nfds; i++) {
 			pfds[i].revents = 0;
-			lxp_fd_t *s = fd_slot(proc, pfds[i].fd);
+			lxp_ofd_t *s = fd_slot(proc, pfds[i].fd);
 			if (!s)
 				continue;
 			int avail;
@@ -3141,7 +3213,7 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 
 static long sys_ioctl(lxp_proc_t *proc, long a0, long a1, long a2)
 {
-	lxp_fd_t *s = fd_slot(proc, (int)a0);
+	lxp_ofd_t *s = fd_slot(proc, (int)a0);
 	if (!s)
 		return -LXP_ENOTTY;
 	if (s->ops && s->ops->ioctl)
@@ -3949,7 +4021,7 @@ static int lxp_poll_scan(lxp_proc_t *proc, lxp_pollfd *pfds, unsigned nfds)
 	int ready = 0;
 	for (unsigned i = 0; i < nfds; i++) {
 		pfds[i].revents = 0;
-		lxp_fd_t *s = fd_slot(proc, pfds[i].fd);
+		lxp_ofd_t *s = fd_slot(proc, pfds[i].fd);
 		if (!s)
 			continue;
 		/* Dispatch readiness through the fd's ops; a kind with no poll fop

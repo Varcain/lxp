@@ -1388,7 +1388,7 @@ static void deferred_track_tty(lxp_proc_t *proc, long nr, long a0, long a1, long
 		return;
 	int fd = (int)a0;
 	unsigned long cmd = (unsigned long)a1;
-	if (fd < 0 || fd >= LXP_MAX_FDS || proc->fds[fd].kind != LXP_FD_CONSOLE ||
+	if (fd < 0 || fd >= LXP_MAX_FDS || lxp_fd_kind(proc, fd) != LXP_FD_CONSOLE ||
 	    (cmd != LXP_TCSETS && cmd != LXP_TCSETSW && cmd != LXP_TCSETSF))
 		return;
 	const void *ut = (const void *)(uintptr_t)(uint32_t)a2;
@@ -1714,6 +1714,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		if (!eng->exec_capture(s))
 			return LXP_RUN_ELAUNCH;
 	g_cfg = cfg;
+	lxp_fd_runtime_reset();
 	g_eng = eng;
 	g_lxp_rootfs_lo = NULL; /* the cpio span — a seam's svc discrimination treats a cpio PC */
 	g_lxp_rootfs_hi = NULL; /* as a program svc (the shared in-place text runs from here) */
@@ -1887,6 +1888,14 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				idle = 0;
 				continue;
 			}
+			if (lxp_fd_fork_inherit(ch) != 0) {
+				proc_mm_put(ch);
+				memset(ch, 0, sizeof(*ch));
+				coordinator_park_slot(eng, es);
+				eng->spawn_resume(es, par->region, &g_ctx[es], -LXP_EAGAIN);
+				idle = 0;
+				continue;
+			}
 			/* The struct copy inherits the parent's pointer, but every slot owns an
 			 * independent transient exec capture. The child has no pending exec yet. */
 			lxp_proc_bind_exec_capture(ch, eng->exec_capture(c));
@@ -1894,15 +1903,6 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * inside a handler, both parent and child may reach the restorer and each
 			 * therefore needs an independent copy of the active return chain. */
 			g_sig_save[c] = g_sig_save[es];
-#if LXP_ENABLE_DEV
-			lxp_dev_fork_inherit(ch); /* the child shares the parent's device opens */
-#endif
-#if LXP_ENABLE_NET
-			lxp_sock_fork_inherit(ch); /* the child shares the parent's socket opens */
-#endif
-#if LXP_ENABLE_NETFS
-			lxp_netfs_fork_inherit(ch); /* the child shares the parent's remote-fs opens */
-#endif
 			ch->pid = next_pid++;
 			ch->ppid = par->tgid;
 			ch->exited = ch->exit_group = ch->exec_pending = ch->fork_pending = 0;
@@ -1965,15 +1965,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				 * session: init+getty+inetd+dropbear+shell+members). Refuse the fork
 				 * (-ENOMEM) rather than share the parent's region and let the child
 				 * corrupt it; the caller sees a clean fork failure, not a fault. */
-#if LXP_ENABLE_DEV
-				lxp_dev_proc_exit(ch); /* undo the fd fork-inherit refcounts */
-#endif
-#if LXP_ENABLE_NET
-				lxp_sock_proc_exit(ch);
-#endif
-#if LXP_ENABLE_NETFS
-				lxp_netfs_proc_exit(ch);
-#endif
+				lxp_fd_close_all(ch); /* undo every inherited descriptor reference */
 				proc_mm_put(ch);
 				ch->alive = 0;
 				g_lxp_used[c] = 0;
@@ -2085,6 +2077,12 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			    launch(eng, es, nr, img_data, img_size, pid, ppid, eargc, ptrs, eptrs,
 				   rexec) != 0) {
 				region_release_if_owned(nr, es);
+				lxp_fd_close_all(&g_lxp_proc[es]);
+				for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
+					g_lxp_proc[es].fds[fd] = saved_fds[fd];
+					if (saved_fds[fd].ofd)
+						(void)lxp_fd_close(&g_lxp_proc[es], fd);
+				}
 				g_lxp_proc[es].mm_ref = 0;
 				g_lxp_proc[es].exit_status = 127;
 				g_lxp_proc[es].exit_reason = LXP_EXIT_REASON_EXEC_LOAD;
@@ -2096,6 +2094,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				idle = 0;
 				continue;
 			}
+			lxp_fd_close_all(&g_lxp_proc[es]); /* discard launch's fresh stdio */
 			memcpy(g_lxp_proc[es].fds, saved_fds, sizeof(saved_fds));
 			memcpy(g_lxp_proc[es].cwd, saved_cwd, sizeof(saved_cwd));
 			g_lxp_proc[es].sig_blocked = saved_mask;
@@ -2115,15 +2114,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			deferred_slot_reassign(es); /* cancel anything tied to the dying slot identity */
 			int cpid = p->pid, tgid = p->tgid, status = p->exit_status,
 			    vp = p->vfork_parent_slot, ppid = p->ppid;
-#if LXP_ENABLE_DEV
-			lxp_dev_proc_exit(p); /* release the exiting process's device opens */
-#endif
-#if LXP_ENABLE_NET
-			lxp_sock_proc_exit(p); /* release the exiting process's socket opens */
-#endif
-#if LXP_ENABLE_NETFS
-			lxp_netfs_proc_exit(p); /* release the exiting process's remote-fs opens */
-#endif
+			lxp_fd_close_all(p);
 			eng->abort_slot(es);
 			g_sig_save[es].depth = 0;
 			if (vp >= 0 && p->snap_region >= 0) {

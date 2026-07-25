@@ -111,8 +111,9 @@ static void pty_ends(int idx, int *masters, int *slaves)
 		if (!tab[s].alive)
 			continue;
 		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (tab[s].fds[fd].kind == LXP_FD_PTY && tab[s].fds[fd].file_idx == idx)
-				(tab[s].fds[fd].rw ? (*masters)++ : (*slaves)++);
+			if (lxp_fd_kind(&tab[s], fd) == LXP_FD_PTY &&
+			    lxp_fd_backing(&tab[s], fd) == idx)
+				(lxp_fd_direction(&tab[s], fd) ? (*masters)++ : (*slaves)++);
 	}
 }
 
@@ -130,8 +131,9 @@ static void pty_signal_slaves(int idx, int sig)
 		if (!tab[s].alive)
 			continue;
 		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (tab[s].fds[fd].kind == LXP_FD_PTY &&
-			    tab[s].fds[fd].file_idx == idx && tab[s].fds[fd].rw == 0) {
+			if (lxp_fd_kind(&tab[s], fd) == LXP_FD_PTY &&
+			    lxp_fd_backing(&tab[s], fd) == idx &&
+			    lxp_fd_direction(&tab[s], fd) == 0) {
 				tab[s].pending_sigs |= lxp_sig_bit(sig);
 				break; /* one delivery per proc */
 			}

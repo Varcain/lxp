@@ -45,8 +45,9 @@ static void pipe_ends(int pi, int *readers, int *writers)
 		if (!tab[s].alive)
 			continue;
 		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (tab[s].fds[fd].kind == LXP_FD_PIPE && tab[s].fds[fd].file_idx == pi)
-				(tab[s].fds[fd].rw ? (*writers)++ : (*readers)++);
+			if (lxp_fd_kind(&tab[s], fd) == LXP_FD_PIPE &&
+			    lxp_fd_backing(&tab[s], fd) == pi)
+				(lxp_fd_direction(&tab[s], fd) ? (*writers)++ : (*readers)++);
 	}
 }
 

@@ -156,6 +156,7 @@ static const lxp_run_config_t g_mock_cfg = {
 static int reset_state(void **state)
 {
 	(void)state;
+	lxp_fd_runtime_reset();
 	memset(g_lxp_proc, 0, sizeof(g_lxp_proc));
 	memset(g_lxp_used, 0, sizeof(g_lxp_used));
 	memset(g_deferred, 0, sizeof(g_deferred));

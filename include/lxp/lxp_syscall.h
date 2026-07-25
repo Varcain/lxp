@@ -444,22 +444,29 @@ typedef struct lxp_file {
 
 struct lxp_file_ops; /* per-fd-kind operation vtable; full definition in src/lxp_vfs.h */
 
-/** Open-file-descriptor slot. */
-typedef struct lxp_fd {
+/** Refcounted open-file description shared by dup() and inherited descriptors. */
+typedef struct lxp_ofd {
+	uint16_t refs; /**< Number of descriptor-table entries referring to this object. */
 	uint8_t kind;  /**< 0 = free, 1 = console, 2 = rootfs file, 3 = pipe, 4 = tmpfs,
 			*   5 = /proc, 6 = device (values 4-6 are private to the syscall +
 			*   device layers; only FD_DEV is exported below). */
 	uint8_t rw;    /**< pipe end: 0 = read, 1 = write (kind == pipe). */
-	uint8_t cloexec; /**< FD_CLOEXEC / O_CLOEXEC: closed on execve (dropbear's exec-status
-			  *   pipe relies on this to detect a successful exec of the shell). */
 	uint8_t nonblock; /**< O_NONBLOCK: a pipe read/write returns -EAGAIN instead of parking
 			   *   (dropbear's SIGCHLD self-pipe is drained with a non-blocking read
 			   *   loop; without this the final empty read parks forever). */
+	uint8_t _pad;
 	int file_idx;  /**< rootfs index (file) / pipe index (pipe) / open-pool index (device). */
 	size_t offset; /**< Read cursor (kind == file). */
 	const struct lxp_file_ops *ops; /**< read/write dispatch vtable for this fd's kind,
 					 *   set at creation via ops_for_kind() (the Linux
 					 *   struct file_operations pattern). */
+} lxp_ofd_t;
+
+/** One descriptor-table entry: descriptor-local flags plus an open-file description. */
+typedef struct lxp_fd {
+	uint16_t ofd; /**< Open-file-description pool index plus one; zero means free. */
+	uint8_t cloexec; /**< FD_CLOEXEC / O_CLOEXEC (descriptor-local). */
+	uint8_t _pad;
 } lxp_fd_t;
 
 /* fd kinds (lxp_fd_t.kind). Shared across the syscall dispatcher + the subsystem TUs
@@ -763,6 +770,20 @@ static inline int lxp_sig_blocked(const lxp_proc_t *proc, int sig)
  * all live procs' fds to count a pipe's open read/write ends (for EOF / EPIPE). */
 lxp_proc_t *lxp_proc_table(void);
 int lxp_proc_nslot(void);
+
+/** Descriptor introspection for backing-object layers that scan process tables. */
+lxp_ofd_t *lxp_fd_description(lxp_proc_t *proc, int fd);
+uint8_t lxp_fd_kind(const lxp_proc_t *proc, int fd);
+int lxp_fd_backing(const lxp_proc_t *proc, int fd);
+int lxp_fd_direction(const lxp_proc_t *proc, int fd);
+/** Take references for a shallow-copied descriptor table, or fail without changes. */
+int lxp_fd_fork_inherit(lxp_proc_t *child);
+/** Close one descriptor through the generic last-reference path. */
+int lxp_fd_close(lxp_proc_t *proc, int fd);
+/** Close every descriptor through the generic last-reference path. */
+void lxp_fd_close_all(lxp_proc_t *proc);
+/** Reset the per-run open-file-description pool after all tasks are stopped. */
+void lxp_fd_runtime_reset(void);
 
 /** @brief Install a kernel object (@p kind, @p idx) into @p p's fd table, returning the
  * lowest free fd or @c -LXP_EMFILE. Lets the socket bridge mint an accept(2) fd. */

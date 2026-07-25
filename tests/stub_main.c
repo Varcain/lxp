@@ -17,6 +17,7 @@ int main(void)
 	int failures = 0;
 #define LXP_SUITE(name, label)                                                                     \
 	printf("=== " label " ===\n");                                                             \
+	lxp_fd_runtime_reset();                                                                     \
 	failures += test_##name##_run();
 #include "framework/suites.inc"
 	printf("\n=== Summary: %d test group(s) had failures ===\n", failures);

@@ -105,7 +105,7 @@ static void test_net_socket_open_stat(void **state)
 	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0,
 				  0, 0);
 	assert_true(fd >= 3);
-	assert_int_equal(p.fds[fd].kind, LXP_FD_SOCKET);
+	assert_int_equal(lxp_fd_kind(&p, fd), LXP_FD_SOCKET);
 
 	/* fstat reports a socket. */
 	struct {
@@ -121,7 +121,7 @@ static void test_net_socket_open_stat(void **state)
 	assert_int_equal(st.st_mode & LXP_S_IFMT, LXP_S_IFSOCK);
 
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
-	assert_int_equal(p.fds[fd].kind, 0 /* FD_FREE */);
+	assert_int_equal(lxp_fd_kind(&p, fd), LXP_FD_FREE);
 
 	/* An unsupported family is rejected with the Linux errno. (SOCK_RAW is now
 	 * supported for ping — see test_net_raw_socket.) */
@@ -267,8 +267,8 @@ static void test_net_dup_close(void **state)
 	assert_true(fd >= 3);
 	long fd2 = lxp_syscall(&p, LXP_NR_dup, fd, 0, 0, 0, 0, 0);
 	assert_true(fd2 >= 3 && fd2 != fd);
-	assert_int_equal(p.fds[fd2].kind, LXP_FD_SOCKET);
-	assert_int_equal(p.fds[fd2].file_idx, p.fds[fd].file_idx); /* share the open */
+	assert_int_equal(lxp_fd_kind(&p, fd2), LXP_FD_SOCKET);
+	assert_int_equal(lxp_fd_backing(&p, fd2), lxp_fd_backing(&p, fd)); /* share the open */
 
 	/* Closing one dup keeps the open alive; closing the last frees it. Then a
 	 * fresh socket reuses the pool slot (no leak). */
@@ -407,7 +407,7 @@ static void test_net_raw_socket(void **state)
 				  LXP_IPPROTO_ICMP, 0, 0, 0);
 	assert_true(fd != -LXP_EPROTONOSUPPORT);
 	if (fd >= 3) {
-		assert_int_equal(p.fds[fd].kind, LXP_FD_SOCKET);
+		assert_int_equal(lxp_fd_kind(&p, fd), LXP_FD_SOCKET);
 		lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 	}
 }
@@ -456,7 +456,7 @@ static void test_net_server_accept(void **state)
 	long cfd = call_pump(&p, LXP_NR_accept, ls, (long)(uintptr_t)&pa,
 			     (long)(uintptr_t)&palen, 0, 0, 0);
 	assert_true(cfd >= 3);
-	assert_int_equal(p.fds[cfd].kind, LXP_FD_SOCKET);
+	assert_int_equal(lxp_fd_kind(&p, cfd), LXP_FD_SOCKET);
 	assert_int_equal(pa.sin_family, LXP_AF_INET);
 
 	/* host -> guest over the accepted fd */

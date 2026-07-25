@@ -41,7 +41,7 @@ static inline int lxp_test_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_
 		lxp_proc_t *owner;
 		lxp_exec_capture_t capture;
 	};
-	static struct capture_slot slots[8];
+	static struct capture_slot slots[32];
 	struct capture_slot *free_slot = NULL;
 	for (size_t i = 0; i < sizeof(slots) / sizeof(slots[0]); i++) {
 		if (slots[i].owner == proc) {

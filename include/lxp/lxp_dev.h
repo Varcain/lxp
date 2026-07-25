@@ -87,12 +87,13 @@ struct lxp_dev {
 /**
  * @brief Per-open state, pooled (the fd slot is too small for driver cursors).
  *
- * A device fd's @c file_idx indexes @c g_lnx_devopen[]. fork/dup share an open
- * (refcounted); the last close calls @c ops->release.
+ * A device open-file description's @c file_idx indexes @c g_lnx_devopen[].
+ * Descriptor aliases are refcounted by the generic VFS layer; the last
+ * description close calls @c ops->release.
  */
 struct lxp_dev_open {
 	uint8_t used;	 /**< Slot allocated. */
-	uint8_t refs;	 /**< Shares across fork/dup; release at 0. */
+	uint16_t refs;	 /**< Distinct open-file descriptions; release at 0. */
 	uint8_t dev;	 /**< Registered-device index. */
 	uint16_t oflags; /**< open(2) flags (O_NONBLOCK gates blocking). */
 	uint32_t pos;	 /**< Seek cursor (fb byte offset, ...). */
@@ -158,8 +159,6 @@ int lxp_dev_lookup(const char *abspath);
 long lxp_dev_open_new(lxp_proc_t *p, int devidx, int flags);
 /** Drop a reference on open @p oi (close/exit); @c ops->release at the last. */
 void lxp_dev_close(int oi);
-/** Add a reference on open @p oi (dup/fork inheritance). */
-void lxp_dev_get(int oi);
 /** fcntl F_SETFL / F_GETFL: the open's status flags (O_NONBLOCK gates blocking;
  *  LVGL's evdev sets O_NONBLOCK via fcntl after open). */
 void lxp_dev_setfl(int oi, int flags);
@@ -202,8 +201,6 @@ long lxp_dev_retry(lxp_proc_t *p);
 void lxp_dev_tick(uint64_t now_us);
 /** Register the Kconfig-enabled class drivers (run once on the coordinator thread). */
 void lxp_dev_autoreg_all(void);
-/** fork: the child inherited the parent's FD_DEV fds — add a reference to each. */
-void lxp_dev_fork_inherit(lxp_proc_t *child);
 /** exit: release every FD_DEV open the process still holds. */
 void lxp_dev_proc_exit(lxp_proc_t *p);
 

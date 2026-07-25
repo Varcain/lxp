@@ -549,6 +549,88 @@ static void test_lnx_file(void **state)
 	assert_int_equal(st2.st_mode & 0xf000u, LXP_S_IFCHR);
 }
 
+static void test_dup_and_fork_share_file_offset(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+	lxp_proc_set_rootfs(&p, k_rootfs, K_ROOTFS_N);
+
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				  (long)(uintptr_t)"/etc/motd", LXP_O_RDONLY, 0, 0, 0);
+	long alias = lxp_syscall(&p, LXP_NR_dup, fd, 0, 0, 0, 0, 0);
+	assert_true(fd >= 3 && alias >= 3);
+	char buf[8];
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, fd, (long)(uintptr_t)buf, 7, 0, 0, 0),
+			 7);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, alias, (long)(uintptr_t)buf, 3, 0, 0, 0),
+			 3);
+	assert_memory_equal(buf, " to", 3);
+
+	lxp_proc_t child = p;
+	assert_int_equal(lxp_fd_fork_inherit(&child), 0);
+	assert_int_equal(lxp_syscall(&child, LXP_NR_read, fd, (long)(uintptr_t)buf, 3, 0, 0, 0),
+			 3);
+	assert_memory_equal(buf, " ov", 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, alias, (long)(uintptr_t)buf, 4, 0, 0, 0),
+			 4);
+	assert_memory_equal(buf, "eRTO", 4);
+	lxp_fd_close_all(&child);
+	lxp_fd_close_all(&p);
+}
+
+static void test_eventfd_alias_survives_peer_close(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+
+	long fd = lxp_syscall(&p, LXP_NR_eventfd2, 0, 0, 0, 0, 0, 0);
+	long alias = lxp_syscall(&p, LXP_NR_dup, fd, 0, 0, 0, 0, 0);
+	assert_true(fd >= 3 && alias >= 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, alias, 0, 0, 0, 0, 0), 0);
+	uint64_t one = 1, value = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, fd, (long)(uintptr_t)&one,
+				     sizeof(one), 0, 0, 0),
+			 sizeof(one));
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, fd, (long)(uintptr_t)&value,
+				     sizeof(value), 0, 0, 0),
+			 sizeof(value));
+	assert_int_equal(value, 1);
+}
+
+static void test_maximum_descriptor_aliases_keep_last_reference_live(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+	lxp_proc_set_rootfs(&p, k_rootfs, K_ROOTFS_N);
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				  (long)(uintptr_t)"/etc/motd", LXP_O_RDONLY, 0, 0, 0);
+	assert_true(fd >= 3);
+	while (lxp_syscall(&p, LXP_NR_dup, fd, 0, 0, 0, 0, 0) >= 0)
+		;
+
+	lxp_proc_t children[LXP_NSLOT - 1];
+	for (int i = 0; i < LXP_NSLOT - 1; i++) {
+		children[i] = p;
+		assert_int_equal(lxp_fd_fork_inherit(&children[i]), 0);
+	}
+	lxp_fd_close_all(&p);
+	for (int i = 0; i < LXP_NSLOT - 2; i++)
+		lxp_fd_close_all(&children[i]);
+
+	char byte = 0;
+	assert_int_equal(lxp_syscall(&children[LXP_NSLOT - 2], LXP_NR_read, fd,
+				     (long)(uintptr_t)&byte, 1, 0, 0, 0),
+			 1);
+	assert_int_equal(byte, 'W');
+	lxp_fd_close_all(&children[LXP_NSLOT - 2]);
+}
+
 /* Writable tmpfs overlay: O_CREAT makes a file, O_APPEND extends it, reads see it. */
 static void test_lnx_tmpfs(void **state)
 {
@@ -1034,6 +1116,9 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_init_stubs),
 		cmocka_unit_test(test_lnx_setup_stack),
 		cmocka_unit_test(test_lnx_file),
+		cmocka_unit_test(test_dup_and_fork_share_file_offset),
+		cmocka_unit_test(test_eventfd_alias_survives_peer_close),
+		cmocka_unit_test(test_maximum_descriptor_aliases_keep_last_reference_live),
 		cmocka_unit_test(test_lnx_exec_script_symlink_interp),
 		cmocka_unit_test(test_lnx_exec_capture_is_per_proc),
 		cmocka_unit_test(test_lnx_fcntl_getfl_access_mode),

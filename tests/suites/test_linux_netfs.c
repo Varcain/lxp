@@ -454,7 +454,7 @@ static void test_netfs_browse(void **state)
 	long fd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD,
 			    (long)(uintptr_t) "/mnt/pi/hello.txt", LXP_O_RDONLY, 0, 0, 0);
 	assert_true(fd >= 3);
-	assert_int_equal(p.fds[fd].kind, LXP_FD_NET);
+	assert_int_equal(lxp_fd_kind(&p, fd), LXP_FD_NET);
 	char rb[32] = {0};
 	long got = call_pump(&p, LXP_NR_read, fd, (long)(uintptr_t)rb, sizeof(rb), 0, 0, 0);
 	assert_int_equal(got, 12);
@@ -479,7 +479,7 @@ static void test_netfs_browse(void **state)
 	/* dup shares the open (same file_idx); closing one keeps it. */
 	long fd2 = lxp_syscall(&p, LXP_NR_dup, fd, 0, 0, 0, 0, 0);
 	assert_true(fd2 >= 3 && fd2 != fd);
-	assert_int_equal(p.fds[fd2].file_idx, p.fds[fd].file_idx);
+	assert_int_equal(lxp_fd_backing(&p, fd2), lxp_fd_backing(&p, fd));
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd2, 0, 0, 0, 0, 0), 0);
 

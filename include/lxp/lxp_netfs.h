@@ -99,8 +99,6 @@ int lxp_netfs_fstat(int oi, uint32_t *mode, uint64_t *size, uint64_t *mtime, uin
  *  No round-trip. @return the new absolute offset, or a negative Linux errno. */
 long lxp_netfs_lseek(int oi, long off, int whence);
 
-/** Add a reference on open @p oi (dup/fork inheritance). */
-void lxp_netfs_get(int oi);
 /** Drop a reference on open @p oi (close/exit); the last ref enqueues a background Tclunk.
  *  Never parks — close(2) always completes at once. */
 void lxp_netfs_close(int oi);
@@ -114,8 +112,6 @@ long lxp_netfs_retry(lxp_proc_t *p);
  *  reply is dropped rather than marshaled into a gone/resumed process, and clears netfs_req. */
 void lxp_netfs_cancel(lxp_proc_t *p);
 
-/** fork: the child inherited the parent's FD_NET fds — add a reference to each. */
-void lxp_netfs_fork_inherit(lxp_proc_t *child);
 /** exit: release every FD_NET open the process still holds (enqueues clunks). */
 void lxp_netfs_proc_exit(lxp_proc_t *p);
 

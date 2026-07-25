@@ -148,13 +148,6 @@ long lxp_dev_open_new(lxp_proc_t *p, int devidx, int flags)
 	return oi;
 }
 
-void lxp_dev_get(int oi)
-{
-	struct lxp_dev_open *o = open_slot(oi);
-	if (o)
-		lxp_pool_get(&o->refs);
-}
-
 void lxp_dev_setfl(int oi, int flags)
 {
 	struct lxp_dev_open *o = open_slot(oi);
@@ -411,18 +404,11 @@ void lxp_dev_tick(uint64_t now_us)
 }
 
 /* ---- fork / exit fd lifecycle ---------------------------------------------- */
-void lxp_dev_fork_inherit(lxp_proc_t *child)
-{
-	lxp_pool_fork_inherit(child, LXP_FD_DEV, lxp_dev_get);
-}
-
 void lxp_dev_proc_exit(lxp_proc_t *p)
 {
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (p->fds[fd].kind == LXP_FD_DEV) {
-			lxp_dev_close(p->fds[fd].file_idx);
-			p->fds[fd].kind = 0; /* FD_FREE (private to the syscall layer) */
-		}
+		if (lxp_fd_kind(p, fd) == LXP_FD_DEV)
+			(void)lxp_fd_close(p, fd);
 }
 
 /* ---- Kconfig-auto class registration --------------------------------------- */
