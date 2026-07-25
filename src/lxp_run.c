@@ -1055,8 +1055,9 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 		arena_mem = eng->dyn_pool(ridx, &arena_sz);
 		stack_lo = rw; /* the region tail is the stack; the arena is in PSRAM */
 	}
-	lxp_arena_init(&g_arenas[ridx], arena_mem, arena_sz);
-	lxp_proc_init(&g_lxp_proc[sidx], &g_arenas[ridx], 0x8000);
+	if (lxp_arena_init(&g_arenas[ridx], arena_mem, arena_sz) != LXP_OK ||
+	    lxp_proc_init(&g_lxp_proc[sidx], &g_arenas[ridx], 0x8000) != LXP_OK)
+		return -1;
 	lxp_proc_bind_exec_capture(&g_lxp_proc[sidx], eng->exec_capture(sidx));
 	/* A fresh image has no handler return chain from the previous slot owner.
 	 * execve likewise discards the old image's in-flight signal contexts. */
@@ -1083,7 +1084,6 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	g_lxp_proc[sidx].is_dynamic = dynamic; /* arena/libc RW data lives in the dyn_pool */
 	g_lxp_proc[sidx].stack_lo = (uintptr_t)stack_lo; /* writable-data / stack boundary (snapshot) */
 	g_lxp_proc[sidx].snap_region = -1;		     /* no vfork snapshot outstanding */
-	g_lxp_proc[sidx].umask = 022; /* standard default; a fork inherits it via the struct copy */
 	g_lxp_proc[sidx].vfork_parent_slot = -1;
 	/* comm = argv[0] basename (strip the login-shell leading '-') for ps/top. */
 	{
@@ -1322,7 +1322,7 @@ static void thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slo
 static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot,
 				  lxp_proc_t *proc, int sig, long ret)
 {
-	uintptr_t h = proc->sig_handler[sig];
+	uintptr_t h = lxp_sig_handler_get(proc, sig);
 	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
 		eng->spawn_resume(slot, proc->region, &g_ctx[slot], ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
 		return;
@@ -1570,7 +1570,7 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 		if (p->netfs_req >= 0)
 			lxp_netfs_cancel(p);
 #endif
-		lxp_fd_close_all(p);
+		lxp_proc_resources_put(p);
 		if (eng->map_device)
 			eng->map_device(s, 0, 0, 0);
 		p->dev_map_lo[0] = p->dev_map_hi[0] = 0;
@@ -1934,7 +1934,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				idle = 0;
 				continue;
 			}
-			if (lxp_fd_fork_inherit(ch) != 0) {
+			if (lxp_proc_resources_fork(ch, par, par->clone_flags) != 0) {
 				proc_mm_put(ch);
 				memset(ch, 0, sizeof(*ch));
 				coordinator_park_slot(eng, es);
@@ -2011,7 +2011,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				 * session: init+getty+inetd+dropbear+shell+members). Refuse the fork
 				 * (-ENOMEM) rather than share the parent's region and let the child
 				 * corrupt it; the caller sees a clean fork failure, not a fault. */
-				lxp_fd_close_all(ch); /* undo every inherited descriptor reference */
+				lxp_proc_resources_put(ch);
 				proc_mm_put(ch);
 				ch->alive = 0;
 				g_lxp_used[c] = 0;
@@ -2064,6 +2064,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			if (nr <
 			    0) { /* region exhaustion: kill THIS proc, do NOT tear down init. */
 				eng->abort_slot(es);
+				lxp_proc_resources_put(p);
 				proc_mm_put(p);
 				p->exit_status = 127;
 				p->exit_reason = LXP_EXIT_REASON_EXEC_RESOURCE;
@@ -2093,18 +2094,33 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				p->vfork_parent_slot = -1;
 				eng->spawn_resume(vp, g_lxp_proc[vp].region, &g_ctx[vp], pid);
 			}
-			/* fds + cwd survive execve: preserve across the relaunch (launch re-inits). */
-			lxp_fd_t saved_fds[LXP_MAX_FDS];
-			char saved_cwd[LXP_PATH_MAX];
+			/* execve gets a private descriptor table, preserves its descriptor
+			 * entries and fs context, and resets signal dispositions. */
+			if (lxp_proc_files_unshare(p) != 0) {
+				p->exec_pending = 0;
+				eng->spawn_resume(es, p->region, &g_ctx[es], -LXP_ENOMEM);
+				idle = 0;
+				continue;
+			}
+			/* Local exec already did this after validation. Remote exec reaches
+			 * its commit point here, after the fetch completed. */
+			for (int fd = 0; fd < LXP_MAX_FDS; fd++)
+				if (p->files->fd[fd].ofd && p->files->fd[fd].cloexec)
+					(void)lxp_fd_close(p, fd);
+			lxp_files_t *saved_files = p->files;
+			lxp_fs_context_t *saved_fs_context = p->fs_context;
+			lxp_sighand_t *old_sighand = p->sighand;
 			uint64_t saved_mask = p->sig_blocked; /* the signal mask survives execve (POSIX) */
 			int saved_pgid = p->pgid;	      /* the process group survives execve (POSIX) */
-			memcpy(saved_fds, p->fds, sizeof(saved_fds));
-			memcpy(saved_cwd, p->cwd, sizeof(saved_cwd));
 			int exec_region_reserved =
 				p->snap_region == nr && g_region_owner[nr] == es &&
 				g_region_refs[nr] == 1;
 			thread_group_stop_exec_peers(eng, es, 127);
 			proc_mm_put(p);
+			/* Transfer these objects across launch()'s proc reinitialization. */
+			p->files = NULL;
+			p->fs_context = NULL;
+			p->sighand = NULL;
 			if (!exec_region_reserved)
 				(void)region_reserve(nr, es);
 			eng->abort_slot(es);
@@ -2123,12 +2139,13 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			    launch(eng, es, nr, img_data, img_size, pid, ppid, eargc, ptrs, eptrs,
 				   rexec) != 0) {
 				region_release_if_owned(nr, es);
-				lxp_fd_close_all(&g_lxp_proc[es]);
-				for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-					g_lxp_proc[es].fds[fd] = saved_fds[fd];
-					if (saved_fds[fd].ofd)
-						(void)lxp_fd_close(&g_lxp_proc[es], fd);
-				}
+				lxp_proc_resources_put(&g_lxp_proc[es]);
+				lxp_proc_t old_resources = {
+					.files = saved_files,
+					.fs_context = saved_fs_context,
+					.sighand = old_sighand,
+				};
+				lxp_proc_resources_put(&old_resources);
 				g_lxp_proc[es].mm_ref = 0;
 				g_lxp_proc[es].exit_status = 127;
 				g_lxp_proc[es].exit_reason = LXP_EXIT_REASON_EXEC_LOAD;
@@ -2140,9 +2157,16 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				idle = 0;
 				continue;
 			}
-			lxp_fd_close_all(&g_lxp_proc[es]); /* discard launch's fresh stdio */
-			memcpy(g_lxp_proc[es].fds, saved_fds, sizeof(saved_fds));
-			memcpy(g_lxp_proc[es].cwd, saved_cwd, sizeof(saved_cwd));
+			/* Discard launch's fresh files/fs, retain its default sighand, then
+			 * transfer the exec-surviving objects without changing their refs. */
+			lxp_sighand_t *fresh_sighand = g_lxp_proc[es].sighand;
+			g_lxp_proc[es].sighand = NULL;
+			lxp_proc_resources_put(&g_lxp_proc[es]);
+			g_lxp_proc[es].files = saved_files;
+			g_lxp_proc[es].fs_context = saved_fs_context;
+			g_lxp_proc[es].sighand = fresh_sighand;
+			lxp_proc_t discarded_sighand = {.sighand = old_sighand};
+			lxp_proc_resources_put(&discarded_sighand);
 			g_lxp_proc[es].sig_blocked = saved_mask;
 			g_lxp_proc[es].tgid = tgid;
 			g_lxp_proc[es].pgid = saved_pgid;
@@ -2160,7 +2184,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			deferred_slot_reassign(es); /* cancel anything tied to the dying slot identity */
 			int cpid = p->pid, tgid = p->tgid, status = p->exit_status,
 			    vp = p->vfork_parent_slot, ppid = p->ppid;
-			lxp_fd_close_all(p);
+			lxp_proc_resources_put(p);
 			eng->abort_slot(es);
 			g_sig_save[es].depth = 0;
 			if (vp >= 0 && p->snap_region >= 0) {
@@ -2296,7 +2320,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					 * default-ignore / stop signal leaves it stopped. */
 					int ps = pending_deliverable(p);
 					if (ps == LXP_SIGKILL ||
-					    (ps && p->sig_handler[ps] == LXP_SIG_DFL &&
+					    (ps && lxp_sig_handler_get(p, ps) == LXP_SIG_DFL &&
 					     !sig_default_ignore(ps) && !sig_is_stop(ps))) {
 						p->pending_sigs &= ~lxp_sig_bit(ps);
 						p->stopped = 0;
@@ -2486,7 +2510,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				if (r != -LXP_EAGAIN) {
 					p->pipe_wait = 0;
 					if (r == -LXP_EPIPE &&
-					    p->sig_handler[LXP_SIGPIPE] != LXP_SIG_IGN) {
+					    lxp_sig_handler_get(p, LXP_SIGPIPE) != LXP_SIG_IGN) {
 						/* broken pipe + default SIGPIPE → terminate the
 						 * writer; the LXP_EV_EXIT pass reaps it (no live thread). */
 						p->exited = 1;

@@ -61,6 +61,7 @@ target_include_directories(lxp_test_stub PRIVATE
 
 # Feature gates for the TUs under test (value-based, matching the module's #if LXP_ENABLE_X).
 target_compile_definitions(lxp_test_stub PRIVATE
+  LXP_RESOURCE_POOL_COUNT=64
   LXP_ENABLE_DEV=1
   LXP_ENABLE_PTY=1
   LXP_ENABLE_NET=1
@@ -112,7 +113,10 @@ target_include_directories(lxp_coord_test PRIVATE
 # in host-provided globals (g_lxp_disp_ops, lxp_netfs_exec_stage) that only the port /
 # stub supplies. Keeping them off avoids re-stubbing them for no added coordinator coverage.
 target_compile_options(lxp_coord_test PRIVATE -Wall -Wextra)
-target_compile_definitions(lxp_coord_test PRIVATE LXP_ENABLE_FPU_CONTEXT=1)
+target_compile_definitions(lxp_coord_test PRIVATE
+  LXP_RESOURCE_POOL_COUNT=64
+  LXP_ENABLE_FPU_CONTEXT=1
+)
 target_link_libraries(lxp_coord_test PRIVATE cmocka-static pthread rt m)
 if(LXP_SANITIZE)
   target_compile_options(lxp_coord_test PRIVATE

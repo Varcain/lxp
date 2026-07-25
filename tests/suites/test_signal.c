@@ -36,18 +36,28 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 #define SIG_CUSTOM 10 /* a signal with a custom handler (not SIGCHLD, in [1, NSIG)) */
 #define SIG_NESTED 12 /* a different catchable signal, eligible during SIG_CUSTOM */
 
+static lxp_sighand_t g_test_sighand;
+
+static void setup_signal_proc(lxp_proc_t *p)
+{
+	memset(p, 0, sizeof(*p));
+	memset(&g_test_sighand, 0, sizeof(g_test_sighand));
+	g_test_sighand.refs = 1;
+	p->sighand = &g_test_sighand;
+}
+
 static void test_sig_swallowed(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
-	p.sig_handler[SIG_CUSTOM] = LXP_SIG_IGN;
+	setup_signal_proc(&p);
+	p.sighand->handler[SIG_CUSTOM] = LXP_SIG_IGN;
 	assert_int_equal(sig_swallowed(&p, SIG_CUSTOM), 1); /* SIG_IGN */
-	p.sig_handler[LXP_SIGCHLD] = LXP_SIG_DFL;
+	p.sighand->handler[LXP_SIGCHLD] = LXP_SIG_DFL;
 	assert_int_equal(sig_swallowed(&p, LXP_SIGCHLD), 1); /* SIG_DFL of a default-ignore signal */
-	p.sig_handler[LXP_SIGCONT] = LXP_SIG_DFL;
+	p.sighand->handler[LXP_SIGCONT] = LXP_SIG_DFL;
 	assert_int_equal(sig_swallowed(&p, LXP_SIGCONT), 1); /* SIGCONT is default-ignore too (fg's kill(-pgid)) */
-	p.sig_handler[SIG_CUSTOM] = 0x4321;
+	p.sighand->handler[SIG_CUSTOM] = 0x4321;
 	assert_int_equal(sig_swallowed(&p, SIG_CUSTOM), 0); /* a real handler is not swallowed */
 }
 
@@ -55,10 +65,10 @@ static void test_resolve_handler_nonfdpic(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
+	setup_signal_proc(&p);
 	p.is_fdpic = 0;
-	p.sig_handler[SIG_CUSTOM] = 0xaaaa0000;
-	p.sig_restorer = 0xbbbb0000;
+	p.sighand->handler[SIG_CUSTOM] = 0xaaaa0000;
+	p.sighand->restorer = 0xbbbb0000;
 	uintptr_t entry, restorer;
 	uint32_t got;
 	resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer);
@@ -74,10 +84,10 @@ static void test_resolve_handler_fdpic(void **st)
 	uint32_t hdesc[2] = {0xc0de0000, 0x60700000}; /* {entry, GOT} */
 	uint32_t rdesc[2] = {0x5e570000, 0};	      /* {restorer, -} */
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
+	setup_signal_proc(&p);
 	p.is_fdpic = 1;
-	p.sig_handler[SIG_CUSTOM] = (uintptr_t)hdesc;
-	p.sig_restorer = (uintptr_t)rdesc;
+	p.sighand->handler[SIG_CUSTOM] = (uintptr_t)hdesc;
+	p.sighand->restorer = (uintptr_t)rdesc;
 	uintptr_t entry, restorer;
 	uint32_t got;
 	resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer);
@@ -90,7 +100,7 @@ static void test_deliver_bad_signal(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
+	setup_signal_proc(&p);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	deliver_signal(&f, &p, LXP_NSIG, 0); /* >= NSIG */
@@ -103,8 +113,8 @@ static void test_deliver_ignored(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
-	p.sig_handler[SIG_CUSTOM] = LXP_SIG_IGN;
+	setup_signal_proc(&p);
+	p.sighand->handler[SIG_CUSTOM] = LXP_SIG_IGN;
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[15] = 0x1000;
@@ -119,8 +129,8 @@ static void test_deliver_default_terminates(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
-	p.sig_handler[SIG_CUSTOM] = LXP_SIG_DFL;
+	setup_signal_proc(&p);
+	p.sighand->handler[SIG_CUSTOM] = LXP_SIG_DFL;
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	g_park_calls = 0;
@@ -134,8 +144,8 @@ static void test_deliver_sigchld_swallowed(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
-	p.sig_handler[LXP_SIGCHLD] = LXP_SIG_DFL;
+	setup_signal_proc(&p);
+	p.sighand->handler[LXP_SIGCHLD] = LXP_SIG_DFL;
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	deliver_signal(&f, &p, LXP_SIGCHLD, 7);
@@ -150,8 +160,8 @@ static void test_deliver_sigcont_swallowed(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
-	p.sig_handler[LXP_SIGCONT] = LXP_SIG_DFL;
+	setup_signal_proc(&p);
+	p.sighand->handler[LXP_SIGCONT] = LXP_SIG_DFL;
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	g_park_calls = 0;
@@ -167,10 +177,10 @@ static void test_deliver_and_restore(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
+	setup_signal_proc(&p);
 	p.is_fdpic = 0;
-	p.sig_handler[SIG_CUSTOM] = 0xdead0000;	 /* handler entry */
-	p.sig_restorer = 0xbeef0000; /* sa_restorer */
+	p.sighand->handler[SIG_CUSTOM] = 0xdead0000;	 /* handler entry */
+	p.sighand->restorer = 0xbeef0000; /* sa_restorer */
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	struct lxp_fp_context fp;
@@ -224,7 +234,7 @@ static void test_sig_restore_noop(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
+	setup_signal_proc(&p);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[0] = 0x1234;
@@ -241,10 +251,10 @@ static void test_nested_delivery_restores_lifo(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
-	p.sig_handler[SIG_CUSTOM] = 0xdead0000;
-	p.sig_handler[SIG_NESTED] = 0xcafe0000;
-	p.sig_restorer = 0xbeef0000;
+	setup_signal_proc(&p);
+	p.sighand->handler[SIG_CUSTOM] = 0xdead0000;
+	p.sighand->handler[SIG_NESTED] = 0xcafe0000;
+	p.sighand->restorer = 0xbeef0000;
 	p.sig_blocked = lxp_sig_bit(LXP_SIGALRM);
 
 	struct lxp_frame f;
@@ -319,10 +329,10 @@ static void test_nested_sigsuspend_mask_restore(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
-	p.sig_handler[SIG_CUSTOM] = 0xdead0000;
-	p.sig_handler[SIG_NESTED] = 0xcafe0000;
-	p.sig_restorer = 0xbeef0000;
+	setup_signal_proc(&p);
+	p.sighand->handler[SIG_CUSTOM] = 0xdead0000;
+	p.sighand->handler[SIG_NESTED] = 0xcafe0000;
+	p.sighand->restorer = 0xbeef0000;
 	uint64_t before_suspend = lxp_sig_bit(LXP_SIGALRM);
 	uint64_t wait_mask = lxp_sig_bit(LXP_SIGINT);
 	p.sig_blocked = wait_mask;
@@ -352,14 +362,14 @@ static void test_signal_depth_overflow_is_contained(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
+	setup_signal_proc(&p);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[15] = 0x12340000;
 	g_sig_save[0].depth = 0;
 	g_park_calls = 0;
 
-	p.sig_handler[SIG_CUSTOM] = 0x80000000u;
+	p.sighand->handler[SIG_CUSTOM] = 0x80000000u;
 	for (unsigned i = 0; i < LXP_SIGNAL_NEST_MAX; i++) {
 		/* A handler may explicitly unblock itself with rt_sigprocmask. Model
 		 * that legitimate recursive-delivery path without requiring one unique
@@ -385,10 +395,10 @@ static void test_deliver_masks_signal(void **st)
 {
 	(void)st;
 	lxp_proc_t p;
-	memset(&p, 0, sizeof(p));
+	setup_signal_proc(&p);
 	p.is_fdpic = 0;
-	p.sig_handler[SIG_CUSTOM] = 0xdead0000;
-	p.sig_restorer = 0xbeef0000;
+	p.sighand->handler[SIG_CUSTOM] = 0xdead0000;
+	p.sighand->restorer = 0xbeef0000;
 	p.sig_blocked = lxp_sig_bit(LXP_SIGALRM); /* a pre-existing block to preserve */
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));

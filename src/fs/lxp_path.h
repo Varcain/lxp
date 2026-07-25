@@ -15,7 +15,7 @@
 
 #include "lxp/lxp_syscall.h" /* lxp_proc_t */
 
-/* Resolve user path `in` against p->cwd into out[outlen] as a normalized absolute
+/* Resolve user path `in` against p->fs_context->cwd into out[outlen] as a normalized absolute
  * path. Returns 0, or a negative errno (-EFAULT / -ENAMETOOLONG).
  *
  * `in` MUST be a guest pointer: this rejects anything not wholly inside the

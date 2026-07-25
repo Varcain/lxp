@@ -755,6 +755,8 @@ static void test_teardown_releases_every_slot_resource(void **state)
 	(void)state;
 	const int s = 2;
 	lxp_proc_t *p = &g_lxp_proc[s];
+	static lxp_arena_t arena;
+	assert_int_equal(lxp_proc_init(p, &arena, 0), LXP_OK);
 	p->alive = 1;
 	p->region = 1;
 	p->mm_ref = 1;
@@ -763,7 +765,7 @@ static void test_teardown_releases_every_slot_resource(void **state)
 	g_lxp_used[s] = 1;
 	assert_true(region_reserve(1, s) != 0);
 	assert_true(region_reserve(2, s) != 0);
-	assert_true(lxp_fd_install(p, LXP_FD_CONSOLE, 0) >= 0);
+	assert_non_null(lxp_fd_description(p, 0));
 
 	coordinator_teardown_all(&g_mock_eng);
 
@@ -1273,14 +1275,18 @@ static void test_sig_stops_proc_predicate(void **state)
 {
 	(void)state;
 	lxp_proc_t *p = &g_lxp_proc[0];
-	p->sig_handler[LXP_SIGTSTP] = LXP_SIG_DFL;
+	static lxp_sighand_t sighand;
+	memset(&sighand, 0, sizeof(sighand));
+	sighand.refs = 1;
+	p->sighand = &sighand;
+	p->sighand->handler[LXP_SIGTSTP] = LXP_SIG_DFL;
 	assert_true(sig_is_stop(LXP_SIGTSTP));
 	assert_true(sig_is_stop(LXP_SIGSTOP));
 	assert_false(sig_is_stop(LXP_SIGINT));
 	assert_true(sig_stops_proc(p, LXP_SIGTSTP)); /* SIG_DFL → stops */
-	p->sig_handler[LXP_SIGTSTP] = 0x1000;	     /* a caught handler → runs it, no stop */
+	p->sighand->handler[LXP_SIGTSTP] = 0x1000;	     /* a caught handler → runs it, no stop */
 	assert_false(sig_stops_proc(p, LXP_SIGTSTP));
-	p->sig_handler[LXP_SIGSTOP] = 0x1000;	     /* SIGSTOP is uncatchable → always stops */
+	p->sighand->handler[LXP_SIGSTOP] = 0x1000;	     /* SIGSTOP is uncatchable → always stops */
 	assert_true(sig_stops_proc(p, LXP_SIGSTOP));
 	assert_false(sig_stops_proc(p, LXP_SIGINT)); /* not a stop signal */
 }

@@ -250,8 +250,8 @@ static void test_lnx_init_stubs(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_rt_sigaction, LXP_SIGINT,
 					 (long)(uintptr_t)act, (long)(uintptr_t)oact, 0, 0, 0),
 			 0);
-	assert_int_equal((uint32_t)p.sig_handler[LXP_SIGINT], 0x1234);
-	assert_int_equal((uint32_t)p.sig_restorer, 0x5678);
+	assert_int_equal((uint32_t)p.sighand->handler[LXP_SIGINT], 0x1234);
+	assert_int_equal((uint32_t)p.sighand->restorer, 0x5678);
 	assert_int_equal(oact[0], LXP_SIG_DFL); /* was unset (default) */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_rt_sigaction, 99, (long)(uintptr_t)act, 0,
 					 0, 0, 0),
@@ -578,6 +578,49 @@ static void test_dup_and_fork_share_file_offset(void **state)
 	assert_memory_equal(buf, "eRTO", 4);
 	lxp_fd_close_all(&child);
 	lxp_fd_close_all(&p);
+}
+
+static void test_clone_resource_sharing_flags(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t parent;
+	const int sig = 10;
+	setup_proc(&parent, &arena);
+	strcpy(parent.fs_context->cwd, "/parent");
+	parent.sighand->handler[sig] = 0x1234;
+
+	lxp_proc_t shared = parent;
+	assert_int_equal(lxp_proc_resources_fork(
+				 &shared, &parent,
+				 LXP_CLONE_FILES | LXP_CLONE_FS | LXP_CLONE_SIGHAND),
+			 0);
+	assert_ptr_equal(shared.files, parent.files);
+	assert_ptr_equal(shared.fs_context, parent.fs_context);
+	assert_ptr_equal(shared.sighand, parent.sighand);
+	strcpy(shared.fs_context->cwd, "/shared");
+	shared.sighand->handler[sig] = 0x5678;
+	assert_string_equal(parent.fs_context->cwd, "/shared");
+	assert_int_equal(parent.sighand->handler[sig], 0x5678);
+	assert_int_equal(lxp_fd_close(&shared, 0), 0);
+	assert_int_equal(lxp_fd_kind(&parent, 0), LXP_FD_FREE);
+	lxp_proc_resources_put(&shared);
+	assert_int_equal(parent.files->refs, 1);
+
+	lxp_proc_t copied = parent;
+	assert_int_equal(lxp_proc_resources_fork(&copied, &parent, 0), 0);
+	assert_ptr_not_equal(copied.files, parent.files);
+	assert_ptr_not_equal(copied.fs_context, parent.fs_context);
+	assert_ptr_not_equal(copied.sighand, parent.sighand);
+	strcpy(copied.fs_context->cwd, "/private");
+	copied.sighand->handler[sig] = 0x9abc;
+	assert_string_equal(parent.fs_context->cwd, "/shared");
+	assert_int_equal(parent.sighand->handler[sig], 0x5678);
+	assert_int_equal(lxp_fd_close(&copied, 1), 0);
+	assert_int_equal(lxp_fd_kind(&parent, 1), LXP_FD_CONSOLE);
+
+	lxp_proc_resources_put(&copied);
+	lxp_proc_resources_put(&parent);
 }
 
 static void test_eventfd_alias_survives_peer_close(void **state)
@@ -1117,6 +1160,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_setup_stack),
 		cmocka_unit_test(test_lnx_file),
 		cmocka_unit_test(test_dup_and_fork_share_file_offset),
+		cmocka_unit_test(test_clone_resource_sharing_flags),
 		cmocka_unit_test(test_eventfd_alias_survives_peer_close),
 		cmocka_unit_test(test_maximum_descriptor_aliases_keep_last_reference_live),
 		cmocka_unit_test(test_lnx_exec_script_symlink_interp),

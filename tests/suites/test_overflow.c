@@ -316,10 +316,10 @@ static void test_dup_clears_cloexec(void **st)
 	lxp_arena_t a;
 	lxp_proc_t p;
 	setup_proc(&p, &a);
-	p.fds[0].cloexec = 1; /* mark stdin close-on-exec */
+	p.files->fd[0].cloexec = 1; /* mark stdin close-on-exec */
 	long nf = lxp_syscall(&p, LXP_NR_dup, 0, 0, 0, 0, 0, 0);
 	assert_true(nf >= 3);
-	assert_int_equal(p.fds[nf].cloexec, 0);
+	assert_int_equal(p.files->fd[nf].cloexec, 0);
 }
 
 /* 2g: dup3(fd, fd, ...) is EINVAL (unlike dup2, which no-ops). */

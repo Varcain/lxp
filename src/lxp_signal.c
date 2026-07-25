@@ -23,8 +23,8 @@
 void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
 			    uintptr_t *restorer)
 {
-	uintptr_t h = proc->sig_handler[sig];
-	uintptr_t r = proc->sig_restorer;
+	uintptr_t h = lxp_sig_handler_get(proc, sig);
+	uintptr_t r = lxp_sig_restorer_get(proc);
 	if (proc->is_fdpic) {
 		*entry = ((const uint32_t *)h)[0];
 		*got = ((const uint32_t *)h)[1];
@@ -53,7 +53,7 @@ int sig_default_ignore(int sig)
  * parked proc — a parent must not die because a child exited or a job was resumed. */
 int sig_swallowed(const lxp_proc_t *proc, int sig)
 {
-	uintptr_t h = proc->sig_handler[sig];
+	uintptr_t h = lxp_sig_handler_get(proc, sig);
 	if (h == LXP_SIG_IGN)
 		return 1;
 	if (h == LXP_SIG_DFL && sig_default_ignore(sig))
@@ -78,7 +78,7 @@ int sig_stops_proc(const lxp_proc_t *proc, int sig)
 		return 0;
 	if (sig == LXP_SIGSTOP)
 		return 1;
-	return proc->sig_handler[sig] == LXP_SIG_DFL;
+	return lxp_sig_handler_get(proc, sig) == LXP_SIG_DFL;
 }
 
 /* Reserve the next host-owned signal frame and install the handler mask. For a
@@ -133,7 +133,7 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		f->r[0] = (uint32_t)ret;
 		return;
 	}
-	uintptr_t h = proc->sig_handler[sig];
+	uintptr_t h = lxp_sig_handler_get(proc, sig);
 	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
 		f->r[0] = (uint32_t)ret; /* SIG_IGN, or a default-ignore signal (SIGCHLD/SIGCONT/...) */
 		return;

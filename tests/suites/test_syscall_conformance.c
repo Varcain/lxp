@@ -655,8 +655,8 @@ static void test_conf_signal(void **state)
 	act[0] = 0xdeadbeef; /* sa_handler */
 	act[2] = 0xcafef00d; /* sa_restorer */
 	assert_int_equal(SC(&p, LXP_NR_rt_sigaction, LXP_SIGINT, (long)(uintptr_t)act, 0, 0, 0, 0), 0);
-	assert_int_equal(p.sig_handler[LXP_SIGINT], 0xdeadbeef);
-	assert_int_equal(p.sig_restorer, 0xcafef00d);
+	assert_int_equal(p.sighand->handler[LXP_SIGINT], 0xdeadbeef);
+	assert_int_equal(p.sighand->restorer, 0xcafef00d);
 	uint32_t *oact = lxp_conf_alloc(fx, 3 * sizeof(uint32_t));
 	assert_int_equal(SC(&p, LXP_NR_rt_sigaction, LXP_SIGINT, 0, (long)(uintptr_t)oact, 0, 0, 0), 0);
 	assert_int_equal(oact[0], 0xdeadbeef);

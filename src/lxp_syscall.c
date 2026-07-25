@@ -76,6 +76,49 @@ static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off);
  * entries in lxp_proc_t recover most of this pool's target-side footprint. */
 #define LXP_MAX_OFD (LXP_NSLOT * LXP_MAX_FDS)
 static lxp_ofd_t g_ofd[LXP_MAX_OFD];
+#ifndef LXP_RESOURCE_POOL_COUNT
+#define LXP_RESOURCE_POOL_COUNT LXP_NSLOT
+#endif
+LXP_STATIC_ASSERT(LXP_RESOURCE_POOL_COUNT >= LXP_NSLOT,
+		  "shared-resource pools must cover every live task");
+static lxp_files_t g_files[LXP_RESOURCE_POOL_COUNT];
+static lxp_fs_context_t g_fs_context[LXP_RESOURCE_POOL_COUNT];
+static lxp_sighand_t g_sighand[LXP_RESOURCE_POOL_COUNT];
+
+static lxp_files_t *files_new(void)
+{
+	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
+		if (g_files[i].refs == 0) {
+			memset(&g_files[i], 0, sizeof(g_files[i]));
+			g_files[i].refs = 1;
+			return &g_files[i];
+		}
+	return NULL;
+}
+
+static lxp_fs_context_t *fs_context_new(void)
+{
+	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
+		if (g_fs_context[i].refs == 0) {
+			memset(&g_fs_context[i], 0, sizeof(g_fs_context[i]));
+			g_fs_context[i].refs = 1;
+			g_fs_context[i].umask = 022;
+			g_fs_context[i].cwd[0] = '/';
+			return &g_fs_context[i];
+		}
+	return NULL;
+}
+
+static lxp_sighand_t *sighand_new(void)
+{
+	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
+		if (g_sighand[i].refs == 0) {
+			memset(&g_sighand[i], 0, sizeof(g_sighand[i]));
+			g_sighand[i].refs = 1;
+			return &g_sighand[i];
+		}
+	return NULL;
+}
 
 #if LXP_ENABLE_NET
 /* pselect6(2): select() over the poll machinery (busybox inetd + dropbear are
@@ -258,11 +301,16 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 		return LXP_ERR_INVALID_PARAM;
 
 	memset(proc, 0, sizeof(*proc));
+	proc->files = files_new();
+	proc->fs_context = fs_context_new();
+	proc->sighand = sighand_new();
+	if (!proc->files || !proc->fs_context || !proc->sighand) {
+		lxp_proc_resources_put(proc);
+		return LXP_ERR_NO_MEMORY;
+	}
 	proc->arena = arena;
 	proc->pid = 1;	    /* the initial task is tid/tgid 1 (ppid 0); fork assigns the rest */
 	proc->tgid = 1;
-	proc->cwd[0] = '/'; /* start at the root directory */
-	proc->cwd[1] = '\0';
 	/* fd 0/1/2 are the standard streams, routed to the caller's callbacks.
 	 * For console fds, file_idx marks the direction: 0 = readable (stdin),
 	 * 1 = writable (stdout/stderr); this survives F_DUPFD so a dup of stdin
@@ -270,13 +318,13 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 	if (fd_alloc(proc, LXP_FD_CONSOLE, 0, 0) != 0 ||
 	    fd_alloc(proc, LXP_FD_CONSOLE, 1, 0) != 1 ||
 	    fd_alloc(proc, LXP_FD_CONSOLE, 1, 0) != 2) {
-		lxp_fd_close_all(proc);
+		lxp_proc_resources_put(proc);
 		return LXP_ERR_NO_MEMORY;
 	}
 	if (brk_bytes) {
 		void *brk = lxp_arena_alloc(arena, brk_bytes);
 		if (!brk) {
-			lxp_fd_close_all(proc);
+			lxp_proc_resources_put(proc);
 			return LXP_ERR_NO_MEMORY;
 		}
 		proc->brk_base = (uintptr_t)brk;
@@ -495,10 +543,11 @@ void *lxp_setup_stack(void *stack, size_t stack_size, int argc, const char *cons
 /* Validate an fd index and return its slot, or NULL. */
 static lxp_ofd_t *fd_slot(lxp_proc_t *p, int fd)
 {
-	if (!p || fd < 0 || fd >= LXP_MAX_FDS || p->fds[fd].ofd == 0 ||
-	    p->fds[fd].ofd > LXP_MAX_OFD)
+	if (!p || !p->files || fd < 0 || fd >= LXP_MAX_FDS ||
+	    p->files->fd[fd].ofd == 0 ||
+	    p->files->fd[fd].ofd > LXP_MAX_OFD)
 		return NULL;
-	lxp_ofd_t *ofd = &g_ofd[p->fds[fd].ofd - 1u];
+	lxp_ofd_t *ofd = &g_ofd[p->files->fd[fd].ofd - 1u];
 	return ofd->refs ? ofd : NULL;
 }
 
@@ -817,7 +866,7 @@ static long fop_write_pipe(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t 
 		return 0; /* dispatch parks; coordinator completes via lxp_pipe_retry */
 	}
 	if (r == -LXP_EPIPE && /* no readers: SIGPIPE — default terminates the writer */
-	    p->sig_handler[LXP_SIGPIPE] != LXP_SIG_IGN) {
+	    lxp_sig_handler_get(p, LXP_SIGPIPE) != LXP_SIG_IGN) {
 		p->exited = 1;
 		p->exit_status = 128 + LXP_SIGPIPE;
 		p->exit_reason = LXP_EXIT_REASON_SIGNAL;
@@ -1522,6 +1571,8 @@ static long sys_munmap(lxp_proc_t *p, uintptr_t addr, size_t len)
 /* Claim the lowest free fd for (kind, idx, off); -EMFILE if the table is full. */
 static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
 {
+	if (!p || !p->files)
+		return -LXP_EMFILE;
 	int oi = -1;
 	for (int i = 0; i < LXP_MAX_OFD; i++)
 		if (g_ofd[i].refs == 0) {
@@ -1531,7 +1582,7 @@ static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
 	if (oi < 0)
 		return -LXP_EMFILE;
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-		if (p->fds[fd].ofd == 0) {
+		if (p->files->fd[fd].ofd == 0) {
 			g_ofd[oi].refs = 1;
 			g_ofd[oi].kind = kind;
 			g_ofd[oi].rw = 0;
@@ -1539,8 +1590,8 @@ static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
 			g_ofd[oi].file_idx = idx;
 			g_ofd[oi].offset = off;
 			g_ofd[oi].ops = ops_for_kind(kind);
-			p->fds[fd].ofd = (uint16_t)(oi + 1);
-			p->fds[fd].cloexec = 0;
+			p->files->fd[fd].ofd = (uint16_t)(oi + 1);
+			p->files->fd[fd].cloexec = 0;
 			return fd;
 		}
 	}
@@ -1656,7 +1707,7 @@ static long proc_open(lxp_proc_t *p, const char *abs)
 
 static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 {
-	(void)dirfd; /* dirfd is AT_FDCWD; relative paths resolve against p->cwd */
+	(void)dirfd; /* dirfd is AT_FDCWD; relative paths resolve against p->fs_context->cwd */
 	if (!path)
 		return -LXP_EFAULT;
 	char abspath[LXP_PATH_MAX];
@@ -1775,7 +1826,7 @@ int lxp_fd_close(lxp_proc_t *p, int fd)
 	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-	p->fds[fd] = (lxp_fd_t){0};
+	p->files->fd[fd] = (lxp_fd_t){0};
 	if (--s->refs == 0) {
 		if (s->ops && s->ops->close)
 			s->ops->close(p, s);
@@ -1786,26 +1837,38 @@ int lxp_fd_close(lxp_proc_t *p, int fd)
 
 void lxp_fd_close_all(lxp_proc_t *p)
 {
-	if (!p)
+	if (!p || !p->files)
 		return;
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (p->fds[fd].ofd)
+		if (p->files->fd[fd].ofd)
 			(void)lxp_fd_close(p, fd);
 }
 
 void lxp_fd_runtime_reset(void)
 {
 	memset(g_ofd, 0, sizeof(g_ofd));
+	memset(g_files, 0, sizeof(g_files));
+	memset(g_fs_context, 0, sizeof(g_fs_context));
+	memset(g_sighand, 0, sizeof(g_sighand));
 }
 
 int lxp_fd_fork_inherit(lxp_proc_t *child)
 {
-	if (!child)
+	if (!child || !child->files)
 		return -1;
+	lxp_files_t *source = child->files;
+	lxp_files_t *copy = files_new();
+	if (!copy)
+		return -1;
+	memcpy(copy->fd, source->fd, sizeof(copy->fd));
+	child->files = copy;
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
 		lxp_ofd_t *s = fd_slot(child, fd);
-		if (s && s->refs == UINT16_MAX)
+		if (s && s->refs == UINT16_MAX) {
+			memset(copy, 0, sizeof(*copy));
+			child->files = source;
 			return -1;
+		}
 	}
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
 		lxp_ofd_t *s = fd_slot(child, fd);
@@ -1813,6 +1876,111 @@ int lxp_fd_fork_inherit(lxp_proc_t *child)
 			s->refs++;
 	}
 	return 0;
+}
+
+static void files_put(lxp_proc_t *p)
+{
+	lxp_files_t *files = p ? p->files : NULL;
+	if (!files)
+		return;
+	if (files->refs == 0) {
+		p->files = NULL;
+		return;
+	}
+	if (--files->refs == 0) {
+		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
+			if (files->fd[fd].ofd)
+				(void)lxp_fd_close(p, fd);
+		memset(files, 0, sizeof(*files));
+	}
+	p->files = NULL;
+}
+
+void lxp_proc_resources_put(lxp_proc_t *p)
+{
+	if (!p)
+		return;
+	files_put(p);
+	if (p->fs_context) {
+		if (p->fs_context->refs > 0 && --p->fs_context->refs == 0)
+			memset(p->fs_context, 0, sizeof(*p->fs_context));
+		p->fs_context = NULL;
+	}
+	if (p->sighand) {
+		if (p->sighand->refs > 0 && --p->sighand->refs == 0)
+			memset(p->sighand, 0, sizeof(*p->sighand));
+		p->sighand = NULL;
+	}
+}
+
+int lxp_proc_files_unshare(lxp_proc_t *p)
+{
+	if (!p || !p->files)
+		return -1;
+	if (p->files->refs == 1)
+		return 0;
+	lxp_files_t *shared = p->files;
+	if (lxp_fd_fork_inherit(p) != 0)
+		return -1;
+	shared->refs--;
+	return 0;
+}
+
+int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent,
+			    uint32_t clone_flags)
+{
+	if (!child || !parent || !parent->files || !parent->fs_context ||
+	    !parent->sighand)
+		return -1;
+
+	child->files = NULL;
+	child->fs_context = NULL;
+	child->sighand = NULL;
+	if (clone_flags & LXP_CLONE_FILES) {
+		if (parent->files->refs == UINT16_MAX)
+			goto fail;
+		child->files = parent->files;
+		parent->files->refs++;
+	} else {
+		child->files = parent->files;
+		if (lxp_fd_fork_inherit(child) != 0) {
+			child->files = NULL;
+			goto fail;
+		}
+	}
+
+	if (clone_flags & LXP_CLONE_FS) {
+		if (parent->fs_context->refs == UINT16_MAX)
+			goto fail;
+		child->fs_context = parent->fs_context;
+		child->fs_context->refs++;
+	} else {
+		child->fs_context = fs_context_new();
+		if (!child->fs_context)
+			goto fail;
+		memcpy(child->fs_context->cwd, parent->fs_context->cwd,
+		       sizeof(child->fs_context->cwd));
+		child->fs_context->umask = parent->fs_context->umask;
+	}
+
+	if (clone_flags & LXP_CLONE_SIGHAND) {
+		if (parent->sighand->refs == UINT16_MAX)
+			goto fail;
+		child->sighand = parent->sighand;
+		child->sighand->refs++;
+	} else {
+		child->sighand = sighand_new();
+		if (!child->sighand)
+			goto fail;
+		memcpy(child->sighand->handler, parent->sighand->handler,
+		       sizeof(child->sighand->handler));
+		child->sighand->restorer = parent->sighand->restorer;
+	}
+	return 0;
+
+fail:
+	lxp_proc_resources_put(child);
+	return -1;
 }
 
 /* pipe(2)/pipe2(2): allocate a pipe object + a read-end / write-end fd pair. @p flags
@@ -1830,7 +1998,7 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 		return -LXP_EMFILE;
 	int rfd = -1, wfd = -1;
 	for (int fd = 0; fd < LXP_MAX_FDS && wfd < 0; fd++) {
-		if (p->fds[fd].ofd != 0)
+		if (p->files->fd[fd].ofd != 0)
 			continue;
 		if (rfd < 0)
 			rfd = fd;
@@ -1850,8 +2018,8 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 	fd_slot(p, rfd)->nonblock = nb;
 	fd_slot(p, wfd)->rw = 1;
 	fd_slot(p, wfd)->nonblock = nb;
-	p->fds[rfd].cloexec = cx;
-	p->fds[wfd].cloexec = cx;
+	p->files->fd[rfd].cloexec = cx;
+	p->files->fd[wfd].cloexec = cx;
 	fds[0] = rfd;
 	fds[1] = wfd;
 	return 0;
@@ -1877,13 +2045,13 @@ static long sys_dup2(lxp_proc_t *p, int oldfd, int newfd)
 	if (newfd < 0 || newfd >= LXP_MAX_FDS)
 		return -LXP_EBADF;
 	if (oldfd != newfd) {
-		uint16_t old_ofd = p->fds[oldfd].ofd;
+		uint16_t old_ofd = p->files->fd[oldfd].ofd;
 		if (fd_get(s) != 0)
 			return -LXP_EMFILE;
-		if (p->fds[newfd].ofd)
+		if (p->files->fd[newfd].ofd)
 			(void)sys_close(p, newfd);
-		p->fds[newfd].ofd = old_ofd;
-		p->fds[newfd].cloexec = 0; /* dup2/dup3 clear FD_CLOEXEC; dup3(O_CLOEXEC) re-sets it */
+		p->files->fd[newfd].ofd = old_ofd;
+		p->files->fd[newfd].cloexec = 0; /* dup2/dup3 clear FD_CLOEXEC; dup3(O_CLOEXEC) re-sets it */
 	}
 	return newfd;
 }
@@ -1895,11 +2063,11 @@ static long sys_dup(lxp_proc_t *p, int oldfd)
 	if (!s)
 		return -LXP_EBADF;
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-		if (p->fds[fd].ofd == 0) {
+		if (p->files->fd[fd].ofd == 0) {
 			if (fd_get(s) != 0)
 				return -LXP_EMFILE;
-			p->fds[fd].ofd = p->fds[oldfd].ofd;
-			p->fds[fd].cloexec = 0; /* dup(2) clears FD_CLOEXEC on the new fd */
+			p->files->fd[fd].ofd = p->files->fd[oldfd].ofd;
+			p->files->fd[fd].cloexec = 0; /* dup(2) clears FD_CLOEXEC on the new fd */
 			return fd;
 		}
 	}
@@ -2845,13 +3013,10 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	if (rr < 0)
 		return rr;
 #if LXP_ENABLE_NETFS_EXEC
-	/* exec a program off the remote mount (/mnt/pi/prog): capture argv, drop close-on-exec
-	 * fds, then park the ELF fetch. The netfs retry sets exec_pending + a SENTINEL exec_file_idx
-	 * on completion, and the run loop's EV_EXEC launches it from the RAM staging buffer. */
+	/* Exec a program off the remote mount (/mnt/pi/prog): capture argv and
+	 * park the ELF fetch. CLOEXEC is deliberately deferred until the fetched
+	 * image reaches the coordinator's exec commit point. */
 	if (lxp_netfs_lookup(execabs) >= 0) {
-		for (int cfd = 0; cfd < LXP_MAX_FDS; cfd++)
-			if (p->fds[cfd].ofd != 0 && p->fds[cfd].cloexec)
-				sys_close(p, cfd);
 		cap->argc = raw_argc;
 		return lxp_netfs_exec_fetch(p, execabs); /* parks, or a negative errno inline */
 	}
@@ -2928,8 +3093,10 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	/* close-on-exec: the fd table survives execve (the run loop preserves it), so drop the
 	 * FD_CLOEXEC fds here — the exec is committed past every error check. dropbear confirms
 	 * the shell exec'd by its exec-status pipe (FD_CLOEXEC) closing this way. */
+	if (lxp_proc_files_unshare(p) != 0)
+		return -LXP_ENOMEM;
 	for (int cfd = 0; cfd < LXP_MAX_FDS; cfd++)
-		if (p->fds[cfd].ofd != 0 && p->fds[cfd].cloexec)
+		if (p->files->fd[cfd].ofd != 0 && p->files->fd[cfd].cloexec)
 			sys_close(p, cfd);
 	cap->argc = argc;
 	p->exec_file_idx = idx;
@@ -2968,11 +3135,11 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 			if (from < 0 || from >= LXP_MAX_FDS)
 				from = 0;
 			for (int nfd = from; nfd < LXP_MAX_FDS; nfd++) {
-				if (proc->fds[nfd].ofd == 0) {
+				if (proc->files->fd[nfd].ofd == 0) {
 					if (fd_get(s) != 0)
 						return -LXP_EMFILE;
-					proc->fds[nfd].ofd = proc->fds[(int)a0].ofd;
-					proc->fds[nfd].cloexec =
+					proc->files->fd[nfd].ofd = proc->files->fd[(int)a0].ofd;
+					proc->files->fd[nfd].cloexec =
 						((int)a1 == LXP_F_DUPFD_CLOEXEC) ? 1 : 0;
 					return nfd;
 				}
@@ -3028,12 +3195,12 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 		/* F_SETFD/F_GETFD track close-on-exec (dropbear sets FD_CLOEXEC on its exec-status
 		 * pipe and detects a successful shell exec by that fd closing on execve). */
 		if ((int)a1 == LXP_F_SETFD) {
-			proc->fds[(int)a0].cloexec =
+			proc->files->fd[(int)a0].cloexec =
 				((int)a2 & LXP_FD_CLOEXEC) ? 1 : 0;
 			return 0;
 		}
 		if ((int)a1 == LXP_F_GETFD)
-			return proc->fds[(int)a0].cloexec ? LXP_FD_CLOEXEC : 0;
+			return proc->files->fd[(int)a0].cloexec ? LXP_FD_CLOEXEC : 0;
 		/* F_GETFL must report a truthful access mode. uClibc's fdopen() validates
 		 * the FILE* mode against it, so answering O_RDONLY (0) for a writable fd
 		 * fails fdopen(fd, "w") with EINVAL — which is how dropbearkey's .pub
@@ -3280,7 +3447,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_open: { /* legacy open(path, flags, mode): dirfd = cwd */
 		long f = sys_openat(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a0, (int)a1);
 		if (f >= 0 && ((int)a1 & LXP_O_CLOEXEC))
-			proc->fds[f].cloexec = 1;
+			proc->files->fd[f].cloexec = 1;
 		return f;
 	}
 	case LXP_NR_execve: /* (path, argv, envp) */
@@ -3289,7 +3456,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_openat: {
 		long f = sys_openat(proc, (int)a0, (const char *)(uintptr_t)a1, (int)a2);
 		if (f >= 0 && ((int)a2 & LXP_O_CLOEXEC))
-			proc->fds[f].cloexec = 1;
+			proc->files->fd[f].cloexec = 1;
 		return f;
 	}
 	case LXP_NR_close:
@@ -3307,7 +3474,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			return -LXP_EINVAL;
 		long nf = sys_dup2(proc, (int)a0, (int)a1);
 		if (nf >= 0 && ((int)a2 & LXP_O_CLOEXEC))
-			proc->fds[nf].cloexec = 1;
+			proc->files->fd[nf].cloexec = 1;
 		return nf;
 	}
 	case LXP_NR_lseek:
@@ -3459,12 +3626,12 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		char *buf = (char *)(uintptr_t)a0;
 		if (!buf)
 			return -LXP_EFAULT;
-		size_t len = strlen(proc->cwd) + 1;
+		size_t len = strlen(proc->fs_context->cwd) + 1;
 		if ((size_t)a1 < len)
 			return -LXP_ERANGE;
 		if (!user_ok(proc, buf, len, 1))
 			return -LXP_EFAULT;
-		memcpy(buf, proc->cwd, len);
+		memcpy(buf, proc->fs_context->cwd, len);
 		return (long)len;
 	}
 	case LXP_NR_chdir: {
@@ -3490,12 +3657,12 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 					return -LXP_ENOTDIR;
 			}
 		}
-		strcpy(proc->cwd, abspath);
+		strcpy(proc->fs_context->cwd, abspath);
 		return 0;
 	}
 	case LXP_NR_umask: { /* set the file-creation mask, return the previous (per-proc, inherited) */
-		int old = proc->umask;
-		proc->umask = (unsigned short)(a0 & 0777);
+		int old = proc->fs_context->umask;
+		proc->fs_context->umask = (unsigned short)(a0 & 0777);
 		return old;
 	}
 	case LXP_NR_setpgid: { /* (pid, pgid) — job control: put a process into a group */
@@ -3725,12 +3892,12 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		if (oact && !user_ok(proc, oact, 3 * sizeof(uint32_t), 1))
 			return -LXP_EFAULT;
 		if (oact) {
-			oact[0] = (uint32_t)proc->sig_handler[sig];
-			oact[2] = (uint32_t)proc->sig_restorer;
+			oact[0] = (uint32_t)lxp_sig_handler_get(proc, sig);
+			oact[2] = (uint32_t)lxp_sig_restorer_get(proc);
 		}
 		if (act) {
-			proc->sig_handler[sig] = act[0];
-			proc->sig_restorer = act[2];
+			proc->sighand->handler[sig] = act[0];
+			proc->sighand->restorer = act[2];
 		}
 		return 0;
 	}

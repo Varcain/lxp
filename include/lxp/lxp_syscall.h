@@ -497,6 +497,30 @@ typedef struct lxp_fd {
 #define LXP_MAX_FDS 32
 /** Maximum path length (absolute, normalized) the personality resolves. */
 #define LXP_PATH_MAX 256
+
+/** Refcounted Linux descriptor table. CLONE_FILES shares this object; ordinary
+ * fork receives a private table whose entries refer to the same open-file
+ * descriptions. */
+typedef struct lxp_files {
+	uint16_t refs;
+	lxp_fd_t fd[LXP_MAX_FDS];
+} lxp_files_t;
+
+/** Refcounted filesystem context shared by CLONE_FS. */
+typedef struct lxp_fs_context {
+	uint16_t refs;
+	unsigned short umask;
+	char cwd[LXP_PATH_MAX];
+} lxp_fs_context_t;
+
+/** Refcounted signal dispositions shared by CLONE_SIGHAND. Signal masks and
+ * pending signals remain task-local in @ref lxp_proc. */
+typedef struct lxp_sighand {
+	uint16_t refs;
+	uintptr_t handler[LXP_NSIG];
+	uintptr_t restorer;
+} lxp_sighand_t;
+
 /** Max exited children queued for wait4 (a pipeline forks several). */
 #define LXP_MAX_CHILD 8
 /** Bounds for an execve() argument vector captured for the engine to relaunch.
@@ -581,13 +605,13 @@ typedef struct lxp_proc {
 	void *io_ctx;			/**< Opaque, passed to @c write_fn / @c read_fn. */
 	const lxp_file_t *fs;	/**< Read-only rootfs table (NULL → no files). */
 	int fs_count;			/**< Number of entries in @c fs. */
-	lxp_fd_t fds[LXP_MAX_FDS]; /**< fd table; 0/1/2 are the std streams. */
+	lxp_files_t *files;	   /**< Refcounted descriptor table; 0/1/2 are std streams. */
 	int pid;			   /**< Linux task id (TID; 1 for the initial task). */
 	int tgid;			   /**< Linux thread-group/process id returned by getpid(). */
 	int ppid;			   /**< Parent process TGID (0 for the initial program). */
 	int pgid;			   /**< Process-group id (job control): pid at launch, inherited on fork, preserved across execve, set by setpgid/setsid. */
 	char comm[16];			   /**< Program name (argv[0] basename) for ps/top. */
-	char cwd[LXP_PATH_MAX];	   /**< Current working directory (absolute, normalized). */
+	lxp_fs_context_t *fs_context; /**< Refcounted cwd + umask context. */
 	int exited;			   /**< Set once @c exit / @c exit_group is called. */
 	int exit_group;		   /**< The pending exit was exit_group(), so all peer tasks exit. */
 	int exit_status;		   /**< Low 8 bits of the exit code. */
@@ -616,8 +640,7 @@ typedef struct lxp_proc {
 	 * sa_restorer the engine returns to after a handler is ONE value per proc, not one
 	 * per signal — uClibc-ng installs the same __restore_rt trampoline for every signal
 	 * — which saves ~3K of .bss across the slot table. */
-	uintptr_t sig_handler[LXP_NSIG];
-	uintptr_t sig_restorer;
+	lxp_sighand_t *sighand; /**< Refcounted signal dispositions. */
 	/* Blocked-signal mask (rt_sigprocmask): signals 1..64 map to bits 0..63. A pending
 	 * signal whose bit is set is deferred at delivery until unblocked; a handler blocks
 	 * its own signal for its duration (restored at rt_sigreturn). SIGKILL/SIGSTOP never. */
@@ -665,7 +688,6 @@ typedef struct lxp_proc {
 	int fork_pending; /**< This proc issued vfork/fork/clone; coordinator spawns a child. */
 	int is_thread;	  /**< This proc is a pthread: shares its creator's region for life. */
 	int is_fdpic;	  /**< Program is FDPIC: signal handlers/restorers are funcdescs {entry,GOT}. */
-	unsigned short umask; /**< umask(2) file-creation mask; 022 at launch, inherited on fork. */
 	uint32_t clone_flags;	     /**< Pending clone resource-sharing flags. */
 	uintptr_t clone_child_stack; /**< clone(2) child_stack arg: the new thread runs on this. */
 	int sigsuspend_pending;	     /**< Parked in rt_sigsuspend; woken by a delivered signal (the
@@ -766,6 +788,20 @@ static inline int lxp_sig_blocked(const lxp_proc_t *proc, int sig)
 	return (proc->sig_blocked & lxp_sig_bit(sig)) != 0;
 }
 
+/** Read a disposition defensively; an uninitialized/contained task has all
+ * default dispositions. */
+static inline uintptr_t lxp_sig_handler_get(const lxp_proc_t *proc, int sig)
+{
+	return (proc && proc->sighand && sig >= 0 && sig < LXP_NSIG)
+		       ? proc->sighand->handler[sig]
+		       : LXP_SIG_DFL;
+}
+
+static inline uintptr_t lxp_sig_restorer_get(const lxp_proc_t *proc)
+{
+	return (proc && proc->sighand) ? proc->sighand->restorer : 0;
+}
+
 /** @brief Proc-table accessors (defined in the run loop) so the pipe layer can scan
  * all live procs' fds to count a pipe's open read/write ends (for EOF / EPIPE). */
 lxp_proc_t *lxp_proc_table(void);
@@ -778,6 +814,13 @@ int lxp_fd_backing(const lxp_proc_t *proc, int fd);
 int lxp_fd_direction(const lxp_proc_t *proc, int fd);
 /** Take references for a shallow-copied descriptor table, or fail without changes. */
 int lxp_fd_fork_inherit(lxp_proc_t *child);
+/** Acquire fork/clone resource ownership after a shallow task-state copy. */
+int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent,
+			    uint32_t clone_flags);
+/** Drop one task's files/fs/sighand ownership, closing descriptors at the last table user. */
+void lxp_proc_resources_put(lxp_proc_t *proc);
+/** Make a shared descriptor table private while retaining its open descriptions. */
+int lxp_proc_files_unshare(lxp_proc_t *proc);
 /** Close one descriptor through the generic last-reference path. */
 int lxp_fd_close(lxp_proc_t *proc, int fd);
 /** Close every descriptor through the generic last-reference path. */

@@ -48,7 +48,7 @@ static void test_path_normalize(void **s)
 	lxp_arena_t arena;
 	lxp_proc_t p;
 	setup_proc(&p, &arena);
-	strcpy(p.cwd, "/foo");
+	strcpy(p.fs_context->cwd, "/foo");
 	char out[LXP_PATH_MAX];
 
 	assert_int_equal(resolve_path(&p, "/a/./b", out, sizeof(out)), 0);

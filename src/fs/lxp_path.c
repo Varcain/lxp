@@ -73,7 +73,7 @@ long resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen)
 	char joined[LXP_PATH_MAX];
 	size_t jl = 0;
 	if (in[0] != '/') { /* prefix the cwd (which is absolute + normalized) */
-		for (const char *c = p->cwd; *c; c++) {
+		for (const char *c = p->fs_context->cwd; *c; c++) {
 			if (jl + 2 >= sizeof(joined))
 				return -LXP_ENAMETOOLONG;
 			joined[jl++] = *c;
