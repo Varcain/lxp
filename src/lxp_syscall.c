@@ -199,7 +199,7 @@ static lxp_mm_t *mm_new(void)
 		if (g_mm[i].refs == 0) {
 			memset(&g_mm[i], 0, sizeof(g_mm[i]));
 			g_mm[i].refs = 1;
-			g_mm[i].region = -1;
+			g_mm[i].region = lxp_region_ref_none();
 			return &g_mm[i];
 		}
 	return NULL;
@@ -227,11 +227,12 @@ static long sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwf
 /* The pipe subsystem (ring buffer + read/write/poll ops) lives in src/fs/lxp_pipe.c;
  * this dispatcher calls it via fs/lxp_pipe.h. */
 
-/* lxp_proc_table / lxp_proc_nslot enumerate the live procs (used by the pipe layer's
+/* lxp_proc_at / lxp_proc_nslot enumerate the live procs (used by the pipe layer's
  * open-ends count). Weak fallbacks so the host syscall test — which links these layers
  * but not the run loop — resolves them; the run loop supplies the strong versions. */
-__attribute__((weak)) lxp_proc_t *lxp_proc_table(void)
+__attribute__((weak)) lxp_proc_t *lxp_proc_at(int slot)
 {
+	(void)slot;
 	return NULL;
 }
 __attribute__((weak)) int lxp_proc_nslot(void)
@@ -2208,8 +2209,8 @@ void lxp_proc_group_put(lxp_proc_t *p)
 static void proc_child_reset(lxp_proc_t *child)
 {
 	memset(child, 0, sizeof(*child));
-	child->vfork_parent_slot = -1;
-	child->snap_region = -1;
+	child->vfork_parent = lxp_slot_ref_none();
+	child->snapshot = lxp_region_ref_none();
 }
 
 void lxp_proc_child_discard(lxp_proc_t *child)
@@ -3902,11 +3903,12 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		 * syscall tests do not register their caller in a run-loop table, so
 		 * retain one for the process making this syscall. */
 		unsigned live = 0;
-		lxp_proc_t *tab = lxp_proc_table();
 		int nslot = lxp_proc_nslot();
-		for (int i = 0; tab && i < nslot; i++)
-			if (tab[i].alive && live < UINT16_MAX)
+		for (int i = 0; i < nslot; i++) {
+			lxp_proc_t *candidate = lxp_proc_at(i);
+			if (candidate && candidate->alive && live < UINT16_MAX)
 				live++;
+		}
 		si->procs = (uint16_t)(live ? live : 1u);
 		return 0;
 	}

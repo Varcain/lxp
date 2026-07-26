@@ -13,8 +13,8 @@
  *
  * This dedicated binary #includes the coordinator TU whole to reach its static
  * helpers, and drives them against a mock engine (lxp_os_ops_t) with NO guest
- * threads: the tests set up g_lxp_proc[] by hand, call the helper, and assert on the
- * recorded engine calls and the resulting process state.
+ * threads: the tests prepare private slot-runtime records, call the helper, and
+ * assert on the recorded engine calls and resulting process state.
  */
 #include <setjmp.h> /* cmocka ordering */
 #include <stdarg.h>
@@ -24,8 +24,8 @@
 
 #include <cmocka.h>
 
-/* Pull in the coordinator: this defines g_lxp_proc / g_lxp_used / g_ctx and the
- * OS-service symbols, and exposes the static helpers (reap_to_parent, region_free). */
+/* Pull in the coordinator: this defines its private runtime and OS-service
+ * symbols, and exposes static helpers such as reap_to_parent and region_free. */
 #include "lxp_run.c"
 
 /* A real engine publishes this pointer before lxp_run(). The coordinator tests
@@ -248,21 +248,15 @@ static int reset_state(void **state)
 {
 	(void)state;
 	lxp_fd_runtime_reset();
-	memset(g_lxp_proc, 0, sizeof(g_lxp_proc));
+	memset(g_lxp_slots, 0, sizeof(g_lxp_slots));
 	memset(g_mock_arenas, 0, sizeof(g_mock_arenas));
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		assert_int_equal(lxp_proc_init(&g_lxp_proc[s], &g_mock_arenas[s], 0), LXP_OK);
-		g_lxp_proc[s].alive = 0;
+		assert_int_equal(lxp_proc_init(&g_lxp_slots[s].proc, &g_mock_arenas[s], 0), LXP_OK);
+		g_lxp_slots[s].proc.alive = 0;
 	}
-	memset(g_lxp_used, 0, sizeof(g_lxp_used));
-	memset(g_slot_lifecycle, SLOT_FREE, sizeof(g_slot_lifecycle));
-	memset(g_deferred, 0, sizeof(g_deferred));
 	memset(g_primary_pending, 0, sizeof(g_primary_pending));
-	memset(g_slot_generation, 0, sizeof(g_slot_generation));
-	memset(g_region_refs, 0, sizeof(g_region_refs));
-	memset(g_region_generation, 0, sizeof(g_region_generation));
+	memset(g_regions, 0, sizeof(g_regions));
 	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
-	memset(g_ctx, 0, sizeof(g_ctx));
 	memset(g_sig_save, 0, sizeof(g_sig_save));
 	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
 	g_diag_native_known = 0;
@@ -272,10 +266,9 @@ static int reset_state(void **state)
 	memset(&g_mock, 0, sizeof(g_mock));
 	g_mock.map_fail_slot = -1;
 	for (int r = 0; r < LXP_NREG; r++)
-		g_region_owner[r] = -1;
+		g_regions[r].lease_owner = lxp_slot_ref_none();
 	for (int s = 0; s < LXP_NSLOT; s++)
-		g_vfork_guard[s].parent_slot = g_vfork_guard[s].parent_region =
-			g_vfork_guard[s].snapshot_region = -1;
+		fork_child_guard_reset(s);
 	lxp_console_set_fg_pgrp(0);
 	g_eng = &g_mock_eng;
 	g_cfg = NULL;
@@ -289,13 +282,25 @@ static int reset_state(void **state)
 static void make_valid_running_slot(int slot, int region)
 {
 	deferred_slot_reassign(slot);
-	assert_true(region_reserve(region, slot) != 0);
-	g_lxp_proc[slot].alive = 1;
-	g_lxp_proc[slot].pid = slot + 1;
-	g_lxp_proc[slot].group->tgid = slot + 1;
-	g_lxp_proc[slot].mm->region = region;
-	g_slot_lifecycle[slot] = SLOT_RUNNING;
-	g_lxp_used[slot] = 1;
+	lxp_slot_ref_t owner = slot_ref_at(slot);
+	lxp_region_ref_t region_ref = region_reserve(region, owner);
+	assert_int_equal(region_ref.index, region);
+	assert_int_equal(region_commit_address_space(region_ref, owner), LXP_OK);
+	g_lxp_slots[slot].proc.alive = 1;
+	g_lxp_slots[slot].proc.pid = slot + 1;
+	g_lxp_slots[slot].proc.group->tgid = slot + 1;
+	g_lxp_slots[slot].proc.mm->region = region_ref;
+	g_lxp_slots[slot].host_state = SLOT_RUNNING;
+	g_lxp_slots[slot].runnable = 1;
+}
+
+static lxp_region_ref_t make_address_space_region(int region, int slot)
+{
+	lxp_slot_ref_t owner = slot_ref_at(slot);
+	lxp_region_ref_t ref = region_reserve(region, owner);
+	assert_int_equal(ref.index, region);
+	assert_int_equal(region_commit_address_space(ref, owner), LXP_OK);
+	return ref;
 }
 
 static long child_test_write(void *ctx, int fd, const void *buf, size_t len)
@@ -377,8 +382,8 @@ static void assert_child_local_state(const lxp_proc_t *child, int child_pid)
 	assert_int_equal(child->wait.kind, LXP_WAIT_NONE);
 	assert_false(child->alarm_deadline_us);
 	assert_false(child->alarm_interval_us);
-	assert_int_equal(child->vfork_parent_slot, -1);
-	assert_int_equal(child->snap_region, -1);
+	assert_int_equal(child->vfork_parent.index, -1);
+	assert_int_equal(child->snapshot.index, -1);
 }
 
 static void test_child_constructors_cover_clone_flag_matrix(void **state)
@@ -388,7 +393,7 @@ static void test_child_constructors_cover_clone_flag_matrix(void **state)
 		LXP_CLONE_VM, LXP_CLONE_FILES, LXP_CLONE_FS, LXP_CLONE_SIGHAND, LXP_CLONE_THREAD,
 	};
 
-	lxp_proc_t *parent = &g_lxp_proc[0];
+	lxp_proc_t *parent = &g_lxp_slots[0].proc;
 	prepare_child_test_parent(parent);
 	unsigned valid_cases = 0;
 	for (unsigned mask = 0; mask < (1u << 5); mask++) {
@@ -451,14 +456,14 @@ static void assert_failed_child_is_empty(const lxp_proc_t *child)
 	assert_null(child->sighand);
 	assert_null(child->group);
 	assert_false(child->alive);
-	assert_int_equal(child->vfork_parent_slot, -1);
-	assert_int_equal(child->snap_region, -1);
+	assert_int_equal(child->vfork_parent.index, -1);
+	assert_int_equal(child->snapshot.index, -1);
 }
 
 static void test_child_constructor_rolls_back_each_acquisition(void **state)
 {
 	(void)state;
-	lxp_proc_t *parent = &g_lxp_proc[0];
+	lxp_proc_t *parent = &g_lxp_slots[0].proc;
 	prepare_child_test_parent(parent);
 	const uint32_t all_shared = LXP_CLONE_VM | LXP_CLONE_FILES | LXP_CLONE_FS |
 				    LXP_CLONE_SIGHAND | LXP_CLONE_THREAD;
@@ -505,21 +510,21 @@ static void test_fork_build_abort_restores_world(void **state)
 {
 	(void)state;
 	make_valid_running_slot(0, 0);
-	lxp_proc_t *parent = &g_lxp_proc[0];
+	lxp_proc_t *parent = &g_lxp_slots[0].proc;
 	parent->mm->region_lo = (uintptr_t)g_mock_regions[0];
 	parent->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
 	parent->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
-	g_ctx[0].sp = (uintptr_t)g_mock_regions[0] + 192u;
-	lxp_proc_child_discard(&g_lxp_proc[1]);
+	g_lxp_slots[0].resume.sp = (uintptr_t)g_mock_regions[0] + 192u;
+	lxp_proc_child_discard(&g_lxp_slots[1].proc);
 
 	/* Region acquisition failure must not touch the destination or parent. */
-	g_region_refs[0] = LXP_NSLOT;
+	g_regions[0].refs = LXP_NSLOT;
 	struct fork_child_build build;
 	assert_int_equal(fork_child_build_prepare(&build, &g_mock_eng, 0, 1, 0, 2), -LXP_EAGAIN);
 	fork_child_build_abort(&build, &g_mock_eng);
-	assert_int_equal(g_region_refs[0], LXP_NSLOT);
-	assert_failed_child_is_empty(&g_lxp_proc[1]);
-	g_region_refs[0] = 1;
+	assert_int_equal(g_regions[0].refs, LXP_NSLOT);
+	assert_failed_child_is_empty(&g_lxp_slots[1].proc);
+	g_regions[0].refs = 1;
 
 	/* A failed native-map restore releases every constructor acquisition. */
 	uint16_t mm_refs = parent->mm->refs;
@@ -533,27 +538,30 @@ static void test_fork_build_abort_restores_world(void **state)
 	g_mock.map_fail_slot = 1;
 	assert_int_equal(fork_child_build_prepare(&build, &g_mock_eng, 0, 1, 0, 2), -LXP_ENOMEM);
 	fork_child_build_abort(&build, &g_mock_eng);
-	assert_int_equal(g_region_refs[0], 1);
+	assert_int_equal(g_regions[0].refs, 1);
 	assert_int_equal(parent->mm->refs, mm_refs);
 	assert_int_equal(parent->files->refs, files_refs);
 	assert_int_equal(parent->fs_context->refs, fs_refs);
 	assert_int_equal(parent->sighand->refs, sighand_refs);
 	assert_int_equal(parent->group->refs, group_refs);
-	assert_failed_child_is_empty(&g_lxp_proc[1]);
+	assert_failed_child_is_empty(&g_lxp_slots[1].proc);
 
 	/* Snapshot exhaustion happens after publication preparation and child
 	 * accounting; the same abort reverses both. */
 	assert_int_equal(fork_child_build_prepare(&build, &g_mock_eng, 0, 1, 0, 2), LXP_OK);
 	fork_child_build_count(&build);
 	for (int r = 1; r < LXP_NREG; r++)
-		assert_true(region_reserve(r, 0) != 0);
-	assert_int_equal(vfork_snapshot(&g_mock_eng, parent, 1, g_ctx[0].sp), -1);
+		assert_int_equal(region_reserve(r, slot_ref_at(0)).index, r);
+	assert_int_equal(vfork_snapshot(&g_mock_eng, parent, build.child_ref,
+					 g_lxp_slots[0].resume.sp)
+				 .index,
+			 -1);
 	fork_child_build_abort(&build, &g_mock_eng);
 	assert_int_equal(parent->group->live_children, 0);
-	assert_int_equal(g_region_refs[0], 1);
-	assert_failed_child_is_empty(&g_lxp_proc[1]);
+	assert_int_equal(g_regions[0].refs, 1);
+	assert_failed_child_is_empty(&g_lxp_slots[1].proc);
 	for (int r = 1; r < LXP_NREG; r++)
-		region_put(r);
+		assert_int_equal(region_put(region_ref_at(r)), LXP_OK);
 	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 }
@@ -574,7 +582,7 @@ static void test_world_diagnostics_snapshot_current_states(void **state)
 	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
 	assert_int_equal(slot.abi_version, LXP_DIAG_ABI_VERSION);
 	assert_int_equal(slot.struct_size, sizeof(slot));
-	assert_int_equal(slot.generation, g_slot_generation[0]);
+	assert_int_equal(slot.generation, g_lxp_slots[0].generation);
 	assert_int_equal(slot.host_state, LXP_DIAG_HOST_RUNNING);
 	assert_int_equal(slot.task_status, LXP_DIAG_TASK_LIVE);
 	assert_int_equal(slot.runnable, 1);
@@ -586,36 +594,36 @@ static void test_world_diagnostics_snapshot_current_states(void **state)
 	assert_int_equal(slot.intent_mask, LXP_DIAG_INTENT_NONE);
 	assert_int_equal(slot.wait_mask, LXP_DIAG_WAIT_NONE);
 
-	g_slot_lifecycle[0] = SLOT_PARKED;
-	g_lxp_used[0] = 0;
-	g_lxp_proc[0].wait.kind = LXP_WAIT_PIPE;
+	g_lxp_slots[0].host_state = SLOT_PARKED;
+	g_lxp_slots[0].runnable = 0;
+	g_lxp_slots[0].proc.wait.kind = LXP_WAIT_PIPE;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
 	assert_int_equal(slot.host_state, LXP_DIAG_HOST_PARKED);
 	assert_int_equal(slot.wait_mask, LXP_DIAG_WAIT_PIPE);
 
-	g_lxp_proc[0].stopped = 1;
-	g_lxp_proc[0].stop_kind = LXP_STOP_PARKED;
+	g_lxp_slots[0].proc.stopped = 1;
+	g_lxp_slots[0].proc.stop_kind = LXP_STOP_PARKED;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
 	assert_int_equal(slot.task_status, LXP_DIAG_TASK_STOPPED);
 
-	g_lxp_proc[0].stopped = 0;
-	g_lxp_proc[0].wait.kind = LXP_WAIT_NONE;
-	g_lxp_proc[0].intent.kind = LXP_INTENT_FORK;
+	g_lxp_slots[0].proc.stopped = 0;
+	g_lxp_slots[0].proc.wait.kind = LXP_WAIT_NONE;
+	g_lxp_slots[0].proc.intent.kind = LXP_INTENT_FORK;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
 	assert_int_equal(slot.intent_mask, LXP_DIAG_INTENT_FORK);
-	g_lxp_proc[0].intent.kind = LXP_INTENT_EXEC;
+	g_lxp_slots[0].proc.intent.kind = LXP_INTENT_EXEC;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
-	g_lxp_proc[0].intent.kind = LXP_INTENT_NONE;
+	g_lxp_slots[0].proc.intent.kind = LXP_INTENT_NONE;
 	g_sig_save[0].depth = 1;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
 	assert_int_equal(slot.signal_depth, 1);
 
-	g_lxp_proc[0].intent.kind = LXP_INTENT_EXIT;
-	g_slot_lifecycle[0] = SLOT_DEAD;
+	g_lxp_slots[0].proc.intent.kind = LXP_INTENT_EXIT;
+	g_lxp_slots[0].host_state = SLOT_DEAD;
 	g_diag_native_present[0] = 0;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
@@ -624,7 +632,7 @@ static void test_world_diagnostics_snapshot_current_states(void **state)
 	lxp_diag_region_t region;
 	assert_int_equal(lxp_diag_region_snapshot(0, &region), LXP_OK);
 	assert_int_equal(region.abi_version, LXP_DIAG_ABI_VERSION);
-	assert_int_equal(region.owner_slot, 0);
+	assert_int_equal(region.owner_slot, -1);
 	assert_int_equal(region.refs, 1);
 	assert_int_equal(region.live_users, 1);
 	assert_true(region.generation != 0);
@@ -636,7 +644,7 @@ static void test_world_validator_reports_conflicting_waits(void **state)
 {
 	(void)state;
 	make_valid_running_slot(0, 0);
-	g_lxp_proc[0].wait.kind = LXP_WAIT_COUNT;
+	g_lxp_slots[0].proc.wait.kind = LXP_WAIT_COUNT;
 	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
 	assert_int_equal(error.issue, LXP_DIAG_MULTIPLE_WAITS);
@@ -647,7 +655,7 @@ static void test_world_validator_reports_conflicting_waits(void **state)
 static void test_typed_intent_transitions_are_exclusive(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	for (int kind = LXP_INTENT_DEFERRED_SYSCALL; kind < LXP_INTENT_COUNT; kind++) {
 		lxp_intent_t intent = {.kind = (lxp_intent_kind_t)kind};
 		assert_int_equal(lxp_intent_begin(p, &intent), 0);
@@ -672,9 +680,9 @@ static void test_exit_intent_supersedes_deferred_work(void **state)
 {
 	(void)state;
 	make_valid_running_slot(0, 0);
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->intent.kind = LXP_INTENT_DEFERRED_SYSCALL;
-	g_deferred[0].generation = g_slot_generation[0];
+	g_lxp_slots[0].deferred.owner = slot_ref_at(0);
 	deferred_state_store(0, DEFER_READY);
 
 	assert_int_equal(lxp_intent_exit(p, 0), 0);
@@ -686,7 +694,7 @@ static void test_exit_intent_supersedes_deferred_work(void **state)
 static void test_typed_wait_transitions_cover_every_kind(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	for (int kind = LXP_WAIT_TIMER; kind < LXP_WAIT_COUNT; kind++) {
 		lxp_wait_t wait = {.kind = (lxp_wait_kind_t)kind};
 		assert_int_equal(lxp_wait_begin(p, &wait), 0);
@@ -707,19 +715,20 @@ static void test_world_validator_reports_stale_mailbox(void **state)
 {
 	(void)state;
 	make_valid_running_slot(0, 0);
-	g_deferred[0].generation = g_slot_generation[0] + 1;
+	g_lxp_slots[0].deferred.owner = slot_ref_at(0);
+	g_lxp_slots[0].deferred.owner.generation++;
 	deferred_state_store(0, DEFER_READY);
 	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
 	assert_int_equal(error.issue, LXP_DIAG_DEFERRED_GENERATION_STALE);
 	assert_int_equal(error.slot, 0);
-	assert_int_equal(error.expected, g_slot_generation[0]);
+	assert_int_equal(error.expected, g_lxp_slots[0].generation);
 }
 
 static void test_world_validator_reports_region_ownership_drift(void **state)
 {
 	(void)state;
-	g_region_owner[2] = 3;
+	g_regions[2].lease_owner = (lxp_slot_ref_t){.index = 3, .generation = 1};
 	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
 	assert_int_equal(error.issue, LXP_DIAG_REGION_OWNER_WITHOUT_REFS);
@@ -727,15 +736,110 @@ static void test_world_validator_reports_region_ownership_drift(void **state)
 	assert_int_equal(error.region, 2);
 }
 
+static void test_slot_references_reject_recycled_incarnations_and_skip_zero(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	g_lxp_slots[0].generation = UINT32_MAX;
+	lxp_slot_ref_t stale = slot_ref_at(0);
+
+	deferred_slot_reassign(0);
+	lxp_slot_ref_t current;
+	assert_int_equal(lxp_slot_ref_current(0, &current), LXP_OK);
+	assert_int_equal(current.generation, 1);
+	assert_false(lxp_slot_ref_is_current(stale));
+	assert_true(lxp_slot_ref_is_current(current));
+
+	struct lxp_frame frame = {0};
+	frame.r[0] = 0xfeedbeefu;
+	frame.r[7] = LXP_NR_getpid;
+	assert_int_equal(lxp_dispatch_slot(stale, &frame), -LXP_ESRCH);
+	assert_int_equal(frame.r[0], 0xfeedbeefu);
+	assert_int_equal(lxp_dispatch_slot(current, &frame), LXP_OK);
+	assert_int_equal(frame.r[0], g_lxp_slots[0].proc.pid);
+}
+
+static void test_fault_publication_rejects_stale_slot_reference(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_slot_ref_t stale = slot_ref_at(0);
+	deferred_slot_reassign(0);
+	lxp_slot_ref_t current = slot_ref_at(0);
+	const lxp_guest_fault_t fault = {
+		.detail = 0x82u,
+		.address = 0x12345678u,
+	};
+
+	assert_int_equal(lxp_slot_report_memory_fault(stale, &fault), -LXP_ESRCH);
+	assert_int_equal(g_lxp_slots[0].proc.intent.kind, LXP_INTENT_NONE);
+	assert_false(primary_slot_pending(0));
+	assert_int_equal(lxp_slot_report_memory_fault(current, &fault), LXP_OK);
+	assert_int_equal(g_lxp_slots[0].proc.intent.kind, LXP_INTENT_EXIT);
+	assert_int_equal(g_lxp_slots[0].proc.exit_reason, LXP_EXIT_REASON_MEMORY_FAULT);
+	assert_int_equal(g_lxp_slots[0].proc.exit_detail, fault.detail);
+	assert_int_equal(g_lxp_slots[0].proc.exit_address, fault.address);
+	assert_true(primary_slot_pending(0));
+}
+
+static void test_region_references_reject_reuse_and_skip_zero(void **state)
+{
+	(void)state;
+	deferred_slot_reassign(0);
+	lxp_slot_ref_t owner = slot_ref_at(0);
+	lxp_region_ref_t stale = region_reserve(1, owner);
+	assert_int_equal(stale.index, 1);
+	assert_int_equal(region_release_if_owned(stale, owner), LXP_OK);
+
+	lxp_region_ref_t current = region_reserve(1, owner);
+	assert_int_equal(current.index, 1);
+	assert_true(current.generation != stale.generation);
+	assert_int_equal(region_put(stale), -1);
+	assert_int_equal(region_release_if_owned(stale, owner), -1);
+	assert_int_equal(g_regions[1].refs, 1);
+	assert_int_equal(region_release_if_owned(current, owner), LXP_OK);
+
+	g_regions[1].generation = UINT32_MAX;
+	current = region_reserve(1, owner);
+	assert_int_equal(current.generation, 1);
+	assert_int_equal(region_release_if_owned(current, owner), LXP_OK);
+}
+
+static void test_world_validator_rejects_stale_region_capabilities(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	g_lxp_slots[0].proc.mm->region.generation++;
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
+	assert_int_equal(error.issue, LXP_DIAG_LIVE_TASK_STALE_REGION_REF);
+	assert_int_equal(error.slot, 0);
+	assert_int_equal(error.region, 0);
+}
+
+static void test_world_validator_rejects_stale_region_leases(void **state)
+{
+	(void)state;
+	deferred_slot_reassign(0);
+	lxp_region_ref_t lease = region_reserve(1, slot_ref_at(0));
+	assert_int_equal(lease.index, 1);
+	deferred_slot_reassign(0);
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
+	assert_int_equal(error.issue, LXP_DIAG_REGION_LEASE_STALE);
+	assert_int_equal(error.slot, 0);
+	assert_int_equal(error.region, 1);
+}
+
 static void test_world_validator_reports_resource_refcount_drift(void **state)
 {
 	(void)state;
 	make_valid_running_slot(0, 0);
 	make_valid_running_slot(1, 1);
-	region_put(1);
-	g_lxp_proc[1].mm = g_lxp_proc[0].mm;
-	g_lxp_proc[1].mm->region = 0;
-	assert_int_equal(region_get(0), LXP_OK);
+	assert_int_equal(region_put(region_ref_at(1)), LXP_OK);
+	g_lxp_slots[1].proc.mm = g_lxp_slots[0].proc.mm;
+	g_lxp_slots[1].proc.mm->region = region_ref_at(0);
+	assert_int_equal(region_get(g_lxp_slots[1].proc.mm->region), LXP_OK);
 	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
 	assert_int_equal(error.issue, LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL);
@@ -747,9 +851,9 @@ static void test_world_validator_checkpoints_latch_first_failure(void **state)
 {
 	(void)state;
 	lxp_diag_checkpoint();
-	g_region_owner[0] = 0;
+	g_regions[0].lease_owner = (lxp_slot_ref_t){.index = 0, .generation = 1};
 	lxp_diag_checkpoint();
-	g_region_owner[1] = 1;
+	g_regions[1].lease_owner = (lxp_slot_ref_t){.index = 1, .generation = 1};
 	lxp_diag_checkpoint();
 
 	lxp_diag_health_t health;
@@ -784,7 +888,7 @@ static void test_world_diagnostic_size_report_matches_compiled_objects(void **st
 	assert_int_equal(sizes.signal_save_stack, sizeof(struct sig_save_stack_s));
 	assert_int_equal(sizes.vfork_guard, sizeof(struct vfork_snapshot_guard));
 	assert_int_equal(sizes.debug_record, sizeof(struct lxp_dbg_s));
-	assert_int_equal(sizes.slot_table, sizeof(g_lxp_proc));
+	assert_int_equal(sizes.slot_table, sizeof(g_lxp_slots));
 	assert_true(sizes.per_slot_core > sizes.proc);
 	assert_true(sizes.coordinator_static > sizes.slot_table);
 	assert_string_equal(lxp_diag_host_state_name(LXP_DIAG_HOST_PARKED), "parked");
@@ -843,12 +947,16 @@ static void test_resource_stats_track_slots_and_reserved_regions(void **state)
 {
 	(void)state;
 	g_lxp_active = 1;
-	g_region_owner[0] = 0; /* live init region */
-	g_region_owner[2] = 1; /* reserved vfork snapshot/exec region */
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].mm->region = 0;
-	g_lxp_proc[1].alive = 1;
-	g_lxp_proc[1].mm->region = 0; /* thread shares region 0 but consumes a slot */
+	deferred_slot_reassign(0);
+	deferred_slot_reassign(1);
+	lxp_region_ref_t shared = region_reserve(0, slot_ref_at(0));
+	lxp_region_ref_t reserved = region_reserve(2, slot_ref_at(1));
+	assert_int_equal(shared.index, 0);
+	assert_int_equal(reserved.index, 2);
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.mm->region = shared;
+	g_lxp_slots[1].proc.alive = 1;
+	g_lxp_slots[1].proc.mm->region = shared; /* thread shares region 0 but consumes a slot */
 
 	struct lxp_resource_stats resources;
 	lxp_get_resource_stats(&resources);
@@ -865,8 +973,8 @@ static void test_resource_stats_track_slots_and_reserved_regions(void **state)
 
 	/* Clone-style processes can share a region but still exhaust process slots. */
 	for (int s = 2; s < LXP_NSLOT; s++) {
-		g_lxp_proc[s].alive = 1;
-		g_lxp_proc[s].mm->region = 0;
+		g_lxp_slots[s].proc.alive = 1;
+		g_lxp_slots[s].proc.mm->region.index = 0;
 	}
 	lxp_get_resource_stats(&resources);
 	assert_int_equal(resources.slots_free, 0);
@@ -894,7 +1002,7 @@ static void test_claim_slot_event_priority_and_consumption(void **state)
 {
 	(void)state;
 	const int s = 2;
-	lxp_proc_t *p = &g_lxp_proc[s];
+	lxp_proc_t *p = &g_lxp_slots[s].proc;
 
 	assert_false(primary_slot_pending(s));
 	lxp_event_post_slot(s);
@@ -917,8 +1025,8 @@ static void test_claim_slot_event_priority_and_consumption(void **state)
 	p->wait.kind = LXP_WAIT_TIMER;
 	p->wait.data.timer.deadline_us = 1;
 	assert_int_equal(claim_slot_event(s), LXP_EV_NONE);
-	g_lxp_used[s] = 1;
-	g_slot_lifecycle[s] = SLOT_RUNNING;
+	g_lxp_slots[s].runnable = 1;
+	g_lxp_slots[s].host_state = SLOT_RUNNING;
 	static const struct {
 		lxp_wait_kind_t kind;
 		int event;
@@ -975,11 +1083,11 @@ static void test_reap_wakes_blocking_parent(void **state)
 	(void)state;
 	int status = -1;
 	/* slot 0 = parent pid 1, blocked in wait4 for any child, with one live child. */
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].group->live_children = 1;
-	set_child_wait(&g_lxp_proc[0], -1, 0, &status);
-	g_slot_lifecycle[0] = SLOT_PARKED;
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.pid = 1;
+	g_lxp_slots[0].proc.group->live_children = 1;
+	set_child_wait(&g_lxp_slots[0].proc, -1, 0, &status);
+	g_lxp_slots[0].host_state = SLOT_PARKED;
 
 	reap_to_parent(&g_mock_eng, /*ppid*/ 1, /*cpid*/ 7, /*status*/ 42, /*sigchld=*/1);
 
@@ -988,27 +1096,27 @@ static void test_reap_wakes_blocking_parent(void **state)
 	assert_int_equal(g_mock.resume_sidx, 0);
 	assert_int_equal(g_mock.resume_r0, 7);
 	assert_int_equal(status, 42 << 8);
-	assert_int_equal(g_lxp_proc[0].wait.kind, LXP_WAIT_NONE);
-	assert_int_equal(g_lxp_proc[0].group->live_children, 0);
-	assert_int_equal(g_lxp_proc[0].group->child_count, 0); /* woken, not queued */
-	assert_int_equal(g_mock.abort_calls, 0); /* g_lxp_used[0]==0: no spin thread */
+	assert_int_equal(g_lxp_slots[0].proc.wait.kind, LXP_WAIT_NONE);
+	assert_int_equal(g_lxp_slots[0].proc.group->live_children, 0);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count, 0); /* woken, not queued */
+	assert_int_equal(g_mock.abort_calls, 0); /* g_lxp_slots[0].runnable==0: no spin thread */
 }
 
 static void test_reap_wakes_waiter_in_parent_thread_group(void **state)
 {
 	(void)state;
 	int status = -1;
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].pid = 10;
-	g_lxp_proc[0].group->tgid = 10;
-	lxp_proc_group_put(&g_lxp_proc[1]);
-	assert_int_equal(lxp_proc_group_fork(&g_lxp_proc[1], &g_lxp_proc[0], LXP_CLONE_THREAD, 11),
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.pid = 10;
+	g_lxp_slots[0].proc.group->tgid = 10;
+	lxp_proc_group_put(&g_lxp_slots[1].proc);
+	assert_int_equal(lxp_proc_group_fork(&g_lxp_slots[1].proc, &g_lxp_slots[0].proc, LXP_CLONE_THREAD, 11),
 			 0);
-	g_lxp_proc[1].alive = 1;
-	g_lxp_proc[1].pid = 11;
-	g_lxp_proc[1].group->live_children = 1;
-	set_child_wait(&g_lxp_proc[1], -1, 0, &status);
-	g_slot_lifecycle[1] = SLOT_PARKED;
+	g_lxp_slots[1].proc.alive = 1;
+	g_lxp_slots[1].proc.pid = 11;
+	g_lxp_slots[1].proc.group->live_children = 1;
+	set_child_wait(&g_lxp_slots[1].proc, -1, 0, &status);
+	g_lxp_slots[1].host_state = SLOT_PARKED;
 
 	reap_to_parent(&g_mock_eng, 10, 17, 9, /*sigchld=*/1);
 
@@ -1016,8 +1124,8 @@ static void test_reap_wakes_waiter_in_parent_thread_group(void **state)
 	assert_int_equal(g_mock.resume_sidx, 1);
 	assert_int_equal(g_mock.resume_r0, 17);
 	assert_int_equal(status, 9 << 8);
-	assert_int_equal(g_lxp_proc[0].group->live_children, 0);
-	assert_int_equal(g_lxp_proc[0].group->child_count, 0);
+	assert_int_equal(g_lxp_slots[0].proc.group->live_children, 0);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count, 0);
 }
 
 /* A signal-killed child (128 + signo) wakes the waiter as WIFSIGNALED. */
@@ -1025,12 +1133,12 @@ static void test_reap_signaled_child_status(void **state)
 {
 	(void)state;
 	int status = -1;
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].group->live_children = 1;
-	set_child_wait(&g_lxp_proc[0], -1, 0, &status);
-	g_lxp_used[0] = 1; /* coordinator has not yet suspended the parked waiter */
-	g_slot_lifecycle[0] = SLOT_RUNNING;
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.pid = 1;
+	g_lxp_slots[0].proc.group->live_children = 1;
+	set_child_wait(&g_lxp_slots[0].proc, -1, 0, &status);
+	g_lxp_slots[0].runnable = 1; /* coordinator has not yet suspended the parked waiter */
+	g_lxp_slots[0].host_state = SLOT_RUNNING;
 
 	reap_to_parent(&g_mock_eng, 1, 7, 128 + 15 /* SIGTERM */, /*sigchld=*/1);
 
@@ -1046,40 +1154,40 @@ static void test_reap_specific_pid_not_woken(void **state)
 {
 	(void)state;
 	int status = -1;
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].group->live_children = 2;
-	set_child_wait(&g_lxp_proc[0], 9, 0, &status);
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.pid = 1;
+	g_lxp_slots[0].proc.group->live_children = 2;
+	set_child_wait(&g_lxp_slots[0].proc, 9, 0, &status);
 
 	reap_to_parent(&g_mock_eng, 1, 7, 0, /*sigchld=*/1); /* pid 7 exits, not 9 */
 
 	/* Not resumed; the zombie is queued and SIGCHLD raised; still one live child left. */
 	assert_int_equal(g_mock.resume_calls, 0);
-	assert_int_equal(g_lxp_proc[0].wait.kind, LXP_WAIT_CHILD);
-	assert_int_equal(g_lxp_proc[0].group->child_count, 1);
-	assert_int_equal(g_lxp_proc[0].group->child_pid[0], 7);
-	assert_int_equal(g_lxp_proc[0].group->live_children, 1);
-	assert_true((g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) != 0);
+	assert_int_equal(g_lxp_slots[0].proc.wait.kind, LXP_WAIT_CHILD);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count, 1);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_pid[0], 7);
+	assert_int_equal(g_lxp_slots[0].proc.group->live_children, 1);
+	assert_true((g_lxp_slots[0].proc.pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) != 0);
 }
 
 /* ---- reap_to_parent: parent not waiting → zombie queued + SIGCHLD ----------- */
 static void test_reap_queues_zombie(void **state)
 {
 	(void)state;
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].group->live_children = 1;
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.pid = 1;
+	g_lxp_slots[0].proc.group->live_children = 1;
 	/* No CHILD wait: the parent is off in select()/poll(), not blocking in wait4. */
 
 	reap_to_parent(&g_mock_eng, 1, 7, 3, /*sigchld=*/1);
 
 	assert_int_equal(g_mock.resume_calls, 0);
-	assert_int_equal(g_lxp_proc[0].group->child_count, 1);
-	assert_int_equal(g_lxp_proc[0].group->child_pid[0], 7);
-	assert_int_equal(g_lxp_proc[0].group->child_status[0],
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count, 1);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_pid[0], 7);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_status[0],
 			 3); /* raw code; wait4 encodes on reap */
-	assert_int_equal(g_lxp_proc[0].group->live_children, 0);
-	assert_true((g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) != 0);
+	assert_int_equal(g_lxp_slots[0].proc.group->live_children, 0);
+	assert_true((g_lxp_slots[0].proc.pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) != 0);
 }
 
 /* ---- reap_to_parent: a vfork parent (already resumed) reaps WITHOUT SIGCHLD --- */
@@ -1091,19 +1199,19 @@ static void test_reap_queues_zombie(void **state)
 static void test_reap_vfork_parent_suppresses_sigchld(void **state)
 {
 	(void)state;
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].group->live_children = 1;
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.pid = 1;
+	g_lxp_slots[0].proc.group->live_children = 1;
 	/* No CHILD wait: just resumed from vfork, about to wait4() the child. */
 
 	reap_to_parent(&g_mock_eng, 1, 7, 127, /*sigchld=*/0);
 
 	assert_int_equal(g_mock.resume_calls, 0);
-	assert_int_equal(g_lxp_proc[0].group->child_count, 1); /* queued for the imminent wait4 */
-	assert_int_equal(g_lxp_proc[0].group->child_pid[0], 7);
-	assert_int_equal(g_lxp_proc[0].group->child_status[0], 127); /* exit code preserved */
-	assert_int_equal(g_lxp_proc[0].group->live_children, 0);
-	assert_true((g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) ==
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count, 1); /* queued for the imminent wait4 */
+	assert_int_equal(g_lxp_slots[0].proc.group->child_pid[0], 7);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_status[0], 127); /* exit code preserved */
+	assert_int_equal(g_lxp_slots[0].proc.group->live_children, 0);
+	assert_true((g_lxp_slots[0].proc.pending_sigs & lxp_sig_bit(LXP_SIGCHLD)) ==
 		    0); /* NOT signalled */
 }
 
@@ -1111,35 +1219,35 @@ static void test_reap_vfork_parent_suppresses_sigchld(void **state)
 static void test_reap_zombie_queue_full(void **state)
 {
 	(void)state;
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].group->live_children = LXP_MAX_CHILD + 1;
-	g_lxp_proc[0].group->child_count = LXP_MAX_CHILD; /* already full */
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.pid = 1;
+	g_lxp_slots[0].proc.group->live_children = LXP_MAX_CHILD + 1;
+	g_lxp_slots[0].proc.group->child_count = LXP_MAX_CHILD; /* already full */
 
 	reap_to_parent(&g_mock_eng, 1, 99, 0, /*sigchld=*/1);
 
-	assert_int_equal(g_lxp_proc[0].group->child_count, LXP_MAX_CHILD); /* clamped, no overrun */
-	assert_int_equal(g_lxp_proc[0].group->live_children, LXP_MAX_CHILD); /* still decremented */
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count, LXP_MAX_CHILD); /* clamped, no overrun */
+	assert_int_equal(g_lxp_slots[0].proc.group->live_children, LXP_MAX_CHILD); /* still decremented */
 }
 
 /* An exit reported for a parent that no longer exists is a safe no-op. */
 static void test_reap_unknown_parent(void **state)
 {
 	(void)state;
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].pid = 1;
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.pid = 1;
 
 	reap_to_parent(&g_mock_eng, /*ppid*/ 42, 7, 0, /*sigchld=*/1); /* no proc has pid 42 */
 
 	assert_int_equal(g_mock.resume_calls, 0);
 	assert_int_equal(g_mock.abort_calls, 0);
-	assert_int_equal(g_lxp_proc[0].group->child_count, 0);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count, 0);
 }
 
 static void test_notify_guest_exit_preserves_attribution(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[3];
+	lxp_proc_t *p = &g_lxp_slots[3].proc;
 	p->pid = 27;
 	p->group->ppid = 7;
 	p->exit_status = 139;
@@ -1167,7 +1275,7 @@ static void test_notify_guest_exit_preserves_attribution(void **state)
 static void test_fork_capacity_accounts_live_and_zombie_children(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	assert_true(fork_capacity_available(p));
 	p->group->child_count = LXP_MAX_CHILD - 1;
 	assert_true(fork_capacity_available(p));
@@ -1183,9 +1291,11 @@ static void test_fork_capacity_accounts_live_and_zombie_children(void **state)
 static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	deferred_slot_reassign(0);
+	deferred_slot_reassign(1);
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
-	p->mm->region = 0;
+	p->mm->region = make_address_space_region(0, 0);
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
 	p->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
 	p->mm->is_dynamic = 1;
@@ -1197,9 +1307,8 @@ static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
 		g_mock_regions[0][i] = (uint8_t)(i ^ 0x3cu);
 	for (size_t i = 0; i < sizeof(g_mock_dyn_pools[0]); i++)
 		g_mock_dyn_pools[0][i] = (uint8_t)(i ^ 0xa5u);
-	(void)region_reserve(0, 0);
-
-	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, sp), 1);
+	lxp_region_ref_t snapshot = vfork_snapshot(&g_mock_eng, p, slot_ref_at(1), sp);
+	assert_int_equal(snapshot.index, 1);
 	assert_memory_equal(g_mock_regions[1], g_mock_regions[0], 128u);
 	assert_memory_equal(&g_mock_regions[1][192], &g_mock_regions[0][192], 64u);
 	for (size_t i = 128u; i < 192u; i++)
@@ -1230,9 +1339,11 @@ static void test_vfork_snapshot_publishes_cacheable_destination(void **state)
 static void test_vfork_restore_publishes_cacheable_parent(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	deferred_slot_reassign(0);
+	deferred_slot_reassign(1);
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
-	p->mm->region = 0;
+	p->mm->region = make_address_space_region(0, 0);
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
 	p->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
 	p->mm->is_dynamic = 1;
@@ -1247,15 +1358,13 @@ static void test_vfork_restore_publishes_cacheable_parent(void **state)
 	memset(&g_mock_regions[0][192], 0xbb, 64u);
 	memset(g_mock_dyn_pools[0], 0xdd, sizeof(g_mock_dyn_pools[0]));
 
-	(void)region_reserve(0, 0);
-	(void)region_reserve(1, 1);
-	g_vfork_guard[1].parent_slot = 0;
-	g_vfork_guard[1].parent_slot_generation = g_slot_generation[0];
-	g_vfork_guard[1].parent_region = 0;
-	g_vfork_guard[1].parent_region_generation = g_region_generation[0];
-	g_vfork_guard[1].snapshot_region = 1;
-	g_vfork_guard[1].snapshot_region_generation = g_region_generation[1];
-	assert_int_equal(vfork_restore(&g_mock_eng, p, 1, 1, sp), 0);
+	lxp_slot_ref_t child = slot_ref_at(1);
+	lxp_region_ref_t snapshot = region_reserve(1, child);
+	g_lxp_slots[1].proc.alive = 1;
+	g_vfork_guard[1].parent = slot_ref_at(0);
+	g_vfork_guard[1].parent_region = p->mm->region;
+	g_vfork_guard[1].snapshot = snapshot;
+	assert_int_equal(vfork_restore(&g_mock_eng, p, snapshot, child, sp), 0);
 
 	assert_memory_equal(g_mock_regions[0], g_mock_regions[1], 128u);
 	assert_memory_equal(&g_mock_regions[0][192], &g_mock_regions[1][192], 64u);
@@ -1276,36 +1385,45 @@ static void test_vfork_restore_publishes_cacheable_parent(void **state)
 static void test_vfork_snapshot_refuses_no_spare_region(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	deferred_slot_reassign(0);
+	deferred_slot_reassign(1);
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
-	p->mm->region = 0;
+	p->mm->region = make_address_space_region(0, 0);
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
 	p->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
-	for (int r = 0; r < LXP_NREG; r++)
-		(void)region_reserve(r, r);
+	for (int r = 1; r < LXP_NREG; r++)
+		(void)region_reserve(r, slot_ref_at(0));
 
-	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, (uintptr_t)g_mock_regions[0] + 192u),
+	assert_int_equal(vfork_snapshot(&g_mock_eng, p, slot_ref_at(1),
+					 (uintptr_t)g_mock_regions[0] + 192u)
+				 .index,
 			 -1);
 	assert_int_equal(g_mock.cache_clean_calls, 0);
-	assert_int_equal(g_vfork_guard[1].snapshot_region, -1);
+	assert_int_equal(g_vfork_guard[1].snapshot.index, -1);
 }
 
 static void test_vfork_restore_rejects_recycled_snapshot(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	deferred_slot_reassign(0);
+	deferred_slot_reassign(1);
+	deferred_slot_reassign(2);
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
-	p->mm->region = 0;
+	p->mm->region = make_address_space_region(0, 0);
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
 	p->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
-	(void)region_reserve(0, 0);
 	uintptr_t sp = (uintptr_t)g_mock_regions[0] + 192u;
-	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, sp), 1);
+	g_lxp_slots[1].proc.alive = 1;
+	lxp_slot_ref_t child = slot_ref_at(1);
+	lxp_region_ref_t snapshot = vfork_snapshot(&g_mock_eng, p, child, sp);
+	assert_int_equal(snapshot.index, 1);
 	memset(g_mock_regions[0], 0x5a, sizeof(g_mock_regions[0]));
-	region_release_if_owned(1, 1);
-	(void)region_reserve(1, 2); /* same index, different reservation incarnation */
+	assert_int_equal(region_release_if_owned(snapshot, child), LXP_OK);
+	(void)region_reserve(1, slot_ref_at(2)); /* same index, new reservation */
 
-	assert_int_equal(vfork_restore(&g_mock_eng, p, 1, 1, sp), -1);
+	assert_int_equal(vfork_restore(&g_mock_eng, p, snapshot, child, sp), -1);
 	for (size_t i = 0; i < sizeof(g_mock_regions[0]); i++)
 		assert_int_equal(g_mock_regions[0][i], 0x5a);
 }
@@ -1313,126 +1431,139 @@ static void test_vfork_restore_rejects_recycled_snapshot(void **state)
 static void test_vfork_restore_rejects_recycled_parent(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	deferred_slot_reassign(0);
+	deferred_slot_reassign(1);
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
-	p->mm->region = 0;
+	p->mm->region = make_address_space_region(0, 0);
 	p->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
 	p->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
-	(void)region_reserve(0, 0);
 	uintptr_t sp = (uintptr_t)g_mock_regions[0] + 192u;
-	assert_int_equal(vfork_snapshot(&g_mock_eng, p, 1, sp), 1);
+	g_lxp_slots[1].proc.alive = 1;
+	lxp_slot_ref_t child = slot_ref_at(1);
+	lxp_region_ref_t snapshot = vfork_snapshot(&g_mock_eng, p, child, sp);
+	assert_int_equal(snapshot.index, 1);
 	memset(g_mock_regions[0], 0xa5, sizeof(g_mock_regions[0]));
 	deferred_slot_reassign(0); /* same slot, different process incarnation */
 
-	assert_int_equal(vfork_restore(&g_mock_eng, p, 1, 1, sp), -1);
+	assert_int_equal(vfork_restore(&g_mock_eng, p, snapshot, child, sp), -1);
 	for (size_t i = 0; i < sizeof(g_mock_regions[0]); i++)
 		assert_int_equal(g_mock_regions[0][i], 0xa5);
 }
 
-/* ---- region_free: owner table AND liveness both gate reuse ------------------ */
+/* ---- region_free: references, leases, and liveness all gate reuse ----------- */
 static void test_region_free(void **state)
 {
 	(void)state;
-	int rowner[LXP_NREG];
-	for (int r = 0; r < LXP_NREG; r++)
-		rowner[r] = -1;
+	/* All regions unreferenced and no live proc → every region is free. */
+	assert_true(region_free(0));
+	assert_true(region_free(1));
 
-	/* All regions unowned and no live proc → every region is free. */
-	assert_true(region_free(0, rowner));
-	assert_true(region_free(1, rowner));
+	/* A transaction-leased region is not free. */
+	g_regions[1].lease_owner = (lxp_slot_ref_t){.index = 3, .generation = 1};
+	assert_false(region_free(1));
+	g_regions[1].lease_owner = lxp_slot_ref_none();
 
-	/* An owned region is not free. */
-	rowner[1] = 3;
-	assert_false(region_free(1, rowner));
-
-	/* Owner table says free (rowner<0), but a live proc still runs there → NOT free.
-	 * This is the anti-trample guard against vfork accounting drift. */
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].mm->region = 2;
-	assert_false(region_free(2, rowner));
+	/* Accounting says free, but a live proc still runs there: the
+	 * anti-trample guard must fail closed. */
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.mm->region.index = 2;
+	assert_false(region_free(2));
 
 	/* A dead proc's stale region entry does not hold the region. */
-	g_lxp_proc[0].alive = 0;
-	assert_true(region_free(2, rowner));
+	g_lxp_slots[0].proc.alive = 0;
+	assert_true(region_free(2));
 }
 
 static void test_shared_region_lives_until_last_task_reference(void **state)
 {
 	(void)state;
-	lxp_proc_t *leader = &g_lxp_proc[0];
-	lxp_proc_t *thread = &g_lxp_proc[1];
+	lxp_proc_t *leader = &g_lxp_slots[0].proc;
+	lxp_proc_t *thread = &g_lxp_slots[1].proc;
 
-	assert_true(region_reserve(2, 0) != 0);
+	deferred_slot_reassign(0);
+	deferred_slot_reassign(1);
+	lxp_region_ref_t region = region_reserve(2, slot_ref_at(0));
+	assert_int_equal(region.index, 2);
+	assert_int_equal(region_commit_address_space(region, slot_ref_at(0)), LXP_OK);
 	leader->alive = 1;
-	leader->mm->region = 2;
-	assert_int_equal(region_get(2), 0);
+	leader->mm->region = region;
+	assert_int_equal(region_get(region), 0);
 	lxp_proc_mm_put(thread);
 	assert_int_equal(lxp_proc_mm_fork(thread, leader, LXP_CLONE_VM), 0);
 	thread->alive = 1;
 	assert_ptr_equal(thread->mm, leader->mm);
+	g_lxp_slots[0].host_state = SLOT_PARKED;
+	g_lxp_slots[1].host_state = SLOT_PARKED;
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 
 	proc_mm_put(leader);
 	leader->alive = 0;
-	assert_int_equal(g_region_refs[2], 1);
-	assert_int_equal(g_region_owner[2], 0);
-	assert_false(region_free(2, g_region_owner));
+	g_lxp_slots[0].host_state = SLOT_FREE;
+	assert_int_equal(g_regions[2].refs, 1);
+	assert_int_equal(g_regions[2].lease_owner.index, -1);
+	assert_false(region_free(2));
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 
 	proc_mm_put(thread);
 	thread->alive = 0;
-	assert_int_equal(g_region_refs[2], 0);
-	assert_int_equal(g_region_owner[2], -1);
-	assert_true(region_free(2, g_region_owner));
+	g_lxp_slots[1].host_state = SLOT_FREE;
+	assert_int_equal(g_regions[2].refs, 0);
+	assert_int_equal(g_regions[2].lease_owner.index, -1);
+	assert_true(region_free(2));
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 }
 
 static void test_thread_group_exit_marks_every_peer(void **state)
 {
 	(void)state;
 	for (int s = 0; s < 3; s++) {
-		g_lxp_proc[s].alive = 1;
-		g_lxp_proc[s].pid = 10 + s;
-		g_lxp_proc[s].group->tgid = s < 2 ? 10 : 12;
+		g_lxp_slots[s].proc.alive = 1;
+		g_lxp_slots[s].proc.pid = 10 + s;
+		g_lxp_slots[s].proc.group->tgid = s < 2 ? 10 : 12;
 	}
-	lxp_proc_group_put(&g_lxp_proc[1]);
-	assert_int_equal(lxp_proc_group_fork(&g_lxp_proc[1], &g_lxp_proc[0], LXP_CLONE_THREAD, 11),
+	lxp_proc_group_put(&g_lxp_slots[1].proc);
+	assert_int_equal(lxp_proc_group_fork(&g_lxp_slots[1].proc, &g_lxp_slots[0].proc, LXP_CLONE_THREAD, 11),
 			 0);
 
-	assert_int_equal(thread_group_live_count(g_lxp_proc[0].group), 2);
+	assert_int_equal(thread_group_live_count(g_lxp_slots[0].proc.group), 2);
 	thread_group_request_exit(1, 37);
-	assert_int_equal(g_lxp_proc[0].intent.kind, LXP_INTENT_EXIT);
-	assert_int_equal(g_lxp_proc[1].intent.kind, LXP_INTENT_EXIT);
-	assert_true(g_lxp_proc[0].intent.data.exit.group);
-	assert_int_equal(g_lxp_proc[0].exit_status, 37);
-	assert_int_equal(g_lxp_proc[2].intent.kind, LXP_INTENT_NONE);
+	assert_int_equal(g_lxp_slots[0].proc.intent.kind, LXP_INTENT_EXIT);
+	assert_int_equal(g_lxp_slots[1].proc.intent.kind, LXP_INTENT_EXIT);
+	assert_true(g_lxp_slots[0].proc.intent.data.exit.group);
+	assert_int_equal(g_lxp_slots[0].proc.exit_status, 37);
+	assert_int_equal(g_lxp_slots[2].proc.intent.kind, LXP_INTENT_NONE);
 }
 
 static void test_exec_stops_only_thread_group_peers(void **state)
 {
 	(void)state;
 	for (int s = 0; s < 3; s++) {
-		g_lxp_proc[s].alive = 1;
-		g_lxp_proc[s].pid = 10 + s;
-		g_lxp_proc[s].group->tgid = s < 2 ? 10 : 12;
-		g_lxp_used[s] = 1;
-		g_slot_lifecycle[s] = SLOT_RUNNING;
+		g_lxp_slots[s].proc.alive = 1;
+		g_lxp_slots[s].proc.pid = 10 + s;
+		g_lxp_slots[s].proc.group->tgid = s < 2 ? 10 : 12;
+		g_lxp_slots[s].runnable = 1;
+		g_lxp_slots[s].host_state = SLOT_RUNNING;
 	}
-	lxp_proc_group_put(&g_lxp_proc[1]);
-	assert_int_equal(lxp_proc_group_fork(&g_lxp_proc[1], &g_lxp_proc[0], LXP_CLONE_THREAD, 11),
+	lxp_proc_group_put(&g_lxp_slots[1].proc);
+	assert_int_equal(lxp_proc_group_fork(&g_lxp_slots[1].proc, &g_lxp_slots[0].proc, LXP_CLONE_THREAD, 11),
 			 0);
 
 	thread_group_stop_exec_peers(&g_mock_eng, 0, 127);
 	assert_int_equal(g_mock.abort_calls, 1);
-	assert_int_equal(g_lxp_proc[1].intent.kind, LXP_INTENT_EXIT);
-	assert_int_equal(g_lxp_proc[1].exit_status, 127);
-	assert_int_equal(g_lxp_used[1], 0);
-	assert_int_equal(g_lxp_proc[0].intent.kind, LXP_INTENT_NONE);
-	assert_int_equal(g_lxp_proc[2].intent.kind, LXP_INTENT_NONE);
+	assert_int_equal(g_lxp_slots[1].proc.intent.kind, LXP_INTENT_EXIT);
+	assert_int_equal(g_lxp_slots[1].proc.exit_status, 127);
+	assert_int_equal(g_lxp_slots[1].runnable, 0);
+	assert_int_equal(g_lxp_slots[0].proc.intent.kind, LXP_INTENT_NONE);
+	assert_int_equal(g_lxp_slots[2].proc.intent.kind, LXP_INTENT_NONE);
 }
 
 /* ---- device mappings: each process owns two independently tracked ranges --- */
 static void test_device_map_index_tracks_both_ranges(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 
 	assert_int_equal(device_map_index(p, 0x1000u, 0x100u), 0);
 	p->mm->dev_map_lo[0] = 0x1000u;
@@ -1451,8 +1582,8 @@ static void test_device_map_index_tracks_both_ranges(void **state)
 static void test_device_maps_follow_shared_address_space(void **state)
 {
 	(void)state;
-	lxp_proc_t *leader = &g_lxp_proc[0];
-	lxp_proc_t *thread = &g_lxp_proc[1];
+	lxp_proc_t *leader = &g_lxp_slots[0].proc;
+	lxp_proc_t *thread = &g_lxp_slots[1].proc;
 	leader->alive = 1;
 	thread->alive = 1;
 	lxp_proc_mm_put(thread);
@@ -1499,25 +1630,25 @@ static void test_teardown_releases_every_slot_resource(void **state)
 {
 	(void)state;
 	const int s = 2;
-	lxp_proc_t *p = &g_lxp_proc[s];
+	deferred_slot_reassign(s);
+	lxp_slot_ref_t owner = slot_ref_at(s);
+	lxp_proc_t *p = &g_lxp_slots[s].proc;
 	p->alive = 1;
-	p->mm->region = 1;
-	p->snap_region = 2;
-	g_lxp_used[s] = 1;
-	g_slot_lifecycle[s] = SLOT_RUNNING;
-	assert_true(region_reserve(1, s) != 0);
-	assert_true(region_reserve(2, s) != 0);
+	p->mm->region = region_reserve(1, owner);
+	p->snapshot = region_reserve(2, owner);
+	g_lxp_slots[s].runnable = 1;
+	g_lxp_slots[s].host_state = SLOT_RUNNING;
 	assert_non_null(lxp_fd_description(p, 0));
 
 	coordinator_teardown_all(&g_mock_eng);
 
 	assert_int_equal(g_mock.abort_calls, LXP_NSLOT);
 	assert_false(p->alive);
-	assert_false(g_lxp_used[s]);
+	assert_false(g_lxp_slots[s].runnable);
 	assert_null(lxp_fd_description(p, 0));
 	for (int r = 0; r < LXP_NREG; r++) {
-		assert_int_equal(g_region_owner[r], -1);
-		assert_int_equal(g_region_refs[r], 0);
+		assert_int_equal(g_regions[r].lease_owner.index, -1);
+		assert_int_equal(g_regions[r].refs, 0);
 	}
 	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
@@ -1527,12 +1658,12 @@ static void test_park_failure_aborts_and_kills_slot(void **state)
 {
 	(void)state;
 	const int s = 2;
-	lxp_proc_t *p = &g_lxp_proc[s];
+	lxp_proc_t *p = &g_lxp_slots[s].proc;
 	p->alive = 1;
-	g_lxp_used[s] = 1;
-	g_slot_lifecycle[s] = SLOT_RUNNING;
+	g_lxp_slots[s].runnable = 1;
+	g_lxp_slots[s].host_state = SLOT_RUNNING;
 	deferred_slot_reassign(s);
-	uint32_t generation = g_slot_generation[s];
+	uint32_t generation = g_lxp_slots[s].generation;
 	g_mock.park_failures = 1;
 
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, s), -LXP_EIO);
@@ -1540,8 +1671,8 @@ static void test_park_failure_aborts_and_kills_slot(void **state)
 	assert_int_equal(g_mock.park_generation, generation);
 	assert_int_equal(g_mock.abort_calls, 1);
 	assert_int_equal(g_mock.abort_generation, generation);
-	assert_int_equal(g_slot_lifecycle[s], SLOT_DEAD);
-	assert_false(g_lxp_used[s]);
+	assert_int_equal(g_lxp_slots[s].host_state, SLOT_DEAD);
+	assert_false(g_lxp_slots[s].runnable);
 	assert_int_equal(p->intent.kind, LXP_INTENT_EXIT);
 	assert_int_equal(p->exit_reason, LXP_EXIT_REASON_HOST_TRANSITION);
 	assert_true(primary_slot_pending(s));
@@ -1551,20 +1682,20 @@ static void test_resume_failure_aborts_parked_slot(void **state)
 {
 	(void)state;
 	const int s = 3;
-	lxp_proc_t *p = &g_lxp_proc[s];
+	lxp_proc_t *p = &g_lxp_slots[s].proc;
 	p->alive = 1;
-	g_slot_lifecycle[s] = SLOT_PARKED;
+	g_lxp_slots[s].host_state = SLOT_PARKED;
 	deferred_slot_reassign(s);
-	uint32_t generation = g_slot_generation[s];
+	uint32_t generation = g_lxp_slots[s].generation;
 	g_mock.resume_failures = 1;
 
-	assert_int_equal(coordinator_resume_slot(&g_mock_eng, s, 0, &g_ctx[s], 42), -LXP_EIO);
+	assert_int_equal(coordinator_resume_slot(&g_mock_eng, s, 0, &g_lxp_slots[s].resume, 42), -LXP_EIO);
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_generation, generation);
 	assert_int_equal(g_mock.abort_calls, 1);
 	assert_int_equal(g_mock.abort_generation, generation);
-	assert_int_equal(g_slot_lifecycle[s], SLOT_DEAD);
-	assert_false(g_lxp_used[s]);
+	assert_int_equal(g_lxp_slots[s].host_state, SLOT_DEAD);
+	assert_false(g_lxp_slots[s].runnable);
 	assert_int_equal(p->intent.kind, LXP_INTENT_EXIT);
 	assert_int_equal(p->exit_reason, LXP_EXIT_REASON_HOST_TRANSITION);
 }
@@ -1573,25 +1704,25 @@ static void test_abort_failure_retains_slot_until_retry(void **state)
 {
 	(void)state;
 	const int s = 4;
-	lxp_proc_t *p = &g_lxp_proc[s];
+	lxp_proc_t *p = &g_lxp_slots[s].proc;
 	p->alive = 1;
-	g_lxp_used[s] = 1;
-	g_slot_lifecycle[s] = SLOT_RUNNING;
+	g_lxp_slots[s].runnable = 1;
+	g_lxp_slots[s].host_state = SLOT_RUNNING;
 	deferred_slot_reassign(s);
-	uint32_t generation = g_slot_generation[s];
+	uint32_t generation = g_lxp_slots[s].generation;
 	g_mock.abort_failures = 1;
 
 	assert_int_equal(coordinator_abort_slot(&g_mock_eng, s), -LXP_EIO);
-	assert_int_equal(g_slot_lifecycle[s], SLOT_FAILED);
-	assert_true(g_lxp_used[s]);
+	assert_int_equal(g_lxp_slots[s].host_state, SLOT_FAILED);
+	assert_true(g_lxp_slots[s].runnable);
 	assert_true(p->alive);
 	assert_int_equal(p->intent.kind, LXP_INTENT_EXIT);
 	assert_int_equal(p->exit_reason, LXP_EXIT_REASON_HOST_TRANSITION);
 	assert_int_equal(g_mock.abort_generation, generation);
 
 	assert_int_equal(coordinator_abort_slot(&g_mock_eng, s), LXP_OK);
-	assert_int_equal(g_slot_lifecycle[s], SLOT_DEAD);
-	assert_false(g_lxp_used[s]);
+	assert_int_equal(g_lxp_slots[s].host_state, SLOT_DEAD);
+	assert_false(g_lxp_slots[s].runnable);
 	assert_true(p->alive); /* Linux ownership is released only by EV_EXIT. */
 }
 
@@ -1601,21 +1732,21 @@ static void test_abort_failure_retains_slot_until_retry(void **state)
 static void test_futex_has_corunner(void **state)
 {
 	(void)state;
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].mm->region = 2;
-	assert_false(futex_has_corunner(&g_lxp_proc[0])); /* alone in region 2 */
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.mm->region.index = 2;
+	assert_false(futex_has_corunner(&g_lxp_slots[0].proc)); /* alone in region 2 */
 
-	g_lxp_proc[1].alive = 1;
-	g_lxp_proc[1].mm->region = 3;
-	assert_false(futex_has_corunner(&g_lxp_proc[0])); /* a live proc, but a different region */
+	g_lxp_slots[1].proc.alive = 1;
+	g_lxp_slots[1].proc.mm->region.index = 3;
+	assert_false(futex_has_corunner(&g_lxp_slots[0].proc)); /* a live proc, but a different region */
 
-	lxp_proc_mm_put(&g_lxp_proc[2]);
-	assert_int_equal(lxp_proc_mm_fork(&g_lxp_proc[2], &g_lxp_proc[0], LXP_CLONE_VM), 0);
-	g_lxp_proc[2].alive = 1;
-	assert_true(futex_has_corunner(&g_lxp_proc[0])); /* a co-runner shares the mm */
+	lxp_proc_mm_put(&g_lxp_slots[2].proc);
+	assert_int_equal(lxp_proc_mm_fork(&g_lxp_slots[2].proc, &g_lxp_slots[0].proc, LXP_CLONE_VM), 0);
+	g_lxp_slots[2].proc.alive = 1;
+	assert_true(futex_has_corunner(&g_lxp_slots[0].proc)); /* a co-runner shares the mm */
 
-	g_lxp_proc[2].alive = 0;
-	assert_false(futex_has_corunner(&g_lxp_proc[0])); /* it exited -> no longer a co-runner */
+	g_lxp_slots[2].proc.alive = 0;
+	assert_false(futex_has_corunner(&g_lxp_slots[0].proc)); /* it exited -> no longer a co-runner */
 }
 
 /* FUTEX_WAKE marks up to `val` waiters queued on the same uaddr (and no others). The
@@ -1625,38 +1756,38 @@ static void test_futex_wake_marks_waiters(void **state)
 {
 	(void)state;
 	const uint32_t uaddr = 0x2000, other = 0x3000;
-	g_lxp_proc[1].alive = 1;
-	g_lxp_proc[1].wait.kind = LXP_WAIT_FUTEX;
-	g_lxp_proc[1].wait.data.futex.uaddr = uaddr;
-	g_lxp_proc[2].alive = 1;
-	g_lxp_proc[2].wait.kind = LXP_WAIT_FUTEX;
-	g_lxp_proc[2].wait.data.futex.uaddr = uaddr;
-	g_lxp_proc[3].alive = 1;
-	g_lxp_proc[3].wait.kind = LXP_WAIT_FUTEX;
-	g_lxp_proc[3].wait.data.futex.uaddr = other;
+	g_lxp_slots[1].proc.alive = 1;
+	g_lxp_slots[1].proc.wait.kind = LXP_WAIT_FUTEX;
+	g_lxp_slots[1].proc.wait.data.futex.uaddr = uaddr;
+	g_lxp_slots[2].proc.alive = 1;
+	g_lxp_slots[2].proc.wait.kind = LXP_WAIT_FUTEX;
+	g_lxp_slots[2].proc.wait.data.futex.uaddr = uaddr;
+	g_lxp_slots[3].proc.alive = 1;
+	g_lxp_slots[3].proc.wait.kind = LXP_WAIT_FUTEX;
+	g_lxp_slots[3].proc.wait.data.futex.uaddr = other;
 
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[0] = uaddr;
 	f.r[1] = 1; /* FUTEX_WAKE */
 	f.r[2] = 1; /* wake at most one */
-	lxp_futex(&f, &g_lxp_proc[0], 0);
+	lxp_futex(&f, &g_lxp_slots[0].proc, 0);
 
 	assert_int_equal(f.r[0], 1); /* reported one woken */
-	assert_int_equal(g_lxp_proc[1].wait.data.futex.woken + g_lxp_proc[2].wait.data.futex.woken,
+	assert_int_equal(g_lxp_slots[1].proc.wait.data.futex.woken + g_lxp_slots[2].proc.wait.data.futex.woken,
 			 1);
-	assert_int_equal(g_lxp_proc[3].wait.data.futex.woken, 0);
+	assert_int_equal(g_lxp_slots[3].proc.wait.data.futex.woken, 0);
 
 	/* A second WAKE(all) picks up the remaining waiter on uaddr, still not the other. */
 	memset(&f, 0, sizeof(f));
 	f.r[0] = uaddr;
 	f.r[1] = 1;
 	f.r[2] = 0x7fffffff;
-	lxp_futex(&f, &g_lxp_proc[0], 0);
+	lxp_futex(&f, &g_lxp_slots[0].proc, 0);
 	assert_int_equal(f.r[0], 1); /* the one still-parked waiter */
-	assert_int_equal(g_lxp_proc[1].wait.data.futex.woken, 1);
-	assert_int_equal(g_lxp_proc[2].wait.data.futex.woken, 1);
-	assert_int_equal(g_lxp_proc[3].wait.data.futex.woken, 0);
+	assert_int_equal(g_lxp_slots[1].proc.wait.data.futex.woken, 1);
+	assert_int_equal(g_lxp_slots[2].proc.wait.data.futex.woken, 1);
+	assert_int_equal(g_lxp_slots[3].proc.wait.data.futex.woken, 0);
 }
 
 /* pending_deliverable returns the lowest-numbered UNBLOCKED pending signal and leaves blocked
@@ -1665,7 +1796,7 @@ static void test_futex_wake_marks_waiters(void **state)
 static void test_pending_deliverable(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->sig_blocked = lxp_sig_bit(LXP_SIGTERM); /* SIGTERM blocked, SIGINT not */
 	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM) | lxp_sig_bit(LXP_SIGINT);
 	assert_int_equal(pending_deliverable(p), LXP_SIGINT); /* skips the blocked SIGTERM */
@@ -1694,7 +1825,7 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 	uint8_t arena_mem[256] __attribute__((aligned(16)));
 	lxp_arena_t arena;
 	assert_int_equal(lxp_arena_init(&arena, arena_mem, sizeof(arena_mem)), LXP_OK);
-	lxp_proc_t *proc = &g_lxp_proc[0];
+	lxp_proc_t *proc = &g_lxp_slots[0].proc;
 	assert_int_equal(lxp_proc_init(proc, &arena, 0), LXP_OK);
 	proc->alive = 1;
 	proc->mm->region_lo = 0x1000u;
@@ -1712,8 +1843,8 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 		f.r[7] = LXP_NR_ioctl;
 		g_tty_isig = 1;
 		g_tty_icrnl = 1;
-		g_lxp_used[0] = 1;
-		g_slot_lifecycle[0] = SLOT_RUNNING;
+		g_lxp_slots[0].runnable = 1;
+		g_lxp_slots[0].host_state = SLOT_RUNNING;
 
 		lxp_dispatch(&f, proc);
 
@@ -1747,7 +1878,7 @@ static void test_console_icrnl_translation(void **state)
 static void test_dispatch_class_defaults_deferred(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
 	p->pid = 42;
 	p->group->tgid = 42;
@@ -1770,8 +1901,8 @@ static void test_dispatch_class_defaults_deferred(void **state)
 	fp.fpscr = 0x01c00000u;
 	fp.active = 1;
 	f.fp = &fp;
-	g_lxp_used[0] = 1;
-	g_slot_lifecycle[0] = SLOT_RUNNING;
+	g_lxp_slots[0].runnable = 1;
+	g_lxp_slots[0].host_state = SLOT_RUNNING;
 	lxp_dispatch(&f, p);
 	assert_int_equal(deferred_state_load(0), DEFER_READY);
 	assert_int_equal(g_mock.event_posts, 1);
@@ -1787,15 +1918,15 @@ static void test_deferred_requests_are_per_slot(void **state)
 {
 	(void)state;
 	for (int s = 0; s < 2; s++) {
-		g_lxp_proc[s].alive = 1;
-		g_lxp_proc[s].pid = s + 1;
+		g_lxp_slots[s].proc.alive = 1;
+		g_lxp_slots[s].proc.pid = s + 1;
 		deferred_slot_reassign(s);
-		g_lxp_used[s] = 1;
-		g_slot_lifecycle[s] = SLOT_RUNNING;
+		g_lxp_slots[s].runnable = 1;
+		g_lxp_slots[s].host_state = SLOT_RUNNING;
 		struct lxp_frame f;
 		memset(&f, 0, sizeof(f));
 		f.r[7] = 900u + (uint32_t)s;
-		lxp_dispatch(&f, &g_lxp_proc[s]);
+		lxp_dispatch(&f, &g_lxp_slots[s].proc);
 	}
 	assert_int_equal(g_mock.event_posts, 2);
 	assert_int_equal(deferred_state_load(0), DEFER_READY);
@@ -1815,26 +1946,26 @@ static void test_deferred_requests_are_per_slot(void **state)
 static void test_deferred_generation_rejects_stale_work(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
 	deferred_slot_reassign(0);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[7] = 999;
 	lxp_dispatch(&f, p);
-	uint32_t old_generation = g_deferred[0].generation;
+	lxp_slot_ref_t old_owner = g_lxp_slots[0].deferred.owner;
 	deferred_slot_reassign(0);
-	g_deferred[0].generation = old_generation;
+	g_lxp_slots[0].deferred.owner = old_owner;
 	deferred_state_store(0, DEFER_READY); /* delayed event from the prior occupant */
-	g_lxp_used[0] = 1;
-	g_slot_lifecycle[0] = SLOT_RUNNING;
+	g_lxp_slots[0].runnable = 1;
+	g_lxp_slots[0].host_state = SLOT_RUNNING;
 
 	execute_deferred(&g_mock_eng, 0);
 
 	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
 	assert_int_equal(g_mock.abort_calls, 0);
 	assert_int_equal(g_mock.resume_calls, 0);
-	assert_int_equal(g_lxp_used[0], 1); /* the replacement task was untouched */
+	assert_int_equal(g_lxp_slots[0].runnable, 1); /* the replacement task was untouched */
 }
 
 /* One slot cannot overwrite its outstanding request, even if a broken seam
@@ -1842,7 +1973,7 @@ static void test_deferred_generation_rejects_stale_work(void **state)
 static void test_deferred_same_slot_rejects_overwrite(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
 	deferred_slot_reassign(0);
 	struct lxp_frame first, second;
@@ -1854,7 +1985,7 @@ static void test_deferred_same_slot_rejects_overwrite(void **state)
 	lxp_dispatch(&second, p);
 	assert_int_equal((int32_t)second.r[0], -LXP_EAGAIN);
 	assert_int_equal(g_mock.event_posts, 1);
-	assert_int_equal((int32_t)g_ctx[0].r4_11[3], 998);
+	assert_int_equal((int32_t)g_lxp_slots[0].resume.r4_11[3], 998);
 }
 
 /* A deliverable signal queued before resource acquisition cancels deferred work.
@@ -1862,14 +1993,14 @@ static void test_deferred_same_slot_rejects_overwrite(void **state)
 static void test_deferred_signal_cancels_before_execute(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
 	deferred_slot_reassign(0);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[7] = 999;
-	g_lxp_used[0] = 1;
-	g_slot_lifecycle[0] = SLOT_RUNNING;
+	g_lxp_slots[0].runnable = 1;
+	g_lxp_slots[0].host_state = SLOT_RUNNING;
 	lxp_dispatch(&f, p);
 	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
 
@@ -1936,12 +2067,12 @@ static void test_console_icrnl_immediate_read(void **state)
 static void test_deferred_blocking_handoff_keeps_parked_task(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
 	p->console_poll = console_not_ready;
 	deferred_slot_reassign(0);
-	g_lxp_used[0] = 1;
-	g_slot_lifecycle[0] = SLOT_RUNNING;
+	g_lxp_slots[0].runnable = 1;
+	g_lxp_slots[0].host_state = SLOT_RUNNING;
 
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
@@ -1955,7 +2086,7 @@ static void test_deferred_blocking_handoff_keeps_parked_task(void **state)
 	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
 	assert_int_equal(p->wait.kind, LXP_WAIT_TIMER);
 	assert_true(primary_slot_pending(0));
-	assert_int_equal(g_lxp_used[0], 0);
+	assert_int_equal(g_lxp_slots[0].runnable, 0);
 	assert_int_equal(g_mock.park_calls, 1);
 	assert_int_equal(g_mock.abort_calls, 0);
 	assert_int_equal(g_mock.resume_calls, 0);
@@ -1970,11 +2101,11 @@ static void test_kill_targets_process_group(void **state)
 	const int pid[5] = {1, 2, 3, 4, 5};
 	const int pgid[5] = {1, 2, 3, 3, 5};
 	for (int i = 0; i < 5; i++) {
-		g_lxp_proc[i].alive = 1;
-		g_lxp_proc[i].pid = pid[i];
-		g_lxp_proc[i].group->pgid = pgid[i];
+		g_lxp_slots[i].proc.alive = 1;
+		g_lxp_slots[i].proc.pid = pid[i];
+		g_lxp_slots[i].proc.group->pgid = pgid[i];
 	}
-	lxp_proc_t *shell = &g_lxp_proc[1]; /* the sender */
+	lxp_proc_t *shell = &g_lxp_slots[1].proc; /* the sender */
 	const uint64_t bit = lxp_sig_bit(LXP_SIGTERM);
 
 	/* shell: kill(-3, SIGTERM) -> process group 3 = {cmd1 pid3, cmd2 pid4} only. */
@@ -1985,30 +2116,30 @@ static void test_kill_targets_process_group(void **state)
 	f.r[1] = LXP_SIGTERM;
 	lxp_dispatch(&f, shell);
 	assert_int_equal((int32_t)f.r[0], 0);		/* a target was found */
-	assert_true(g_lxp_proc[2].pending_sigs & bit);	/* cmd1 (pgid 3) */
-	assert_true(g_lxp_proc[3].pending_sigs & bit);	/* cmd2 (pgid 3) */
-	assert_false(g_lxp_proc[0].pending_sigs & bit); /* init untouched */
-	assert_false(g_lxp_proc[1].pending_sigs & bit); /* the sender itself */
-	assert_false(g_lxp_proc[4].pending_sigs & bit); /* inetd (pgid 5) — the old broadcast bug */
+	assert_true(g_lxp_slots[2].proc.pending_sigs & bit);	/* cmd1 (pgid 3) */
+	assert_true(g_lxp_slots[3].proc.pending_sigs & bit);	/* cmd2 (pgid 3) */
+	assert_false(g_lxp_slots[0].proc.pending_sigs & bit); /* init untouched */
+	assert_false(g_lxp_slots[1].proc.pending_sigs & bit); /* the sender itself */
+	assert_false(g_lxp_slots[4].proc.pending_sigs & bit); /* inetd (pgid 5) — the old broadcast bug */
 
 	/* kill(0, SIGTERM) targets the SENDER's own group (pgid 2); put inetd in it. */
 	for (int i = 0; i < 5; i++)
-		g_lxp_proc[i].pending_sigs = 0;
-	g_lxp_proc[4].group->pgid = 2;
+		g_lxp_slots[i].proc.pending_sigs = 0;
+	g_lxp_slots[4].proc.group->pgid = 2;
 	memset(&f, 0, sizeof(f));
 	f.r[7] = LXP_NR_kill;
 	f.r[0] = 0; /* caller's process group */
 	f.r[1] = LXP_SIGTERM;
 	lxp_dispatch(&f, shell);
-	assert_true(g_lxp_proc[4].pending_sigs & bit);	/* the group peer */
-	assert_false(g_lxp_proc[2].pending_sigs & bit); /* pgid 3, not in group 2 */
+	assert_true(g_lxp_slots[4].proc.pending_sigs & bit);	/* the group peer */
+	assert_false(g_lxp_slots[2].proc.pending_sigs & bit); /* pgid 3, not in group 2 */
 }
 
 /* setpgid(0,pgid)/getpgrp track a real per-proc group; setsid makes the caller a leader. */
 static void test_setpgid_getpgrp_track_group(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	p->alive = 1;
 	p->pid = 7;
 	p->group->pgid = 7;
@@ -2050,9 +2181,9 @@ static void test_console_sigint_targets_fg_group(void **state)
 	const int pid[5] = {1, 2, 3, 4, 5};
 	const int pgid[5] = {1, 2, 3, 3, 5};
 	for (int i = 0; i < 5; i++) {
-		g_lxp_proc[i].alive = 1;
-		g_lxp_proc[i].pid = pid[i];
-		g_lxp_proc[i].group->pgid = pgid[i];
+		g_lxp_slots[i].proc.alive = 1;
+		g_lxp_slots[i].proc.pid = pid[i];
+		g_lxp_slots[i].proc.group->pgid = pgid[i];
 	}
 	const uint64_t bit = lxp_sig_bit(LXP_SIGINT);
 
@@ -2060,18 +2191,18 @@ static void test_console_sigint_targets_fg_group(void **state)
 	lxp_console_set_fg_pgrp(0);
 	console_signal_fg(LXP_SIGINT);
 	for (int i = 0; i < 5; i++)
-		assert_false(g_lxp_proc[i].pending_sigs & bit);
+		assert_false(g_lxp_slots[i].proc.pending_sigs & bit);
 
 	/* Shell put group 3 in the foreground: ^C hits that group only. */
 	lxp_console_set_fg_pgrp(3);
 	assert_int_equal(lxp_console_fg_pgrp(), 3);
 	console_signal_fg(LXP_SIGINT);
-	assert_true(g_lxp_proc[2].pending_sigs & bit);	/* fg job (pgid 3) */
-	assert_true(g_lxp_proc[3].pending_sigs & bit);	/* fg pipeline peer (pgid 3) */
-	assert_false(g_lxp_proc[0].pending_sigs & bit); /* init (pgid 1) */
-	assert_false(g_lxp_proc[1].pending_sigs &
+	assert_true(g_lxp_slots[2].proc.pending_sigs & bit);	/* fg job (pgid 3) */
+	assert_true(g_lxp_slots[3].proc.pending_sigs & bit);	/* fg pipeline peer (pgid 3) */
+	assert_false(g_lxp_slots[0].proc.pending_sigs & bit); /* init (pgid 1) */
+	assert_false(g_lxp_slots[1].proc.pending_sigs &
 		     bit); /* the shell (pgid 2) — survives to re-prompt */
-	assert_false(g_lxp_proc[4].pending_sigs & bit); /* background job (pgid 5) — untouched */
+	assert_false(g_lxp_slots[4].proc.pending_sigs & bit); /* background job (pgid 5) — untouched */
 }
 
 /* Ctrl+Z (VSUSP) fans SIGTSTP out to the foreground group only — the shell and background
@@ -2082,16 +2213,16 @@ static void test_console_sigtstp_targets_fg_group(void **state)
 	const int pid[3] = {2, 3, 5}; /* shell(2,2) fg-job(3,3) bg-job(5,5) */
 	const int pgid[3] = {2, 3, 5};
 	for (int i = 0; i < 3; i++) {
-		g_lxp_proc[i].alive = 1;
-		g_lxp_proc[i].pid = pid[i];
-		g_lxp_proc[i].group->pgid = pgid[i];
+		g_lxp_slots[i].proc.alive = 1;
+		g_lxp_slots[i].proc.pid = pid[i];
+		g_lxp_slots[i].proc.group->pgid = pgid[i];
 	}
 	const uint64_t bit = lxp_sig_bit(LXP_SIGTSTP);
 	lxp_console_set_fg_pgrp(3);
 	console_signal_fg(LXP_SIGTSTP);
-	assert_true(g_lxp_proc[1].pending_sigs & bit);	/* fg job (pgid 3) */
-	assert_false(g_lxp_proc[0].pending_sigs & bit); /* the shell (pgid 2) */
-	assert_false(g_lxp_proc[2].pending_sigs & bit); /* background job (pgid 5) */
+	assert_true(g_lxp_slots[1].proc.pending_sigs & bit);	/* fg job (pgid 3) */
+	assert_false(g_lxp_slots[0].proc.pending_sigs & bit); /* the shell (pgid 2) */
+	assert_false(g_lxp_slots[2].proc.pending_sigs & bit); /* background job (pgid 5) */
 }
 
 /* The stop-signal predicate: SIGSTOP always stops (uncatchable); SIGTSTP/TTIN/TTOU stop
@@ -2099,7 +2230,7 @@ static void test_console_sigtstp_targets_fg_group(void **state)
 static void test_sig_stops_proc_predicate(void **state)
 {
 	(void)state;
-	lxp_proc_t *p = &g_lxp_proc[0];
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
 	static lxp_sighand_t sighand;
 	memset(&sighand, 0, sizeof(sighand));
 	sighand.refs = 1;
@@ -2122,21 +2253,21 @@ static void test_stop_notify_wakes_wuntraced_waiter(void **state)
 {
 	(void)state;
 	int status = -1;
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].group->live_children = 1;
-	set_child_wait(&g_lxp_proc[0], -1, LXP_WUNTRACED, &status);
-	g_slot_lifecycle[0] = SLOT_PARKED;
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.pid = 1;
+	g_lxp_slots[0].proc.group->live_children = 1;
+	set_child_wait(&g_lxp_slots[0].proc, -1, LXP_WUNTRACED, &status);
+	g_lxp_slots[0].host_state = SLOT_PARKED;
 
 	notify_parent_stopped(&g_mock_eng, /*ppid*/ 1, /*cpid*/ 7, LXP_SIGTSTP);
 
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_r0, 7);
 	assert_int_equal(status, ((LXP_SIGTSTP & 0xff) << 8) | 0x7f); /* WIFSTOPPED */
-	assert_int_equal(g_lxp_proc[0].wait.kind, LXP_WAIT_NONE);
-	assert_int_equal(g_lxp_proc[0].group->live_children,
+	assert_int_equal(g_lxp_slots[0].proc.wait.kind, LXP_WAIT_NONE);
+	assert_int_equal(g_lxp_slots[0].proc.group->live_children,
 			 1); /* NOT decremented — the child lives */
-	assert_int_equal(g_lxp_proc[0].group->child_count, 0);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count, 0);
 }
 
 /* A stopped child whose parent is NOT waiting (or waits without WUNTRACED) queues a STOPPED
@@ -2145,21 +2276,21 @@ static void test_stop_notify_queues_without_wuntraced(void **state)
 {
 	(void)state;
 	/* Parent blocked in wait4 but WITHOUT WUNTRACED → cannot take the stop → queue it. */
-	g_lxp_proc[0].alive = 1;
-	g_lxp_proc[0].pid = 1;
-	g_lxp_proc[0].group->live_children = 1;
-	set_child_wait(&g_lxp_proc[0], -1, 0, NULL);
+	g_lxp_slots[0].proc.alive = 1;
+	g_lxp_slots[0].proc.pid = 1;
+	g_lxp_slots[0].proc.group->live_children = 1;
+	set_child_wait(&g_lxp_slots[0].proc, -1, 0, NULL);
 
 	notify_parent_stopped(&g_mock_eng, /*ppid*/ 1, /*cpid*/ 7, LXP_SIGTSTP);
 
 	assert_int_equal(g_mock.resume_calls, 0); /* the waiter is not woken */
-	assert_int_equal(g_lxp_proc[0].wait.kind, LXP_WAIT_CHILD);
-	assert_int_equal(g_lxp_proc[0].group->child_count, 1);
-	assert_int_equal(g_lxp_proc[0].group->child_pid[0], 7);
-	assert_int_equal(g_lxp_proc[0].group->child_status[0], LXP_SIGTSTP);
-	assert_int_equal(g_lxp_proc[0].group->child_kind[0], LXP_CHILD_STOPPED);
-	assert_int_equal(g_lxp_proc[0].group->live_children, 1); /* NOT decremented */
-	assert_true(g_lxp_proc[0].pending_sigs & lxp_sig_bit(LXP_SIGCHLD));
+	assert_int_equal(g_lxp_slots[0].proc.wait.kind, LXP_WAIT_CHILD);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count, 1);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_pid[0], 7);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_status[0], LXP_SIGTSTP);
+	assert_int_equal(g_lxp_slots[0].proc.group->child_kind[0], LXP_CHILD_STOPPED);
+	assert_int_equal(g_lxp_slots[0].proc.group->live_children, 1); /* NOT decremented */
+	assert_true(g_lxp_slots[0].proc.pending_sigs & lxp_sig_bit(LXP_SIGCHLD));
 }
 
 int main(void)
@@ -2177,6 +2308,17 @@ int main(void)
 		cmocka_unit_test_setup(test_typed_wait_transitions_cover_every_kind, reset_state),
 		cmocka_unit_test_setup(test_world_validator_reports_stale_mailbox, reset_state),
 		cmocka_unit_test_setup(test_world_validator_reports_region_ownership_drift,
+				       reset_state),
+		cmocka_unit_test_setup(
+			test_slot_references_reject_recycled_incarnations_and_skip_zero,
+			reset_state),
+		cmocka_unit_test_setup(test_fault_publication_rejects_stale_slot_reference,
+				       reset_state),
+		cmocka_unit_test_setup(test_region_references_reject_reuse_and_skip_zero,
+				       reset_state),
+		cmocka_unit_test_setup(test_world_validator_rejects_stale_region_capabilities,
+				       reset_state),
+		cmocka_unit_test_setup(test_world_validator_rejects_stale_region_leases,
 				       reset_state),
 		cmocka_unit_test_setup(test_world_validator_reports_resource_refcount_drift,
 				       reset_state),

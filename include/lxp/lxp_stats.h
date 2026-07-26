@@ -7,7 +7,7 @@
  *
  * Unified process/CPU snapshot for the Linux personality's synthetic /proc
  * (ps/top). The run-loop thread builds it each refresh from the live Linux slots
- * (g_lxp_proc[]) plus an ove_thread_list() of the RTOS kernel threads; the
+ * plus an ove_thread_list() of the RTOS kernel threads; the
  * /proc generator (svc-handler context) only READS it via the accessors. Holding
  * the table here (rather than reaching into the run loop) keeps the engine-agnostic
  * syscall layer free of run-loop symbols, so the host syscall tests link cleanly.

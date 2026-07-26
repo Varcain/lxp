@@ -10,7 +10,7 @@
  * discipline — open /dev/ptmx (master) + /dev/pts/N (slave) via TIOCGPTN,
  * canonical line delivery + echo, raw passthrough, ONLCR output mapping,
  * O_NONBLOCK EAGAIN, and winsize round-trip. The master/slave open-end count
- * (EOF vs EAGAIN) is driven by lxp_proc_table(), stubbed strong below so the
+ * (EOF vs EAGAIN) is driven by lxp_proc_at(), stubbed strong below so the
  * scan sees this test's fds.
  */
 
@@ -30,9 +30,9 @@ static lxp_arena_t g_arena;
 /* Strong override of the weak NULL stub in ove_linux_syscall.c so the pty layer's
  * open-end scan (pty_ends) counts THIS proc's master/slave fds — required for the
  * EOF/EAGAIN distinction (an empty read blocks only while the peer end is open). */
-lxp_proc_t *lxp_proc_table(void)
+lxp_proc_t *lxp_proc_at(int slot)
 {
-	return &g_proc;
+	return slot == 0 ? &g_proc : NULL;
 }
 int lxp_proc_nslot(void)
 {

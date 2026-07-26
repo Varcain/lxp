@@ -38,7 +38,7 @@ struct sig_save_stack_s {
 extern struct sig_save_stack_s g_sig_save[LXP_NSLOT];
 
 /* ---- coordinator primitives (lxp_run.c) ------------------------------------ */
-int slot_of(const lxp_proc_t *p);	/* slot index of proc (proc - g_lxp_proc) */
+int slot_of(const lxp_proc_t *p);	/* slot index of proc in the private runtime table */
 void park_frame(struct lxp_frame *f, lxp_proc_t *proc); /* park + publish this slot to the coordinator */
 
 /* ---- signal delivery (lxp_signal.c) ---------------------------------------- */

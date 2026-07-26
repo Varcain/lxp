@@ -329,7 +329,7 @@ extern "C" {
 #define LXP_STOP_PARKED \
 	1 /* stopped during a typed wait; resume = clear stopped, retry resumes */
 #define LXP_STOP_BOUNDARY \
-	2 /* took the stop at a syscall boundary; resume = spawn_resume(g_ctx, stop_r0) */
+	2 /* took the stop at a syscall boundary; resume from the slot runtime context */
 /* statx: AT_EMPTY_PATH means "stat the dirfd itself" (fstat); the basic-stats
  * result mask reported back in stx_mask. */
 #define LXP_AT_EMPTY_PATH 0x1000
@@ -524,6 +524,41 @@ typedef struct lxp_sighand {
 	uintptr_t restorer;
 } lxp_sighand_t;
 
+/** Generation-bearing identity for a process slot. Delayed producers retain
+ * and revalidate the complete reference before publishing. */
+typedef struct lxp_slot_ref {
+	int16_t index;
+	uint16_t _pad;
+	uint32_t generation;
+} lxp_slot_ref_t;
+
+/** Generation-bearing identity for one reserved program region. */
+typedef struct lxp_region_ref {
+	int16_t index;
+	uint16_t _pad;
+	uint32_t generation;
+} lxp_region_ref_t;
+
+static inline lxp_slot_ref_t lxp_slot_ref_none(void)
+{
+	return (lxp_slot_ref_t){.index = -1};
+}
+
+static inline lxp_region_ref_t lxp_region_ref_none(void)
+{
+	return (lxp_region_ref_t){.index = -1};
+}
+
+static inline int lxp_slot_ref_equal(lxp_slot_ref_t a, lxp_slot_ref_t b)
+{
+	return a.index == b.index && a.generation == b.generation;
+}
+
+static inline int lxp_region_ref_equal(lxp_region_ref_t a, lxp_region_ref_t b)
+{
+	return a.index == b.index && a.generation == b.generation;
+}
+
 /** Refcounted NOMMU address-space state. CLONE_VM shares this object; a
  * vfork-style child receives a logical copy while its task temporarily
  * references the same program region. */
@@ -534,7 +569,7 @@ typedef struct lxp_mm {
 	uintptr_t brk_base;
 	uintptr_t brk_cur;
 	uintptr_t brk_max;
-	int region;
+	lxp_region_ref_t region;
 	uintptr_t region_lo, region_hi;
 	uintptr_t pool_lo, pool_hi;
 	int is_dynamic;
@@ -768,16 +803,16 @@ typedef struct lxp_proc {
 	 * while the coordinator relaunches the slot. */
 	int exec_file_idx;		  /**< Rootfs index of the program to run. */
 	lxp_exec_capture_t *exec_capture; /**< Port-owned capture, or NULL if exec is unavailable. */
-	/* Concurrent process model (Phase D): the run loop is a coordinator over the
-	 * live process SET, not a stack. These were the run-loop locals top/R[]/rowner[]/
-	 * vctx[]; the per-slot resume contexts live in lxp_run.c. */
+	/* Concurrent process model: the run loop coordinates a live process set;
+	 * incarnation, resume, and host lifecycle live in its private slot-runtime
+	 * record. */
 	int alive;	       /**< This slot holds a live process. */
-	int vfork_parent_slot; /**< Slot of a parent suspended awaiting this child's exec/exit, or -1. */
+	lxp_slot_ref_t vfork_parent; /**< Parent suspended awaiting this child's exec/exit. */
 	/* vfork data isolation (NOMMU has no copy-on-write): a vfork child SHARES the parent's region,
 	 * so its pre-exec writes (e.g. a libc signal-disposition reset) would corrupt the suspended
 	 * parent. The coordinator snapshots the parent's writable data into a spare region at EV_FORK
 	 * and restores it before the parent resumes (EV_EXEC/EV_EXIT). See vfork_snapshot/vfork_restore. */
-	int snap_region; /**< Scratch region index holding the parent's data snapshot, or -1 (none). */
+	lxp_region_ref_t snapshot; /**< Scratch region holding the parent's data snapshot. */
 	uintptr_t stack_lo; /**< Boundary between this proc's in-region writable data and its stack. */
 	int is_fdpic; /**< Program is FDPIC: signal handlers/restorers are funcdescs {entry,GOT}. */
 	/* Cross-process signals (Phase D3): kill(pid,sig) from another proc, or a coordinator-
@@ -828,9 +863,9 @@ static inline uintptr_t lxp_sig_restorer_get(const lxp_proc_t *proc)
 	return (proc && proc->sighand) ? proc->sighand->restorer : 0;
 }
 
-/** @brief Proc-table accessors (defined in the run loop) so the pipe layer can scan
- * all live procs' fds to count a pipe's open read/write ends (for EOF / EPIPE). */
-lxp_proc_t *lxp_proc_table(void);
+/** @brief Bounded proc accessors (defined in the run loop) so backing-object
+ * layers can inspect descriptors without exposing writable slot storage. */
+lxp_proc_t *lxp_proc_at(int slot);
 int lxp_proc_nslot(void);
 
 /** Descriptor introspection for backing-object layers that scan process tables. */

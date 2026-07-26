@@ -103,17 +103,15 @@ static void pty_ends(int idx, int *masters, int *slaves)
 {
 	*masters = 0;
 	*slaves = 0;
-	lxp_proc_t *tab = lxp_proc_table();
 	int n = lxp_proc_nslot();
-	if (!tab)
-		return;
 	for (int s = 0; s < n; s++) {
-		if (!tab[s].alive)
+		lxp_proc_t *proc = lxp_proc_at(s);
+		if (!proc || !proc->alive)
 			continue;
 		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (lxp_fd_kind(&tab[s], fd) == LXP_FD_PTY &&
-			    lxp_fd_backing(&tab[s], fd) == idx)
-				(lxp_fd_direction(&tab[s], fd) ? (*masters)++ : (*slaves)++);
+			if (lxp_fd_kind(proc, fd) == LXP_FD_PTY &&
+			    lxp_fd_backing(proc, fd) == idx)
+				(lxp_fd_direction(proc, fd) ? (*masters)++ : (*slaves)++);
 	}
 }
 
@@ -123,18 +121,16 @@ static void pty_ends(int idx, int *masters, int *slaves)
  * track pgid — setpgid is inert), and broadcasting is safe because the shell survives. */
 static void pty_signal_slaves(int idx, int sig)
 {
-	lxp_proc_t *tab = lxp_proc_table();
 	int n = lxp_proc_nslot();
-	if (!tab)
-		return;
 	for (int s = 0; s < n; s++) {
-		if (!tab[s].alive)
+		lxp_proc_t *proc = lxp_proc_at(s);
+		if (!proc || !proc->alive)
 			continue;
 		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (lxp_fd_kind(&tab[s], fd) == LXP_FD_PTY &&
-			    lxp_fd_backing(&tab[s], fd) == idx &&
-			    lxp_fd_direction(&tab[s], fd) == 0) {
-				tab[s].pending_sigs |= lxp_sig_bit(sig);
+			if (lxp_fd_kind(proc, fd) == LXP_FD_PTY &&
+			    lxp_fd_backing(proc, fd) == idx &&
+			    lxp_fd_direction(proc, fd) == 0) {
+				proc->pending_sigs |= lxp_sig_bit(sig);
 				break; /* one delivery per proc */
 			}
 	}

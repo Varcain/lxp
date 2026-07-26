@@ -91,10 +91,8 @@ struct lxp_resume_ctx {
  * park/abort, the crit/event primitives, dyn_pool/map_device, and the OS-service
  * hooks (time, thread_list, cache, rootfs_window, exec_stage) + prepare/teardown. */
 
-/* ---- shared state (defined in lxp_run.c) ------------------------------- */
+/* ---- narrow shared-core operations (defined in lxp_run.c) -------------- */
 extern struct lxp_resume_ctx g_lxp_vfork; /* vfork capture buffer */
-extern lxp_proc_t g_lxp_proc[LXP_NSLOT];
-extern int g_lxp_used[LXP_NSLOT]; /* slot in use (run loop + seam read) */
 extern volatile int g_lxp_active;	  /* a run is in progress (seam trap gate) */
 extern volatile int g_lxp_halt;	  /* reboot(2)/poweroff: stop the run loop */
 /* The rootfs cpio's data span [lo, hi): dynamic FDPIC processes execute shared text in place from
@@ -106,13 +104,26 @@ extern const uint8_t *g_lxp_rootfs_lo, *g_lxp_rootfs_hi;
  * native saved-frame engines resume directly without consuming the token. */
 void lxp_park_loop(void *token);
 
-/* The shared svc-dispatch body. Called by the seam's trap with the uniform frame
- * and the running slot's proc; on return the seam writes the frame back. */
-void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc);
+/** Fault metadata published by an engine containment path. */
+typedef struct lxp_guest_fault {
+	uint32_t detail;
+	uintptr_t address;
+} lxp_guest_fault_t;
 
-/* Publish a primary event for @p slot and wake the coordinator. Engine fault
- * containment paths use this after publishing the guest's typed exit intent. */
-void lxp_event_post_slot(int slot);
+/** Capture the current incarnation of @p slot. */
+int lxp_slot_ref_current(int slot, lxp_slot_ref_t *out);
+/** Whether @p ref still identifies the same live slot incarnation. */
+int lxp_slot_ref_is_current(lxp_slot_ref_t ref);
+/** Whether @p ref is the current incarnation and its native task is runnable. */
+int lxp_slot_ref_is_runnable(lxp_slot_ref_t ref);
+/** Obtain the current address-space region capability for @p ref. */
+int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out);
+
+/** Dispatch one guest SVC only if @p ref remains current and runnable. */
+int lxp_dispatch_slot(lxp_slot_ref_t ref, struct lxp_frame *frame);
+
+/** Publish a contained memory fault and its exit event for a current slot. */
+int lxp_slot_report_memory_fault(lxp_slot_ref_t ref, const lxp_guest_fault_t *fault);
 
 /* The shared run loop. The public lxp_run() (lxp_run.c) wraps this: it publishes
  * the net/display ports, runs ops->prepare(), drives this loop, then ops->teardown(). */

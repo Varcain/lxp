@@ -31,24 +31,22 @@ typedef struct {
 static lxp_pipe_t
 	g_pipes[LXP_NPIPE] LXP_FAR_BSS; /* LXP_FAR_BSS relocates the pool (STM32: .sdram_bss) */
 
-/* Count a pipe's open read/write ends across ALL live procs' fd tables. lxp_proc_table
+/* Count a pipe's open read/write ends across ALL live procs' fd tables. lxp_proc_at
  * / lxp_proc_nslot are weak in lxp_syscall.c (the host test links them but never drives
  * pipes); the run loop supplies the strong versions. */
 static void pipe_ends(int pi, int *readers, int *writers)
 {
 	*readers = 0;
 	*writers = 0;
-	lxp_proc_t *tab = lxp_proc_table();
 	int n = lxp_proc_nslot();
-	if (!tab)
-		return;
 	for (int s = 0; s < n; s++) {
-		if (!tab[s].alive)
+		lxp_proc_t *proc = lxp_proc_at(s);
+		if (!proc || !proc->alive)
 			continue;
 		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (lxp_fd_kind(&tab[s], fd) == LXP_FD_PIPE &&
-			    lxp_fd_backing(&tab[s], fd) == pi)
-				(lxp_fd_direction(&tab[s], fd) ? (*writers)++ : (*readers)++);
+			if (lxp_fd_kind(proc, fd) == LXP_FD_PIPE &&
+			    lxp_fd_backing(proc, fd) == pi)
+				(lxp_fd_direction(proc, fd) ? (*writers)++ : (*readers)++);
 	}
 }
 

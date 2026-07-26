@@ -102,7 +102,11 @@ typedef struct lxp_diag_slot {
 	uint8_t native_task_present;
 } lxp_diag_slot_t;
 
-/** One read-only program-region ownership dump. */
+/** One read-only program-region ownership dump.
+ *
+ * owner_slot is the temporary reservation-lease holder, or -1 after ownership
+ * has transferred to an address space.
+ */
 typedef struct lxp_diag_region {
 	uint32_t abi_version;
 	uint32_t struct_size;
@@ -135,6 +139,8 @@ typedef enum lxp_diag_issue {
 	LXP_DIAG_DEFERRED_GENERATION_STALE,
 	LXP_DIAG_MULTIPLE_INTENTS,
 	LXP_DIAG_MULTIPLE_WAITS,
+	LXP_DIAG_REGION_LEASE_STALE,
+	LXP_DIAG_LIVE_TASK_STALE_REGION_REF,
 } lxp_diag_issue_t;
 
 /** First offending location and values from a validation pass. */

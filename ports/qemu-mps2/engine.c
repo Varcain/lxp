@@ -10,7 +10,8 @@
  * runs under QEMU with FreeRTOS providing the proven task/context-switch — this is
  * a de-oveRTOS'd distillation of backends/freertos/freertos_lnx.c. Each guest is a
  * FreeRTOS task; its Linux syscall traps to SVC_Handler, which captures the frame,
- * drives lxp_dispatch(), and (on a park) wakes the coordinator via a semaphore.
+ * dispatches through the generation-checked slot API, and (on a park) wakes the
+ * coordinator via a semaphore.
  *
  * Guests are restricted, unprivileged tasks. Per-task MPU regions grant only the
  * program, dynamic pool and rootfs XIP windows; user_ok/user_strnlen remain the
@@ -66,6 +67,14 @@ static StaticTask_t g_tcb[LXP_NSLOT];
 static TaskHandle_t g_tid[LXP_NSLOT];
 static uint32_t g_task_generation[LXP_NSLOT];
 
+static lxp_slot_ref_t task_slot_ref(int slot)
+{
+	return (lxp_slot_ref_t){
+		.index = (int16_t)slot,
+		.generation = slot >= 0 && slot < LXP_NSLOT ? g_task_generation[slot] : 0,
+	};
+}
+
 static int current_slot(void)
 {
 	/* Read pxCurrentTCB directly, NOT xTaskGetCurrentTaskHandle(): under the MPU port the
@@ -75,7 +84,7 @@ static int current_slot(void)
 	extern void *volatile pxCurrentTCB;
 	TaskHandle_t t = (TaskHandle_t)pxCurrentTCB;
 	for (int i = 0; i < LXP_NSLOT; i++)
-		if (g_lxp_used[i] && g_tid[i] == t)
+		if (g_tid[i] == t && lxp_slot_ref_is_runnable(task_slot_ref(i)))
 			return i;
 	return -1;
 }
@@ -138,7 +147,7 @@ int lxp_qemu_svc_c(struct lnx_capture *g)
 	f.r[15] = g->hw[6];
 	f.xpsr = g->hw[7];
 
-	lxp_dispatch(&f, &g_lxp_proc[sidx]);
+	(void)lxp_dispatch_slot(task_slot_ref(sidx), &f);
 
 	g->hw[0] = f.r[0];
 	g->hw[1] = f.r[1];
@@ -221,13 +230,14 @@ void lxp_qemu_fault_c(uint32_t *frame /* the faulting program's PSP HW frame */)
 {
 	int sidx = current_slot();
 	if (g_lxp_active && sidx >= 0) {
-		g_lxp_proc[sidx].exit_status = 139;             /* 128 + SIGSEGV */
-		(void)lxp_intent_exit(&g_lxp_proc[sidx], 0);
+		lxp_guest_fault_t fault = {
+			.detail = *(volatile uint32_t *)0xE000ED28u,
+		};
+		(void)lxp_slot_report_memory_fault(task_slot_ref(sidx), &fault);
 		frame[0] = 0;                                   /* fault park has no resume token */
 		frame[6] = ((uint32_t)&lxp_park_loop) & ~1u;    /* stacked PC → park loop */
 		frame[7] |= (1u << 24);                         /* xPSR.T */
 		*(volatile uint32_t *)0xE000ED28u = *(volatile uint32_t *)0xE000ED28u; /* clear CFSR */
-		lxp_event_post_slot(sidx);
 		return;
 	}
 	HardFault_Handler(); /* not a program fault → fatal */
@@ -428,7 +438,7 @@ static int qemu_spawn_resume(int sidx, uint32_t generation, int ridx,
 	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0)
 		return -1;
 	struct resume_desc *d = g_park_desc[sidx];
-	if (!g_lxp_used[sidx] && g_tid[sidx] && d) {
+	if (!lxp_slot_ref_is_runnable(task_slot_ref(sidx)) && g_tid[sidx] && d) {
 		if (g_task_generation[sidx] != generation)
 			return -1;
 		d->r0 = (uint32_t)r0val;
@@ -462,7 +472,8 @@ static int qemu_abort_slot(int sidx, uint32_t generation)
 
 static int qemu_park_slot(int sidx, uint32_t generation)
 {
-	if (sidx < 0 || sidx >= LXP_NSLOT || !g_lxp_used[sidx] ||
+	if (sidx < 0 || sidx >= LXP_NSLOT ||
+	    !lxp_slot_ref_is_runnable(task_slot_ref(sidx)) ||
 	    !g_tid[sidx] || g_task_generation[sidx] != generation)
 		return -1;
 	vTaskSuspend(g_tid[sidx]);
@@ -522,10 +533,13 @@ static int qemu_mem_stats(struct lxp_mem_stats *out)
 {
 	if (!out)
 		return LXP_ERR_INVALID_PARAM;
-	out->total = configTOTAL_HEAP_SIZE;
-	out->free = xPortGetFreeHeapSize();
-	out->used = out->total - out->free;
-	out->peak_used = out->total - xPortGetMinimumEverFreeHeapSize();
+	/* The harness uses only statically allocated FreeRTOS objects and compiles
+	 * the allocator out. Report no host heap instead of referencing heap APIs
+	 * that do not exist in this configuration. */
+	out->total = 0;
+	out->free = 0;
+	out->used = 0;
+	out->peak_used = 0;
 	return LXP_OK;
 }
 
