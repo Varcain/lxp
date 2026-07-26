@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "lxp/lxp_arena.h"
+#include "lxp/lxp_diag.h"
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_seam.h"
 #include "lxp/lxp_latency.h"
@@ -45,6 +46,13 @@
 #include "lxp_internal.h" /* lxp_encode_wstatus (shared with sys_wait4) */
 #include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
 
+/* Latest native-task census collected by refresh_stats(). A separate known bit
+ * distinguishes a clean "no task" result from an engine without introspection
+ * or a truncated kernel-thread list. Diagnostic reads never invoke the engine
+ * from an arbitrary caller context. */
+static uint8_t g_diag_native_known;
+static uint8_t g_diag_native_present[LXP_NSLOT];
+
 /* Rebuild the ps/top snapshot from the live process SET + the RTOS kernel threads.
  * Run-loop thread only (ove_thread_list locks the scheduler — unsafe from the svc
  * handler). The seam attaches an explicit slot ID to each guest thread; names
@@ -66,6 +74,11 @@ static void refresh_stats(void)
 		n = LXP_MAX_KTHREAD;
 		overflow = 1;
 	}
+	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
+	g_diag_native_known = trc == LXP_OK;
+	for (size_t i = 0; i < n; i++)
+		if (ti[i].lxp_slot >= 0 && ti[i].lxp_slot < LXP_NSLOT)
+			g_diag_native_present[ti[i].lxp_slot] = 1;
 
 	/* 1. Charge each live Linux thread's CPU to its explicitly assigned slot. */
 	uint64_t idle = 0, busy = 0;
@@ -559,6 +572,388 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
  * stored because a C handler preserves them; r9 is explicit because FDPIC uses
  * it as the module GOT. Delivery/restore operations live in lxp_signal.c. */
 struct sig_save_stack_s g_sig_save[LXP_NSLOT];
+
+static lxp_diag_health_t g_diag_health;
+static uint32_t slot_generation(int sidx);
+
+static uint32_t diag_intent_mask(int slot)
+{
+	const lxp_proc_t *p = &g_lxp_proc[slot];
+	uint32_t mask = 0;
+	if (deferred_state_load(slot) != DEFER_IDLE)
+		mask |= LXP_DIAG_INTENT_DEFERRED_SYSCALL;
+	if (p->fork_pending)
+		mask |= LXP_DIAG_INTENT_FORK;
+	if (p->exec_pending)
+		mask |= LXP_DIAG_INTENT_EXEC;
+	if (p->exited)
+		mask |= LXP_DIAG_INTENT_EXIT;
+	return mask;
+}
+
+static uint32_t diag_wait_mask(const lxp_proc_t *p)
+{
+	uint32_t mask = 0;
+	if (p->sleep_pending || p->sleeping)
+		mask |= LXP_DIAG_WAIT_TIMER;
+	if (p->wait_pending)
+		mask |= LXP_DIAG_WAIT_CHILD;
+	if (p->futex_wait)
+		mask |= LXP_DIAG_WAIT_FUTEX;
+	if (p->pipe_wait)
+		mask |= LXP_DIAG_WAIT_PIPE;
+	if (p->console_wait)
+		mask |= LXP_DIAG_WAIT_CONSOLE;
+	if (p->dev_wait)
+		mask |= LXP_DIAG_WAIT_DEVICE;
+	if (p->sock_wait)
+		mask |= LXP_DIAG_WAIT_SOCKET;
+	if (p->netfs_wait)
+		mask |= LXP_DIAG_WAIT_NETFS;
+	if (p->pty_wait)
+		mask |= LXP_DIAG_WAIT_PTY;
+	if (p->sigsuspend_pending)
+		mask |= LXP_DIAG_WAIT_SIGSUSPEND;
+	return mask;
+}
+
+static uint8_t diag_task_status(const lxp_proc_t *p)
+{
+	if (!p->alive)
+		return LXP_DIAG_TASK_FREE;
+	if (p->exited)
+		return LXP_DIAG_TASK_ZOMBIE;
+	if (p->stopped)
+		return LXP_DIAG_TASK_STOPPED;
+	return LXP_DIAG_TASK_LIVE;
+}
+
+int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
+{
+	if (!out || slot < 0 || slot >= LXP_NSLOT)
+		return -LXP_EINVAL;
+	const lxp_proc_t *p = &g_lxp_proc[slot];
+	memset(out, 0, sizeof(*out));
+	out->abi_version = LXP_DIAG_ABI_VERSION;
+	out->struct_size = sizeof(*out);
+	out->slot = slot;
+	out->generation = slot_generation(slot);
+	out->pid = p->pid;
+	out->tgid = p->group ? p->group->tgid : 0;
+	out->ppid = p->group ? p->group->ppid : 0;
+	out->region = p->mm ? p->mm->region : -1;
+	out->vfork_parent_slot = p->vfork_parent_slot;
+	out->snapshot_region = p->snap_region;
+	out->host_state = g_slot_lifecycle[slot];
+	out->task_status = diag_task_status(p);
+	out->deferred_state = deferred_state_load(slot);
+	out->runnable = g_lxp_used[slot] != 0;
+	out->primary_pending = primary_slot_pending(slot);
+	out->signal_depth = g_sig_save[slot].depth;
+	out->native_task_known = g_diag_native_known;
+	out->native_task_present = g_diag_native_present[slot];
+	out->intent_mask = diag_intent_mask(slot);
+	out->wait_mask = diag_wait_mask(p);
+	out->mm_identity = (uintptr_t)p->mm;
+	out->files_identity = (uintptr_t)p->files;
+	out->fs_identity = (uintptr_t)p->fs_context;
+	out->sighand_identity = (uintptr_t)p->sighand;
+	out->group_identity = (uintptr_t)p->group;
+	out->mm_refs = p->mm ? p->mm->refs : 0;
+	out->files_refs = p->files ? p->files->refs : 0;
+	out->fs_refs = p->fs_context ? p->fs_context->refs : 0;
+	out->sighand_refs = p->sighand ? p->sighand->refs : 0;
+	out->group_refs = p->group ? p->group->refs : 0;
+	if (out->region >= 0 && out->region < LXP_NREG) {
+		out->region_generation = g_region_generation[out->region];
+		out->region_refs = g_region_refs[out->region];
+	}
+	return LXP_OK;
+}
+
+int lxp_diag_region_snapshot(int region, lxp_diag_region_t *out)
+{
+	if (!out || region < 0 || region >= LXP_NREG)
+		return -LXP_EINVAL;
+	memset(out, 0, sizeof(*out));
+	out->abi_version = LXP_DIAG_ABI_VERSION;
+	out->struct_size = sizeof(*out);
+	out->region = region;
+	out->owner_slot = g_region_owner[region];
+	out->refs = g_region_refs[region];
+	out->generation = g_region_generation[region];
+	for (int slot = 0; slot < LXP_NSLOT; slot++)
+		if (g_lxp_proc[slot].alive && g_lxp_proc[slot].mm &&
+		    g_lxp_proc[slot].mm->region == region)
+			out->live_users++;
+	return LXP_OK;
+}
+
+static int diag_error(lxp_diag_error_t *error, lxp_diag_issue_t issue,
+		      int slot, int region, uint32_t actual, uint32_t expected)
+{
+	if (error) {
+		memset(error, 0, sizeof(*error));
+		error->abi_version = LXP_DIAG_ABI_VERSION;
+		error->struct_size = sizeof(*error);
+		error->issue = issue;
+		error->slot = slot;
+		error->region = region;
+		error->actual = actual;
+		error->expected = expected;
+	}
+	return -LXP_EINVAL;
+}
+
+static unsigned diag_popcount(uint32_t value)
+{
+	unsigned count = 0;
+	while (value) {
+		value &= value - 1u;
+		count++;
+	}
+	return count;
+}
+
+static unsigned diag_live_resource_users(const void *identity, int resource)
+{
+	unsigned users = 0;
+	for (int slot = 0; slot < LXP_NSLOT; slot++) {
+		const lxp_proc_t *p = &g_lxp_proc[slot];
+		if (!p->alive)
+			continue;
+		const void *candidate = resource == 0   ? (const void *)p->mm
+					: resource == 1 ? (const void *)p->files
+					: resource == 2 ? (const void *)p->fs_context
+					: resource == 3 ? (const void *)p->sighand
+							: (const void *)p->group;
+		if (candidate == identity)
+			users++;
+	}
+	return users;
+}
+
+int lxp_validate_world(lxp_diag_error_t *error)
+{
+	if (error) {
+		memset(error, 0, sizeof(*error));
+		error->abi_version = LXP_DIAG_ABI_VERSION;
+		error->struct_size = sizeof(*error);
+		error->slot = -1;
+		error->region = -1;
+	}
+
+	for (int region = 0; region < LXP_NREG; region++) {
+		int owner = g_region_owner[region];
+		uint16_t refs = g_region_refs[region];
+		if (refs == 0 && owner != -1)
+			return diag_error(error, LXP_DIAG_REGION_OWNER_WITHOUT_REFS,
+					  owner, region, (uint32_t)owner, UINT32_MAX);
+		if (refs != 0 && (owner < 0 || owner >= LXP_NSLOT))
+			return diag_error(error, LXP_DIAG_REGION_REFS_WITHOUT_OWNER,
+					  owner, region, refs, 0);
+		if (refs != 0 && g_region_generation[region] == 0)
+			return diag_error(error, LXP_DIAG_REGION_REFS_WITHOUT_GENERATION,
+					  owner, region, 0, 1);
+	}
+
+	for (int slot = 0; slot < LXP_NSLOT; slot++) {
+		const lxp_proc_t *p = &g_lxp_proc[slot];
+		uint8_t host = g_slot_lifecycle[slot];
+		uint8_t deferred = deferred_state_load(slot);
+		uint32_t intents = diag_intent_mask(slot);
+		uint32_t waits = diag_wait_mask(p);
+
+		if (host > SLOT_FAILED)
+			return diag_error(error, LXP_DIAG_BAD_SLOT, slot, -1, host,
+					  SLOT_FAILED);
+		if (deferred > DEFER_RUNNING)
+			return diag_error(error, LXP_DIAG_DEFERRED_STATE_INVALID,
+					  slot, -1, deferred, DEFER_RUNNING);
+		if (host != SLOT_FREE && slot_generation(slot) == 0)
+			return diag_error(error, LXP_DIAG_HOST_STATE_WITHOUT_GENERATION,
+					  slot, -1, 0, 1);
+		if (deferred != DEFER_IDLE &&
+		    g_deferred[slot].generation != slot_generation(slot))
+			return diag_error(error, LXP_DIAG_DEFERRED_GENERATION_STALE,
+					  slot, -1, g_deferred[slot].generation,
+					  slot_generation(slot));
+		if (diag_popcount(intents) > 1)
+			return diag_error(error, LXP_DIAG_MULTIPLE_INTENTS, slot, -1,
+					  intents, 1);
+		if (diag_popcount(waits) > 1)
+			return diag_error(error, LXP_DIAG_MULTIPLE_WAITS, slot, -1,
+					  waits, 1);
+
+		if (!p->alive) {
+			if (g_lxp_used[slot])
+				return diag_error(error, LXP_DIAG_FREE_TASK_RUNNABLE,
+						  slot, -1, 1, 0);
+			if (g_diag_native_known && g_diag_native_present[slot] &&
+			    (host == SLOT_FREE || host == SLOT_DEAD))
+				return diag_error(error, LXP_DIAG_NATIVE_TASK_LEAKED,
+						  slot, -1, host, SLOT_FREE);
+			continue;
+		}
+		if (!p->mm || !p->files || !p->fs_context || !p->sighand || !p->group)
+			return diag_error(error, LXP_DIAG_LIVE_TASK_WITHOUT_RESOURCES,
+					  slot, -1, 0, 5);
+		int region = p->mm->region;
+		if (region < 0 || region >= LXP_NREG)
+			return diag_error(error, LXP_DIAG_LIVE_TASK_BAD_REGION,
+					  slot, region, (uint32_t)region, LXP_NREG);
+		if (g_region_refs[region] == 0)
+			return diag_error(error, LXP_DIAG_LIVE_TASK_WITHOUT_REGION_REF,
+					  slot, region, 0, 1);
+		unsigned region_users = 0;
+		for (int peer = 0; peer < LXP_NSLOT; peer++)
+			if (g_lxp_proc[peer].alive && g_lxp_proc[peer].mm &&
+			    g_lxp_proc[peer].mm->region == region)
+				region_users++;
+		if (g_region_refs[region] < region_users)
+			return diag_error(error, LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL,
+					  slot, region, g_region_refs[region], region_users);
+
+#define CHECK_RESOURCE_REFS(member, which)                                              \
+	do {                                                                             \
+		unsigned users = diag_live_resource_users(p->member, which);               \
+		if (p->member->refs < users)                                               \
+			return diag_error(error, LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL,      \
+					  slot, region, p->member->refs, users);             \
+	} while (0)
+		CHECK_RESOURCE_REFS(mm, 0);
+		CHECK_RESOURCE_REFS(files, 1);
+		CHECK_RESOURCE_REFS(fs_context, 2);
+		CHECK_RESOURCE_REFS(sighand, 3);
+		CHECK_RESOURCE_REFS(group, 4);
+#undef CHECK_RESOURCE_REFS
+
+		if (g_lxp_used[slot] && host != SLOT_RUNNING && host != SLOT_FAILED)
+			return diag_error(error, LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH,
+					  slot, region, host, SLOT_RUNNING);
+		if (host == SLOT_RUNNING && !g_lxp_used[slot])
+			return diag_error(error, LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH,
+					  slot, region, 0, 1);
+		if (host == SLOT_PARKED && g_lxp_used[slot])
+			return diag_error(error, LXP_DIAG_PARKED_TASK_RUNNABLE,
+					  slot, region, 1, 0);
+		if (g_diag_native_known &&
+		    (host == SLOT_RUNNING || host == SLOT_PARKED || host == SLOT_FAILED) &&
+		    !g_diag_native_present[slot])
+			return diag_error(error, LXP_DIAG_NATIVE_TASK_MISSING,
+					  slot, region, 0, 1);
+	}
+	return LXP_OK;
+}
+
+void lxp_diag_size_report(lxp_diag_size_report_t *out)
+{
+	if (!out)
+		return;
+	memset(out, 0, sizeof(*out));
+	out->abi_version = LXP_DIAG_ABI_VERSION;
+	out->struct_size = sizeof(*out);
+	out->slots = LXP_NSLOT;
+	out->regions = LXP_NREG;
+	out->proc = sizeof(lxp_proc_t);
+	out->mm = sizeof(lxp_mm_t);
+	out->files = sizeof(lxp_files_t);
+	out->fs = sizeof(lxp_fs_context_t);
+	out->sighand = sizeof(lxp_sighand_t);
+	out->thread_group = sizeof(lxp_thread_group_t);
+	out->arena = sizeof(lxp_arena_t);
+	out->exec_capture = sizeof(lxp_exec_capture_t);
+	out->resume_context = sizeof(struct lxp_resume_ctx);
+	out->deferred_request = sizeof(struct deferred_req);
+	out->signal_save_stack = sizeof(struct sig_save_stack_s);
+	out->vfork_guard = sizeof(struct vfork_snapshot_guard);
+	out->debug_record = sizeof(struct lxp_dbg_s);
+	out->per_slot_core = out->proc + out->resume_context +
+			     out->deferred_request + out->signal_save_stack +
+			     out->vfork_guard + out->arena + out->debug_record;
+	out->per_region_core = out->arena + sizeof(g_region_owner[0]) +
+			       sizeof(g_region_refs[0]) +
+			       sizeof(g_region_generation[0]);
+	out->slot_table = sizeof(g_lxp_proc);
+	out->coordinator_static =
+		sizeof(g_lxp_proc) + sizeof(g_lxp_used) + sizeof(g_arenas) +
+		sizeof(g_region_owner) + sizeof(g_region_refs) +
+		sizeof(g_region_generation) + sizeof(g_vfork_guard) +
+		sizeof(g_snap_arena) + sizeof(g_primary_pending) + sizeof(g_ctx) +
+		sizeof(g_deferred) + sizeof(g_slot_generation) +
+		sizeof(g_slot_lifecycle) + sizeof(g_lxp_dbg) + sizeof(g_sig_save) +
+		sizeof(g_diag_native_present) + sizeof(g_diag_health);
+}
+
+void lxp_diag_health(lxp_diag_health_t *out)
+{
+	if (out)
+		*out = g_diag_health;
+}
+
+const char *lxp_diag_host_state_name(unsigned state)
+{
+	static const char *const names[] = {
+		"free", "starting", "running", "parking", "parked",
+		"resuming", "exiting", "dead", "failed",
+	};
+	return state < sizeof(names) / sizeof(names[0]) ? names[state] : "invalid";
+}
+
+const char *lxp_diag_task_status_name(unsigned status)
+{
+	static const char *const names[] = {"free", "live", "stopped", "zombie"};
+	return status < sizeof(names) / sizeof(names[0]) ? names[status] : "invalid";
+}
+
+const char *lxp_diag_issue_name(unsigned issue)
+{
+	static const char *const names[] = {
+		"ok",
+		"bad-slot",
+		"bad-region",
+		"region-owner-without-refs",
+		"region-refs-without-owner",
+		"region-refs-without-generation",
+		"live-task-without-resources",
+		"live-task-bad-region",
+		"live-task-without-region-ref",
+		"resource-refcount-too-small",
+		"free-task-runnable",
+		"runnable-host-state-mismatch",
+		"parked-task-runnable",
+		"native-task-missing",
+		"native-task-leaked",
+		"host-state-without-generation",
+		"deferred-state-invalid",
+		"deferred-generation-stale",
+		"multiple-intents",
+		"multiple-waits",
+	};
+	return issue < sizeof(names) / sizeof(names[0]) ? names[issue] : "invalid";
+}
+
+static void lxp_diag_reset_health(void)
+{
+	memset(&g_diag_health, 0, sizeof(g_diag_health));
+	g_diag_health.abi_version = LXP_DIAG_ABI_VERSION;
+	g_diag_health.struct_size = sizeof(g_diag_health);
+	g_diag_health.first_error.slot = -1;
+	g_diag_health.first_error.region = -1;
+	g_diag_health.last_error.slot = -1;
+	g_diag_health.last_error.region = -1;
+}
+
+static void lxp_diag_checkpoint(void)
+{
+	lxp_diag_error_t error;
+	g_diag_health.checks++;
+	if (lxp_validate_world(&error) == LXP_OK)
+		return;
+	if (g_diag_health.failures++ == 0)
+		g_diag_health.first_error = error;
+	g_diag_health.last_error = error;
+}
 
 static volatile int g_tty_isig = 1;
 /* Input translation advertised by the console's canonical termios.  The board
@@ -1785,6 +2180,8 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 	for (int s = 0; s < LXP_NSLOT; s++)
 		g_vfork_guard[s].parent_slot = g_vfork_guard[s].parent_region =
 			g_vfork_guard[s].snapshot_region = -1;
+	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
+	g_diag_native_known = eng->thread_list != NULL;
 	lxp_fd_runtime_reset();
 #if LXP_ENABLE_NETFS
 	lxp_netfs_shutdown();
@@ -2017,6 +2414,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		goto launch_failed;
 	}
 	g_lxp_proc[0].exec_file_idx = bb; /* the running image, for /proc/self/exe re-exec */
+	lxp_diag_checkpoint();
 
 	int rc = LXP_RUN_ETIMEOUT;
 	int next_pid = 2;
@@ -2925,6 +3323,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		if (now - last_refresh_us >= 200000ull) {
 			last_refresh_us = now;
 			refresh_stats();
+			lxp_diag_checkpoint();
 		}
 #if LXP_ENABLE_DEV
 		lxp_dev_tick(now); /* coordinator-thread periodic work (fb flush, touch poll) */
@@ -2960,11 +3359,13 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	}
 	g_lxp_active = 0;
 	coordinator_teardown_all(eng);
+	lxp_diag_checkpoint();
 	return rc;
 
 launch_failed:
 	g_lxp_active = 0;
 	coordinator_teardown_all(eng);
+	lxp_diag_checkpoint();
 	return LXP_RUN_ELAUNCH;
 }
 
@@ -3067,6 +3468,9 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const char *const argv[])
 {
 	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
+	lxp_diag_reset_health();
+	g_diag_native_known = 0;
+	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
 	if (!os_ops_valid(os_ops) || !net_ops_valid(net_ops) ||
 	    !display_ops_valid(disp_ops) || !run_config_valid(run_config) ||
 	    !path || argc < 1 || !argv)

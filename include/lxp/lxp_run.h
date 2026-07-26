@@ -9,6 +9,7 @@
 #ifndef LXP_RUN_H
 #define LXP_RUN_H
 
+#include "lxp/lxp_diag.h"
 #include "lxp/lxp_port.h" /* lxp_os_ops_t / lxp_net_ops_t / lxp_display_ops_t / lxp_config_t */
 #include "lxp/lxp_syscall.h"
 

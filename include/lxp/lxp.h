@@ -12,6 +12,7 @@
 #define LXP_H
 
 #include "lxp/lxp_config.h"
+#include "lxp/lxp_diag.h"
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_port.h"
 

@@ -266,6 +266,9 @@ static int reset_state(void **state)
 	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
 	memset(g_ctx, 0, sizeof(g_ctx));
 	memset(g_sig_save, 0, sizeof(g_sig_save));
+	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
+	g_diag_native_known = 0;
+	lxp_diag_reset_health();
 	memset(g_mock_regions, 0, sizeof(g_mock_regions));
 	memset(g_mock_dyn_pools, 0, sizeof(g_mock_dyn_pools));
 	memset(&g_mock, 0, sizeof(g_mock));
@@ -283,6 +286,197 @@ static int reset_state(void **state)
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
 	return 0;
+}
+
+static void make_valid_running_slot(int slot, int region)
+{
+	deferred_slot_reassign(slot);
+	assert_true(region_reserve(region, slot) != 0);
+	g_lxp_proc[slot].alive = 1;
+	g_lxp_proc[slot].pid = slot + 1;
+	g_lxp_proc[slot].group->tgid = slot + 1;
+	g_lxp_proc[slot].mm->region = region;
+	g_slot_lifecycle[slot] = SLOT_RUNNING;
+	g_lxp_used[slot] = 1;
+}
+
+static void test_world_diagnostics_snapshot_current_states(void **state)
+{
+	(void)state;
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+	assert_int_equal(error.issue, LXP_DIAG_OK);
+
+	make_valid_running_slot(0, 0);
+	g_diag_native_known = 1;
+	g_diag_native_present[0] = 1;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+
+	lxp_diag_slot_t slot;
+	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
+	assert_int_equal(slot.abi_version, LXP_DIAG_ABI_VERSION);
+	assert_int_equal(slot.struct_size, sizeof(slot));
+	assert_int_equal(slot.generation, g_slot_generation[0]);
+	assert_int_equal(slot.host_state, LXP_DIAG_HOST_RUNNING);
+	assert_int_equal(slot.task_status, LXP_DIAG_TASK_LIVE);
+	assert_int_equal(slot.runnable, 1);
+	assert_int_equal(slot.native_task_known, 1);
+	assert_int_equal(slot.native_task_present, 1);
+	assert_int_equal(slot.region, 0);
+	assert_int_equal(slot.region_refs, 1);
+	assert_int_equal(slot.mm_refs, 1);
+	assert_int_equal(slot.intent_mask, LXP_DIAG_INTENT_NONE);
+	assert_int_equal(slot.wait_mask, LXP_DIAG_WAIT_NONE);
+
+	g_slot_lifecycle[0] = SLOT_PARKED;
+	g_lxp_used[0] = 0;
+	g_lxp_proc[0].pipe_wait = 1;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
+	assert_int_equal(slot.host_state, LXP_DIAG_HOST_PARKED);
+	assert_int_equal(slot.wait_mask, LXP_DIAG_WAIT_PIPE);
+
+	g_lxp_proc[0].stopped = 1;
+	g_lxp_proc[0].stop_kind = LXP_STOP_PARKED;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
+	assert_int_equal(slot.task_status, LXP_DIAG_TASK_STOPPED);
+
+	g_lxp_proc[0].stopped = 0;
+	g_lxp_proc[0].pipe_wait = 0;
+	g_lxp_proc[0].fork_pending = 1;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
+	assert_int_equal(slot.intent_mask, LXP_DIAG_INTENT_FORK);
+	g_lxp_proc[0].fork_pending = 0;
+	g_lxp_proc[0].exec_pending = 1;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+	g_lxp_proc[0].exec_pending = 0;
+	g_sig_save[0].depth = 1;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
+	assert_int_equal(slot.signal_depth, 1);
+
+	g_lxp_proc[0].exited = 1;
+	g_slot_lifecycle[0] = SLOT_DEAD;
+	g_diag_native_present[0] = 0;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
+	assert_int_equal(slot.task_status, LXP_DIAG_TASK_ZOMBIE);
+
+	lxp_diag_region_t region;
+	assert_int_equal(lxp_diag_region_snapshot(0, &region), LXP_OK);
+	assert_int_equal(region.abi_version, LXP_DIAG_ABI_VERSION);
+	assert_int_equal(region.owner_slot, 0);
+	assert_int_equal(region.refs, 1);
+	assert_int_equal(region.live_users, 1);
+	assert_true(region.generation != 0);
+	assert_int_equal(lxp_diag_slot_snapshot(-1, &slot), -LXP_EINVAL);
+	assert_int_equal(lxp_diag_region_snapshot(LXP_NREG, &region), -LXP_EINVAL);
+}
+
+static void test_world_validator_reports_conflicting_waits(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	g_lxp_proc[0].sleep_pending = 1;
+	g_lxp_proc[0].wait_pending = 1;
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
+	assert_int_equal(error.issue, LXP_DIAG_MULTIPLE_WAITS);
+	assert_int_equal(error.slot, 0);
+	assert_int_equal(error.actual, LXP_DIAG_WAIT_TIMER | LXP_DIAG_WAIT_CHILD);
+}
+
+static void test_world_validator_reports_stale_mailbox(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	g_deferred[0].generation = g_slot_generation[0] + 1;
+	deferred_state_store(0, DEFER_READY);
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
+	assert_int_equal(error.issue, LXP_DIAG_DEFERRED_GENERATION_STALE);
+	assert_int_equal(error.slot, 0);
+	assert_int_equal(error.expected, g_slot_generation[0]);
+}
+
+static void test_world_validator_reports_region_ownership_drift(void **state)
+{
+	(void)state;
+	g_region_owner[2] = 3;
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
+	assert_int_equal(error.issue, LXP_DIAG_REGION_OWNER_WITHOUT_REFS);
+	assert_int_equal(error.slot, 3);
+	assert_int_equal(error.region, 2);
+}
+
+static void test_world_validator_reports_resource_refcount_drift(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	make_valid_running_slot(1, 1);
+	region_put(1);
+	g_lxp_proc[1].mm = g_lxp_proc[0].mm;
+	g_lxp_proc[1].mm->region = 0;
+	assert_int_equal(region_get(0), LXP_OK);
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
+	assert_int_equal(error.issue, LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL);
+	assert_int_equal(error.actual, 1);
+	assert_int_equal(error.expected, 2);
+}
+
+static void test_world_validator_checkpoints_latch_first_failure(void **state)
+{
+	(void)state;
+	lxp_diag_checkpoint();
+	g_region_owner[0] = 0;
+	lxp_diag_checkpoint();
+	g_region_owner[1] = 1;
+	lxp_diag_checkpoint();
+
+	lxp_diag_health_t health;
+	lxp_diag_health(&health);
+	assert_int_equal(health.abi_version, LXP_DIAG_ABI_VERSION);
+	assert_int_equal(health.checks, 3);
+	assert_int_equal(health.failures, 2);
+	assert_int_equal(health.first_error.issue,
+			 LXP_DIAG_REGION_OWNER_WITHOUT_REFS);
+	assert_int_equal(health.first_error.region, 0);
+	assert_int_equal(health.last_error.region, 0);
+}
+
+static void test_world_diagnostic_size_report_matches_compiled_objects(void **state)
+{
+	(void)state;
+	lxp_diag_size_report_t sizes;
+	lxp_diag_size_report(&sizes);
+	assert_int_equal(sizes.abi_version, LXP_DIAG_ABI_VERSION);
+	assert_int_equal(sizes.struct_size, sizeof(sizes));
+	assert_int_equal(sizes.slots, LXP_NSLOT);
+	assert_int_equal(sizes.regions, LXP_NREG);
+	assert_int_equal(sizes.proc, sizeof(lxp_proc_t));
+	assert_int_equal(sizes.mm, sizeof(lxp_mm_t));
+	assert_int_equal(sizes.files, sizeof(lxp_files_t));
+	assert_int_equal(sizes.fs, sizeof(lxp_fs_context_t));
+	assert_int_equal(sizes.sighand, sizeof(lxp_sighand_t));
+	assert_int_equal(sizes.thread_group, sizeof(lxp_thread_group_t));
+	assert_int_equal(sizes.arena, sizeof(lxp_arena_t));
+	assert_int_equal(sizes.exec_capture, sizeof(lxp_exec_capture_t));
+	assert_int_equal(sizes.resume_context, sizeof(struct lxp_resume_ctx));
+	assert_int_equal(sizes.deferred_request, sizeof(struct deferred_req));
+	assert_int_equal(sizes.signal_save_stack, sizeof(struct sig_save_stack_s));
+	assert_int_equal(sizes.vfork_guard, sizeof(struct vfork_snapshot_guard));
+	assert_int_equal(sizes.debug_record, sizeof(struct lxp_dbg_s));
+	assert_int_equal(sizes.slot_table, sizeof(g_lxp_proc));
+	assert_true(sizes.per_slot_core > sizes.proc);
+	assert_true(sizes.coordinator_static > sizes.slot_table);
+	assert_string_equal(lxp_diag_host_state_name(LXP_DIAG_HOST_PARKED), "parked");
+	assert_string_equal(lxp_diag_task_status_name(LXP_DIAG_TASK_ZOMBIE), "zombie");
+	assert_string_equal(lxp_diag_issue_name(LXP_DIAG_MULTIPLE_WAITS),
+			    "multiple-waits");
 }
 
 static void test_system_version_routes_to_engine(void **state)
@@ -1003,6 +1197,8 @@ static void test_teardown_releases_every_slot_resource(void **state)
 		assert_int_equal(g_region_owner[r], -1);
 		assert_int_equal(g_region_refs[r], 0);
 	}
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 }
 
 static void test_park_failure_aborts_and_kills_slot(void **state)
@@ -1650,6 +1846,20 @@ static void test_stop_notify_queues_without_wuntraced(void **state)
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
+		cmocka_unit_test_setup(test_world_diagnostics_snapshot_current_states,
+				       reset_state),
+		cmocka_unit_test_setup(test_world_validator_reports_conflicting_waits,
+				       reset_state),
+		cmocka_unit_test_setup(test_world_validator_reports_stale_mailbox,
+				       reset_state),
+		cmocka_unit_test_setup(test_world_validator_reports_region_ownership_drift,
+				       reset_state),
+		cmocka_unit_test_setup(test_world_validator_reports_resource_refcount_drift,
+				       reset_state),
+		cmocka_unit_test_setup(test_world_validator_checkpoints_latch_first_failure,
+				       reset_state),
+		cmocka_unit_test_setup(test_world_diagnostic_size_report_matches_compiled_objects,
+				       reset_state),
 		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
 		cmocka_unit_test_setup(test_port_abi_and_required_ops_are_validated,
 				       reset_state),
