@@ -552,10 +552,9 @@ static void test_fork_build_abort_restores_world(void **state)
 	fork_child_build_count(&build);
 	for (int r = 1; r < LXP_NREG; r++)
 		assert_int_equal(region_reserve(r, slot_ref_at(0)).index, r);
-	assert_int_equal(vfork_snapshot(&g_mock_eng, parent, build.child_ref,
-					 g_lxp_slots[0].resume.sp)
-				 .index,
-			 -1);
+	assert_int_equal(
+		vfork_snapshot(&g_mock_eng, parent, build.child_ref, g_lxp_slots[0].resume.sp).index,
+		-1);
 	fork_child_build_abort(&build, &g_mock_eng);
 	assert_int_equal(parent->group->live_children, 0);
 	assert_int_equal(g_regions[0].refs, 1);
@@ -1050,6 +1049,95 @@ static void test_claim_slot_event_priority_and_consumption(void **state)
 	}
 }
 
+static void test_coordinator_claim_rotates_fairly_and_discards_stale_hints(void **state)
+{
+	(void)state;
+	make_valid_running_slot(2, 2);
+	make_valid_running_slot(4, 4);
+	g_lxp_slots[2].proc.wait.kind = LXP_WAIT_TIMER;
+	g_lxp_slots[4].proc.wait.kind = LXP_WAIT_TIMER;
+	primary_slot_mark(2);
+	primary_slot_mark(4);
+
+	unsigned cursor = 0;
+	struct lxp_claimed_event claimed = coordinator_claim_event(&g_mock_eng, &cursor);
+	assert_int_equal(claimed.slot, 2);
+	assert_int_equal(claimed.type, LXP_EV_SLEEP);
+	assert_int_equal(cursor, 3);
+
+	/* Re-publishing slot 2 cannot starve the later pending slot. */
+	primary_slot_mark(2);
+	claimed = coordinator_claim_event(&g_mock_eng, &cursor);
+	assert_int_equal(claimed.slot, 4);
+	assert_int_equal(cursor, 5);
+	claimed = coordinator_claim_event(&g_mock_eng, &cursor);
+	assert_int_equal(claimed.slot, 2);
+	assert_int_equal(cursor, 3);
+
+	/* A stale bitmap hint is consumed without inventing an event. */
+	primary_slot_mark(1);
+	claimed = coordinator_claim_event(&g_mock_eng, &cursor);
+	assert_int_equal(claimed.slot, -1);
+	assert_int_equal(claimed.type, LXP_EV_NONE);
+	assert_false(primary_slot_pending(1));
+}
+
+static void test_primary_wait_handler_applies_park_outcome(void **state)
+{
+	(void)state;
+	const int slot = 2;
+	make_valid_running_slot(slot, 2);
+	g_lxp_slots[slot].proc.wait.kind = LXP_WAIT_TIMER;
+	int next_pid = 10;
+
+	struct lxp_primary_result result =
+		lxp_handle_primary_event(&g_mock_eng, &g_mock_cfg, slot, LXP_EV_SLEEP, &next_pid);
+	assert_int_equal(result.flow, LXP_PRIMARY_HANDLED);
+	assert_int_equal(g_mock.park_calls, 1);
+	assert_int_equal(g_mock.park_sidx, slot);
+	assert_int_equal(g_lxp_slots[slot].host_state, SLOT_PARKED);
+	assert_false(g_lxp_slots[slot].runnable);
+	assert_int_equal(next_pid, 10);
+}
+
+static void test_primary_handler_rejects_out_of_range_slot(void **state)
+{
+	(void)state;
+	int next_pid = 10;
+
+	struct lxp_primary_result result = lxp_handle_primary_event(
+		&g_mock_eng, &g_mock_cfg, LXP_NSLOT, LXP_EV_EXIT, &next_pid);
+	assert_int_equal(result.flow, LXP_PRIMARY_SCAN_BLOCKED);
+	assert_int_equal(g_mock.abort_calls, 0);
+	assert_int_equal(next_pid, 10);
+}
+
+static void test_blocked_timer_handler_resumes_expired_wait(void **state)
+{
+	(void)state;
+	const int slot = 3;
+	make_valid_running_slot(slot, 3);
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, slot), LXP_OK);
+	assert_int_equal(lxp_wait_begin(&g_lxp_slots[slot].proc,
+					&(lxp_wait_t){
+						.kind = LXP_WAIT_TIMER,
+						.data.timer.deadline_us = 50,
+					}),
+			 LXP_OK);
+
+	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, 50);
+	assert_true(scan.any_alive);
+	assert_true(scan.any_busy);
+	assert_true(scan.progress);
+	assert_int_equal(scan.next_deadline_us, UINT64_MAX);
+	assert_int_equal(g_mock.resume_calls, 1);
+	assert_int_equal(g_mock.resume_sidx, slot);
+	assert_int_equal(g_mock.resume_r0, 0);
+	assert_int_equal(g_lxp_slots[slot].proc.wait.kind, LXP_WAIT_NONE);
+	assert_int_equal(g_lxp_slots[slot].host_state, SLOT_RUNNING);
+	assert_true(g_lxp_slots[slot].runnable);
+}
+
 /* ---- wait-status encoding --------------------------------------------------- */
 static void test_encode_wstatus(void **state)
 {
@@ -1110,7 +1198,8 @@ static void test_reap_wakes_waiter_in_parent_thread_group(void **state)
 	g_lxp_slots[0].proc.pid = 10;
 	g_lxp_slots[0].proc.group->tgid = 10;
 	lxp_proc_group_put(&g_lxp_slots[1].proc);
-	assert_int_equal(lxp_proc_group_fork(&g_lxp_slots[1].proc, &g_lxp_slots[0].proc, LXP_CLONE_THREAD, 11),
+	assert_int_equal(lxp_proc_group_fork(&g_lxp_slots[1].proc, &g_lxp_slots[0].proc,
+					     LXP_CLONE_THREAD, 11),
 			 0);
 	g_lxp_slots[1].proc.alive = 1;
 	g_lxp_slots[1].proc.pid = 11;
@@ -1207,7 +1296,8 @@ static void test_reap_vfork_parent_suppresses_sigchld(void **state)
 	reap_to_parent(&g_mock_eng, 1, 7, 127, /*sigchld=*/0);
 
 	assert_int_equal(g_mock.resume_calls, 0);
-	assert_int_equal(g_lxp_slots[0].proc.group->child_count, 1); /* queued for the imminent wait4 */
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count,
+			 1); /* queued for the imminent wait4 */
 	assert_int_equal(g_lxp_slots[0].proc.group->child_pid[0], 7);
 	assert_int_equal(g_lxp_slots[0].proc.group->child_status[0], 127); /* exit code preserved */
 	assert_int_equal(g_lxp_slots[0].proc.group->live_children, 0);
@@ -1226,8 +1316,10 @@ static void test_reap_zombie_queue_full(void **state)
 
 	reap_to_parent(&g_mock_eng, 1, 99, 0, /*sigchld=*/1);
 
-	assert_int_equal(g_lxp_slots[0].proc.group->child_count, LXP_MAX_CHILD); /* clamped, no overrun */
-	assert_int_equal(g_lxp_slots[0].proc.group->live_children, LXP_MAX_CHILD); /* still decremented */
+	assert_int_equal(g_lxp_slots[0].proc.group->child_count,
+			 LXP_MAX_CHILD); /* clamped, no overrun */
+	assert_int_equal(g_lxp_slots[0].proc.group->live_children,
+			 LXP_MAX_CHILD); /* still decremented */
 }
 
 /* An exit reported for a parent that no longer exists is a safe no-op. */
@@ -1396,7 +1488,7 @@ static void test_vfork_snapshot_refuses_no_spare_region(void **state)
 		(void)region_reserve(r, slot_ref_at(0));
 
 	assert_int_equal(vfork_snapshot(&g_mock_eng, p, slot_ref_at(1),
-					 (uintptr_t)g_mock_regions[0] + 192u)
+					(uintptr_t)g_mock_regions[0] + 192u)
 				 .index,
 			 -1);
 	assert_int_equal(g_mock.cache_clean_calls, 0);
@@ -1524,7 +1616,8 @@ static void test_thread_group_exit_marks_every_peer(void **state)
 		g_lxp_slots[s].proc.group->tgid = s < 2 ? 10 : 12;
 	}
 	lxp_proc_group_put(&g_lxp_slots[1].proc);
-	assert_int_equal(lxp_proc_group_fork(&g_lxp_slots[1].proc, &g_lxp_slots[0].proc, LXP_CLONE_THREAD, 11),
+	assert_int_equal(lxp_proc_group_fork(&g_lxp_slots[1].proc, &g_lxp_slots[0].proc,
+					     LXP_CLONE_THREAD, 11),
 			 0);
 
 	assert_int_equal(thread_group_live_count(g_lxp_slots[0].proc.group), 2);
@@ -1547,7 +1640,8 @@ static void test_exec_stops_only_thread_group_peers(void **state)
 		g_lxp_slots[s].host_state = SLOT_RUNNING;
 	}
 	lxp_proc_group_put(&g_lxp_slots[1].proc);
-	assert_int_equal(lxp_proc_group_fork(&g_lxp_slots[1].proc, &g_lxp_slots[0].proc, LXP_CLONE_THREAD, 11),
+	assert_int_equal(lxp_proc_group_fork(&g_lxp_slots[1].proc, &g_lxp_slots[0].proc,
+					     LXP_CLONE_THREAD, 11),
 			 0);
 
 	thread_group_stop_exec_peers(&g_mock_eng, 0, 127);
@@ -1689,7 +1783,8 @@ static void test_resume_failure_aborts_parked_slot(void **state)
 	uint32_t generation = g_lxp_slots[s].generation;
 	g_mock.resume_failures = 1;
 
-	assert_int_equal(coordinator_resume_slot(&g_mock_eng, s, 0, &g_lxp_slots[s].resume, 42), -LXP_EIO);
+	assert_int_equal(coordinator_resume_slot(&g_mock_eng, s, 0, &g_lxp_slots[s].resume, 42),
+			 -LXP_EIO);
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_generation, generation);
 	assert_int_equal(g_mock.abort_calls, 1);
@@ -1738,15 +1833,18 @@ static void test_futex_has_corunner(void **state)
 
 	g_lxp_slots[1].proc.alive = 1;
 	g_lxp_slots[1].proc.mm->region.index = 3;
-	assert_false(futex_has_corunner(&g_lxp_slots[0].proc)); /* a live proc, but a different region */
+	assert_false(
+		futex_has_corunner(&g_lxp_slots[0].proc)); /* a live proc, but a different region */
 
 	lxp_proc_mm_put(&g_lxp_slots[2].proc);
-	assert_int_equal(lxp_proc_mm_fork(&g_lxp_slots[2].proc, &g_lxp_slots[0].proc, LXP_CLONE_VM), 0);
+	assert_int_equal(lxp_proc_mm_fork(&g_lxp_slots[2].proc, &g_lxp_slots[0].proc, LXP_CLONE_VM),
+			 0);
 	g_lxp_slots[2].proc.alive = 1;
 	assert_true(futex_has_corunner(&g_lxp_slots[0].proc)); /* a co-runner shares the mm */
 
 	g_lxp_slots[2].proc.alive = 0;
-	assert_false(futex_has_corunner(&g_lxp_slots[0].proc)); /* it exited -> no longer a co-runner */
+	assert_false(
+		futex_has_corunner(&g_lxp_slots[0].proc)); /* it exited -> no longer a co-runner */
 }
 
 /* FUTEX_WAKE marks up to `val` waiters queued on the same uaddr (and no others). The
@@ -1774,7 +1872,8 @@ static void test_futex_wake_marks_waiters(void **state)
 	lxp_futex(&f, &g_lxp_slots[0].proc, 0);
 
 	assert_int_equal(f.r[0], 1); /* reported one woken */
-	assert_int_equal(g_lxp_slots[1].proc.wait.data.futex.woken + g_lxp_slots[2].proc.wait.data.futex.woken,
+	assert_int_equal(g_lxp_slots[1].proc.wait.data.futex.woken +
+				 g_lxp_slots[2].proc.wait.data.futex.woken,
 			 1);
 	assert_int_equal(g_lxp_slots[3].proc.wait.data.futex.woken, 0);
 
@@ -2115,12 +2214,13 @@ static void test_kill_targets_process_group(void **state)
 	f.r[0] = (uint32_t)(-3); /* target = -pgid */
 	f.r[1] = LXP_SIGTERM;
 	lxp_dispatch(&f, shell);
-	assert_int_equal((int32_t)f.r[0], 0);		/* a target was found */
-	assert_true(g_lxp_slots[2].proc.pending_sigs & bit);	/* cmd1 (pgid 3) */
-	assert_true(g_lxp_slots[3].proc.pending_sigs & bit);	/* cmd2 (pgid 3) */
+	assert_int_equal((int32_t)f.r[0], 0);		      /* a target was found */
+	assert_true(g_lxp_slots[2].proc.pending_sigs & bit);  /* cmd1 (pgid 3) */
+	assert_true(g_lxp_slots[3].proc.pending_sigs & bit);  /* cmd2 (pgid 3) */
 	assert_false(g_lxp_slots[0].proc.pending_sigs & bit); /* init untouched */
 	assert_false(g_lxp_slots[1].proc.pending_sigs & bit); /* the sender itself */
-	assert_false(g_lxp_slots[4].proc.pending_sigs & bit); /* inetd (pgid 5) — the old broadcast bug */
+	assert_false(g_lxp_slots[4].proc.pending_sigs &
+		     bit); /* inetd (pgid 5) — the old broadcast bug */
 
 	/* kill(0, SIGTERM) targets the SENDER's own group (pgid 2); put inetd in it. */
 	for (int i = 0; i < 5; i++)
@@ -2131,7 +2231,7 @@ static void test_kill_targets_process_group(void **state)
 	f.r[0] = 0; /* caller's process group */
 	f.r[1] = LXP_SIGTERM;
 	lxp_dispatch(&f, shell);
-	assert_true(g_lxp_slots[4].proc.pending_sigs & bit);	/* the group peer */
+	assert_true(g_lxp_slots[4].proc.pending_sigs & bit);  /* the group peer */
 	assert_false(g_lxp_slots[2].proc.pending_sigs & bit); /* pgid 3, not in group 2 */
 }
 
@@ -2197,12 +2297,13 @@ static void test_console_sigint_targets_fg_group(void **state)
 	lxp_console_set_fg_pgrp(3);
 	assert_int_equal(lxp_console_fg_pgrp(), 3);
 	console_signal_fg(LXP_SIGINT);
-	assert_true(g_lxp_slots[2].proc.pending_sigs & bit);	/* fg job (pgid 3) */
-	assert_true(g_lxp_slots[3].proc.pending_sigs & bit);	/* fg pipeline peer (pgid 3) */
+	assert_true(g_lxp_slots[2].proc.pending_sigs & bit);  /* fg job (pgid 3) */
+	assert_true(g_lxp_slots[3].proc.pending_sigs & bit);  /* fg pipeline peer (pgid 3) */
 	assert_false(g_lxp_slots[0].proc.pending_sigs & bit); /* init (pgid 1) */
 	assert_false(g_lxp_slots[1].proc.pending_sigs &
 		     bit); /* the shell (pgid 2) — survives to re-prompt */
-	assert_false(g_lxp_slots[4].proc.pending_sigs & bit); /* background job (pgid 5) — untouched */
+	assert_false(g_lxp_slots[4].proc.pending_sigs &
+		     bit); /* background job (pgid 5) — untouched */
 }
 
 /* Ctrl+Z (VSUSP) fans SIGTSTP out to the foreground group only — the shell and background
@@ -2220,7 +2321,7 @@ static void test_console_sigtstp_targets_fg_group(void **state)
 	const uint64_t bit = lxp_sig_bit(LXP_SIGTSTP);
 	lxp_console_set_fg_pgrp(3);
 	console_signal_fg(LXP_SIGTSTP);
-	assert_true(g_lxp_slots[1].proc.pending_sigs & bit);	/* fg job (pgid 3) */
+	assert_true(g_lxp_slots[1].proc.pending_sigs & bit);  /* fg job (pgid 3) */
 	assert_false(g_lxp_slots[0].proc.pending_sigs & bit); /* the shell (pgid 2) */
 	assert_false(g_lxp_slots[2].proc.pending_sigs & bit); /* background job (pgid 5) */
 }
@@ -2335,6 +2436,13 @@ int main(void)
 		cmocka_unit_test_setup(test_coordinator_socket_wait_uses_readiness_events,
 				       reset_state),
 		cmocka_unit_test_setup(test_claim_slot_event_priority_and_consumption, reset_state),
+		cmocka_unit_test_setup(
+			test_coordinator_claim_rotates_fairly_and_discards_stale_hints,
+			reset_state),
+		cmocka_unit_test_setup(test_primary_wait_handler_applies_park_outcome, reset_state),
+		cmocka_unit_test_setup(test_primary_handler_rejects_out_of_range_slot, reset_state),
+		cmocka_unit_test_setup(test_blocked_timer_handler_resumes_expired_wait,
+				       reset_state),
 		cmocka_unit_test_setup(test_kill_targets_process_group, reset_state),
 		cmocka_unit_test_setup(test_setpgid_getpgrp_track_group, reset_state),
 		cmocka_unit_test_setup(test_console_sigint_targets_fg_group, reset_state),

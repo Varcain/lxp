@@ -32,6 +32,7 @@ set(LXP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 file(GLOB_RECURSE LXP_TEST_MODULE_SRC CONFIGURE_DEPENDS "${LXP_ROOT}/src/*.c")
 list(REMOVE_ITEM LXP_TEST_MODULE_SRC
   "${LXP_ROOT}/src/lxp_run.c")
+list(FILTER LXP_TEST_MODULE_SRC EXCLUDE REGEX "/src/run/.*\\.c$")
 
 add_executable(lxp_test_stub
   ${LXP_TEST_MODULE_SRC}

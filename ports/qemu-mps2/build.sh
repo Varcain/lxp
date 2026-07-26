@@ -32,7 +32,7 @@ PORTFLAGS="$FLAGS -Wextra -Werror"
 
 rm -rf build && mkdir -p build
 err=0
-for f in $(find "$LXP_ROOT/src" -name '*.c'); do
+for f in $(find "$LXP_ROOT/src" -name '*.c' ! -path "$LXP_ROOT/src/run/*"); do
     $ARMCC $LXPFLAGS $INC -c "$f" -o "build/$(basename "$f").o" || err=1
 done
 for f in "$FRT/tasks.c" "$FRT/queue.c" "$FRT/list.c" "$PORT/port.c" "$MPU_WRAP"; do
