@@ -31,14 +31,15 @@ extern "C" {
  * controller (the input driver then relies on the synthetic testpad or an external
  * feeder). */
 
-/* The active display port. Published by lxp_run() from its disp_ops argument (on
- * oveRTOS the ove_fb / ove_ft5336 adapter; a host test may set it directly). */
+/* The active display port. lxp_run() publishes its validated disp_ops argument
+ * for the duration of a run and clears the binding before returning. Standalone
+ * host tests may bind it directly when they do not use the run coordinator. */
 extern const lxp_display_ops_t *g_lxp_disp_ops;
 
 /* Set the display geometry used to clamp / report touch coordinates (replaces the
  * board_desc.h OVE_DISPLAY_* constants). Non-positive args are ignored; the
- * default is 480x272 (the STM32F746-Disco panel). A host with a different panel
- * calls this before the run (a future lxp_run() seeds it from lxp_config_t). */
+ * default is 480x272 (the STM32F746-Disco panel). lxp_run() seeds it from the
+ * optional display_width/display_height fields in lxp_config_t. */
 void lxp_disp_set_geometry(int width, int height);
 
 #ifdef __cplusplus

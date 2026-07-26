@@ -403,7 +403,7 @@ static void stop_mock(void)
 #if LXP_ENABLE_NETFS_EXEC
 /* The engine staging buffer for a fetched remote ELF (the STM32 backend puts this in SDRAM). */
 static uint8_t g_stage[64 * 1024];
-uint8_t *lxp_netfs_exec_stage(size_t *cap)
+uint8_t *lxp_exec_stage(size_t *cap)
 {
 	if (cap)
 		*cap = sizeof(g_stage);

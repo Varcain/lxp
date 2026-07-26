@@ -59,6 +59,11 @@ typedef struct lxp_guest_exit_info {
 typedef struct lxp_run_config {
 	const lxp_file_t *rootfs; /**< Parsed (read-only) rootfs table. */
 	int rootfs_count;	      /**< Entry count in @p rootfs. */
+	/** Trusted contiguous image that owns every @p rootfs data extent. Required.
+	 * Dynamic FDPIC text executes in place from this window, so the core validates
+	 * every table entry before publishing the window to an MPU seam. */
+	const void *rootfs_image;
+	size_t rootfs_image_size;
 	/** Console sink (fd 1/2), called from the privileged coordinator task. It must
 	 * return within a host-defined finite interval; byte count is bounded by
 	 * LXP_SYSCALL_QUANTUM_BYTES but the module cannot bound an external callback. */
@@ -102,8 +107,8 @@ typedef struct lxp_run_config {
  *               time, + optional cache / thread-introspection / prepare / teardown.
  * @p net_ops    the handle-based socket port, or NULL when built without NET.
  * @p disp_ops   the framebuffer / touch port, or NULL when built without DEV.
- * @p config     geometry + optional sizing overrides (0 fields => lxp_config.h
- *               defaults); may be NULL.
+ * @p config     optional runtime display geometry; may be NULL. Static pool
+ *               sizing is configured at build time through lxp_config.h.
  * @p run_config the rootfs table + console read/write callbacks (required).
  *
  * @p argv[0] is the program name seen by the program (it may differ from @p path,

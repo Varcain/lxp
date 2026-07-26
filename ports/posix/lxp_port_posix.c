@@ -323,6 +323,8 @@ static int nif_set_up(lxp_netif_t nif, int up)
 
 /* ---- the net-ops vtable, published to the module --------------------------- */
 static const lxp_net_ops_t g_posix_net_ops = {
+	.abi_version = LXP_NET_OPS_ABI_VERSION,
+	.struct_size = sizeof(lxp_net_ops_t),
 	.sock_open = p_open,
 	.sock_accept = p_accept,
 	.sock_close = p_close,

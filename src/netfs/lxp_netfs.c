@@ -1279,7 +1279,7 @@ long lxp_netfs_exec_fetch(lxp_proc_t *p, const char *abspath)
 	if (strlen(rp) >= LXP_PATH_MAX)
 		return -LXP_ENAMETOOLONG;
 	size_t cap = 0;
-	g_exec_buf = lxp_netfs_exec_stage(&cap);
+	g_exec_buf = lxp_exec_stage(&cap);
 	if (!g_exec_buf || cap == 0)
 		return -LXP_ENOMEM; /* no staging buffer on this build */
 	g_exec_cap = cap;

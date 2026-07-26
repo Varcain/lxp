@@ -137,6 +137,8 @@ static void coordinator_task(void *arg)
 	lxp_run_config_t cfg = {
 		.rootfs = g_files,
 		.rootfs_count = n,
+		.rootfs_image = cpio,
+		.rootfs_image_size = cpio_len,
 		.write_fn = con_write,
 		.read_fn = con_read,
 		.io_ctx = NULL,

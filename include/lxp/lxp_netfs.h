@@ -157,10 +157,8 @@ long lxp_netfs_exec_fetch(lxp_proc_t *p, const char *abspath);
 /** The staged remote ELF after a completed EXECFETCH: bytes + size for launch(). */
 const uint8_t *lxp_netfs_exec_image(size_t *size);
 
-/** Engine-provided RAM staging buffer for a fetched remote ELF (SDRAM on the STM32, a static
- *  buffer under test). Returns the buffer + its capacity in @p cap, or NULL if unavailable.
- *  Provided by the backend/board (gated on LXP_ENABLE_NETFS_EXEC). */
-uint8_t *lxp_netfs_exec_stage(size_t *cap);
+/** Internal adapter to the active lxp_os_ops_t::exec_stage provider. */
+uint8_t *lxp_exec_stage(size_t *cap);
 #endif
 
 /** Wake the coordinator so it retries parked netfs I/O at once (the eth RX path calls this

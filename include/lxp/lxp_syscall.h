@@ -878,57 +878,11 @@ void lxp_proc_set_rootfs(lxp_proc_t *proc, const lxp_file_t *files, int count);
 int lxp_cpio_to_rootfs(const uint8_t *cpio, size_t len, lxp_file_t *out, int max_entries,
 			   char *namebuf, size_t namebuf_len);
 
-/**
- * @brief Declare a memory-mapped rootfs image window so the coordinator task reads it safely.
- *
- * Call once, from the coordinator task, BEFORE the first read of a rootfs image that lives in a
- * memory-mapped device window (before @ref lxp_cpio_to_rootfs and any @ref lxp_run over
- * it).  On most engines/boards this is a no-op.  On the STM32F746 with the QUADSPI-XIP rootfs and
- * the M7 D-cache enabled, the FreeRTOS backend installs a bounded, non-cacheable per-task MPU
- * region over [base, base+len) so the cache never issues a line-fill burst — nor speculatively
- * prefetches past the flash chip — into the memory-mapped NOR (both corrupt the read otherwise).
- *
- * @param base start of the memory-mapped rootfs window.
- * @param len  size of the window in bytes (an upper bound is fine; use the mapped device size).
- */
-void lxp_rootfs_window(const void *base, size_t len);
-
-/**
- * @brief Make a guest buffer coherent before the coordinator reads it for the transport.
- *
- * Call from the coordinator, on a guest-supplied buffer, immediately BEFORE handing it to an
- * engine transport that will read it from physical memory (e.g. @ref ove_socket_send, whose
- * lwIP copy runs in the privileged coordinator context).  On most engines/boards this is a
- * no-op.  On the STM32F746 with the M7 D-cache enabled, the guest writes this SDRAM buffer
- * through its Normal-cacheable MPU region, so the freshly written bytes can still sit in dirty
- * D-cache lines while physical SDRAM holds stale data; the coordinator reads the SAME SDRAM
- * through its uncached (Device) background view and would copy the stale bytes.  The FreeRTOS
- * backend cleans (writes back) the buffer's D-cache lines so both views agree.  The tail of a
- * just-built buffer is the most-recently-written and thus the most likely victim.
- *
- * @param base start of the guest buffer the transport is about to read.
- * @param len  number of bytes the transport will read.
- */
-void lxp_guest_flush(const void *base, size_t len);
-
-/**
- * @brief Invalidate the guest's D-cache over [base, len) so its next read refills from SDRAM.
- *
- * The inverse of @ref lxp_guest_flush: after the coordinator has WRITTEN guest memory through
- * its uncached view (the vfork data-isolation restore), the guest's cached lines are stale and must
- * be discarded (invalidate, not clean — a clean would overwrite the coordinator's fresh SDRAM).
- */
-void lxp_guest_invalidate(const void *base, size_t len);
-
 /* ---- OS-service hooks routed through the engine ops ------------------------
  * The personality core calls these module-internal wrappers instead of the
  * host's clock / cache primitives; the per-engine seam fills the underlying
  * ops (see lxp_os_ops_t in lxp_port.h). This lets the personality build against
- * any host without referencing ove_time_* directly.
- *
- * lxp_cache_clean/invalidate are the ops-routed equivalents of
- * lxp_guest_flush/invalidate above (which remain for the direct callers
- * still using the weak-symbol form during the extraction). */
+ * any host without referencing ove_time_* directly. */
 int lxp_time_us(uint64_t *out);
 int lxp_time_ns(uint64_t *out);
 /** Fill @p len bytes from the active host entropy provider. Returns an lxp_err_t. */

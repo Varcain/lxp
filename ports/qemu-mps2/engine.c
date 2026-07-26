@@ -551,6 +551,8 @@ static int qemu_random_fill(void *buf, size_t len)
 }
 
 const lxp_os_ops_t g_lxp_qemu_engine = {
+	.abi_version = LXP_OS_OPS_ABI_VERSION,
+	.struct_size = sizeof(lxp_os_ops_t),
 	.region = qemu_region,
 	.spawn_launch = qemu_spawn_launch,
 	.spawn_resume = qemu_spawn_resume,
@@ -571,7 +573,7 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.dyn_pool = qemu_dyn_pool, /* M3: hosts a dynamic proc's libc.so mmap + arena */
 	.exec_capture = qemu_exec_capture,
 	/* map_device / thread_list / cache_* / rootfs_window / exec_stage: NULL — the
-	 * target is coherent (no cache), the rootfs is a plain RAM/PSRAM window (weak
-	 * lxp_rootfs_window no-op), and the spawn path already installs each task's MPU
+	 * target is coherent (no cache), the rootfs is a plain RAM/PSRAM window, and
+	 * the spawn path already installs each task's MPU
 	 * view. Device mapping and netfs exec staging are not provided by this port. */
 };

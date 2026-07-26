@@ -104,6 +104,19 @@ static void mock_cache_invalidate(const void *base, size_t len)
 		g_mock.cache_invalidate_len[i] = len;
 	}
 }
+static int mock_spawn_launch(int sidx, uint32_t generation, int ridx,
+			     const lxp_flat_t *prog, void *entry, void *sp,
+			     void *stack_lo)
+{
+	(void)sidx;
+	(void)generation;
+	(void)ridx;
+	(void)prog;
+	(void)entry;
+	(void)sp;
+	(void)stack_lo;
+	return LXP_OK;
+}
 static int mock_spawn_resume(int sidx, uint32_t generation, int ridx,
 			     const struct lxp_resume_ctx *c, long r0)
 {
@@ -162,6 +175,23 @@ static void mock_event_post(void)
 {
 	g_mock.event_posts++;
 }
+static void mock_event_wait(unsigned ms)
+{
+	(void)ms;
+}
+static void mock_crit(void)
+{
+}
+static int mock_time(uint64_t *out)
+{
+	*out = 1;
+	return LXP_OK;
+}
+static int mock_random_fill(void *buf, size_t len)
+{
+	memset(buf, 0x5a, len);
+	return LXP_OK;
+}
 static int mock_map_device(int sidx, uintptr_t addr, size_t size, unsigned attrs)
 {
 	int i = g_mock.map_calls++;
@@ -183,15 +213,24 @@ static const char *mock_system_version(void)
 }
 
 static const lxp_os_ops_t g_mock_eng = {
+	.abi_version = LXP_OS_OPS_ABI_VERSION,
+	.struct_size = sizeof(lxp_os_ops_t),
 	.region = mock_region,
 	.dyn_pool = mock_dyn_pool,
 	.exec_capture = mock_exec_capture,
+	.spawn_launch = mock_spawn_launch,
 	.spawn_resume = mock_spawn_resume,
 	.abort_slot = mock_abort_slot,
 	.park_prepare = mock_park_prepare,
 	.park_slot = mock_park_slot,
+	.crit_enter = mock_crit,
+	.crit_exit = mock_crit,
 	.event_post = mock_event_post,
+	.event_wait = mock_event_wait,
 	.map_device = mock_map_device,
+	.time_us = mock_time,
+	.time_ns = mock_time,
+	.random_fill = mock_random_fill,
 	.cache_clean = mock_cache_clean,
 	.cache_invalidate = mock_cache_invalidate,
 	.system_version = mock_system_version,
@@ -253,6 +292,45 @@ static void test_system_version_routes_to_engine(void **state)
 			    "MockRTOS 9.8.7 ove-fedcba9 lxp-7654321");
 	g_eng = NULL;
 	assert_string_equal(lxp_system_version(), "lxp");
+}
+
+static void test_port_abi_and_required_ops_are_validated(void **state)
+{
+	(void)state;
+	assert_true(os_ops_valid(&g_mock_eng));
+
+	lxp_os_ops_t ops = g_mock_eng;
+	ops.abi_version++;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	ops.struct_size--;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	ops.random_fill = NULL;
+	assert_false(os_ops_valid(&ops));
+}
+
+static void test_rootfs_requires_one_explicit_trusted_window(void **state)
+{
+	(void)state;
+	uint8_t image[16] = {0};
+	lxp_file_t files[] = {
+		{.path = "/", .data = NULL, .size = 0, .mode = LXP_S_IFDIR | 0755},
+		{.path = "/init", .data = image + 4, .size = 4, .mode = LXP_S_IFREG | 0755},
+	};
+	lxp_run_config_t cfg = {
+		.rootfs = files,
+		.rootfs_count = 2,
+		.rootfs_image = image,
+		.rootfs_image_size = sizeof(image),
+	};
+	assert_true(run_config_valid(&cfg));
+
+	cfg.rootfs_image = image + 8;
+	cfg.rootfs_image_size = 8;
+	assert_false(run_config_valid(&cfg));
+	cfg.rootfs_image = NULL;
+	assert_false(run_config_valid(&cfg));
 }
 
 static void test_resource_stats_track_slots_and_reserved_regions(void **state)
@@ -1573,6 +1651,10 @@ int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
+		cmocka_unit_test_setup(test_port_abi_and_required_ops_are_validated,
+				       reset_state),
+		cmocka_unit_test_setup(test_rootfs_requires_one_explicit_trusted_window,
+				       reset_state),
 		cmocka_unit_test_setup(test_resource_stats_track_slots_and_reserved_regions,
 				       reset_state),
 		cmocka_unit_test_setup(test_coordinator_socket_wait_uses_readiness_events,

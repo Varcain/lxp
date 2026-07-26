@@ -45,38 +45,6 @@
 #include "lxp_internal.h" /* lxp_encode_wstatus (shared with sys_wait4) */
 #include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
 
-/* Declare a memory-mapped rootfs image window [base, base+len) so the coordinator task can
- * read it safely on the target.  Default: no-op — an ordinary CPU view of the window is already
- * correct (a RAM-backed rootfs, or an engine that covers the window with a global MPU region,
- * e.g. NuttX region 4 / Zephyr).  The FreeRTOS seam strong-overrides this on the STM32F746
- * (QUADSPI-XIP rootfs + M7 D-cache): it installs a bounded, non-cacheable MPU region for the
- * calling task so cache line-fill bursts + speculative prefetch never reach the memory-mapped
- * NOR.  A weak definition so only the engines that need it provide one. */
-__attribute__((weak)) void lxp_rootfs_window(const void *base, size_t len)
-{
-	(void)base;
-	(void)len;
-}
-
-/* Engine-common weak no-op; the FreeRTOS backend strong-overrides this on the STM32F746 where the
- * guest writes cacheable SDRAM but the coordinator reads it uncached (D-cache coherency). CLEANS
- * (writes back) the guest's cache lines so a subsequent uncached coordinator read sees them. */
-__attribute__((weak)) void lxp_guest_flush(const void *base, size_t len)
-{
-	(void)base;
-	(void)len;
-}
-
-/* Engine-common weak no-op; FreeRTOS strong-overrides it. INVALIDATES the guest's D-cache lines over
- * [base, len) so the guest's next read misses and refills from SDRAM — used after the coordinator has
- * written guest memory through its uncached view (vfork restore). Invalidate, NOT clean: a clean would
- * write the guest's stale lines back OVER what the coordinator just put in SDRAM. */
-__attribute__((weak)) void lxp_guest_invalidate(const void *base, size_t len)
-{
-	(void)base;
-	(void)len;
-}
-
 /* Parse the slot index from a Linux-program thread name "lnx<slot>". */
 static int lnx_slot_of_name(const char *name)
 {
@@ -211,6 +179,14 @@ int lxp_random_fill(void *buf, size_t len)
 	if ((!buf && len != 0u) || !g_eng || !g_eng->random_fill)
 		return (!buf && len != 0u) ? LXP_ERR_INVALID_PARAM : LXP_ERR_NOT_SUPPORTED;
 	return g_eng->random_fill(buf, len);
+}
+uint8_t *lxp_exec_stage(size_t *cap)
+{
+	if (cap)
+		*cap = 0;
+	if (!g_eng || !g_eng->exec_stage)
+		return NULL;
+	return g_eng->exec_stage(cap);
 }
 int lxp_mem_stats(struct lxp_mem_stats *out)
 {
@@ -1144,7 +1120,7 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	/* The loader reads the FDPIC ELF from `data` — on the STM32F746 that points into the
 	 * QUADSPI-mapped NOR (0x90000000).  Correctness of that read is a memory-attribute concern,
 	 * not a timing one: the coordinator reads the NOR through a bounded, non-cacheable MPU region
-	 * (lxp_rootfs_window), so no D-cache burst or speculative prefetch can garble it and a
+	 * (os_ops->rootfs_window), so no D-cache burst or speculative prefetch can garble it and a
 	 * context switch mid-load is harmless.  No preemption masking needed. */
 	int lrc = lxp_loader_load_fdpic(&prog, data, len, region, LXP_PROG_REGION_SIZE, 0,
 					remote_exec);
@@ -1971,24 +1947,17 @@ static void vfork_contain_stale(int child_slot, lxp_proc_t *child)
 int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		       const char *path, int argc, const char *const argv[])
 {
-	if (!eng || !eng->exec_capture || !cfg || !cfg->rootfs || !path || argc < 1 || !argv)
+	if (!eng || !eng->exec_capture || !cfg || !cfg->rootfs ||
+	    !cfg->rootfs_image || cfg->rootfs_image_size == 0u ||
+	    !path || argc < 1 || !argv)
 		return LXP_RUN_ELAUNCH;
 	for (int s = 0; s < LXP_NSLOT; s++)
 		if (!eng->exec_capture(s))
 			return LXP_RUN_ELAUNCH;
 	g_cfg = cfg;
 	g_eng = eng;
-	g_lxp_rootfs_lo = NULL; /* the cpio span — a seam's svc discrimination treats a cpio PC */
-	g_lxp_rootfs_hi = NULL; /* as a program svc (the shared in-place text runs from here) */
-	for (int i = 0; i < cfg->rootfs_count; i++) {
-		const lxp_file_t *f = &cfg->rootfs[i];
-		if (!f->data)
-			continue;
-		if (!g_lxp_rootfs_lo || f->data < g_lxp_rootfs_lo)
-			g_lxp_rootfs_lo = f->data;
-		if (!g_lxp_rootfs_hi || f->data + f->size > g_lxp_rootfs_hi)
-			g_lxp_rootfs_hi = f->data + f->size;
-	}
+	g_lxp_rootfs_lo = cfg->rootfs_image;
+	g_lxp_rootfs_hi = g_lxp_rootfs_lo + cfg->rootfs_image_size;
 	for (int i = 0; i < LXP_NSLOT; i++) {
 		g_lxp_used[i] = 0;
 		g_slot_lifecycle[i] = SLOT_FREE;
@@ -2997,38 +2966,118 @@ launch_failed:
 	return LXP_RUN_ELAUNCH;
 }
 
-/* THE port entry (see lxp_run.h). Publishes the net/display ports the subsystem
- * cores read through the module globals, seeds display geometry from the config,
- * and brackets the shared run loop with the engine's optional prepare()/teardown()
- * — where a host homes its per-run bring-up (semaphore, faults, MPU, svc IRQ). */
+static int os_ops_valid(const lxp_os_ops_t *ops)
+{
+	if (!ops || ops->abi_version != LXP_OS_OPS_ABI_VERSION ||
+	    ops->struct_size != sizeof(*ops) ||
+	    !ops->region || !ops->spawn_launch || !ops->spawn_resume ||
+	    !ops->abort_slot || !ops->park_prepare || !ops->park_slot ||
+	    !ops->crit_enter || !ops->crit_exit || !ops->event_post ||
+	    !ops->event_wait || !ops->time_us || !ops->time_ns ||
+	    !ops->exec_capture || !ops->random_fill)
+		return 0;
+#if LXP_ENABLE_NETFS_EXEC
+	if (!ops->exec_stage)
+		return 0;
+#endif
+	for (int r = 0; r < LXP_NREG; r++)
+		if (!ops->region(r))
+			return 0;
+	for (int s = 0; s < LXP_NSLOT; s++)
+		if (!ops->exec_capture(s))
+			return 0;
+	return 1;
+}
+
+static int net_ops_valid(const lxp_net_ops_t *ops)
+{
+#if LXP_ENABLE_NET
+	if (!ops || ops->abi_version != LXP_NET_OPS_ABI_VERSION ||
+	    ops->struct_size != sizeof(*ops) ||
+	    !ops->sock_open || !ops->sock_accept || !ops->sock_close ||
+	    !ops->sock_connect || !ops->sock_bind || !ops->sock_listen ||
+	    !ops->sock_send || !ops->sock_recv || !ops->sock_sendto ||
+	    !ops->sock_recvfrom || !ops->sock_set_nonblock || !ops->sock_poll ||
+	    !ops->sock_shutdown || !ops->sock_getsockname ||
+	    !ops->sock_getpeername || !ops->sock_get_error ||
+	    !ops->netif_get_addr || !ops->netif_get_hwaddr ||
+	    !ops->netif_get_flags || !ops->netif_set_addr ||
+	    !ops->netif_set_up)
+		return 0;
+#else
+	(void)ops;
+#endif
+	return 1;
+}
+
+static int display_ops_valid(const lxp_display_ops_t *ops)
+{
+#if LXP_ENABLE_DEV_FB || LXP_ENABLE_DEV_DMA2D || LXP_ENABLE_TOUCH
+	if (!ops || ops->abi_version != LXP_DISPLAY_OPS_ABI_VERSION ||
+	    ops->struct_size != sizeof(*ops))
+		return 0;
+#endif
+#if LXP_ENABLE_DEV_FB
+	if (!ops->fb_init || !ops->fb_get_info || !ops->fb_get_buffer ||
+	    !ops->fb_flush || !ops->fb_present)
+		return 0;
+#endif
+#if LXP_ENABLE_DEV_DMA2D
+	if (!ops->dma2d_submit)
+		return 0;
+#endif
+#if LXP_ENABLE_TOUCH
+	if (!ops->touch_init || !ops->touch_read)
+		return 0;
+#endif
+	(void)ops;
+	return 1;
+}
+
+static int run_config_valid(const lxp_run_config_t *cfg)
+{
+	if (!cfg || !cfg->rootfs || cfg->rootfs_count <= 0 ||
+	    !cfg->rootfs_image || cfg->rootfs_image_size == 0u)
+		return 0;
+	uintptr_t lo = (uintptr_t)cfg->rootfs_image;
+	uintptr_t hi = lo + cfg->rootfs_image_size;
+	if (hi < lo)
+		return 0;
+	for (int i = 0; i < cfg->rootfs_count; i++) {
+		const lxp_file_t *f = &cfg->rootfs[i];
+		if (!f->path || (!f->data && f->size != 0u))
+			return 0;
+		if (!f->data)
+			continue;
+		uintptr_t start = (uintptr_t)f->data;
+		uintptr_t end = start + f->size;
+		if (start < lo || end < start || end > hi)
+			return 0;
+	}
+	return 1;
+}
+
+/* THE port entry (see lxp_run.h). Validate and publish this run's exact
+ * providers, then bracket the coordinator with optional host setup/teardown. */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const lxp_display_ops_t *disp_ops, const lxp_config_t *config,
 	    const lxp_run_config_t *run_config, const char *path, int argc,
 	    const char *const argv[])
 {
 	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
-	if (!os_ops || !os_ops->region || !os_ops->spawn_launch ||
-	    !os_ops->spawn_resume || !os_ops->abort_slot ||
-	    !os_ops->park_prepare || !os_ops->park_slot ||
-	    !os_ops->crit_enter || !os_ops->crit_exit ||
-	    !os_ops->event_post || !os_ops->event_wait ||
-	    !os_ops->time_us || !os_ops->time_ns || !os_ops->exec_capture)
+	if (!os_ops_valid(os_ops) || !net_ops_valid(net_ops) ||
+	    !display_ops_valid(disp_ops) || !run_config_valid(run_config) ||
+	    !path || argc < 1 || !argv)
 		return LXP_RUN_ELAUNCH;
 
-	/* Publish the optional ports the subsystem cores read via the module globals
-	 * (net.c / netfs.c / dev_fb.c). The globals are DEFINED by the host port (the
-	 * oveRTOS adapter, the POSIX reference port, or a bare-metal seam); we only
-	 * assign a NON-NULL argument, so a host that pre-sets the globals statically
-	 * (and passes NULL here) is never clobbered. Built-out subsystems only. */
+	/* Assign even NULL providers so a later sequential run cannot inherit one. */
 #if LXP_ENABLE_NET
-	if (net_ops)
-		g_lxp_net_ops = net_ops;
+	g_lxp_net_ops = net_ops;
 #else
 	(void)net_ops;
 #endif
 #if LXP_ENABLE_DEV
-	if (disp_ops)
-		g_lxp_disp_ops = disp_ops;
+	g_lxp_disp_ops = disp_ops;
 #else
 	(void)disp_ops;
 #endif
@@ -3038,15 +3087,36 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	if (config && config->display_width > 0 && config->display_height > 0)
 		lxp_disp_set_geometry(config->display_width, config->display_height);
 #endif
-	(void)config; /* sizing knobs (prog_region_size, nreg, ...) remain compile-time */
+	(void)config;
+
+	if (os_ops->rootfs_window)
+		os_ops->rootfs_window(run_config->rootfs_image,
+				    run_config->rootfs_image_size);
 
 	if (os_ops->prepare) {
 		int prc = os_ops->prepare();
-		if (prc < 0)
+		if (prc < 0) {
+#if LXP_ENABLE_NET
+			g_lxp_net_ops = NULL;
+#endif
+#if LXP_ENABLE_DEV
+			g_lxp_disp_ops = NULL;
+#endif
 			return LXP_RUN_ELAUNCH;
+		}
 	}
 	int rc = lxp_run_common(os_ops, run_config, path, argc, argv);
 	if (os_ops->teardown)
 		os_ops->teardown();
+	g_eng = NULL;
+	g_cfg = NULL;
+	g_lxp_rootfs_lo = NULL;
+	g_lxp_rootfs_hi = NULL;
+#if LXP_ENABLE_NET
+	g_lxp_net_ops = NULL;
+#endif
+#if LXP_ENABLE_DEV
+	g_lxp_disp_ops = NULL;
+#endif
 	return rc;
 }

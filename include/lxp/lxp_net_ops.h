@@ -37,9 +37,9 @@ extern "C" {
  * and the address/socket value types all come from lxp_port.h. This header adds
  * only the module-internal binding below. */
 
-/* The active network port. Set by the host (on oveRTOS: statically to the ove_net
- * adapter in backends/common/lxp_ove_adapter.c). The personality reads it; a
- * non-oveRTOS host may point it elsewhere. */
+/* The active network port. lxp_run() publishes its validated net_ops argument
+ * for the duration of a run and clears the binding before returning. Standalone
+ * test ports may bind it directly when they do not use the run coordinator. */
 extern const struct lxp_net_ops *g_lxp_net_ops;
 
 #ifdef __cplusplus

@@ -93,16 +93,6 @@ const char *lxp_system_version(void)
 {
 	return "TestRTOS 1.2.3 ove-abcdef0 lxp-1234567";
 }
-void lxp_guest_flush(const void *base, size_t len)
-{
-	(void)base;
-	(void)len;
-}
-void lxp_guest_invalidate(const void *base, size_t len)
-{
-	(void)base;
-	(void)len;
-}
 void lxp_cache_clean(const void *base, size_t len)
 {
 	g_lxp_test_cache_clean_calls++;
@@ -182,6 +172,8 @@ static int mock_dma2d_submit(const lxp_dma2d_op_t *op)
 	return 0;
 }
 static const lxp_display_ops_t g_mock_disp = {
+	.abi_version = LXP_DISPLAY_OPS_ABI_VERSION,
+	.struct_size = sizeof(lxp_display_ops_t),
 	.fb_init = mock_fb_init,
 	.fb_get_info = mock_fb_get_info,
 	.fb_get_buffer = mock_fb_get_buffer,

@@ -85,6 +85,10 @@ typedef struct {
 #define LXP_MAP_WT 1u  /**< Write-through. */
 #define LXP_MAP_DEV 2u /**< Device / strongly-ordered. */
 
+#define LXP_OS_OPS_ABI_VERSION 1u
+#define LXP_NET_OPS_ABI_VERSION 1u
+#define LXP_DISPLAY_OPS_ABI_VERSION 1u
+
 /* ─────────────────────────────────────────────────────────────────────────
  * (1) OS / engine port — the process-model substrate.
  *
@@ -95,6 +99,9 @@ typedef struct {
  * feature quietly degrades, matching the old weak-symbol stubs).
  * ───────────────────────────────────────────────────────────────────────── */
 typedef struct lxp_os_ops {
+	uint32_t abi_version; /**< Must be LXP_OS_OPS_ABI_VERSION. */
+	uint32_t struct_size; /**< Must be sizeof(lxp_os_ops_t). */
+
 	/* The engine owns prog_regions[]; return region `ridx`'s base. */
 	uint8_t *(*region)(int ridx);
 	/* Host task transitions are generation checked and synchronous. The engine
@@ -195,6 +202,9 @@ typedef struct lxp_os_ops {
  * internal locking.
  * ───────────────────────────────────────────────────────────────────────── */
 typedef struct lxp_net_ops {
+	uint32_t abi_version; /**< Must be LXP_NET_OPS_ABI_VERSION. */
+	uint32_t struct_size; /**< Must be sizeof(lxp_net_ops_t). */
+
 	int (*sock_open)(lxp_af_t af, lxp_sock_type_t type, int proto, lxp_socket_t *out);
 	int (*sock_accept)(lxp_socket_t listener, lxp_socket_t *out, uint64_t timeout_ns);
 	void (*sock_close)(lxp_socket_t s);
@@ -255,6 +265,9 @@ typedef struct lxp_dma2d_op {
 } lxp_dma2d_op_t;
 
 typedef struct lxp_display_ops {
+	uint32_t abi_version; /**< Must be LXP_DISPLAY_OPS_ABI_VERSION. */
+	uint32_t struct_size; /**< Must be sizeof(lxp_display_ops_t). */
+
 	int (*fb_init)(void);
 	int (*fb_get_info)(lxp_fb_info_t *info);
 	void *(*fb_get_buffer)(void);
@@ -268,21 +281,21 @@ typedef struct lxp_display_ops {
 } lxp_display_ops_t;
 
 /* ─────────────────────────────────────────────────────────────────────────
- * (4) Run config — geometry + optional sizing overrides (0 => lxp_config.h).
+ * (4) Run config — runtime display geometry.
+ *
+ * Process counts and pool sizes are compile-time properties because they size
+ * static storage and MPU regions. Configure those through lxp_config.h (or a
+ * lxp_config_user.h override), not this runtime object.
  * ───────────────────────────────────────────────────────────────────────── */
 typedef struct lxp_config {
 	uint16_t display_width, display_height; /**< 0 => defaults. */
-	uint32_t prog_region_size, dyn_pool_size;
-	uint16_t nreg, nslot, npipe, pipe_buf, pty_buf;
 } lxp_config_t;
 
 /* ---- entry points ------------------------------------------------------------
  * The personality's actual run entry (lxp_run), lxp_net_set_netif, and
- * lxp_netfs_mount_config are declared in the module's own API headers (lxp_run.h,
- * lxp_net.h, lxp_netfs.h). The current host binding fills the ops via the module
- * globals (g_lxp_net_ops / g_lxp_disp_ops + the per-engine lxp_engine vtable) set
- * before the run, rather than passing them to lxp_run(); the ops structs above are
- * the contract those bindings implement. */
+ * lxp_netfs_mount_config are declared in the module's own API headers
+ * (lxp_run.h, lxp_net.h, lxp_netfs.h). The host passes all active providers to
+ * lxp_run(); the module clears them again before returning. */
 
 #ifdef __cplusplus
 }
