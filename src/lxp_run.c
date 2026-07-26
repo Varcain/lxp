@@ -45,22 +45,11 @@
 #include "lxp_internal.h" /* lxp_encode_wstatus (shared with sys_wait4) */
 #include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
 
-/* Parse the slot index from a Linux-program thread name "lnx<slot>". */
-static int lnx_slot_of_name(const char *name)
-{
-	if (name[0] != 'l' || name[1] != 'n' || name[2] != 'x' || name[3] < '0' || name[3] > '9')
-		return -1;
-	int v = 0;
-	for (const char *p = name + 3; *p >= '0' && *p <= '9'; p++)
-		v = v * 10 + (*p - '0');
-	return v;
-}
-
 /* Rebuild the ps/top snapshot from the live process SET + the RTOS kernel threads.
  * Run-loop thread only (ove_thread_list locks the scheduler — unsafe from the svc
- * handler). Each Linux slot's thread is named "lnx<slot>" so its CPU attributes to
- * the right process even with several running at once; the idle thread is folded
- * into /proc/stat idle, not shown as a process (else it crushes top's %CPU math). */
+ * handler). The seam attaches an explicit slot ID to each guest thread; names
+ * remain diagnostic only. The idle thread is folded into /proc/stat idle, not
+ * shown as a process (else it crushes top's %CPU math). */
 static void refresh_stats(void)
 {
 	/* Short-lived shell commands must not consume cumulative-CPU slots
@@ -69,8 +58,14 @@ static void refresh_stats(void)
 
 	struct lxp_thread_info ti[LXP_MAX_KTHREAD];
 	size_t n = 0;
-	if (lxp_thread_list(ti, LXP_MAX_KTHREAD, &n) != LXP_OK)
+	int trc = lxp_thread_list(ti, LXP_MAX_KTHREAD, &n);
+	int overflow = trc == LXP_ERR_QUEUE_FULL;
+	if (trc != LXP_OK && trc != LXP_ERR_QUEUE_FULL)
 		n = 0; /* no host introspection: /proc shows only the Linux procs */
+	if (n > LXP_MAX_KTHREAD) {
+		n = LXP_MAX_KTHREAD;
+		overflow = 1;
+	}
 
 	/* 1. Charge each live Linux thread's CPU to its proc (slot from the name). */
 	uint64_t idle = 0, busy = 0;
@@ -83,11 +78,9 @@ static void refresh_stats(void)
 			continue;
 		}
 		busy += rus;
-		if (cls == 2) {
-			int s = lnx_slot_of_name(name);
-			if (s >= 0 && s < LXP_NSLOT && g_lxp_proc[s].alive)
-				lxp_stats_charge(g_lxp_proc[s].pid, rus);
-		}
+		int s = ti[i].lxp_slot;
+		if (s >= 0 && s < LXP_NSLOT && g_lxp_proc[s].alive)
+			lxp_stats_charge(g_lxp_proc[s].pid, rus);
 	}
 	/* 2. Build the snapshot: the live Linux procs, then the kernel threads [name]. */
 	lxp_stats_begin();
@@ -96,15 +89,24 @@ static void refresh_stats(void)
 		if (!p->alive)
 			continue;
 		char state = (g_lxp_used[s] && !p->sleeping && !p->wait_pending) ? 'R' : 'S';
-		lxp_stats_add(p->pid, p->group->ppid, p->comm, state, lxp_proc_cpu_us(p->pid), 0);
+		if (lxp_stats_add(p->pid, p->group->ppid, p->comm, state,
+				  lxp_proc_cpu_us(p->pid), 0) != LXP_OK)
+			overflow = 1;
 	}
 	for (size_t i = 0; i < n; i++) {
 		const char *name = ti[i].name ? ti[i].name : "?";
-		if (lxp_stats_classify(name) != 0)
+		if (lxp_stats_classify(name) != 0 ||
+		    ti[i].lxp_slot != LXP_THREAD_SLOT_NONE)
 			continue; /* idle or a Linux slot thread */
-		lxp_stats_add(lxp_kpid_for(name), 0, name, 'S',
-				  ti[i].state_times.running_us, 1);
+		int kpid = lxp_kpid_for(name);
+		if (kpid < 0 ||
+		    lxp_stats_add(kpid, 0, name, 'S',
+				  ti[i].state_times.running_us, 1) != LXP_OK)
+			overflow = 1;
 	}
+	if (overflow)
+		(void)lxp_stats_add(LXP_KPID_BASE + LXP_MAX_KTHREAD, 0,
+				    "threads-overflow", 'S', 0, 1);
 	lxp_stats_set_cpu(idle, busy);
 }
 

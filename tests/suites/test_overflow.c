@@ -361,10 +361,31 @@ static void test_stats_snapshot_reuses_stale_entries(void **st)
 
 	for (int pid = 1; pid <= LXP_MAX_PENT + 8; pid++) {
 		lxp_stats_begin();
-		lxp_stats_add(pid, 0, "short", 'R', (uint64_t)pid * 1000u, 0);
+		assert_int_equal(lxp_stats_add(pid, 0, "short", 'R',
+					       (uint64_t)pid * 1000u, 0),
+				 LXP_OK);
 		assert_int_equal(lxp_pent_count(), 1);
 		assert_non_null(lxp_pent_find(pid));
 	}
+}
+
+/* Snapshot sizing follows the configured slot count and reports a genuinely
+ * full table rather than silently dropping an entry. */
+static void test_stats_capacity_reports_overflow(void **st)
+{
+	(void)st;
+	assert_int_equal(LXP_MAX_KTHREAD,
+			 LXP_NSLOT + LXP_HOST_THREAD_ALLOWANCE);
+	lxp_stats_reset();
+	lxp_stats_begin();
+	for (int i = 0; i < LXP_MAX_PENT; i++)
+		assert_int_equal(lxp_stats_add(i + 1, 0, "full", 'S', 0, 1),
+				 LXP_OK);
+	assert_int_equal(lxp_stats_add(LXP_MAX_PENT + 1, 0, "overflow", 'S',
+				       0, 1),
+			 LXP_ERR_QUEUE_FULL);
+	assert_int_equal(lxp_pent_count(), LXP_MAX_PENT);
+	assert_int_equal(lxp_stats_classify("lnx12"), 0);
 }
 
 /* The cumulative CPU table is independently bounded. Reclaim records for PIDs
@@ -380,8 +401,9 @@ static void test_stats_prunes_exited_cpu_records(void **st)
 	}
 
 	lxp_stats_begin();
-	lxp_stats_add(LXP_MAX_PENT, 0, "live", 'R',
-		      lxp_proc_cpu_us(LXP_MAX_PENT), 0);
+	assert_int_equal(lxp_stats_add(LXP_MAX_PENT, 0, "live", 'R',
+				       lxp_proc_cpu_us(LXP_MAX_PENT), 0),
+			 LXP_OK);
 	lxp_stats_prune();
 
 	const int replacement = LXP_MAX_PENT + 100;
@@ -405,6 +427,7 @@ int test_overflow_run(void)
 		cmocka_unit_test(test_dup3_same_fd_einval),
 		cmocka_unit_test(test_symlink_target_fault),
 		cmocka_unit_test(test_stats_snapshot_reuses_stale_entries),
+		cmocka_unit_test(test_stats_capacity_reports_overflow),
 		cmocka_unit_test(test_stats_prunes_exited_cpu_records),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

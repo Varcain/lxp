@@ -106,12 +106,20 @@ struct lxp_thread_state_times {
 	uint64_t suspended_us;
 };
 
+/** No Linux slot owns this host thread. */
+#define LXP_THREAD_SLOT_NONE (-1)
+
 /**
- * @brief Snapshot of one host kernel thread. Layout matches struct
- *        lxp_thread_info so an oveRTOS port fills it field-for-field.
+ * @brief Snapshot of one host kernel thread.
+ *
+ * @c identity is an opaque host-thread cookie used only for equality by a
+ * seam. @c lxp_slot is assigned explicitly by an LXP-aware seam; the core
+ * never derives ownership from a display name.
  */
 struct lxp_thread_info {
 	const char *name;
+	uintptr_t identity;
+	int32_t lxp_slot;
 	lxp_thread_state_t state;
 	int priority;
 	size_t stack_used;

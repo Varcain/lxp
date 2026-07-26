@@ -50,8 +50,6 @@ int lxp_stats_classify(const char *name)
 		return 0;
 	if (name_has_idle(name))
 		return 1;
-	if (name[0] == 'l' && name[1] == 'n' && name[2] == 'x') /* a Linux program slot */
-		return 2;
 	return 0;
 }
 
@@ -61,7 +59,7 @@ int lxp_kpid_for(const char *name)
 		if (strcmp(g_kreg[i].name, name) == 0)
 			return g_kreg[i].pid;
 	if (g_nkreg >= LXP_MAX_KTHREAD)
-		return LXP_KPID_BASE + LXP_MAX_KTHREAD; /* overflow: shared bucket */
+		return -1;
 	int idx = g_nkreg++;
 	size_t m = strlen(name);
 	if (m >= sizeof(g_kreg[idx].name))
@@ -108,8 +106,8 @@ void lxp_stats_begin(void)
 		g_pent[i].live = 0;
 }
 
-void lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu_us,
-		       int is_kernel)
+int lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu_us,
+		      int is_kernel)
 {
 	int slot = -1, stale_slot = -1;
 	for (int i = 0; i < g_npent; i++) {
@@ -126,7 +124,7 @@ void lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu
 		else if (g_npent < LXP_MAX_PENT)
 			slot = g_npent++;
 		else
-			return;
+			return LXP_ERR_QUEUE_FULL;
 	}
 	struct lxp_pentry *e = &g_pent[slot];
 	e->pid = pid;
@@ -141,6 +139,7 @@ void lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu
 	e->cpu_us = cpu_us;
 	e->is_kernel = is_kernel;
 	e->live = 1;
+	return LXP_OK;
 }
 
 uint64_t lxp_stats_charge(int pid, uint64_t thread_running_us)

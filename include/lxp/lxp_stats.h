@@ -19,8 +19,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define LXP_MAX_PENT 24    /* live Linux slots (<=NSLOT) + kernel threads */
-#define LXP_MAX_KTHREAD 24 /* host threads + every possible Linux slot */
+#include "lxp/lxp_config.h"
+#include "lxp/lxp_types.h"
+
+/* One bounded snapshot must hold every configured guest plus an explicit host
+ * allowance. The extra pentry is reserved for a visible overflow marker. */
+#ifndef LXP_HOST_THREAD_ALLOWANCE
+#define LXP_HOST_THREAD_ALLOWANCE 16
+#endif
+#define LXP_MAX_KTHREAD (LXP_NSLOT + LXP_HOST_THREAD_ALLOWANCE)
+#define LXP_MAX_PENT (LXP_MAX_KTHREAD + 1)
 #define LXP_KPID_BASE 1000 /* kernel pids start here; Linux pids are 1..~16 */
 
 struct lxp_thread_info; /* from <ove/thread.h> */
@@ -43,16 +51,16 @@ void lxp_stats_reset(void); /* clear everything (at lxp_run start) */
 void lxp_stats_prune(void);
 void lxp_stats_begin(void); /* start a refresh: mark all entries not-live */
 /* Add/update one entry (matched by pid). */
-void lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu_us,
-		       int is_kernel);
+int lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu_us,
+		      int is_kernel);
 /* Charge a slice of a Linux process's CPU: accumulate (thread_running_us - baseline)
  * across the slot-thread recreate (fork/exec/nanosleep reset it), return the total. */
 uint64_t lxp_stats_charge(int pid, uint64_t thread_running_us);
 /* Read a Linux pid's accumulated CPU without charging (for parked procs). */
 uint64_t lxp_proc_cpu_us(int pid);
-/* Classify a kernel-thread name: idle (->1), a Linux "lnx" slot (->2), else 0. */
+/* Classify a host-thread name: idle (->1), else 0. Guest ownership is explicit. */
 int lxp_stats_classify(const char *name);
-/* Stable synthetic pid for a kernel thread name (allocated on first sighting). */
+/* Stable synthetic pid for a kernel thread name, or -1 if the registry is full. */
 int lxp_kpid_for(const char *name);
 void lxp_stats_set_cpu(uint64_t idle_us, uint64_t busy_us);
 

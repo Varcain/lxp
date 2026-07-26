@@ -85,7 +85,7 @@ typedef struct {
 #define LXP_MAP_WT 1u  /**< Write-through. */
 #define LXP_MAP_DEV 2u /**< Device / strongly-ordered. */
 
-#define LXP_OS_OPS_ABI_VERSION 1u
+#define LXP_OS_OPS_ABI_VERSION 2u
 #define LXP_NET_OPS_ABI_VERSION 1u
 #define LXP_DISPLAY_OPS_ABI_VERSION 1u
 
