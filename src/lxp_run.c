@@ -67,7 +67,7 @@ static void refresh_stats(void)
 		overflow = 1;
 	}
 
-	/* 1. Charge each live Linux thread's CPU to its proc (slot from the name). */
+	/* 1. Charge each live Linux thread's CPU to its explicitly assigned slot. */
 	uint64_t idle = 0, busy = 0;
 	for (size_t i = 0; i < n; i++) {
 		const char *name = ti[i].name ? ti[i].name : "?";

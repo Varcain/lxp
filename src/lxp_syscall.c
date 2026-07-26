@@ -3784,7 +3784,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return 0;
 	}
 	case LXP_NR_prctl:
-	case LXP_NR_sched_yield: /* cooperative hint; FreeRTOS time-slices peers anyway */
+	case LXP_NR_sched_yield: /* accepted hint; host preemption/admission owns fairness */
 	case LXP_NR_sync:	  /* no backing store to flush */
 	case LXP_NR_fsync:	  /* dropbearkey fsyncs the host key; the writable overlay is RAM */
 	case LXP_NR_fdatasync:

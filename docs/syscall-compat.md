@@ -62,7 +62,7 @@ Surface: 138 LXP_NR_* — 95 implemented, 32 benign-stub, 1 refused-eopnotsupp, 
 | 141 | getdents | implemented | 32-bit dirent (uClibc readdir) |
 | 146 | writev | implemented |  |
 | 148 | fdatasync | benign-stub | writable overlay is RAM |
-| 158 | sched_yield | benign-stub | FreeRTOS time-slices peers |
+| 158 | sched_yield | benign-stub | accepted hint; host scheduling owns fairness |
 | 162 | nanosleep | implemented | parks via the run loop |
 | 168 | poll | implemented |  |
 | 172 | prctl | benign-stub | accepted (inert) |

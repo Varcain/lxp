@@ -117,7 +117,7 @@ utimensat_time64	benign-stub	times not tracked
 sync	benign-stub	no backing store to flush
 fsync	benign-stub	writable overlay is RAM
 fdatasync	benign-stub	writable overlay is RAM
-sched_yield	benign-stub	FreeRTOS time-slices peers
+sched_yield	benign-stub	accepted hint; host scheduling owns fairness
 prctl	benign-stub	accepted (inert)
 setpgid	benign-stub	accepted (inert)
 setsid	benign-stub	returns pid; no session machinery

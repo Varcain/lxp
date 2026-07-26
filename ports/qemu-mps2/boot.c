@@ -155,7 +155,7 @@ static void coordinator_task(void *arg)
 	int argc = 1;
 #elif LXP_MILESTONE == 7
 	/* M7 = hard-float FDPIC VFP-state regression across deferred and blocking
-	 * syscalls (including the task-recreation resume trampoline). */
+	 * syscalls, including saved-frame resume of the persistent guest task. */
 	const char *entry = "/fpcheck";
 	const char *const argv[] = {"fpcheck", NULL};
 	int argc = 1;

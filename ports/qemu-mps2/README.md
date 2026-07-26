@@ -75,8 +75,8 @@ rootfs (~11 MiB) instead of the minimal fixture.
   correctness under ASan/UBSan; M4 owns the execution-fidelity residual. **Done.**
 - **M7** — hard-float FDPIC execution. `/fpcheck` verifies VFP argument codegen, all
   `s0-s31` registers and FPSCR across both the deferred coordinator and a blocking
-  task-recreation path. It is generated on demand because the normal pinned fixture
-  deliberately remains soft-float. **Done.**
+  saved-frame resume of the persistent guest task. It is generated on demand because
+  the normal pinned fixture deliberately remains soft-float. **Done.**
 
 ## Gotchas (learned the hard way)
 
