@@ -13,7 +13,8 @@
  * aliases and the last close clunks.
  *
  * Blocking is deferred, never inline: every op that needs a Pi round-trip submits a
- * 9P request, sets proc->netfs_wait, and returns 0 (parked); the run-loop coordinator
+ * 9P request, publishes an LXP_WAIT_NETFS state, and returns 0 (parked);
+ * the run-loop coordinator
  * pumps the transport each pass via lxp_netfs_retry and resumes the guest. The
  * transport is serialized — one 9P message in flight, a FIFO of the rest.
  */
@@ -35,21 +36,22 @@
 /* These sit in scarce internal SRAM, so keep the footprint small: msize 2K (two 2K
  * transport buffers) is plenty for read-only browse (reads/readdir just page in more
  * chunks). A future optimization relocates the buffers to SDRAM for larger msize. */
-#define NETFS_MSIZE 2048u	 /* negotiated max 9P message; two buffers of this. */
-#define NETFS_NFID 32		 /* max concurrent 9P fids (root + opens + temp). */
-#define NETFS_NOPEN 16		 /* max concurrent guest opens (pooled). */
-#define NETFS_NREQ 8		 /* max in-flight+queued requests (parked procs). */
-#define NETFS_NCLUNK 24		 /* pending background-clunk fid queue. */
-#define NETFS_MP_MAX 64		 /* mount-point string cap. */
-#define NETFS_NAME_MAX 96	 /* one path-component / attach-string cap. */
+#define NETFS_MSIZE 2048u	      /* negotiated max 9P message; two buffers of this. */
+#define NETFS_NFID 32		      /* max concurrent 9P fids (root + opens + temp). */
+#define NETFS_NOPEN 16		      /* max concurrent guest opens (pooled). */
+#define NETFS_NREQ 8		      /* max in-flight+queued requests (parked procs). */
+#define NETFS_NCLUNK 24		      /* pending background-clunk fid queue. */
+#define NETFS_MP_MAX 64		      /* mount-point string cap. */
+#define NETFS_NAME_MAX 96	      /* one path-component / attach-string cap. */
 #define NETFS_RECONNECT_US 2000000ull /* backoff between reconnect attempts. */
-#define NETFS_MAXWELEM 16	 /* 9P Twalk max name components per message. */
+#define NETFS_MAXWELEM 16	      /* 9P Twalk max name components per message. */
 
 #define P9_NOTAG 0xffffu
 #define P9_NOFID 0xffffffffu
 #define P9_TAG 1u /* one request in flight → a single fixed tag. */
 #define P9_ROOT_FID 0u
-#define P9_GETATTR_BASIC 0x000007ffull /* mode,nlink,uid,gid,rdev,atime,mtime,ctime,ino,size,blocks */
+#define P9_GETATTR_BASIC \
+	0x000007ffull /* mode,nlink,uid,gid,rdev,atime,mtime,ctime,ino,size,blocks */
 
 /* 9P2000.L message types. */
 enum {
@@ -91,8 +93,8 @@ enum { CONN_DOWN = 0, CONN_UP };
 static lxp_socket_t g_sk; /* host-owned handle; the adapter owns the storage */
 static int g_conn;
 static uint32_t g_msize = NETFS_MSIZE;
-static uint32_t g_generation;	    /* bumped on every (re)connect; opens carry theirs. */
-static uint64_t g_reconnect_at_us;  /* next reconnect attempt (backoff). */
+static uint32_t g_generation;	   /* bumped on every (re)connect; opens carry theirs. */
+static uint64_t g_reconnect_at_us; /* next reconnect attempt (backoff). */
 
 /* ---- fid allocator (bitmap; fid 0 = attached root) ------------------------- */
 static uint32_t g_fid_bm[(NETFS_NFID + 31) / 32];
@@ -116,15 +118,15 @@ static void fid_free(int f)
 /* ---- open pool ------------------------------------------------------------- */
 struct netfs_open {
 	uint8_t used;
-	uint16_t refs;	/* distinct open-file descriptions; last drop enqueues a clunk. */
+	uint16_t refs; /* distinct open-file descriptions; last drop enqueues a clunk. */
 	uint8_t is_dir;
-	uint8_t stale;	/* fid invalidated by a reconnect → read/getdents give -ESTALE. */
+	uint8_t stale; /* fid invalidated by a reconnect → read/getdents give -ESTALE. */
 	int fid;
 	uint32_t generation;
-	uint32_t mode;	/* cached st_mode (from Rlgetattr at open). */
+	uint32_t mode; /* cached st_mode (from Rlgetattr at open). */
 	uint64_t size;
-	uint64_t mtime; /* seconds. */
-	uint64_t ino;	/* qid.path — stable + unique on the server. */
+	uint64_t mtime;	  /* seconds. */
+	uint64_t ino;	  /* qid.path — stable + unique on the server. */
 	uint64_t rd_off;  /* file read cursor (shared across dup/fork — POSIX open-file offset). */
 	uint64_t dir_off; /* Treaddir resume cursor. */
 };
@@ -159,16 +161,16 @@ enum { REQ_FREE = 0, REQ_QUEUED, REQ_INFLIGHT, REQ_DONE };
 #define REQ_OP_CLUNK 0xffu /* internal (owner_slot<0) background-clunk request. */
 struct netfs_req {
 	uint8_t state;
-	uint8_t op;    /* NETFSW_* (owner set) or REQ_OP_CLUNK (owner NULL). */
+	uint8_t op; /* NETFSW_* (owner set) or REQ_OP_CLUNK (owner NULL). */
 	uint8_t step;
 	lxp_proc_t *owner; /* proc to resume/marshal for, or NULL for an internal (clunk) request. */
-	uint32_t seq;	/* FIFO ordering. */
-	int oi;		/* open-pool slot (open reserves it; read/getdents use it). */
-	int fid;	/* working fid (walk target / temp). */
-	uint64_t off;	/* read / readdir offset. */
-	uintptr_t ubuf; /* guest buffer (read/getdents) or stat-out. */
-	size_t ulen;	/* length / capacity. */
-	int flags;	/* open flags / statkind / is64. */
+	uint32_t seq;	   /* FIFO ordering. */
+	int oi;		   /* open-pool slot (open reserves it; read/getdents use it). */
+	int fid;	   /* working fid (walk target / temp). */
+	uint64_t off;	   /* read / readdir offset. */
+	uintptr_t ubuf;	   /* guest buffer (read/getdents) or stat-out. */
+	size_t ulen;	   /* length / capacity. */
+	int flags;	   /* open flags / statkind / is64. */
 	int statkind;
 	int is64;
 	char path[LXP_PATH_MAX]; /* remote path (open/stat). */
@@ -179,9 +181,9 @@ static uint32_t g_req_seq;
 static int g_inflight = -1; /* request whose message is being sent / awaiting reply. */
 
 #if LXP_ENABLE_NETFS_EXEC
-static uint8_t *g_exec_buf;  /* the engine's RAM staging buffer for a fetched remote ELF */
-static size_t g_exec_cap;    /* staging capacity */
-static size_t g_exec_size;   /* bytes fetched so far (the valid image size on completion) */
+static uint8_t *g_exec_buf; /* the engine's RAM staging buffer for a fetched remote ELF */
+static size_t g_exec_cap;   /* staging capacity */
+static size_t g_exec_size;  /* bytes fetched so far (the valid image size on completion) */
 #endif
 
 /* ---- TX/RX transport buffers ----------------------------------------------- */
@@ -310,7 +312,7 @@ static int rx_fill(void)
 	while (g_rxlen < sizeof(g_rx)) {
 		size_t got = 0;
 		int r = g_lxp_net_ops->sock_recv(g_sk, g_rx + g_rxlen, sizeof(g_rx) - g_rxlen, &got,
-					LXP_WAIT_FOREVER);
+						 LXP_WAIT_FOREVER);
 		if (r == LXP_OK) {
 			if (got == 0)
 				return -1; /* orderly close */
@@ -444,8 +446,8 @@ static int handshake(void)
 
 /* Build an IPv4 lxp_sockaddr_t (host-order port) — was ove_sockaddr_ipv4, now module-local
  * so the netfs client depends only on the net-ops port, not the ove_net helper set. */
-static void netfs_sockaddr_ipv4(lxp_sockaddr_t *a, uint8_t b0, uint8_t b1, uint8_t b2,
-				uint8_t b3, uint16_t port)
+static void netfs_sockaddr_ipv4(lxp_sockaddr_t *a, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3,
+				uint16_t port)
 {
 	memset(a, 0, sizeof(*a));
 	a->family = LXP_AF_INET;
@@ -703,7 +705,8 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 	}
 
 	if (type == P9_RLERROR) {
-		uint32_t ecode = (blen < 4) ? (uint32_t)LXP_EIO : get32(body, &o); /* truncated Rlerror */
+		uint32_t ecode = (blen < 4) ? (uint32_t)LXP_EIO
+					    : get32(body, &o); /* truncated Rlerror */
 		/* clean up any fid this op had walked to */
 		if (r->fid > 0) {
 			clunk_enqueue(r->fid);
@@ -759,7 +762,9 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 		break;
 
 	case LXP_NETFSW_READ: {
-		uint32_t cnt = (blen < 4) ? 0u : get32(body, &o); /* short Rread: don't read the count OOB */
+		uint32_t cnt =
+			(blen < 4) ? 0u
+				   : get32(body, &o); /* short Rread: don't read the count OOB */
 		if (blen >= 4 && cnt > blen - 4)
 			cnt = (uint32_t)(blen - 4);
 		if (cnt > r->ulen)
@@ -793,8 +798,8 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 			const char *nm = (const char *)(body + o);
 			o += nlen;
 			uint8_t dtype = dt9 ? dt9 : dtype_from_qid(qt);
-			size_t rl = dirent_emit_rec(r->is64, r->ubuf, r->ulen, filled, qpath, doff, dtype,
-						    nm, nlen);
+			size_t rl = dirent_emit_rec(r->is64, r->ubuf, r->ulen, filled, qpath, doff,
+						    dtype, nm, nlen);
 			if (!rl) /* record didn't fit; stop before it, resume here next call */
 				break;
 			filled += rl;
@@ -824,7 +829,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 			uint64_t size, mtime, ino;
 			parse_getattr(body, o, blen, &mode, &size, &mtime, &ino);
 			r->result = lxp_netfs_fill_stat(r->owner, r->ubuf, r->statkind, mode, size,
-							    mtime, ino);
+							mtime, ino);
 			r->step = 2; /* send Tclunk(fid) */
 			return;
 		}
@@ -838,7 +843,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 
 #if LXP_ENABLE_NETFS_EXEC
 	case LXP_NETFSW_EXECFETCH:
-		if (r->step == 0) { /* Rwalk */
+		if (r->step == 0) {					   /* Rwalk */
 			uint16_t nwqid = (blen < 2) ? 0 : get16(body, &o); /* truncated Rwalk */
 			const char *cp[NETFS_MAXWELEM];
 			size_t cl[NETFS_MAXWELEM];
@@ -871,7 +876,10 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 			return;
 		}
 		if (r->step == 3) { /* Rread → copy a chunk into staging */
-			uint32_t cnt = (blen < 4) ? 0u : get32(body, &o); /* short Rread: don't read the count OOB */
+			uint32_t cnt =
+				(blen < 4) ? 0u
+					   : get32(body,
+						   &o); /* short Rread: don't read the count OOB */
 			if (blen >= 4 && cnt > blen - 4)
 				cnt = (uint32_t)(blen - 4);
 			if (r->off + cnt > g_exec_cap)
@@ -1017,17 +1025,24 @@ static struct netfs_req *req_new(lxp_proc_t *p, uint8_t op)
 			r->oi = -1;
 			r->fid = -1;
 			r->seq = g_req_seq++;
-			p->netfs_req = i;
-			p->netfs_wait = op;
-			p->netfs_deadline_us = 0;
+			lxp_wait_t wait = {
+				.kind = LXP_WAIT_NETFS,
+				.op = op,
+				.data.io.object = -1,
+				.data.io.request = i,
+			};
+			if (lxp_wait_begin(p, &wait) != 0) {
+				r->state = REQ_FREE;
+				return NULL;
+			}
 			return r;
 		}
 	return NULL;
 }
 
 /* ---- mount config + init --------------------------------------------------- */
-void lxp_netfs_mount_config(const char *mp, const uint8_t ip[4], uint16_t port,
-				const char *aname, const char *uname)
+void lxp_netfs_mount_config(const char *mp, const uint8_t ip[4], uint16_t port, const char *aname,
+			    const char *uname)
 {
 	memset(&g_mnt, 0, sizeof(g_mnt));
 	if (mp) {
@@ -1132,7 +1147,7 @@ long lxp_netfs_open(lxp_proc_t *p, const char *abspath, int flags)
 	r->oi = oi;
 	r->flags = flags;
 	strcpy(r->path, rp);
-	p->netfs_oi = oi;
+	p->wait.data.io.object = oi;
 	return 0; /* parked */
 }
 
@@ -1155,7 +1170,7 @@ long lxp_netfs_read(lxp_proc_t *p, int oi, void *ubuf, size_t len)
 	r->oi = oi;
 	r->ubuf = (uintptr_t)ubuf;
 	r->ulen = len;
-	p->netfs_oi = oi;
+	p->wait.data.io.object = oi;
 	return 0; /* parked */
 }
 
@@ -1170,7 +1185,7 @@ long lxp_netfs_lseek(int oi, long off, int whence)
 		return -LXP_EISDIR;
 	uint64_t base = (whence == LXP_SEEK_CUR)   ? op->rd_off
 			: (whence == LXP_SEEK_END) ? op->size
-						       : 0;
+						   : 0;
 	long long np = (long long)base + off;
 	if (np < 0)
 		return -LXP_EINVAL;
@@ -1196,7 +1211,7 @@ long lxp_netfs_getdents(lxp_proc_t *p, int oi, uintptr_t ubuf, size_t cap, int i
 	r->ubuf = ubuf;
 	r->ulen = cap;
 	r->is64 = is64;
-	p->netfs_oi = oi;
+	p->wait.data.io.object = oi;
 	return 0; /* parked */
 }
 
@@ -1211,7 +1226,7 @@ long lxp_netfs_stat(lxp_proc_t *p, const char *abspath, uintptr_t ustat, int sta
 	r->ubuf = ustat;
 	r->statkind = statkind;
 	strcpy(r->path, rp);
-	p->netfs_oi = -1;
+	p->wait.data.io.object = -1;
 	return 0; /* parked */
 }
 
@@ -1252,13 +1267,14 @@ void lxp_netfs_close(int oi)
  * A reserved-but-unfinished OPEN slot is released so it cannot leak. */
 void lxp_netfs_cancel(lxp_proc_t *p)
 {
-	int ri = p->netfs_req;
-	p->netfs_req = -1;
+	int ri = (p && p->wait.kind == LXP_WAIT_NETFS) ? p->wait.data.io.request : -1;
+	if (p && p->wait.kind == LXP_WAIT_NETFS)
+		p->wait.data.io.request = -1;
 	if (ri < 0 || ri >= NETFS_NREQ)
 		return;
 	struct netfs_req *r = &g_req[ri];
 	if (r->owner != p)
-		return; /* the slot was already reclaimed / reused for another proc */
+		return;	 /* the slot was already reclaimed / reused for another proc */
 	r->owner = NULL; /* a late reply must not be marshaled into the gone/resumed guest */
 	r->ubuf = 0;
 	if (r->state != REQ_INFLIGHT) {
@@ -1290,7 +1306,7 @@ long lxp_netfs_exec_fetch(lxp_proc_t *p, const char *abspath)
 		return -LXP_EMFILE;
 	strcpy(r->path, rp);
 	r->off = 0;
-	p->netfs_oi = -1;
+	p->wait.data.io.object = -1;
 	return 0; /* parked */
 }
 
@@ -1305,11 +1321,13 @@ const uint8_t *lxp_netfs_exec_image(size_t *size)
 /* ---- coordinator: retry a parked op / periodic pump ------------------------ */
 long lxp_netfs_retry(lxp_proc_t *p)
 {
+	if (!p || p->wait.kind != LXP_WAIT_NETFS)
+		return -LXP_EINVAL;
 	uint64_t now = 0;
 	lxp_time_us(&now);
 	pump(now);
 
-	int ri = p->netfs_req;
+	int ri = p->wait.data.io.request;
 	if (ri < 0 || ri >= NETFS_NREQ)
 		return -LXP_EBADF;
 	struct netfs_req *r = &g_req[ri];
@@ -1320,7 +1338,7 @@ long lxp_netfs_retry(lxp_proc_t *p)
 	uint8_t op = r->op;
 	int oi = r->oi;
 	r->state = REQ_FREE;
-	p->netfs_req = -1;
+	p->wait.data.io.request = -1;
 
 	if (op == LXP_NETFSW_OPEN && result >= 0) {
 		int fd = lxp_fd_install(p, LXP_FD_NET, oi);
@@ -1335,13 +1353,15 @@ long lxp_netfs_retry(lxp_proc_t *p)
 		/* Preflight the complete staged image while the old program and fd table
 		 * are still intact. A malformed fetch returns ENOEXEC to execve; only a
 		 * loadable image may advance to the coordinator's commit point. */
-		if (lxp_loader_validate_fdpic(g_exec_buf, g_exec_size,
-					      LXP_PROG_REGION_SIZE, 1) != LXP_OK)
+		if (lxp_loader_validate_fdpic(g_exec_buf, g_exec_size, LXP_PROG_REGION_SIZE, 1) !=
+		    LXP_OK)
 			return -LXP_ENOEXEC;
-		/* The ELF is staged and validated: flag the exec so the run loop's
-		 * EV_EXEC launches it. Returning 0 with exec_pending set tells the run
-		 * loop not to resume the old image. */
-		p->exec_pending = 1;
+		/* The ELF is staged and validated: complete this wait before publishing
+		 * the EXEC intent. Returning 0 with that intent tells the run loop not
+		 * to resume the old image. */
+		(void)lxp_wait_complete(p, LXP_WAIT_NETFS);
+		if (lxp_intent_begin(p, &(lxp_intent_t){.kind = LXP_INTENT_EXEC}) != 0)
+			return -LXP_EAGAIN;
 		p->exec_file_idx = LXP_NETFS_EXEC_SENTINEL;
 		return 0;
 	}
@@ -1404,9 +1424,8 @@ void lxp_netfs_fuzz_reset(void)
 /* Feed one untrusted R-message (type, body[blen]) into the reply parser as if it completed
  * an in-flight request of (op, step). @owner + @ubuf/@ulen model the parked guest the parser
  * marshals results into (caller-owned storage). */
-void lxp_netfs_fuzz_feed(lxp_proc_t *owner, uintptr_t ubuf, size_t ulen, unsigned op,
-			 unsigned step, int is64, int statkind, uint8_t type, const uint8_t *body,
-			 size_t blen)
+void lxp_netfs_fuzz_feed(lxp_proc_t *owner, uintptr_t ubuf, size_t ulen, unsigned op, unsigned step,
+			 int is64, int statkind, uint8_t type, const uint8_t *body, size_t blen)
 {
 	struct netfs_req r;
 	memset(&r, 0, sizeof(r));

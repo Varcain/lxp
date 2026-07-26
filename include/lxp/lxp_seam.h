@@ -111,7 +111,7 @@ void lxp_park_loop(void *token);
 void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc);
 
 /* Publish a primary event for @p slot and wake the coordinator. Engine fault
- * containment paths use this after marking a guest exited. */
+ * containment paths use this after publishing the guest's typed exit intent. */
 void lxp_event_post_slot(int slot);
 
 /* The shared run loop. The public lxp_run() (lxp_run.c) wraps this: it publishes

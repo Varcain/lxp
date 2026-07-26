@@ -26,8 +26,7 @@
 
 #include "lxp/lxp_syscall.h"
 
-/* Parked-op codes stored in lxp_proc.pty_wait (the coordinator retries via
- * lxp_pty_retry, mirroring pipe_wait). */
+/* Parked-op codes stored in lxp_proc.wait.op for LXP_WAIT_PTY. */
 #define LXP_PTYW_SREAD 1  /* slave  read  (shell reads input)  — m2s empty, master open */
 #define LXP_PTYW_MREAD 2  /* master read  (server reads output) — s2m empty, slave open */
 #define LXP_PTYW_SWRITE 3 /* slave  write (shell output)       — s2m full,  master open */
@@ -51,8 +50,7 @@ long lxp_pty_write(lxp_proc_t *p, int idx, int is_master, const void *ubuf, size
 
 /** ioctl(2) on a pty: TCGETS/TCSETS(W/F), TIOCGPTN, TIOCSPTLCK, TIOC[GS]WINSZ,
  *  TIOC[GS]PGRP, TIOCSCTTY/TIOCNOTTY. */
-long lxp_pty_ioctl(lxp_proc_t *p, int idx, int is_master, unsigned long cmd,
-		       unsigned long arg);
+long lxp_pty_ioctl(lxp_proc_t *p, int idx, int is_master, unsigned long cmd, unsigned long arg);
 
 /** poll(2) readiness bitmap (POLLIN/POLLOUT) for an FD_PTY fd. */
 unsigned lxp_pty_poll(int idx, int is_master);

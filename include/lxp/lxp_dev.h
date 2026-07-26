@@ -23,8 +23,8 @@
  *
  * Blocking model: like the syscall layer, driver entry points run in the
  * SVC/exception context, so they must NOT block inline. A driver that would
- * block returns @c -LXP_EAGAIN; the core parks the calling process
- * (@c dev_wait) and the run-loop coordinator retries the op on its own thread
+ * block returns @c -LXP_EAGAIN; the core publishes an @c LXP_WAIT_DEVICE record
+ * and the run-loop coordinator retries the op on its own thread
  * — the same park/retry pattern the pipe layer uses (see lxp_pipe_retry).
  *
  * @note Requires @c LXP_ENABLE_DEV.
@@ -62,11 +62,11 @@ struct lxp_dev_ops {
 	long (*read)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, void *buf,
 		     size_t len);
 	/** write(2): bytes written, or -EAGAIN to block. @p buf is pre-@c user_ok'd. */
-	long (*write)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
-		      const void *buf, size_t len);
+	long (*write)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, const void *buf,
+		      size_t len);
 	/** ioctl(2): every user deref of @p arg must pass @c user_ok. -ENOTTY = unknown cmd. */
-	long (*ioctl)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
-		      unsigned long cmd, unsigned long arg);
+	long (*ioctl)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, unsigned long cmd,
+		      unsigned long arg);
 	/** poll(2): POLLIN|POLLOUT bits currently ready; must never block. */
 	unsigned (*poll)(struct lxp_dev *d, struct lxp_dev_open *o);
 	/** mmap(2): fill @p phys with the device buffer address + @p attrs; the core
@@ -77,11 +77,11 @@ struct lxp_dev_ops {
 
 /** A registered character device. */
 struct lxp_dev {
-	const char *path;		     /**< Absolute node path, e.g. "/dev/fb0". */
-	const struct lxp_dev_ops *ops;   /**< Class operations. */
-	void *drv;			     /**< Class-driver instance state. */
-	uint16_t major, minor;		     /**< Real Linux device numbers (for st_rdev). */
-	uint32_t size;			     /**< Seekable extent (0 => lseek -ESPIPE). */
+	const char *path;	       /**< Absolute node path, e.g. "/dev/fb0". */
+	const struct lxp_dev_ops *ops; /**< Class operations. */
+	void *drv;		       /**< Class-driver instance state. */
+	uint16_t major, minor;	       /**< Real Linux device numbers (for st_rdev). */
+	uint32_t size;		       /**< Seekable extent (0 => lseek -ESPIPE). */
 };
 
 /**
@@ -111,7 +111,7 @@ struct lxp_dev_open {
 
 /* LXP_MAP_NC/WT/DEV (map_device attribute hints) come from lxp_port.h. */
 
-/** dev_wait op codes: which parked device op the coordinator retries/completes.
+/** Device-wait op codes stored in @c proc->wait.op.
  *  Shared with the run loop (src/lxp_run.c) so it can special-case
  *  DEVW_MMAP (the only one needing the engine's map_device seam). */
 #define LXP_DEVW_READ 1u

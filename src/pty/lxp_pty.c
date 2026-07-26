@@ -56,8 +56,8 @@ typedef struct {
 	lxp_winsize ws;
 	int fg_pgrp; /* TIOCSPGRP foreground group (advisory; ^C broadcasts to slave holders) */
 	int used;
-	int locked;  /* TIOCSPTLCK: slave locked until unlockpt (advisory here) */
-	int m2s_eof; /* one-shot EOF pending on the slave (^D on an empty canonical line) */
+	int locked;	    /* TIOCSPTLCK: slave locked until unlockpt (advisory here) */
+	int m2s_eof;	    /* one-shot EOF pending on the slave (^D on an empty canonical line) */
 	uint8_t m_nb, s_nb; /* O_NONBLOCK per end: an empty/full ring returns EAGAIN, not park.
 			     * dropbear sets the master non-blocking and drives it with select. */
 } lxp_pty_t;
@@ -267,9 +267,8 @@ long lxp_pty_read(lxp_proc_t *p, int idx, int is_master, void *ubuf, size_t len)
 	}
 	/* slave: the shell reads its input from m2s */
 	if (pt->m2s.n > 0)
-		return (long)((pt->tio.c_lflag & LXP_ICANON)
-				      ? ring_read_line(&pt->m2s, out, len)
-				      : ring_read(&pt->m2s, out, len));
+		return (long)((pt->tio.c_lflag & LXP_ICANON) ? ring_read_line(&pt->m2s, out, len)
+							     : ring_read(&pt->m2s, out, len));
 	pty_ends(idx, &masters, &slaves);
 	if (masters == 0)
 		return 0; /* master closed (client disconnect) → EOF/hangup → the shell exits */
@@ -291,8 +290,7 @@ long lxp_pty_write(lxp_proc_t *p, int idx, int is_master, const void *ubuf, size
 	return is_master ? pty_input(idx, in, len) : pty_output(idx, in, len);
 }
 
-long lxp_pty_ioctl(lxp_proc_t *p, int idx, int is_master, unsigned long cmd,
-		       unsigned long arg)
+long lxp_pty_ioctl(lxp_proc_t *p, int idx, int is_master, unsigned long cmd, unsigned long arg)
 {
 	(void)is_master;
 	if (idx < 0 || idx >= LXP_NPTY || !g_ptys[idx].used)
@@ -404,15 +402,21 @@ int lxp_pty_getfl(int idx, int is_master)
 
 long lxp_pty_retry(lxp_proc_t *p)
 {
-	switch (p->pty_wait) {
+	if (!p || p->wait.kind != LXP_WAIT_PTY)
+		return -LXP_EINVAL;
+	switch (p->wait.op) {
 	case LXP_PTYW_SREAD:
-		return lxp_pty_read(p, p->pty_idx, 0, (void *)p->pty_buf, p->pty_len);
+		return lxp_pty_read(p, p->wait.data.io.object, 0, (void *)p->wait.data.io.buffer,
+				    p->wait.data.io.length);
 	case LXP_PTYW_MREAD:
-		return lxp_pty_read(p, p->pty_idx, 1, (void *)p->pty_buf, p->pty_len);
+		return lxp_pty_read(p, p->wait.data.io.object, 1, (void *)p->wait.data.io.buffer,
+				    p->wait.data.io.length);
 	case LXP_PTYW_SWRITE:
-		return lxp_pty_write(p, p->pty_idx, 0, (const void *)p->pty_buf, p->pty_len);
+		return lxp_pty_write(p, p->wait.data.io.object, 0,
+				     (const void *)p->wait.data.io.buffer, p->wait.data.io.length);
 	case LXP_PTYW_MWRITE:
-		return lxp_pty_write(p, p->pty_idx, 1, (const void *)p->pty_buf, p->pty_len);
+		return lxp_pty_write(p, p->wait.data.io.object, 1,
+				     (const void *)p->wait.data.io.buffer, p->wait.data.io.length);
 	default:
 		return 0;
 	}
@@ -439,9 +443,9 @@ long lxp_pty_open_master(int flags)
 		pt->tio.c_oflag = LXP_OPOST | LXP_ONLCR;
 		pt->tio.c_cflag = LXP_CS8 | LXP_CREAD;
 		pt->tio.c_lflag = LXP_ICANON | LXP_ECHO | LXP_ISIG;
-		pt->tio.c_cc[LXP_VINTR] = 3;     /* ^C */
+		pt->tio.c_cc[LXP_VINTR] = 3;	 /* ^C */
 		pt->tio.c_cc[LXP_VERASE] = 0x7f; /* DEL */
-		pt->tio.c_cc[LXP_VEOF] = 4;	     /* ^D */
+		pt->tio.c_cc[LXP_VEOF] = 4;	 /* ^D */
 		pt->tio.c_cc[LXP_VMIN] = 1;
 		pt->ws.ws_row = 24;
 		pt->ws.ws_col = 80;

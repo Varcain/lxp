@@ -221,8 +221,8 @@ void lxp_qemu_fault_c(uint32_t *frame /* the faulting program's PSP HW frame */)
 {
 	int sidx = current_slot();
 	if (g_lxp_active && sidx >= 0) {
-		g_lxp_proc[sidx].exited = 1;
 		g_lxp_proc[sidx].exit_status = 139;             /* 128 + SIGSEGV */
+		(void)lxp_intent_exit(&g_lxp_proc[sidx], 0);
 		frame[0] = 0;                                   /* fault park has no resume token */
 		frame[6] = ((uint32_t)&lxp_park_loop) & ~1u;    /* stacked PC → park loop */
 		frame[7] |= (1u << 24);                         /* xPSR.T */

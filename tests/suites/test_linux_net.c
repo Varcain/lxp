@@ -42,25 +42,24 @@ static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 	p->mm->pool_lo = p->mm->pool_hi = 0;
 }
 
-/* Drive a syscall and, if it parked on the socket layer (returns 0 with
- * sock_wait set), pump the coordinator retry the run loop would run. Returns the
+/* Drive a syscall and, if it parked on the socket layer, pump the coordinator
+ * retry the run loop would run. Returns the
  * completed result. */
-static long call_pump(lxp_proc_t *p, long nr, long a0, long a1, long a2, long a3, long a4,
-		      long a5)
+static long call_pump(lxp_proc_t *p, long nr, long a0, long a1, long a2, long a3, long a4, long a5)
 {
 	long r = lxp_syscall(p, nr, a0, a1, a2, a3, a4, a5);
-	if (!p->sock_wait)
+	if (p->wait.kind != LXP_WAIT_SOCKET)
 		return r;
 	for (int i = 0; i < 4000; i++) {
 		long rr = lxp_sock_retry(p);
 		if (rr != -LXP_EAGAIN) {
-			p->sock_wait = 0;
+			(void)lxp_wait_complete(p, LXP_WAIT_SOCKET);
 			return rr;
 		}
 		struct timespec ts = {.tv_sec = 0, .tv_nsec = 500000}; /* 0.5 ms */
 		nanosleep(&ts, NULL);
 	}
-	p->sock_wait = 0;
+	(void)lxp_wait_cancel(p);
 	return -LXP_EAGAIN;
 }
 
@@ -102,8 +101,7 @@ static void test_net_socket_open_stat(void **state)
 	lxp_proc_t p;
 	setup(&p, &arena);
 
-	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0,
-				  0, 0);
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
 	assert_true(fd >= 3);
 	assert_int_equal(lxp_fd_kind(&p, fd), LXP_FD_SOCKET);
 
@@ -116,8 +114,7 @@ static void test_net_socket_open_stat(void **state)
 		uint8_t rest[96];
 	} st;
 	memset(&st, 0, sizeof(st));
-	assert_int_equal(
-		lxp_syscall(&p, LXP_NR_fstat64, fd, (long)(uintptr_t)&st, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_fstat64, fd, (long)(uintptr_t)&st, 0, 0, 0, 0), 0);
 	assert_int_equal(st.st_mode & LXP_S_IFMT, LXP_S_IFSOCK);
 
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
@@ -125,8 +122,7 @@ static void test_net_socket_open_stat(void **state)
 
 	/* An unsupported family is rejected with the Linux errno. (SOCK_RAW is now
 	 * supported for ping — see test_net_raw_socket.) */
-	assert_int_equal(lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET6,
-					 LXP_SOCK_STREAM, 0, 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET6, LXP_SOCK_STREAM, 0, 0, 0, 0),
 			 -LXP_EAFNOSUPPORT);
 }
 
@@ -140,23 +136,21 @@ static void test_net_connect_errors(void **state)
 	/* connect on a non-socket fd (stdout) → ENOTSOCK. */
 	lxp_sockaddr_in a;
 	guest_addr(&a, 9);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_connect, 1, (long)(uintptr_t)&a, sizeof(a), 0,
-					 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_connect, 1, (long)(uintptr_t)&a, sizeof(a), 0, 0,
+				     0),
 			 -LXP_ENOTSOCK);
 
-	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0,
-				  0, 0);
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
 	assert_true(fd >= 3);
 
 	/* NULL address → EFAULT (user_ok rejects). */
-	assert_int_equal(lxp_syscall(&p, LXP_NR_connect, fd, 0, sizeof(a), 0, 0, 0),
-			 -LXP_EFAULT);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_connect, fd, 0, sizeof(a), 0, 0, 0), -LXP_EFAULT);
 
 	/* Wrong address family in the sockaddr → EAFNOSUPPORT. */
 	lxp_sockaddr_in a6 = a;
 	a6.sin_family = LXP_AF_INET6;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_connect, fd, (long)(uintptr_t)&a6, sizeof(a6),
-					 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_connect, fd, (long)(uintptr_t)&a6, sizeof(a6), 0, 0,
+				     0),
 			 -LXP_EAFNOSUPPORT);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
@@ -172,8 +166,7 @@ static void test_net_loopback_roundtrip(void **state)
 	int port = 0;
 	int ls = host_listen(&port);
 
-	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0,
-				  0, 0);
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
 	assert_true(fd >= 3);
 
 	lxp_sockaddr_in a;
@@ -185,7 +178,7 @@ static void test_net_loopback_roundtrip(void **state)
 	assert_true(conn >= 0);
 
 	/* guest send → host recv. */
-	long sr = call_pump(&p, LXP_NR_send, fd, (long)(uintptr_t) "hello", 5, 0, 0, 0);
+	long sr = call_pump(&p, LXP_NR_send, fd, (long)(uintptr_t)"hello", 5, 0, 0, 0);
 	assert_int_equal(sr, 5);
 	char hbuf[16] = {0};
 	assert_int_equal((int)recv(conn, hbuf, sizeof(hbuf), 0), 5);
@@ -203,7 +196,7 @@ static void test_net_loopback_roundtrip(void **state)
 	uint32_t palen = sizeof(pa);
 	memset(&pa, 0, sizeof(pa));
 	assert_int_equal(lxp_syscall(&p, LXP_NR_getpeername, fd, (long)(uintptr_t)&pa,
-					 (long)(uintptr_t)&palen, 0, 0, 0),
+				     (long)(uintptr_t)&palen, 0, 0, 0),
 			 0);
 	assert_int_equal(pa.sin_family, LXP_AF_INET);
 	assert_int_equal(pa.sin_addr, htonl(INADDR_LOOPBACK));
@@ -228,8 +221,8 @@ static void test_net_nonblock(void **state)
 	int port = 0;
 	int ls = host_listen(&port);
 
-	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET,
-				  LXP_SOCK_STREAM | LXP_SOCK_NONBLOCK, 0, 0, 0, 0);
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM | LXP_SOCK_NONBLOCK,
+			      0, 0, 0, 0);
 	assert_true(fd >= 3);
 
 	lxp_sockaddr_in a;
@@ -238,17 +231,16 @@ static void test_net_nonblock(void **state)
 	/* A non-blocking connect either completes at once (loopback) or returns
 	 * EINPROGRESS — never parks. */
 	assert_true(cr == 0 || cr == -LXP_EINPROGRESS);
-	assert_int_equal(p.sock_wait, 0);
+	assert_int_equal(p.wait.kind, LXP_WAIT_NONE);
 
 	int conn = accept(ls, NULL, NULL);
 	assert_true(conn >= 0);
 
 	/* A non-blocking recv with no data pending returns EAGAIN, does not park. */
 	char gbuf[8];
-	long rr = lxp_syscall(&p, LXP_NR_recv, fd, (long)(uintptr_t)gbuf, sizeof(gbuf), 0, 0,
-				  0);
+	long rr = lxp_syscall(&p, LXP_NR_recv, fd, (long)(uintptr_t)gbuf, sizeof(gbuf), 0, 0, 0);
 	assert_int_equal(rr, -LXP_EAGAIN);
-	assert_int_equal(p.sock_wait, 0);
+	assert_int_equal(p.wait.kind, LXP_WAIT_NONE);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 	close(conn);
@@ -262,8 +254,7 @@ static void test_net_dup_close(void **state)
 	lxp_proc_t p;
 	setup(&p, &arena);
 
-	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0,
-				  0, 0);
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
 	assert_true(fd >= 3);
 	long fd2 = lxp_syscall(&p, LXP_NR_dup, fd, 0, 0, 0, 0, 0);
 	assert_true(fd2 >= 3 && fd2 != fd);
@@ -278,16 +269,14 @@ static void test_net_dup_close(void **state)
 	/* proc_exit releases any still-open sockets (exercise the exit path: open a
 	 * few, then simulate exit). */
 	for (int i = 0; i < 4; i++) {
-		long f = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM,
-					 0, 0, 0, 0);
+		long f = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
 		assert_true(f >= 3);
 	}
 	lxp_sock_proc_exit(&p);
 	/* After release, all pool slots are free again: 16 fresh sockets must open. */
 	int opened = 0;
 	for (int i = 0; i < 16; i++) {
-		long f = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM,
-					 0, 0, 0, 0);
+		long f = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
 		if (f >= 3)
 			opened++;
 	}
@@ -308,13 +297,12 @@ static void test_net_poll(void **state)
 
 	int port = 0;
 	int ls = host_listen(&port);
-	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0,
-				  0);
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
 	assert_true(fd >= 3);
 	lxp_sockaddr_in a;
 	guest_addr(&a, port);
-	assert_int_equal(
-		call_pump(&p, LXP_NR_connect, fd, (long)(uintptr_t)&a, sizeof(a), 0, 0, 0), 0);
+	assert_int_equal(call_pump(&p, LXP_NR_connect, fd, (long)(uintptr_t)&a, sizeof(a), 0, 0, 0),
+			 0);
 	int conn = accept(ls, NULL, NULL);
 	assert_true(conn >= 0);
 
@@ -350,8 +338,7 @@ static void test_net_ifconfig(void **state)
 
 	lxp_sock_set_netif(lxp_posix_netif());
 
-	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_DGRAM, 0, 0, 0,
-				  0);
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_DGRAM, 0, 0, 0, 0);
 	assert_true(fd >= 3);
 
 	lxp_ifreq ifr;
@@ -359,8 +346,8 @@ static void test_net_ifconfig(void **state)
 	strcpy(ifr.ifr_name, "eth0");
 
 	/* SIOCGIFFLAGS: posix reports an up, running, broadcast interface. */
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, LXP_SIOCGIFFLAGS,
-					 (long)(uintptr_t)&ifr, 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, LXP_SIOCGIFFLAGS, (long)(uintptr_t)&ifr,
+				     0, 0, 0),
 			 0);
 	assert_true(ifr.ifr_ifru.ifru_flags & LXP_IFF_UP);
 	assert_true(ifr.ifr_ifru.ifru_flags & LXP_IFF_RUNNING);
@@ -369,8 +356,8 @@ static void test_net_ifconfig(void **state)
 	/* SIOCGIFHWADDR: sockaddr{ARPHRD_ETHER, MAC}; posix synth = 02:00:00:DE:AD:01. */
 	memset(&ifr, 0, sizeof(ifr));
 	strcpy(ifr.ifr_name, "eth0");
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, LXP_SIOCGIFHWADDR,
-					 (long)(uintptr_t)&ifr, 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, LXP_SIOCGIFHWADDR, (long)(uintptr_t)&ifr,
+				     0, 0, 0),
 			 0);
 	assert_int_equal(ifr.ifr_ifru.ifru_raw[0], LXP_ARPHRD_ETHER);
 	assert_int_equal(ifr.ifr_ifru.ifru_raw[2], 0x02);
@@ -380,12 +367,12 @@ static void test_net_ifconfig(void **state)
 	memset(&ifr, 0, sizeof(ifr));
 	strcpy(ifr.ifr_name, "eth0");
 	ifr.ifr_ifru.ifru_addr.sin_family = LXP_AF_INET;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, LXP_SIOCSIFADDR,
-					 (long)(uintptr_t)&ifr, 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, LXP_SIOCSIFADDR, (long)(uintptr_t)&ifr,
+				     0, 0, 0),
 			 0);
 	ifr.ifr_ifru.ifru_flags = LXP_IFF_UP;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, LXP_SIOCSIFFLAGS,
-					 (long)(uintptr_t)&ifr, 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, LXP_SIOCSIFFLAGS, (long)(uintptr_t)&ifr,
+				     0, 0, 0),
 			 0);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
@@ -403,8 +390,8 @@ static void test_net_raw_socket(void **state)
 	lxp_proc_t p;
 	setup(&p, &arena);
 
-	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_RAW,
-				  LXP_IPPROTO_ICMP, 0, 0, 0);
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_RAW, LXP_IPPROTO_ICMP, 0, 0,
+			      0);
 	assert_true(fd != -LXP_EPROTONOSUPPORT);
 	if (fd >= 3) {
 		assert_int_equal(lxp_fd_kind(&p, fd), LXP_FD_SOCKET);
@@ -422,21 +409,19 @@ static void test_net_server_accept(void **state)
 	lxp_proc_t p;
 	setup(&p, &arena);
 
-	long ls = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0,
-				  0, 0);
+	long ls = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
 	assert_true(ls >= 3);
 	lxp_sockaddr_in a;
 	guest_addr(&a, 0); /* bind to an ephemeral loopback port */
-	assert_int_equal(
-		lxp_syscall(&p, LXP_NR_bind, ls, (long)(uintptr_t)&a, sizeof(a), 0, 0, 0),
-		0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_bind, ls, (long)(uintptr_t)&a, sizeof(a), 0, 0, 0),
+			 0);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_listen, ls, 8, 0, 0, 0, 0), 0);
 
 	lxp_sockaddr_in bound;
 	uint32_t blen = sizeof(bound);
 	memset(&bound, 0, sizeof(bound));
 	assert_int_equal(lxp_syscall(&p, LXP_NR_getsockname, ls, (long)(uintptr_t)&bound,
-					 (long)(uintptr_t)&blen, 0, 0, 0),
+				     (long)(uintptr_t)&blen, 0, 0, 0),
 			 0);
 	int port = ntohs(bound.sin_port);
 	assert_true(port > 0);
@@ -453,8 +438,8 @@ static void test_net_server_accept(void **state)
 	lxp_sockaddr_in pa;
 	uint32_t palen = sizeof(pa);
 	memset(&pa, 0, sizeof(pa));
-	long cfd = call_pump(&p, LXP_NR_accept, ls, (long)(uintptr_t)&pa,
-			     (long)(uintptr_t)&palen, 0, 0, 0);
+	long cfd = call_pump(&p, LXP_NR_accept, ls, (long)(uintptr_t)&pa, (long)(uintptr_t)&palen,
+			     0, 0, 0);
 	assert_true(cfd >= 3);
 	assert_int_equal(lxp_fd_kind(&p, cfd), LXP_FD_SOCKET);
 	assert_int_equal(pa.sin_family, LXP_AF_INET);
@@ -467,7 +452,7 @@ static void test_net_server_accept(void **state)
 	assert_memory_equal(gbuf, "ping", 4);
 
 	/* guest -> host over the accepted fd */
-	long sr = call_pump(&p, LXP_NR_send, cfd, (long)(uintptr_t) "pong", 4, 0, 0, 0);
+	long sr = call_pump(&p, LXP_NR_send, cfd, (long)(uintptr_t)"pong", 4, 0, 0, 0);
 	assert_int_equal(sr, 4);
 	char hbuf[16] = {0};
 	assert_int_equal((int)recv(hc, hbuf, sizeof(hbuf), 0), 4);

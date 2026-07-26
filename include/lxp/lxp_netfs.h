@@ -25,7 +25,7 @@
  *
  * Blocking model: every remote-touching op needs a Pi round-trip and the syscall
  * handlers run in the SVC/exception context, so nothing blocks inline. An op
- * submits a 9P request, sets proc->netfs_wait, and returns 0 (parked); the
+ * submits a 9P request, publishes @c LXP_WAIT_NETFS, and returns 0 (parked); the
  * run-loop coordinator pumps the transport each pass via lxp_netfs_retry and
  * resumes the guest via spawn_resume(...,result). Ops answerable from cached
  * open-state (fstat, lseek) run inline. The transport is serialized: one 9P
@@ -44,13 +44,14 @@
 extern "C" {
 #endif
 
-/** proc->netfs_wait op codes: which parked netfs op the coordinator retries.
+/** Netfs-wait op codes stored in @c proc->wait.op.
  *  Shared with the run loop (src/lxp_run.c). */
-#define LXP_NETFSW_OPEN 1u	  /**< open: Twalk -> Tlgetattr -> Tlopen -> install fd. */
-#define LXP_NETFSW_READ 2u	  /**< read: Tread -> copy to guest. */
+#define LXP_NETFSW_OPEN 1u     /**< open: Twalk -> Tlgetattr -> Tlopen -> install fd. */
+#define LXP_NETFSW_READ 2u     /**< read: Tread -> copy to guest. */
 #define LXP_NETFSW_GETDENTS 3u /**< getdents64: Treaddir -> emit dirent64 records. */
-#define LXP_NETFSW_STAT 4u	  /**< path stat: Twalk -> Tlgetattr -> Tclunk -> fill guest stat. */
-#define LXP_NETFSW_EXECFETCH 5u /**< Phase B: read a whole remote ELF into the exec staging buffer. */
+#define LXP_NETFSW_STAT 4u     /**< path stat: Twalk -> Tlgetattr -> Tclunk -> fill guest stat. */
+#define LXP_NETFSW_EXECFETCH \
+	5u /**< Phase B: read a whole remote ELF into the exec staging buffer. */
 
 /* ---- boot: mount config + connection init (coordinator thread) ------------- */
 
@@ -63,7 +64,7 @@ extern "C" {
  * @param uname      the user name to attach as (diod -n no-auth accepts any; "root").
  */
 void lxp_netfs_mount_config(const char *mountpoint, const uint8_t ip[4], uint16_t port,
-				const char *aname, const char *uname);
+			    const char *aname, const char *uname);
 
 /** @brief Open the socket + do the blocking Tversion/Tattach handshake. Coordinator
  *  thread only (from lxp_dev_autoreg_all's region). A down server is non-fatal:
@@ -83,8 +84,9 @@ void lxp_netfs_shutdown(void);
 /** @return mount id (>=0) if @p abspath is at or under the mount point, else -1. */
 int lxp_netfs_lookup(const char *abspath);
 
-/** open(2): submit Twalk->Tlgetattr->Tlopen for the /mnt path; parks (returns 0 with
- *  netfs_wait=NETFSW_OPEN), or a negative Linux errno inline (path too long, no mount). */
+/** open(2): submit Twalk->Tlgetattr->Tlopen for the /mnt path; parks in an
+ *  @c LXP_WAIT_NETFS state with @c LXP_NETFSW_OPEN, or returns a negative
+ *  Linux errno inline (path too long, no mount). */
 long lxp_netfs_open(lxp_proc_t *p, const char *abspath, int flags);
 
 /** read(2)/pread(2): submit Tread at @p off (SIZE_MAX off => use the fd cursor); parks. */
@@ -117,7 +119,8 @@ long lxp_netfs_retry(lxp_proc_t *p);
 
 /** Abandon @p p's in-flight netfs op after a signal interrupts the parked guest (called from
  *  the run loop's parked-signal delivery). Detaches the owner + guest buffer so a late 9P
- *  reply is dropped rather than marshaled into a gone/resumed process, and clears netfs_req. */
+ *  reply is dropped rather than marshaled into a gone/resumed process and the
+ *  request index in the typed wait is invalidated. */
 void lxp_netfs_cancel(lxp_proc_t *p);
 
 /** exit: release every FD_NET open the process still holds (enqueues clunks). */
@@ -136,8 +139,8 @@ int lxp_netfs_busy(void);
 
 /** Marshal remote attributes into the guest's stat/statx buffer (the netfs retry owns the
  *  9P transport; the syscall TU owns the kstat/statx layout + user_ok). @return 0 or -errno. */
-long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t mode,
-			     uint64_t size, uint64_t mtime, uint64_t ino);
+long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t mode, uint64_t size,
+			 uint64_t mtime, uint64_t ino);
 
 /** access_ok for the netfs handlers to validate a guest pointer (confused-deputy guard —
  *  handlers run PRIVILEGED). Defined in lxp_syscall.c. */
@@ -150,8 +153,8 @@ int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 #define LXP_NETFS_EXEC_SENTINEL (-2)
 
 /** execve of a /mnt path: submit walk/getattr/open + chained Tread of the whole ELF into the
- *  staging buffer; parks (netfs_wait=NETFSW_EXECFETCH). On completion the retry sets the proc's
- *  exec_pending + exec_file_idx=SENTINEL and the run loop launches from the staged image.
+ *  staging buffer; parks with @c LXP_NETFSW_EXECFETCH. On completion the retry publishes an
+ *  @c LXP_INTENT_EXEC plus @c exec_file_idx=SENTINEL and the run loop launches the staged image.
  *  Returns 0 (parked) or a negative Linux errno inline. */
 long lxp_netfs_exec_fetch(lxp_proc_t *p, const char *abspath);
 /** The staged remote ELF after a completed EXECFETCH: bytes + size for launch(). */

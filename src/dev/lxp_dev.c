@@ -11,7 +11,7 @@
  * lxp_dev and bridge to the engine-neutral ove_* HALs.
  *
  * Blocking is deferred, never inline: a driver op that would block returns
- * -EAGAIN; this core parks the caller (proc->dev_wait) and the run-loop
+ * -EAGAIN; this core parks the caller (LXP_WAIT_DEVICE) and the run-loop
  * coordinator retries via lxp_dev_retry — mirroring the pipe park/retry.
  */
 
@@ -21,7 +21,7 @@
 
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_disp_ops.h" /* lxp_display_ops_t + g_lxp_disp_ops (published by lxp_run) */
-#include "lxp_pool.h"	       /* shared refcounted open-pool primitives */
+#include "lxp_pool.h"	      /* shared refcounted open-pool primitives */
 
 #include <string.h>
 
@@ -48,12 +48,12 @@
 #define LXP_O_WRONLY 1
 #endif
 
-/* proc->dev_wait states (LXP_DEVW_*) now live in ove/linux/dev.h, shared with
+/* Device wait operations (LXP_DEVW_*) live in ove/linux/dev.h, shared with
  * the run loop so it can special-case DEVW_MMAP (needs the engine map_device seam). */
 
-#define LXP_NDEV 16	    /* max registered device nodes */
+#define LXP_NDEV 16	/* max registered device nodes */
 #define LXP_NDEVOPEN 16 /* max concurrent device opens (pooled) */
-#define LXP_NDEVTICK 4  /* max coordinator-tick callbacks (fb flush, touch poll) */
+#define LXP_NDEVTICK 4	/* max coordinator-tick callbacks (fb flush, touch poll) */
 
 static struct lxp_dev g_lnx_devs[LXP_NDEV];
 static int g_lnx_ndev;
@@ -197,10 +197,15 @@ long lxp_dev_read(lxp_proc_t *p, int oi, void *buf, size_t len)
 	if (r == -LXP_EAGAIN) {
 		if (o->oflags & LXP_O_NONBLOCK)
 			return -LXP_EAGAIN;
-		p->dev_wait = LXP_DEVW_READ; /* park: the coordinator retries */
-		p->dev_oi = oi;
-		p->dev_buf = (uintptr_t)buf;
-		p->dev_len = len;
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_DEVICE,
+			.op = LXP_DEVW_READ,
+			.data.io.object = oi,
+			.data.io.buffer = (uintptr_t)buf,
+			.data.io.length = len,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
 		return 0;
 	}
 	return r;
@@ -220,10 +225,15 @@ long lxp_dev_write(lxp_proc_t *p, int oi, const void *buf, size_t len)
 	if (r == -LXP_EAGAIN) {
 		if (o->oflags & LXP_O_NONBLOCK)
 			return -LXP_EAGAIN;
-		p->dev_wait = LXP_DEVW_WRITE;
-		p->dev_oi = oi;
-		p->dev_buf = (uintptr_t)buf;
-		p->dev_len = len;
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_DEVICE,
+			.op = LXP_DEVW_WRITE,
+			.data.io.object = oi,
+			.data.io.buffer = (uintptr_t)buf,
+			.data.io.length = len,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
 		return 0;
 	}
 	return r;
@@ -241,10 +251,15 @@ long lxp_dev_ioctl(lxp_proc_t *p, int oi, unsigned long cmd, unsigned long arg)
 	if (r == -LXP_EAGAIN) {
 		if (o->oflags & LXP_O_NONBLOCK)
 			return -LXP_EAGAIN;
-		p->dev_wait = LXP_DEVW_IOCTL;
-		p->dev_oi = oi;
-		p->dev_cmd = cmd;
-		p->dev_buf = arg;
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_DEVICE,
+			.op = LXP_DEVW_IOCTL,
+			.data.io.object = oi,
+			.data.io.buffer = arg,
+			.data.io.command = cmd,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
 		return 0;
 	}
 	return r;
@@ -268,17 +283,22 @@ long lxp_dev_mmap(lxp_proc_t *p, int oi, size_t len, uint32_t pgoff)
 	long r = d->ops->mmap(d, o, p, len, pgoff, &phys, &attrs);
 	if (r < 0)
 		return r;
-	p->dev_wait = LXP_DEVW_MMAP;
-	p->dev_oi = oi;
-	p->dev_buf = phys;  /* physical base to map */
-	p->dev_len = len;   /* extent */
-	p->dev_cmd = attrs; /* LXP_MAP_* hint for the engine seam */
+	lxp_wait_t wait = {
+		.kind = LXP_WAIT_DEVICE,
+		.op = LXP_DEVW_MMAP,
+		.data.io.object = oi,
+		.data.io.buffer = phys,
+		.data.io.length = len,
+		.data.io.command = attrs,
+	};
+	if (lxp_wait_begin(p, &wait) != 0)
+		return -LXP_EAGAIN;
 	return 0;
 }
 
 /* Positioned I/O: drive the same read/write op at `off` with the fd cursor
  * preserved (pread/pwrite semantics). The fb is inline (never -EAGAIN), so this
- * does not park; a blocking device would need the dev_wait path instead. */
+ * does not park; a blocking device would use the typed device-wait path instead. */
 long lxp_dev_pread(lxp_proc_t *p, int oi, void *buf, size_t len, uint32_t off)
 {
 	struct lxp_dev_open *o = open_slot(oi);
@@ -385,20 +405,25 @@ int lxp_dev_stat_path(const char *abspath, uint32_t *mode, uint64_t *rdev)
 /* ---- coordinator: retry parked device I/O + periodic tick ------------------ */
 long lxp_dev_retry(lxp_proc_t *p)
 {
-	int oi = p->dev_oi;
+	if (!p || p->wait.kind != LXP_WAIT_DEVICE)
+		return -LXP_EINVAL;
+	int oi = p->wait.data.io.object;
 	struct lxp_dev_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
 	struct lxp_dev *d = &g_lnx_devs[o->dev];
-	switch (p->dev_wait) {
+	switch (p->wait.op) {
 	case LXP_DEVW_READ:
-		return d->ops->read ? d->ops->read(d, o, p, (void *)p->dev_buf, p->dev_len)
+		return d->ops->read ? d->ops->read(d, o, p, (void *)p->wait.data.io.buffer,
+						   p->wait.data.io.length)
 				    : -LXP_EINVAL;
 	case LXP_DEVW_WRITE:
-		return d->ops->write ? d->ops->write(d, o, p, (const void *)p->dev_buf, p->dev_len)
+		return d->ops->write ? d->ops->write(d, o, p, (const void *)p->wait.data.io.buffer,
+						     p->wait.data.io.length)
 				     : -LXP_EINVAL;
 	case LXP_DEVW_IOCTL:
-		return d->ops->ioctl ? d->ops->ioctl(d, o, p, p->dev_cmd, p->dev_buf)
+		return d->ops->ioctl ? d->ops->ioctl(d, o, p, p->wait.data.io.command,
+						     p->wait.data.io.buffer)
 				     : -LXP_ENOTTY;
 	default:
 		return -LXP_EINVAL;
@@ -463,6 +488,8 @@ __attribute__((weak)) void lxp_input_report_touch(int x, int y, int pressed)
 /* Weak coordinator kick: the run loop provides the strong version (posts its
  * event). The host cmocka test links the core without the run loop, so this
  * no-op keeps a driver's lxp_dev_kick() call resolvable there. */
-__attribute__((weak)) void lxp_dev_kick(void) {}
+__attribute__((weak)) void lxp_dev_kick(void)
+{
+}
 
 #endif /* LXP_ENABLE_DEV */

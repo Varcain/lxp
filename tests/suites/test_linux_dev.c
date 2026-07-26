@@ -14,7 +14,7 @@
 #include "../framework/lxp_test.h"
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_dev.h"
-#include "lxp/lxp_port.h"		/* lxp_dma2d_op_t */
+#include "lxp/lxp_port.h" /* lxp_dma2d_op_t */
 #include "lxp/lxp_syscall.h"
 #include "../../src/dev/lxp_uapi.h" /* struct lxp_dma2d_submit + LXP_DMA2D_* */
 
@@ -80,8 +80,8 @@ static long mock_release(struct lxp_dev *d, struct lxp_dev_open *o)
 	return 0;
 }
 
-static long mock_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
-		      void *buf, size_t len)
+static long mock_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, void *buf,
+		      size_t len)
 {
 	(void)d;
 	(void)o;
@@ -93,8 +93,8 @@ static long mock_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 	return (long)n;
 }
 
-static long mock_write(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
-		       const void *buf, size_t len)
+static long mock_write(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, const void *buf,
+		       size_t len)
 {
 	(void)d;
 	(void)o;
@@ -105,8 +105,8 @@ static long mock_write(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 	return (long)len;
 }
 
-static long mock_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
-		       unsigned long cmd, unsigned long arg)
+static long mock_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, unsigned long cmd,
+		       unsigned long arg)
 {
 	(void)d;
 	(void)o;
@@ -135,8 +135,8 @@ static unsigned mock_poll(struct lxp_dev *d, struct lxp_dev_open *o)
 /* mmap(2) (P3): hand back a fixed "device buffer" + a cache-attr hint, rejecting a
  * request past the device extent — the shape the /dev/fb0 driver's op has. */
 static uint8_t g_mock_fb[256];
-static long mock_mmap(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
-		      size_t len, uint32_t pgoff, uintptr_t *phys, unsigned *attrs)
+static long mock_mmap(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, size_t len,
+		      uint32_t pgoff, uintptr_t *phys, unsigned *attrs)
 {
 	(void)o;
 	(void)p;
@@ -190,8 +190,8 @@ static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 
 static long dev_open(lxp_proc_t *p, int flags)
 {
-	return lxp_syscall(p, LXP_NR_openat, LXP_AT_FDCWD,
-			       (long)(uintptr_t) "/dev/mock", flags, 0, 0, 0);
+	return lxp_syscall(p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/dev/mock", flags, 0,
+			   0, 0);
 }
 
 /* ---- tests ----------------------------------------------------------------- */
@@ -208,8 +208,8 @@ static void test_dev_open_close(void **state)
 	assert_int_equal(g_mock_opened, 1);
 
 	/* Opening a non-registered /dev path falls through to ENOENT. */
-	assert_int_equal(lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
-					 (long)(uintptr_t) "/dev/nope", LXP_O_RDWR, 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/dev/nope",
+				     LXP_O_RDWR, 0, 0, 0),
 			 -LXP_ENOENT);
 
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
@@ -228,7 +228,7 @@ static void test_dev_read_write(void **state)
 	assert_true(fd >= 3);
 
 	/* write routes to the driver, which captures the bytes. */
-	long w = lxp_syscall(&p, LXP_NR_write, fd, (long)(uintptr_t) "abcd", 4, 0, 0, 0);
+	long w = lxp_syscall(&p, LXP_NR_write, fd, (long)(uintptr_t)"abcd", 4, 0, 0, 0);
 	assert_int_equal(w, 4);
 	assert_int_equal((int)g_mock_wlen, 4);
 	assert_memory_equal(g_mock_wbuf, "abcd", 4);
@@ -256,22 +256,18 @@ static void test_dev_ioctl(void **state)
 
 	/* SET then GET round-trips the register through the driver. */
 	uint32_t v = 0xdeadbeef;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, MOCK_IOC_SET,
-					 (long)(uintptr_t)&v, 0, 0, 0),
-			 0);
+	assert_int_equal(
+		lxp_syscall(&p, LXP_NR_ioctl, fd, MOCK_IOC_SET, (long)(uintptr_t)&v, 0, 0, 0), 0);
 	uint32_t out = 0;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, MOCK_IOC_GET,
-					 (long)(uintptr_t)&out, 0, 0, 0),
-			 0);
+	assert_int_equal(
+		lxp_syscall(&p, LXP_NR_ioctl, fd, MOCK_IOC_GET, (long)(uintptr_t)&out, 0, 0, 0), 0);
 	assert_int_equal(out, 0xdeadbeef);
 
 	/* An unknown command → -ENOTTY (not the console gate's blanket reject). */
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, 0x9999, 0, 0, 0, 0),
-			 -LXP_ENOTTY);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, 0x9999, 0, 0, 0, 0), -LXP_ENOTTY);
 
 	/* A bad user pointer (NULL) is rejected by the handler's user_ok → -EFAULT. */
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, MOCK_IOC_GET, 0, 0, 0, 0),
-			 -LXP_EFAULT);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, MOCK_IOC_GET, 0, 0, 0, 0), -LXP_EFAULT);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
@@ -287,8 +283,8 @@ static void test_dev_input_eviocgname_size(void **state)
 	setup(&p, &arena);
 	lxp_dev_autoreg_input(); /* registers /dev/input/event0 (idempotent) */
 
-	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
-			      (long)(uintptr_t) "/dev/input/event0", LXP_O_RDONLY, 0, 0, 0);
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/dev/input/event0",
+			      LXP_O_RDONLY, 0, 0, 0);
 	assert_true(fd >= 3);
 
 	/* EVIOCGNAME(8): an 8-byte buffer — the handler must not write past byte 8. */
@@ -297,11 +293,13 @@ static void test_dev_input_eviocgname_size(void **state)
 	long r = lxp_syscall(&p, LXP_NR_ioctl, fd, (long)EVIOCGNAME_CMD(8), (long)(uintptr_t)nm, 0,
 			     0, 0);
 	assert_true(r >= 0 && r <= 8);
-	assert_int_equal((uint8_t)nm[8], 0x7f); /* untouched (pre-fix: 14 bytes copied -> clobbered) */
+	assert_int_equal((uint8_t)nm[8],
+			 0x7f); /* untouched (pre-fix: 14 bytes copied -> clobbered) */
 
 	/* EVIOCGNAME(64): a large buffer receives the full NUL-terminated name. */
 	memset(nm, 0x7f, sizeof(nm));
-	r = lxp_syscall(&p, LXP_NR_ioctl, fd, (long)EVIOCGNAME_CMD(64), (long)(uintptr_t)nm, 0, 0, 0);
+	r = lxp_syscall(&p, LXP_NR_ioctl, fd, (long)EVIOCGNAME_CMD(64), (long)(uintptr_t)nm, 0, 0,
+			0);
 	assert_true(r > 0);
 	assert_string_equal(nm, "overtos-touch");
 
@@ -319,8 +317,8 @@ static void test_dev_input_syn_dropped_on_overrun(void **state)
 	setup(&p, &arena);
 	lxp_dev_autoreg_input();
 
-	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
-			      (long)(uintptr_t) "/dev/input/event0", LXP_O_RDONLY, 0, 0, 0);
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/dev/input/event0",
+			      LXP_O_RDONLY, 0, 0, 0);
 	assert_true(fd >= 3); /* opens at the live head, so only the pushes below count */
 
 	/* Overflow the 64-slot ring behind this reader: 17 touches = 68 events > 64. */
@@ -353,10 +351,10 @@ static void test_dev_input_write_injects_touch(void **state)
 	lxp_dev_autoreg_input();
 
 	long rfd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
-			       (long)(uintptr_t) "/dev/input/event0",
-			       LXP_O_RDONLY | LXP_O_NONBLOCK, 0, 0, 0);
+			       (long)(uintptr_t)"/dev/input/event0", LXP_O_RDONLY | LXP_O_NONBLOCK,
+			       0, 0, 0);
 	long wfd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
-			       (long)(uintptr_t) "/dev/input/event0", LXP_O_WRONLY, 0, 0, 0);
+			       (long)(uintptr_t)"/dev/input/event0", LXP_O_WRONLY, 0, 0, 0);
 	assert_true(rfd >= 3);
 	assert_true(wfd >= 3);
 
@@ -374,13 +372,13 @@ static void test_dev_input_write_injects_touch(void **state)
 	report[3].type = LXP_EV_SYN;
 	report[3].code = LXP_SYN_REPORT;
 
-	assert_int_equal(lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t)report,
-				     sizeof(report), 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t)report, sizeof(report),
+				     0, 0, 0),
 			 sizeof(report));
 
 	struct lxp_input_event out[4];
-	assert_int_equal(lxp_syscall(&p, LXP_NR_read, rfd, (long)(uintptr_t)out,
-				     sizeof(out), 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, rfd, (long)(uintptr_t)out, sizeof(out), 0, 0,
+				     0),
 			 sizeof(out));
 	assert_int_equal(out[0].type, LXP_EV_ABS);
 	assert_int_equal(out[0].code, LXP_ABS_X);
@@ -398,8 +396,8 @@ static void test_dev_input_write_injects_touch(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t)report,
 				     sizeof(report) - sizeof(report[0]), 0, 0, 0),
 			 -LXP_EINVAL);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_read, rfd, (long)(uintptr_t)out,
-				     sizeof(out), 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, rfd, (long)(uintptr_t)out, sizeof(out), 0, 0,
+				     0),
 			 -LXP_EAGAIN);
 
 	lxp_syscall(&p, LXP_NR_close, rfd, 0, 0, 0, 0, 0);
@@ -424,20 +422,20 @@ static void test_dev_accmode_enforced(void **state)
 	long rfd = dev_open(&p, LXP_O_RDONLY);
 	assert_true(rfd >= 3);
 	assert_true(lxp_syscall(&p, LXP_NR_read, rfd, (long)(uintptr_t)b, 1, 0, 0, 0) >= 0);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_write, rfd, (long)(uintptr_t) "z", 1, 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, rfd, (long)(uintptr_t)"z", 1, 0, 0, 0),
 			 -LXP_EBADF);
 
 	/* O_WRONLY: write ok, read -> EBADF. */
 	long wfd = dev_open(&p, LXP_O_WRONLY);
 	assert_true(wfd >= 3);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t) "z", 1, 0, 0, 0), 1);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t)"z", 1, 0, 0, 0), 1);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_read, wfd, (long)(uintptr_t)b, 1, 0, 0, 0),
 			 -LXP_EBADF);
 
 	/* O_RDWR: both directions allowed. */
 	long rwfd = dev_open(&p, LXP_O_RDWR);
 	assert_true(rwfd >= 3);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_write, rwfd, (long)(uintptr_t) "z", 1, 0, 0, 0), 1);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, rwfd, (long)(uintptr_t)"z", 1, 0, 0, 0), 1);
 	assert_true(lxp_syscall(&p, LXP_NR_read, rwfd, (long)(uintptr_t)b, 1, 0, 0, 0) >= 0);
 
 	lxp_syscall(&p, LXP_NR_close, rfd, 0, 0, 0, 0, 0);
@@ -456,7 +454,7 @@ static void test_dev_fb_flush_spans_crossed_rows(void **state)
 	setup(&p, &arena);
 	lxp_dev_autoreg_fb(); /* /dev/fb0 over the stub's 64x64 RGB565 mock (stride 128) */
 
-	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t) "/dev/fb0",
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/dev/fb0",
 			      LXP_O_RDWR, 0, 0, 0);
 	assert_true(fd >= 3);
 
@@ -485,7 +483,7 @@ static void test_dev_fb_dma2d_blit(void **state)
 	setup(&p, &arena);
 	lxp_dev_autoreg_fb(); /* 64x64 RGB565 mock fb, stride 128 */
 	lxp_dev_autoreg_dma2d();
-	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t) "/dev/fb0",
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/dev/fb0",
 			      LXP_O_RDWR, 0, 0, 0);
 	assert_true(fd >= 3);
 
@@ -518,7 +516,7 @@ static void test_dev_fb_dma2d_blit(void **state)
 	g_mock_dma2d_calls = 0;
 	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_FBIO_DMA2D_BLIT, 0, 0, 0, 0),
 			 -LXP_EFAULT); /* NULL descriptor */
-	b.x = 60; /* x+w = 76 > fb width 64 */
+	b.x = 60;		       /* x+w = 76 > fb width 64 */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_FBIO_DMA2D_BLIT, a, 0, 0, 0),
 			 -LXP_EINVAL);
 	b.x = 4;
@@ -537,7 +535,7 @@ static void test_dev_fb_dma2d_blit(void **state)
 /* mmap(2) of a device buffer (P3): sys_mmap2 routes a /dev fd with an .mmap op to it, which
  * PARKS on DEVW_MMAP — the run-loop coordinator (not present in this unit test) would then
  * install the MPU region + resume with r0 = the mapped address. Assert the deferral state the
- * coordinator consumes (dev_wait/dev_buf/dev_len/dev_cmd), and that a request past the device
+ * coordinator consumes (typed device wait payload), and that a request past the device
  * extent is rejected by the driver op without parking. */
 static void test_dev_mmap(void **state)
 {
@@ -551,16 +549,17 @@ static void test_dev_mmap(void **state)
 	/* MAP_SHARED (0x1), NOT MAP_ANONYMOUS, PROT_READ|WRITE (0x3) — the fbdev shape. */
 	long r = lxp_syscall(&p, LXP_NR_mmap2, 0, 256, 0x3, 0x1, fd, 0);
 	assert_int_equal(r, 0); /* parked, not an immediate return */
-	assert_int_equal(p.dev_wait, LXP_DEVW_MMAP);
-	assert_int_equal(p.dev_buf, (uintptr_t)g_mock_fb);
-	assert_int_equal(p.dev_len, 256);
-	assert_int_equal(p.dev_cmd, LXP_MAP_NC);
+	assert_int_equal(p.wait.kind, LXP_WAIT_DEVICE);
+	assert_int_equal(p.wait.op, LXP_DEVW_MMAP);
+	assert_int_equal(p.wait.data.io.buffer, (uintptr_t)g_mock_fb);
+	assert_int_equal(p.wait.data.io.length, 256);
+	assert_int_equal(p.wait.data.io.command, LXP_MAP_NC);
 
 	/* A length past the device extent is rejected by the driver op — no park. */
-	p.dev_wait = 0;
+	(void)lxp_wait_cancel(&p);
 	long r2 = lxp_syscall(&p, LXP_NR_mmap2, 0, 512, 0x3, 0x1, fd, 0);
 	assert_int_equal(r2, -LXP_EINVAL);
-	assert_int_equal(p.dev_wait, 0);
+	assert_int_equal(p.wait.kind, LXP_WAIT_NONE);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
@@ -587,23 +586,20 @@ static void test_dev_stat_lseek_poll(void **state)
 		uint8_t rest[80];
 	} st;
 	memset(&st, 0, sizeof(st));
-	assert_int_equal(
-		lxp_syscall(&p, LXP_NR_fstat64, fd, (long)(uintptr_t)&st, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_fstat64, fd, (long)(uintptr_t)&st, 0, 0, 0, 0), 0);
 	assert_int_equal(st.st_mode & LXP_S_IFMT, LXP_S_IFCHR);
 	assert_int_equal((int)st.st_rdev, (42 << 8) | 7);
 
 	/* stat-by-path recognises the device node too. */
 	memset(&st, 0, sizeof(st));
-	assert_int_equal(lxp_syscall(&p, LXP_NR_stat64, (long)(uintptr_t) "/dev/mock",
-					 (long)(uintptr_t)&st, 0, 0, 0, 0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_stat64, (long)(uintptr_t)"/dev/mock",
+				     (long)(uintptr_t)&st, 0, 0, 0, 0),
 			 0);
 	assert_int_equal(st.st_mode & LXP_S_IFMT, LXP_S_IFCHR);
 
 	/* lseek within the device's fixed extent (size 256). */
-	assert_int_equal(lxp_syscall(&p, LXP_NR_lseek, fd, 10, LXP_SEEK_SET, 0, 0, 0),
-			 10);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_lseek, fd, 0, LXP_SEEK_END, 0, 0, 0),
-			 256);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_lseek, fd, 10, LXP_SEEK_SET, 0, 0, 0), 10);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_lseek, fd, 0, LXP_SEEK_END, 0, 0, 0), 256);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_lseek, fd, 300, LXP_SEEK_SET, 0, 0, 0),
 			 -LXP_EINVAL); /* past the extent */
 
@@ -611,8 +607,7 @@ static void test_dev_stat_lseek_poll(void **state)
 	lxp_pollfd pfd = {.fd = (int)fd, .events = LXP_POLLIN | LXP_POLLOUT};
 	long pr = lxp_syscall(&p, LXP_NR_poll, (long)(uintptr_t)&pfd, 1, 0, 0, 0, 0);
 	assert_int_equal(pr, 1);
-	assert_int_equal(pfd.revents & (LXP_POLLIN | LXP_POLLOUT),
-			 LXP_POLLIN | LXP_POLLOUT);
+	assert_int_equal(pfd.revents & (LXP_POLLIN | LXP_POLLOUT), LXP_POLLIN | LXP_POLLOUT);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
@@ -627,12 +622,12 @@ static void test_dev_deferred_block(void **state)
 	long fd = dev_open(&p, LXP_O_RDWR);
 	assert_true(fd >= 3);
 
-	/* A blocking read parks the proc (dev_wait set, syscall returns 0 = parked). */
+	/* A blocking read parks the proc in a typed device wait. */
 	g_mock_block = 1;
 	char rb[8] = {0};
 	long r = lxp_syscall(&p, LXP_NR_read, fd, (long)(uintptr_t)rb, sizeof(rb), 0, 0, 0);
 	assert_int_equal(r, 0);
-	assert_int_not_equal(p.dev_wait, 0); /* parked for the coordinator to retry */
+	assert_int_equal(p.wait.kind, LXP_WAIT_DEVICE);
 
 	/* Still blocked → the coordinator's retry reports -EAGAIN (stay parked). */
 	assert_int_equal(lxp_dev_retry(&p), -LXP_EAGAIN);
@@ -645,14 +640,14 @@ static void test_dev_deferred_block(void **state)
 	assert_memory_equal(rb, "ok", 2);
 
 	/* O_NONBLOCK does NOT park — it returns -EAGAIN straight to the program. */
-	p.dev_wait = 0;
+	(void)lxp_wait_complete(&p, LXP_WAIT_DEVICE);
 	long fd2 = dev_open(&p, LXP_O_RDWR | LXP_O_NONBLOCK);
 	assert_true(fd2 >= 3);
 	g_mock_block = 1;
-	assert_int_equal(
-		lxp_syscall(&p, LXP_NR_read, fd2, (long)(uintptr_t)rb, sizeof(rb), 0, 0, 0),
-		-LXP_EAGAIN);
-	assert_int_equal(p.dev_wait, 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, fd2, (long)(uintptr_t)rb, sizeof(rb), 0, 0,
+				     0),
+			 -LXP_EAGAIN);
+	assert_int_equal(p.wait.kind, LXP_WAIT_NONE);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 	lxp_syscall(&p, LXP_NR_close, fd2, 0, 0, 0, 0, 0);
@@ -688,13 +683,13 @@ static void test_dev_getdents(void **state)
 	setup(&p, &arena);
 
 	/* Open /dev as a directory and list it — the mock device appears as DT_CHR. */
-	long dfd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
-				   (long)(uintptr_t) "/dev", LXP_O_RDONLY, 0, 0, 0);
+	long dfd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/dev",
+			       LXP_O_RDONLY, 0, 0, 0);
 	assert_true(dfd >= 3);
 
 	uint8_t buf[256];
-	long n = lxp_syscall(&p, LXP_NR_getdents64, dfd, (long)(uintptr_t)buf, sizeof(buf),
-				 0, 0, 0);
+	long n =
+		lxp_syscall(&p, LXP_NR_getdents64, dfd, (long)(uintptr_t)buf, sizeof(buf), 0, 0, 0);
 	assert_true(n > 0);
 
 	int found = 0;
@@ -718,7 +713,7 @@ static void test_dev_getdents(void **state)
 
 static long dma2d_open(lxp_proc_t *p)
 {
-	return lxp_syscall(p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t) "/dev/dma2d",
+	return lxp_syscall(p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/dev/dma2d",
 			   LXP_O_RDWR, 0, 0, 0);
 }
 
@@ -742,8 +737,9 @@ static void test_dev_dma2d_submit_ok(void **state)
 	d.output_address = 0x1000;
 	d.output_cf = LXP_DMA2D_CF_RGB565;
 	d.reg_to_mem_color = 0xf800; /* red */
-	assert_int_equal(
-		lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, (long)(uintptr_t)&d, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, (long)(uintptr_t)&d,
+				     0, 0, 0),
+			 0);
 	assert_int_equal(g_mock_dma2d_calls, 1);
 	assert_int_equal(g_mock_dma2d_op.mode, LXP_DMA2D_R2M);
 	assert_int_equal(g_mock_dma2d_op.w, 8);
@@ -769,14 +765,14 @@ static void test_dev_dma2d_rejects_bad_descriptor(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, 0, 0, 0, 0),
 			 -LXP_EFAULT);
 
-#define BASE()                                                                 \
-	do {                                                                   \
-		memset(&d, 0, sizeof(d));                                      \
-		d.mode = LXP_DMA2D_R2M;                                        \
-		d.w = 8;                                                       \
-		d.h = 8;                                                       \
-		d.output_address = 0x1000;                                     \
-		d.output_cf = LXP_DMA2D_CF_RGB565;                             \
+#define BASE()                                     \
+	do {                                       \
+		memset(&d, 0, sizeof(d));          \
+		d.mode = LXP_DMA2D_R2M;            \
+		d.w = 8;                           \
+		d.h = 8;                           \
+		d.output_address = 0x1000;         \
+		d.output_cf = LXP_DMA2D_CF_RGB565; \
 	} while (0)
 
 	/* NULL plane address → EFAULT (user_ok IS applied to the plane, not just the desc). */

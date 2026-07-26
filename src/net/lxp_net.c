@@ -14,7 +14,7 @@
  *
  * Blocking is deferred, never inline: the backing ove_socket is kept non-blocking,
  * so every op returns at once; a would-block (LXP_ERR_TIMEOUT) parks the caller
- * (proc->sock_wait) and the run-loop coordinator retries via lxp_sock_retry —
+ * (LXP_WAIT_SOCKET) and the run-loop coordinator retries via lxp_sock_retry —
  * the same park/retry the pipe and device layers use.
  */
 
@@ -46,7 +46,7 @@ struct sock_open {
 	uint16_t oflags;     /* guest fd status flags (O_NONBLOCK gates parking) */
 	uintptr_t rx_src;    /* parked recvfrom: user sockaddr* to fill (0 => recv) */
 	uintptr_t rx_srclen; /* parked recvfrom: user socklen_t* */
-	lxp_socket_t sock; /* host-owned handle; the adapter owns the storage */
+	lxp_socket_t sock;   /* host-owned handle; the adapter owns the storage */
 };
 
 static struct sock_open g_sock[LXP_NSOCK];
@@ -115,8 +115,7 @@ static long net_errno_to_lnx(int e)
 
 /* Copy an lxp_sockaddr_t out to a guest (sockaddr*, socklen_t*) pair, honouring
  * the caller's buffer cap and writing back the untruncated size (Linux semantics). */
-static long copy_sockaddr_out(lxp_proc_t *p, void *uaddr, void *uaddrlen,
-			      const lxp_sockaddr_t *oa)
+static long copy_sockaddr_out(lxp_proc_t *p, void *uaddr, void *uaddrlen, const lxp_sockaddr_t *oa)
 {
 	if (!uaddr || !uaddrlen)
 		return 0;
@@ -231,8 +230,13 @@ long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen
 		if (!(rev & (LXP_SOCK_POLLOUT | LXP_SOCK_POLLERR | LXP_SOCK_POLLHUP))) {
 			if (o->oflags & LXP_O_NONBLOCK)
 				return -LXP_EALREADY;
-			p->sock_wait = LXP_SOCKW_CONNECT;
-			p->sock_oi = oi;
+			lxp_wait_t wait = {
+				.kind = LXP_WAIT_SOCKET,
+				.op = LXP_SOCKW_CONNECT,
+				.data.socket.object = oi,
+			};
+			if (lxp_wait_begin(p, &wait) != 0)
+				return -LXP_EAGAIN;
 			return 0;
 		}
 		int se = g_lxp_net_ops->sock_get_error(o->sock);
@@ -257,8 +261,13 @@ long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen
 		o->connecting = 1;
 		if (o->oflags & LXP_O_NONBLOCK)
 			return -LXP_EINPROGRESS;
-		p->sock_wait = LXP_SOCKW_CONNECT;
-		p->sock_oi = oi;
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_SOCKET,
+			.op = LXP_SOCKW_CONNECT,
+			.data.socket.object = oi,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
 		return 0; /* parked */
 	}
 	return net_errno_to_lnx(r);
@@ -292,8 +301,7 @@ long lxp_sock_listen(int oi, int backlog)
  * Returns the new guest fd, -EAGAIN if none is pending yet (the caller parks or
  * reports would-block), or a negative errno. Runs both from accept(2) and, on a
  * parked accept, from the coordinator's retry — so it owns the whole mint. */
-static long do_accept(lxp_proc_t *p, struct sock_open *lo, void *uaddr, void *uaddrlen,
-		      int flags)
+static long do_accept(lxp_proc_t *p, struct sock_open *lo, void *uaddr, void *uaddrlen, int flags)
 {
 	int ci = -1;
 	for (int i = 0; i < LXP_NSOCK; i++)
@@ -312,7 +320,8 @@ static long do_accept(lxp_proc_t *p, struct sock_open *lo, void *uaddr, void *ua
 		return net_errno_to_lnx(r);
 	co->used = 1;
 	co->refs = 1;
-	g_lxp_net_ops->sock_set_nonblock(co->sock, 1); /* every op returns at once; the coordinator parks */
+	g_lxp_net_ops->sock_set_nonblock(co->sock,
+					 1); /* every op returns at once; the coordinator parks */
 	if (flags & LXP_SOCK_NONBLOCK)
 		co->oflags |= LXP_O_NONBLOCK;
 	if (uaddr) {
@@ -340,17 +349,22 @@ long lxp_sock_accept(lxp_proc_t *p, int oi, void *uaddr, void *uaddrlen, int fla
 	if (r == -LXP_EAGAIN) {
 		if (lo->oflags & LXP_O_NONBLOCK)
 			return -LXP_EAGAIN;
-		p->sock_wait = LXP_SOCKW_ACCEPT; /* park; the retry re-runs do_accept */
-		p->sock_oi = oi;
-		p->sock_buf = (uintptr_t)uaddr;
-		p->sock_len = (size_t)(uintptr_t)uaddrlen;
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_SOCKET,
+			.op = LXP_SOCKW_ACCEPT,
+			.data.socket.object = oi,
+			.data.socket.buffer = (uintptr_t)uaddr,
+			.data.socket.length = (size_t)(uintptr_t)uaddrlen,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
 		return 0; /* parked */
 	}
 	return r; /* new fd, or a negative errno */
 }
 
 long lxp_sock_send(lxp_proc_t *p, int oi, const void *ubuf, size_t len, int flags,
-		       const void *udest, unsigned destlen)
+		   const void *udest, unsigned destlen)
 {
 	struct sock_open *o = open_slot(oi);
 	if (!o)
@@ -382,10 +396,15 @@ long lxp_sock_send(lxp_proc_t *p, int oi, const void *ubuf, size_t len, int flag
 		 * park would need to remember its dest — added when needed). */
 		if (udest || (o->oflags & LXP_O_NONBLOCK) || (flags & LXP_MSG_DONTWAIT))
 			return -LXP_EAGAIN;
-		p->sock_wait = LXP_SOCKW_SEND;
-		p->sock_oi = oi;
-		p->sock_buf = (uintptr_t)ubuf;
-		p->sock_len = len;
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_SOCKET,
+			.op = LXP_SOCKW_SEND,
+			.data.socket.object = oi,
+			.data.socket.buffer = (uintptr_t)ubuf,
+			.data.socket.length = len,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
 		return 0; /* parked */
 	}
 	return net_errno_to_lnx(r);
@@ -434,7 +453,7 @@ long lxp_sock_sendmsg(lxp_proc_t *p, int oi, const lxp_iovec *iov, int iovcnt, i
 }
 
 long lxp_sock_recv(lxp_proc_t *p, int oi, void *ubuf, size_t len, int flags, void *usrc,
-		       void *usrclen)
+		   void *usrclen)
 {
 	struct sock_open *o = open_slot(oi);
 	if (!o)
@@ -460,10 +479,15 @@ long lxp_sock_recv(lxp_proc_t *p, int oi, void *ubuf, size_t len, int flags, voi
 	if (r == LXP_ERR_TIMEOUT) {
 		if ((o->oflags & LXP_O_NONBLOCK) || (flags & LXP_MSG_DONTWAIT))
 			return -LXP_EAGAIN;
-		p->sock_wait = LXP_SOCKW_RECV;
-		p->sock_oi = oi;
-		p->sock_buf = (uintptr_t)ubuf;
-		p->sock_len = len;
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_SOCKET,
+			.op = LXP_SOCKW_RECV,
+			.data.socket.object = oi,
+			.data.socket.buffer = (uintptr_t)ubuf,
+			.data.socket.length = len,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
 		o->rx_src = (uintptr_t)usrc; /* non-zero => recvfrom on the retry */
 		o->rx_srclen = (uintptr_t)usrclen;
 		return 0; /* parked */
@@ -504,8 +528,7 @@ long lxp_sock_getpeername(lxp_proc_t *p, int oi, void *uaddr, void *uaddrlen)
 	return copy_sockaddr_out(p, uaddr, uaddrlen, &oa);
 }
 
-long lxp_sock_getsockopt(lxp_proc_t *p, int oi, int level, int optname, void *uval,
-			     void *ulen)
+long lxp_sock_getsockopt(lxp_proc_t *p, int oi, int level, int optname, void *uval, void *ulen)
 {
 	struct sock_open *o = open_slot(oi);
 	if (!o)
@@ -528,7 +551,7 @@ long lxp_sock_getsockopt(lxp_proc_t *p, int oi, int level, int optname, void *uv
 }
 
 long lxp_sock_setsockopt(lxp_proc_t *p, int oi, int level, int optname, const void *uval,
-			     unsigned len)
+			 unsigned len)
 {
 	struct sock_open *o = open_slot(oi);
 	if (!o)
@@ -549,7 +572,8 @@ unsigned lxp_sock_poll(int oi)
 	if (!o)
 		return 0;
 	unsigned rev = 0, out = 0;
-	if (g_lxp_net_ops->sock_poll(o->sock, LXP_SOCK_POLLIN | LXP_SOCK_POLLOUT, &rev, 0) != LXP_OK)
+	if (g_lxp_net_ops->sock_poll(o->sock, LXP_SOCK_POLLIN | LXP_SOCK_POLLOUT, &rev, 0) !=
+	    LXP_OK)
 		return LXP_POLLIN; /* surface the condition via a read */
 	if (rev & (LXP_SOCK_POLLIN | LXP_SOCK_POLLERR | LXP_SOCK_POLLHUP))
 		out |= LXP_POLLIN;
@@ -579,7 +603,7 @@ void lxp_sock_set_netif(void *netif_handle)
 /* Snapshot the registered interface for the /proc/net/{dev,route} generators (which live
  * in the syscall TU). Any out param may be NULL. Returns 0, or -1 if no interface. */
 int lxp_sock_ifsnapshot(uint8_t ip[4], uint8_t gw[4], uint8_t nm[4], uint8_t mac[6],
-			    unsigned *flags)
+			unsigned *flags)
 {
 	if (!g_lnx_netif)
 		return -1;
@@ -690,8 +714,8 @@ long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg)
 		return 0;
 	}
 	case LXP_SIOCSIFFLAGS:
-		return g_lxp_net_ops->netif_set_up(nif, (ifr->ifr_ifru.ifru_flags & LXP_IFF_UP) ? 1 : 0) ==
-				       LXP_OK
+		return g_lxp_net_ops->netif_set_up(
+			       nif, (ifr->ifr_ifru.ifru_flags & LXP_IFF_UP) ? 1 : 0) == LXP_OK
 			       ? 0
 			       : -LXP_EINVAL;
 	case LXP_SIOCGIFADDR:
@@ -722,8 +746,9 @@ long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg)
 		lxp_sockaddr_t sa = {0};
 		sa.family = LXP_AF_INET;
 		memcpy(sa.addr, &in->sin_addr, 4);
-		int r = (req == LXP_SIOCSIFADDR) ? g_lxp_net_ops->netif_set_addr(nif, &sa, NULL, NULL)
-						     : g_lxp_net_ops->netif_set_addr(nif, NULL, &sa, NULL);
+		int r = (req == LXP_SIOCSIFADDR)
+				? g_lxp_net_ops->netif_set_addr(nif, &sa, NULL, NULL)
+				: g_lxp_net_ops->netif_set_addr(nif, NULL, &sa, NULL);
 		return r == LXP_OK ? 0 : net_errno_to_lnx(r);
 	}
 	case LXP_SIOCGIFHWADDR: {
@@ -750,15 +775,17 @@ long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg)
 
 long lxp_sock_retry(lxp_proc_t *p)
 {
+	if (!p || p->wait.kind != LXP_WAIT_SOCKET)
+		return -LXP_EINVAL;
 	/* A parked poll() waits on a whole fd set, not one open; the syscall TU owns the
 	 * fd table + per-kind readiness probes, so re-scan there. */
-	if (p->sock_wait == LXP_SOCKW_POLL)
+	if (p->wait.op == LXP_SOCKW_POLL)
 		return lxp_poll_retry(p);
 
-	struct sock_open *o = open_slot(p->sock_oi);
+	struct sock_open *o = open_slot(p->wait.data.socket.object);
 	if (!o)
 		return -LXP_EBADF;
-	switch (p->sock_wait) {
+	switch (p->wait.op) {
 	case LXP_SOCKW_CONNECT: {
 		unsigned rev = 0;
 		g_lxp_net_ops->sock_poll(o->sock, LXP_SOCK_POLLOUT, &rev, 0);
@@ -770,7 +797,8 @@ long lxp_sock_retry(lxp_proc_t *p)
 	}
 	case LXP_SOCKW_SEND: {
 		size_t sent = 0;
-		int r = g_lxp_net_ops->sock_send(o->sock, (const void *)p->sock_buf, p->sock_len, &sent);
+		int r = g_lxp_net_ops->sock_send(o->sock, (const void *)p->wait.data.socket.buffer,
+						 p->wait.data.socket.length, &sent);
 		if (r == LXP_OK)
 			return (long)sent;
 		if (r == LXP_ERR_TIMEOUT)
@@ -782,15 +810,18 @@ long lxp_sock_retry(lxp_proc_t *p)
 		lxp_sockaddr_t src;
 		int r;
 		if (o->rx_src)
-			r = g_lxp_net_ops->sock_recvfrom(o->sock, (void *)p->sock_buf, p->sock_len, &got,
-						&src, LXP_WAIT_FOREVER);
+			r = g_lxp_net_ops->sock_recvfrom(o->sock,
+							 (void *)p->wait.data.socket.buffer,
+							 p->wait.data.socket.length, &got, &src,
+							 LXP_WAIT_FOREVER);
 		else
-			r = g_lxp_net_ops->sock_recv(o->sock, (void *)p->sock_buf, p->sock_len, &got,
-					    LXP_WAIT_FOREVER);
+			r = g_lxp_net_ops->sock_recv(o->sock, (void *)p->wait.data.socket.buffer,
+						     p->wait.data.socket.length, &got,
+						     LXP_WAIT_FOREVER);
 		if (r == LXP_OK) {
 			if (o->rx_src)
-				(void)copy_sockaddr_out(p, (void *)o->rx_src,
-							(void *)o->rx_srclen, &src);
+				(void)copy_sockaddr_out(p, (void *)o->rx_src, (void *)o->rx_srclen,
+							&src);
 			return (long)got;
 		}
 		if (r == LXP_ERR_NET_CLOSED)
@@ -801,8 +832,9 @@ long lxp_sock_retry(lxp_proc_t *p)
 	}
 	case LXP_SOCKW_ACCEPT:
 		/* Re-run the mint: a new fd when a client is now pending, -EAGAIN to stay
-		 * parked, or a negative errno. sock_buf/sock_len hold the user addr/len. */
-		return do_accept(p, o, (void *)p->sock_buf, (void *)(uintptr_t)p->sock_len, 0);
+		 * parked, or a negative errno. The wait payload holds the user addr/len. */
+		return do_accept(p, o, (void *)p->wait.data.socket.buffer,
+				 (void *)(uintptr_t)p->wait.data.socket.length, 0);
 	default:
 		return -LXP_EINVAL;
 	}

@@ -21,7 +21,7 @@
  * interrupted code and needs its own r9=GOT. Non-FDPIC (e.g. the posix host test): raw entries, no
  * GOT change. */
 void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
-			    uintptr_t *restorer)
+		     uintptr_t *restorer)
 {
 	uintptr_t h = lxp_sig_handler_get(proc, sig);
 	uintptr_t r = lxp_sig_restorer_get(proc);
@@ -43,8 +43,7 @@ void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t
  * kill(-pgid, SIGCONT) to resume a job, kills the very job (and every proc in range). */
 int sig_default_ignore(int sig)
 {
-	return sig == LXP_SIGCHLD || sig == LXP_SIGCONT || sig == LXP_SIGURG ||
-	       sig == LXP_SIGWINCH;
+	return sig == LXP_SIGCHLD || sig == LXP_SIGCONT || sig == LXP_SIGURG || sig == LXP_SIGWINCH;
 }
 
 /* Is signal `sig` effectively ignored for `proc`? True for SIG_IGN, or SIG_DFL of a
@@ -64,8 +63,7 @@ int sig_swallowed(const lxp_proc_t *proc, int sig)
 /* The job-control stop signals: their default action suspends the process. */
 int sig_is_stop(int sig)
 {
-	return sig == LXP_SIGSTOP || sig == LXP_SIGTSTP || sig == LXP_SIGTTIN ||
-	       sig == LXP_SIGTTOU;
+	return sig == LXP_SIGSTOP || sig == LXP_SIGTSTP || sig == LXP_SIGTTIN || sig == LXP_SIGTTOU;
 }
 
 /* Would delivering `sig` to `proc` actually STOP it (rather than run a handler or be
@@ -135,11 +133,12 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	}
 	uintptr_t h = lxp_sig_handler_get(proc, sig);
 	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
-		f->r[0] = (uint32_t)ret; /* SIG_IGN, or a default-ignore signal (SIGCHLD/SIGCONT/...) */
+		f->r[0] = (uint32_t)
+			ret; /* SIG_IGN, or a default-ignore signal (SIGCHLD/SIGCONT/...) */
 		return;
 	}
 	if (h == LXP_SIG_DFL) {
-		proc->exited = 1;
+		(void)lxp_intent_exit(proc, 0);
 		proc->exit_status = 128 + sig;
 		proc->exit_reason = LXP_EXIT_REASON_SIGNAL;
 		proc->exit_signal = (uint8_t)sig;
@@ -151,7 +150,7 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		/* The bounded host stack must never wrap or overwrite an older context.
 		 * Match guest stack exhaustion: terminate this process with SIGSEGV and
 		 * leave the host/coordinator operational. */
-		proc->exited = 1;
+		(void)lxp_intent_exit(proc, 0);
 		proc->exit_status = 128 + LXP_SIGSEGV;
 		proc->exit_reason = LXP_EXIT_REASON_SIGNAL_DEPTH;
 		proc->exit_signal = LXP_SIGSEGV;
@@ -162,7 +161,8 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	sv->r1 = f->r[1];
 	sv->r2 = f->r[2];
 	sv->r3 = f->r[3];
-	sv->r9 = f->r[9]; /* FDPIC GOT of the interrupted code — clobbered below, restored at sigreturn */
+	sv->r9 =
+		f->r[9]; /* FDPIC GOT of the interrupted code — clobbered below, restored at sigreturn */
 	sv->r12 = f->r[12];
 	sv->lr = f->r[14];
 	sv->pc = f->r[15];
@@ -177,10 +177,10 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	uint32_t got;
 	resolve_handler(proc, sig, &entry, &got, &restorer);
 	if (proc->is_fdpic)
-		f->r[9] = got;			 /* FDPIC: r9 = the handler's own GOT */
-	f->r[15] = entry & ~1u;			 /* pc -> handler entry (Thumb via xPSR.T) */
-	f->r[0] = (uint32_t)sig;		 /* r0 = signo */
-	f->r[14] = restorer | 1u;		 /* lr -> sa_restorer */
+		f->r[9] = got;	  /* FDPIC: r9 = the handler's own GOT */
+	f->r[15] = entry & ~1u;	  /* pc -> handler entry (Thumb via xPSR.T) */
+	f->r[0] = (uint32_t)sig;  /* r0 = signo */
+	f->r[14] = restorer | 1u; /* lr -> sa_restorer */
 	f->xpsr |= (1u << 24);
 }
 
@@ -194,12 +194,14 @@ void sig_restore(struct lxp_frame *f, lxp_proc_t *proc)
 	if (stack->depth == 0)
 		return;
 	struct sig_save_s *sv = &stack->frame[stack->depth - 1u];
-	proc->sig_blocked = sv->saved_mask; /* undo the handler self-block (+ any handler-local mask) */
+	proc->sig_blocked =
+		sv->saved_mask; /* undo the handler self-block (+ any handler-local mask) */
 	f->r[0] = sv->r0;
 	f->r[1] = sv->r1;
 	f->r[2] = sv->r2;
 	f->r[3] = sv->r3;
-	f->r[9] = sv->r9; /* FDPIC GOT: the handler ran with its own r9; restore the interrupted code's */
+	f->r[9] =
+		sv->r9; /* FDPIC GOT: the handler ran with its own r9; restore the interrupted code's */
 	f->r[12] = sv->r12;
 	f->r[14] = sv->lr;
 	f->r[15] = sv->pc & ~1u;

@@ -211,9 +211,9 @@ extern "C" {
 #define LXP_O_CREAT 0x40
 #define LXP_O_TRUNC 0x200
 #define LXP_O_APPEND 0x400
-#define LXP_O_NONBLOCK 0x800 /* a device open that returns -EAGAIN instead of blocking */
+#define LXP_O_NONBLOCK 0x800  /* a device open that returns -EAGAIN instead of blocking */
 #define LXP_O_CLOEXEC 0x80000 /* close-on-exec (also pipe2/dup3/accept4 flag) */
-#define LXP_FD_CLOEXEC 1	  /* fcntl(F_SETFD/F_GETFD) close-on-exec bit */
+#define LXP_FD_CLOEXEC 1      /* fcntl(F_SETFD/F_GETFD) close-on-exec bit */
 /* openat dirfd sentinel for the current working directory. */
 #define LXP_AT_FDCWD (-100)
 /* lseek(2) whence. */
@@ -272,12 +272,12 @@ extern "C" {
 #define LXP_SIGPIPE 13
 #define LXP_SIGALRM 14
 #define LXP_SIGTERM 15
-#define LXP_SIGCHLD 17 /* child stop/exit; default action = IGNORE (never terminates) */
-#define LXP_SIGCONT 18 /* continue a stopped process; default action never terminates */
-#define LXP_SIGSTOP 19 /* stop (job control); can never be caught or blocked */
-#define LXP_SIGTSTP 20 /* stop from the tty (^Z); default action = stop */
-#define LXP_SIGTTIN 21 /* background read from the tty; default action = stop */
-#define LXP_SIGTTOU 22 /* background write to the tty; default action = stop */
+#define LXP_SIGCHLD 17	/* child stop/exit; default action = IGNORE (never terminates) */
+#define LXP_SIGCONT 18	/* continue a stopped process; default action never terminates */
+#define LXP_SIGSTOP 19	/* stop (job control); can never be caught or blocked */
+#define LXP_SIGTSTP 20	/* stop from the tty (^Z); default action = stop */
+#define LXP_SIGTTIN 21	/* background read from the tty; default action = stop */
+#define LXP_SIGTTOU 22	/* background write to the tty; default action = stop */
 #define LXP_SIGURG 23	/* urgent socket data; default action = IGNORE */
 #define LXP_SIGWINCH 28 /* terminal resized; default action = IGNORE */
 
@@ -317,7 +317,7 @@ extern "C" {
 
 /* wait4/waitpid options. */
 #define LXP_WNOHANG 1
-#define LXP_WUNTRACED 2   /* also report children that stopped (job control) */
+#define LXP_WUNTRACED 2 /* also report children that stopped (job control) */
 #define LXP_WCONTINUED 8
 
 /* Ready-child queue entry kind (child_kind[]): an exited zombie vs a stop notification. */
@@ -326,8 +326,10 @@ extern "C" {
 
 /* How a process entered the `stopped` state, for the SIGCONT resume path. */
 #define LXP_STOP_NONE 0
-#define LXP_STOP_PARKED 1   /* was parked with an X_wait flag; resume = clear stopped, retry resumes */
-#define LXP_STOP_BOUNDARY 2 /* took the stop at a syscall boundary; resume = spawn_resume(g_ctx, stop_r0) */
+#define LXP_STOP_PARKED \
+	1 /* stopped during a typed wait; resume = clear stopped, retry resumes */
+#define LXP_STOP_BOUNDARY \
+	2 /* took the stop at a syscall boundary; resume = spawn_resume(g_ctx, stop_r0) */
 /* statx: AT_EMPTY_PATH means "stat the dirfd itself" (fstat); the basic-stats
  * result mask reported back in stx_mask. */
 #define LXP_AT_EMPTY_PATH 0x1000
@@ -447,11 +449,11 @@ struct lxp_file_ops; /* per-fd-kind operation vtable; full definition in src/lxp
 
 /** Refcounted open-file description shared by dup() and inherited descriptors. */
 typedef struct lxp_ofd {
-	uint16_t refs; /**< Number of descriptor-table entries referring to this object. */
-	uint8_t kind;  /**< 0 = free, 1 = console, 2 = rootfs file, 3 = pipe, 4 = tmpfs,
+	uint16_t refs;	  /**< Number of descriptor-table entries referring to this object. */
+	uint8_t kind;	  /**< 0 = free, 1 = console, 2 = rootfs file, 3 = pipe, 4 = tmpfs,
 			*   5 = /proc, 6 = device (values 4-6 are private to the syscall +
 			*   device layers; only FD_DEV is exported below). */
-	uint8_t rw;    /**< pipe end: 0 = read, 1 = write (kind == pipe). */
+	uint8_t rw;	  /**< pipe end: 0 = read, 1 = write (kind == pipe). */
 	uint8_t nonblock; /**< O_NONBLOCK: a pipe read/write returns -EAGAIN instead of parking
 			   *   (dropbear's SIGCHLD self-pipe is drained with a non-blocking read
 			   *   loop; without this the final empty read parks forever). */
@@ -465,19 +467,19 @@ typedef struct lxp_ofd {
 
 /** One descriptor-table entry: descriptor-local flags plus an open-file description. */
 typedef struct lxp_fd {
-	uint16_t ofd; /**< Open-file-description pool index plus one; zero means free. */
+	uint16_t ofd;	 /**< Open-file-description pool index plus one; zero means free. */
 	uint8_t cloexec; /**< FD_CLOEXEC / O_CLOEXEC (descriptor-local). */
 	uint8_t _pad;
 } lxp_fd_t;
 
 /* fd kinds (lxp_fd_t.kind). Shared across the syscall dispatcher + the subsystem TUs
  * (pipe/tmpfs/proc/dev/socket/pty/netfs) that own the backing objects. */
-#define LXP_FD_FREE 0    /**< unused slot */
+#define LXP_FD_FREE 0	 /**< unused slot */
 #define LXP_FD_CONSOLE 1 /**< stdio console (host write_fn/read_fn) */
-#define LXP_FD_FILE 2    /**< read-only rootfs file; @c file_idx = rootfs index, @c offset = cursor */
-#define LXP_FD_PIPE 3    /**< pipe end; @c file_idx = pipe-pool index, @c rw = 1 write end */
-#define LXP_FD_TMPFS 4   /**< writable tmpfs node; @c file_idx = wnode index */
-#define LXP_FD_PROC 5    /**< synthetic /proc file; @c file_idx = proc-fd backing index */
+#define LXP_FD_FILE 2  /**< read-only rootfs file; @c file_idx = rootfs index, @c offset = cursor */
+#define LXP_FD_PIPE 3  /**< pipe end; @c file_idx = pipe-pool index, @c rw = 1 write end */
+#define LXP_FD_TMPFS 4 /**< writable tmpfs node; @c file_idx = wnode index */
+#define LXP_FD_PROC 5  /**< synthetic /proc file; @c file_idx = proc-fd backing index */
 /** Device fd kind (shared by the syscall + device layers). @c file_idx = open-pool index. */
 #define LXP_FD_DEV 6
 /** Socket fd kind (shared by the syscall + socket layers). @c file_idx = open-pool index. */
@@ -615,38 +617,117 @@ _Static_assert(LXP_EXEC_MAXARGS >= 4, "argv vector too short for a #! rewrite pl
  * slot and must remain valid for that slot's lifetime.
  */
 typedef struct lxp_exec_capture {
-	int argc; /**< Captured argument count. */
+	int argc;			 /**< Captured argument count. */
 	uint16_t argv[LXP_EXEC_MAXARGS]; /**< Offsets into @ref argv_buf. */
-	char argv_buf[LXP_EXEC_ARGBUF];  /**< Captured argument strings. */
-	int envc; /**< Captured environment count. */
-	uint16_t env[LXP_EXEC_MAXENVS]; /**< Offsets into @ref env_buf. */
-	char env_buf[LXP_EXEC_ENVBUF];  /**< Captured environment strings. */
+	char argv_buf[LXP_EXEC_ARGBUF];	 /**< Captured argument strings. */
+	int envc;			 /**< Captured environment count. */
+	uint16_t env[LXP_EXEC_MAXENVS];	 /**< Offsets into @ref env_buf. */
+	char env_buf[LXP_EXEC_ENVBUF];	 /**< Captured environment strings. */
 } lxp_exec_capture_t;
+
+/** One coordinator action requested by a guest task. The discriminant makes
+ * fork/exec/exit/deferred-syscall publication structurally exclusive. */
+typedef enum lxp_intent_kind {
+	LXP_INTENT_NONE = 0,
+	LXP_INTENT_DEFERRED_SYSCALL,
+	LXP_INTENT_FORK,
+	LXP_INTENT_EXEC,
+	LXP_INTENT_EXIT,
+	LXP_INTENT_COUNT,
+} lxp_intent_kind_t;
+
+typedef struct lxp_intent {
+	lxp_intent_kind_t kind;
+	union {
+		struct {
+			uint32_t flags;
+			uintptr_t child_stack;
+		} fork;
+		struct {
+			uint8_t group;
+		} exit;
+	} data;
+} lxp_intent_t;
+
+/** Why a guest task is blocked. Exactly one tagged payload is live. */
+typedef enum lxp_wait_kind {
+	LXP_WAIT_NONE = 0,
+	LXP_WAIT_TIMER,
+	LXP_WAIT_CHILD,
+	LXP_WAIT_FUTEX,
+	LXP_WAIT_PIPE,
+	LXP_WAIT_CONSOLE,
+	LXP_WAIT_DEVICE,
+	LXP_WAIT_SOCKET,
+	LXP_WAIT_NETFS,
+	LXP_WAIT_PTY,
+	LXP_WAIT_SIGSUSPEND,
+	LXP_WAIT_COUNT,
+} lxp_wait_kind_t;
+
+typedef struct lxp_wait {
+	lxp_wait_kind_t kind;
+	uint8_t op;    /**< Subsystem-specific LXP_*W_* operation. */
+	uint8_t flags; /**< Wait-kind-specific flags (socket select currently uses bit 0). */
+	uint16_t _pad;
+	union {
+		struct {
+			uint64_t deadline_us;
+		} timer;
+		struct {
+			int pid;
+			int options;
+			uintptr_t status;
+		} child;
+		struct {
+			uintptr_t uaddr;
+			uint64_t deadline_us;
+			uint8_t woken;
+		} futex;
+		struct {
+			int object;
+			int request;
+			uintptr_t buffer;
+			size_t length;
+			unsigned long command;
+			uint64_t deadline_us;
+		} io;
+		struct {
+			int object;
+			int nfds;
+			uintptr_t buffer;
+			size_t length;
+			uint64_t deadline_us;
+			uintptr_t readfds;
+			uintptr_t writefds;
+			uintptr_t exceptfds;
+		} socket;
+	} data;
+} lxp_wait_t;
 
 /**
  * @brief A Linux task context — the per-slot state syscalls act on.
  *
  * NOMMU model: a bounded program break + anonymous mmap carved from an
  * @c ove_arena, a small fd table over standard streams (caller callbacks) and a
- * read-only in-memory rootfs, and an exit latch. Process-wide state is held by
- * the refcounted mm, files, fs-context, sighand and thread-group objects.
+ * read-only in-memory rootfs, and typed coordinator state. Process-wide state
+ * is held by the refcounted mm, files, fs-context, sighand and thread-group
+ * objects.
  */
 typedef struct lxp_proc {
 	lxp_mm_t *mm;			/**< Refcounted address space, arena and mappings. */
-	lxp_write_fn write_fn;	/**< fd 1/2 sink; NULL → @c -LXP_EBADF. */
-	lxp_read_fn read_fn;	/**< fd 0 source; NULL → EOF. */
+	lxp_write_fn write_fn;		/**< fd 1/2 sink; NULL → @c -LXP_EBADF. */
+	lxp_read_fn read_fn;		/**< fd 0 source; NULL → EOF. */
 	int (*console_poll)(void *ctx); /**< Optional non-blocking "key available?" for poll(2). */
 	void *io_ctx;			/**< Opaque, passed to @c write_fn / @c read_fn. */
-	const lxp_file_t *fs;	/**< Read-only rootfs table (NULL → no files). */
+	const lxp_file_t *fs;		/**< Read-only rootfs table (NULL → no files). */
 	int fs_count;			/**< Number of entries in @c fs. */
-	lxp_files_t *files;	   /**< Refcounted descriptor table; 0/1/2 are std streams. */
-	int pid;			   /**< Linux task id (TID; 1 for the initial task). */
-	lxp_thread_group_t *group; /**< Refcounted process identity, children and job control. */
-	char comm[16];			   /**< Program name (argv[0] basename) for ps/top. */
+	lxp_files_t *files;		/**< Refcounted descriptor table; 0/1/2 are std streams. */
+	int pid;			/**< Linux task id (TID; 1 for the initial task). */
+	lxp_thread_group_t *group;    /**< Refcounted process identity, children and job control. */
+	char comm[16];		      /**< Program name (argv[0] basename) for ps/top. */
 	lxp_fs_context_t *fs_context; /**< Refcounted cwd + umask context. */
-	int exited;			   /**< Set once @c exit / @c exit_group is called. */
-	int exit_group;		   /**< The pending exit was exit_group(), so all peer tasks exit. */
-	int exit_status;		   /**< Low 8 bits of the exit code. */
+	int exit_status;	      /**< Low 8 bits of the exit code. */
 	uint8_t exit_reason; /**< @c LXP_EXIT_REASON_* host-side termination attribution. */
 	uint8_t exit_signal; /**< Signal number for SIGNAL / SIGNAL_DEPTH / MEMORY_FAULT. */
 	uint16_t _exit_pad;
@@ -656,10 +737,10 @@ typedef struct lxp_proc {
 	 * scheduled until it takes SIGCONT. stop_kind picks the resume path (see the
 	 * LXP_STOP_* constants); stop_r0 is the syscall result to hand back on a
 	 * boundary-stop resume. */
-	int stopped;		 /**< Non-zero while job-control-stopped (SIGSTOP/SIGTSTP). */
-	uint8_t stop_kind;	 /**< LXP_STOP_PARKED / LXP_STOP_BOUNDARY. */
-	uint8_t stop_sig;	 /**< The stop signal, for the WIFSTOPPED status word. */
-	long stop_r0;		 /**< Boundary-stop: syscall result to resume with on SIGCONT. */
+	int stopped;	   /**< Non-zero while job-control-stopped (SIGSTOP/SIGTSTP). */
+	uint8_t stop_kind; /**< LXP_STOP_PARKED / LXP_STOP_BOUNDARY. */
+	uint8_t stop_sig;  /**< The stop signal, for the WIFSTOPPED status word. */
+	long stop_r0;	   /**< Boundary-stop: syscall result to resume with on SIGCONT. */
 	/* Signal disposition: per-signal handler address (or SIG_DFL/SIG_IGN). The
 	 * sa_restorer the engine returns to after a handler is ONE value per proc, not one
 	 * per signal — uClibc-ng installs the same __restore_rt trampoline for every signal
@@ -678,112 +759,46 @@ typedef struct lxp_proc {
 	 * deadlocked: manager + main + a sigwait thread all stuck). */
 	uint64_t sigsuspend_saved_mask;
 	int sigsuspend_active; /**< Wait mask installed; next caught signal frame consumes saved_mask. */
-	/* execve request: the engine seam relaunches the thread on this rootfs
-	 * program with the captured argument vector (image replacement). The large
-	 * transient payload is port-owned cold storage so it need not be replicated
-	 * in scarce internal SRAM with the hot process table. */
-	int exec_pending;	   /**< Set when execve() should relaunch. */
-	int exec_file_idx;	   /**< Rootfs index of the program to run. */
+	/* The coordinator consumes exactly one typed action and one typed blocking
+	 * reason. Their tagged payloads replace the formerly independent pending
+	 * flags, which could describe impossible combinations after an error path. */
+	lxp_intent_t intent;
+	lxp_wait_t wait;
+	/* execve request: the target image identity and capture outlive the intent
+	 * while the coordinator relaunches the slot. */
+	int exec_file_idx;		  /**< Rootfs index of the program to run. */
 	lxp_exec_capture_t *exec_capture; /**< Port-owned capture, or NULL if exec is unavailable. */
-	/* nanosleep request: the dispatch parks the program and the run loop delays
-	 * to the deadline (so RTOS idle/kernel threads run + time advances). */
-	int sleep_pending;	 /**< Set when nanosleep() should park + delay. */
-	uint64_t sleep_until_us; /**< Absolute wake deadline (ove_time_get_us base). */
 	/* Concurrent process model (Phase D): the run loop is a coordinator over the
 	 * live process SET, not a stack. These were the run-loop locals top/R[]/rowner[]/
 	 * vctx[]; the per-slot resume contexts live in lxp_run.c. */
-	int alive;	  /**< This slot holds a live process. */
+	int alive;	       /**< This slot holds a live process. */
 	int vfork_parent_slot; /**< Slot of a parent suspended awaiting this child's exec/exit, or -1. */
 	/* vfork data isolation (NOMMU has no copy-on-write): a vfork child SHARES the parent's region,
 	 * so its pre-exec writes (e.g. a libc signal-disposition reset) would corrupt the suspended
 	 * parent. The coordinator snapshots the parent's writable data into a spare region at EV_FORK
 	 * and restores it before the parent resumes (EV_EXEC/EV_EXIT). See vfork_snapshot/vfork_restore. */
-	int snap_region;    /**< Scratch region index holding the parent's data snapshot, or -1 (none). */
+	int snap_region; /**< Scratch region index holding the parent's data snapshot, or -1 (none). */
 	uintptr_t stack_lo; /**< Boundary between this proc's in-region writable data and its stack. */
-	int fork_pending; /**< This proc issued vfork/fork/clone; coordinator spawns a child. */
-	int is_fdpic;	  /**< Program is FDPIC: signal handlers/restorers are funcdescs {entry,GOT}. */
-	uint32_t clone_flags;	     /**< Pending clone resource-sharing flags. */
-	uintptr_t clone_child_stack; /**< clone(2) child_stack arg: the new thread runs on this. */
-	int sigsuspend_pending;	     /**< Parked in rt_sigsuspend; woken by a delivered signal (the
-				      *   LinuxThreads restart) — the coordinator runs the handler. */
-	int sleeping;	  /**< Parked for nanosleep until sleep_until_us. */
-	int wait_pending; /**< Blocked in wait4 (parked) awaiting a child exit. */
-	int wait_pid;	  /**< wait4 pid arg (-1 = any child). */
-	int wait_nohang;  /**< WNOHANG was set. */
-	int wait_options; /**< wait4 options (WUNTRACED etc.), so a parked waiter can accept a stop. */
-	uintptr_t wait_status_p; /**< User int* to fill with the wait status on wake. */
-	/* futex(2) uaddr-keyed wait/wake for co-running CLONE_VM threads. A FUTEX_WAIT whose
-	 * word still holds the expected value parks (only when a co-runner shares the region —
-	 * else no one could wake it, so it returns -EAGAIN); a peer's FUTEX_WAKE marks matching
-	 * waiters and the coordinator resumes them with 0. Parked/resume-eligible is told apart
-	 * by g_lxp_used[slot], as for sock_wait/pipe_wait — no separate "pending" flag needed. */
-	uint8_t futex_wait;    /**< Parked in FUTEX_WAIT on @c futex_uaddr. */
-	uint8_t futex_woken;   /**< A FUTEX_WAKE marked this waiter for resume. */
-	uintptr_t futex_uaddr; /**< The futex word this thread is queued on. */
-	uint64_t futex_deadline_us; /**< FUTEX_WAIT timeout deadline (0 = wait forever). */
-	/* Blocking pipe I/O (Phase D2): a read on an empty pipe with a writer still open,
-	 * or a write on a full pipe with a reader still open, parks the proc; the
-	 * coordinator retries each pass and resumes it when the peer drains/fills. */
-	int pipe_wait;	    /**< 0 = none, 1 = blocked reading, 2 = blocked writing. */
-	int pipe_idx;	    /**< g_pipes[] index being waited on. */
-	uintptr_t pipe_buf; /**< User buffer for the parked read/write. */
-	size_t pipe_len;    /**< Requested length for the parked read/write. */
-	int console_wait;      /**< 1 = blocked reading the console; the coordinator polls it. */
-	uintptr_t console_buf; /**< User buffer for the parked console read. */
-	size_t console_len;    /**< Requested length for the parked console read. */
+	int is_fdpic; /**< Program is FDPIC: signal handlers/restorers are funcdescs {entry,GOT}. */
 	/* Cross-process signals (Phase D3): kill(pid,sig) from another proc, or a coordinator-
 	 * raised SIGCHLD/SIGALRM, latches here as a bitmask (bit sig-1); delivered lowest-first at
 	 * this proc's next syscall boundary (if running) or by the coordinator (if parked). A set
 	 * rather than a single slot so a signal blocked by sig_blocked can stay pending without a
 	 * later signal overwriting it. 0 = none. */
 	uint64_t pending_sigs;
-	/* Blocking device I/O (P0 device layer): a read/write/ioctl on a /dev node that
-	 * would block parks the proc; the coordinator retries via lxp_dev_retry (the
-	 * same park/retry as pipe_wait) and resumes it on completion. */
-	uint8_t dev_wait;	  /**< 0 = none, else a DEVW_* op the coordinator retries. */
-	int dev_oi;		  /**< Open-pool index being waited on. */
-	uintptr_t dev_buf;	  /**< User buffer (read/write) or ioctl arg. */
-	size_t dev_len;		  /**< Requested length (read/write). */
-	unsigned long dev_cmd;	  /**< ioctl command. */
-	uint64_t dev_deadline_us; /**< 0 = infinite (poll timeout / read VTIME). */
-	/* Device mmap ranges (P3): a successful /dev mmap records its [lo,hi) here so
-	 * user_ok accepts the mapped framebuffer (two mappings max). */
-	/* Blocking socket I/O (P0 socket layer): a connect/send/recv on a socket that
-	 * would block parks the proc; the coordinator retries via lxp_sock_retry
-	 * (the same park/retry as dev_wait) and resumes it on completion. */
-	uint8_t sock_wait;  /**< 0 = none, else a SOCKW_* op the coordinator retries. */
-	int sock_oi;	    /**< Socket open-pool index being waited on. */
-	uintptr_t sock_buf; /**< User buffer (send/recv); the user pollfd array for SOCKW_POLL. */
-	size_t sock_len;    /**< Requested length (send/recv); nfds for SOCKW_POLL. */
-	uint64_t sock_deadline_us; /**< SOCKW_POLL absolute timeout (UINT64_MAX = infinite). */
-	/* pselect6(2): a parked select reuses the SOCKW_POLL machinery but re-derives the
-	 * poll set from the caller's fd_sets each retry (they are untouched until it
-	 * completes, then written in place). Non-zero sel_active flags this to the retry. */
-	uint8_t sel_active;   /**< 1 = the parked poll originated from pselect6. */
-	int sel_nfds;	      /**< pselect nfds (highest fd + 1). */
-	uintptr_t sel_rfds;   /**< user readfds fd_set* (0 = NULL). */
-	uintptr_t sel_wfds;   /**< user writefds fd_set* (0 = NULL). */
-	uintptr_t sel_efds;   /**< user exceptfds fd_set* (0 = NULL). */
-	/* Blocking pty I/O (pseudo-terminal layer): a read on an empty ring or a write on a
-	 * full ring parks the proc; the coordinator retries via lxp_pty_retry and resumes
-	 * it when the peer end drains/fills (same park/retry as pipe_wait). */
-	uint8_t pty_wait;   /**< 0 = none, else a PTYW_* op the coordinator retries. */
-	int pty_idx;	    /**< g_ptys[] index being waited on. */
-	uintptr_t pty_buf;  /**< User buffer for the parked read/write. */
-	size_t pty_len;	    /**< Requested length for the parked read/write. */
 	uint64_t alarm_deadline_us; /**< setitimer(ITIMER_REAL)/alarm() fire time; 0 = disarmed. */
 	uint64_t alarm_interval_us; /**< Repeating interval (0 = one-shot); re-arms on fire. */
-		/* Blocking remote-fs I/O (9P netfs layer, /mnt/pi): an open/read/getdents/stat that
-		 * needs a Pi round-trip parks the proc; the coordinator pumps the 9P transport each
-		 * pass via lxp_netfs_retry and resumes it on completion (same park/retry as
-		 * dev_wait/sock_wait). The heavy request state lives in the netfs request pool. */
-		uint8_t netfs_wait; /**< 0 = none, else a NETFSW_* op the coordinator retries. */
-		int netfs_oi;	    /**< netfs open-pool index being waited on (-1 for a path-only op). */
-		int netfs_req;	    /**< netfs request-pool index driving this parked op. */
-		uintptr_t netfs_buf; /**< User buffer (read) / stat-out / getdents buffer. */
-		size_t netfs_len;    /**< Requested length / buffer capacity. */
-		uint64_t netfs_deadline_us; /**< Absolute-µs per-request timeout (UINT64_MAX = infinite). */
 } lxp_proc_t;
+
+/** Publish one action/wait. A second live record fails with @c -LXP_EAGAIN. */
+int lxp_intent_begin(lxp_proc_t *proc, const lxp_intent_t *intent);
+int lxp_intent_complete(lxp_proc_t *proc, lxp_intent_kind_t expected);
+int lxp_intent_exit(lxp_proc_t *proc, int group);
+int lxp_wait_begin(lxp_proc_t *proc, const lxp_wait_t *wait);
+int lxp_wait_complete(lxp_proc_t *proc, lxp_wait_kind_t expected);
+int lxp_wait_interrupt(lxp_proc_t *proc, lxp_wait_kind_t expected);
+int lxp_wait_timeout(lxp_proc_t *proc, lxp_wait_kind_t expected);
+int lxp_wait_cancel(lxp_proc_t *proc);
 
 /** Bit for signal @p sig (1..64) in a @c sig_blocked mask; 0 for out-of-range. */
 static inline uint64_t lxp_sig_bit(int sig)
@@ -804,9 +819,8 @@ static inline int lxp_sig_blocked(const lxp_proc_t *proc, int sig)
  * default dispositions. */
 static inline uintptr_t lxp_sig_handler_get(const lxp_proc_t *proc, int sig)
 {
-	return (proc && proc->sighand && sig >= 0 && sig < LXP_NSIG)
-		       ? proc->sighand->handler[sig]
-		       : LXP_SIG_DFL;
+	return (proc && proc->sighand && sig >= 0 && sig < LXP_NSIG) ? proc->sighand->handler[sig]
+								     : LXP_SIG_DFL;
 }
 
 static inline uintptr_t lxp_sig_restorer_get(const lxp_proc_t *proc)
@@ -827,16 +841,14 @@ int lxp_fd_direction(const lxp_proc_t *proc, int fd);
 /** Take references for a descriptor table being copied, or fail without changes. */
 int lxp_fd_fork_inherit(lxp_proc_t *child);
 /** Acquire fork/clone resource ownership for an otherwise unowned child. */
-int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent,
-			    uint32_t clone_flags);
+int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags);
 /** Acquire a shared or copied address-space object for an unowned child. */
-int lxp_proc_mm_fork(lxp_proc_t *child, const lxp_proc_t *parent,
-		     uint32_t clone_flags);
+int lxp_proc_mm_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags);
 /** Drop only the address-space object reference (the coordinator owns region refs). */
 void lxp_proc_mm_put(lxp_proc_t *proc);
 /** Acquire a shared thread group for CLONE_THREAD, or a fresh child process group. */
-int lxp_proc_group_fork(lxp_proc_t *child, const lxp_proc_t *parent,
-			uint32_t clone_flags, int child_pid);
+int lxp_proc_group_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags,
+			int child_pid);
 /** Drop one task's thread-group reference. */
 void lxp_proc_group_put(lxp_proc_t *proc);
 /** Drop one task's files/fs/sighand ownership, closing descriptors at the last table user. */
@@ -848,17 +860,15 @@ void lxp_proc_resources_put(lxp_proc_t *proc);
  * copied; mm/files/fs/sighand follow @p clone_flags; a fresh process group is
  * derived from @p parent.
  */
-int lxp_proc_init_process_child(lxp_proc_t *child,
-				const lxp_proc_t *parent,
-				uint32_t clone_flags, int child_pid);
+int lxp_proc_init_process_child(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags,
+				int child_pid);
 /**
  * Construct an unpublished CLONE_THREAD child. CLONE_VM and CLONE_SIGHAND are
  * mandatory; task-local waits, pending work, timers, signals and exit state
  * start empty.
  */
-int lxp_proc_init_thread_child(lxp_proc_t *child,
-			       const lxp_proc_t *parent,
-			       uint32_t clone_flags, int child_tid);
+int lxp_proc_init_thread_child(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags,
+			       int child_tid);
 /**
  * Release every object acquired by a child constructor and restore an empty,
  * unpublished record. Region reservations remain coordinator-owned.
@@ -899,7 +909,7 @@ void lxp_proc_set_rootfs(lxp_proc_t *proc, const lxp_file_t *files, int count);
  * @note Requires @c LXP_ENABLE_LINUX.
  */
 int lxp_cpio_to_rootfs(const uint8_t *cpio, size_t len, lxp_file_t *out, int max_entries,
-			   char *namebuf, size_t namebuf_len);
+		       char *namebuf, size_t namebuf_len);
 
 /* ---- OS-service hooks routed through the engine ops ------------------------
  * The personality core calls these module-internal wrappers instead of the
@@ -915,7 +925,6 @@ void lxp_cache_invalidate(const void *base, size_t len);
 struct lxp_thread_info;
 int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actual_count);
 
-
 /**
  * @brief Resolve an absolute path through a rootfs (following symlinks) to a file's bytes.
  *
@@ -923,8 +932,8 @@ int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actua
  * exists. Follows up to 8 symlink hops (each normalized against the link's directory).
  * @return 0 with @p data / @p len set, or a negative errno (@c -ENOENT if unresolved).
  */
-long lxp_rootfs_resolve(const lxp_file_t *fs, int count, const char *abspath,
-			    const uint8_t **data, size_t *len);
+long lxp_rootfs_resolve(const lxp_file_t *fs, int count, const char *abspath, const uint8_t **data,
+			size_t *len);
 
 /**
  * @brief Initialise a process context with an arena-backed program break.
@@ -985,8 +994,8 @@ void lxp_proc_bind_exec_capture(lxp_proc_t *proc, lxp_exec_capture_t *capture);
  *       provider. Process creation deliberately fails closed without one.
  */
 void *lxp_setup_stack(void *stack, size_t stack_size, int argc, const char *const argv[],
-			  const char *const envp[], int fdpic, uintptr_t phdr, int phnum,
-			  uintptr_t entry, uintptr_t at_base);
+		      const char *const envp[], int fdpic, uintptr_t phdr, int phnum,
+		      uintptr_t entry, uintptr_t at_base);
 
 /**
  * @brief Dispatch one Linux syscall against @p proc.
@@ -1000,8 +1009,7 @@ void *lxp_setup_stack(void *stack, size_t stack_size, int argc, const char *cons
  *         @c -LXP_ENOSYS.
  * @note Requires @c LXP_ENABLE_LINUX.
  */
-long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, long a4,
-		     long a5);
+long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, long a4, long a5);
 
 #ifdef __cplusplus
 }

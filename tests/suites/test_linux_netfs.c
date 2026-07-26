@@ -88,7 +88,7 @@ static void build_mock_fdpic(void)
 	g_prog[1] = 'E';
 	g_prog[2] = 'L';
 	g_prog[3] = 'F';
-	g_prog[4] = 1;  /* ELFCLASS32 */
+	g_prog[4] = 1;	/* ELFCLASS32 */
 	g_prog[7] = 65; /* ELFOSABI_ARM_FDPIC */
 	size_t off = 16;
 	w16(g_prog, &off, 3);  /* ET_DYN */
@@ -106,7 +106,7 @@ static void build_mock_fdpic(void)
 	w32(g_prog, &off, 16); /* memsz */
 	w32(g_prog, &off, 1);  /* PF_X */
 	off = 84;
-	w32(g_prog, &off, 1);   /* PT_LOAD data */
+	w32(g_prog, &off, 1);	/* PT_LOAD data */
 	w32(g_prog, &off, 116); /* file offset */
 	w32(g_prog, &off, 0x1000);
 	off = 84 + 16;
@@ -116,12 +116,18 @@ static void build_mock_fdpic(void)
 }
 
 static const struct mnode g_tree[] = {
-	{"", 1, NULL, 0, -1},					 /* 0: root */
+	{"", 1, NULL, 0, -1},						   /* 0: root */
 	{"hello.txt", 0, "hello world\n", sizeof("hello world\n") - 1, 0}, /* 1 */
-	{"sub", 1, NULL, 0, 0},					 /* 2 */
-	{"a.txt", 0, "aaa", sizeof("aaa") - 1, 2},			 /* 3 */
-	{"prog", 0, g_prog, sizeof(g_prog), 0},				 /* 4 */
-	{"badprog", 0, "\x7f" "ELFbad", sizeof("\x7f" "ELFbad") - 1, 0}, /* 5 */
+	{"sub", 1, NULL, 0, 0},						   /* 2 */
+	{"a.txt", 0, "aaa", sizeof("aaa") - 1, 2},			   /* 3 */
+	{"prog", 0, g_prog, sizeof(g_prog), 0},				   /* 4 */
+	{"badprog", 0,
+	 "\x7f"
+	 "ELFbad",
+	 sizeof("\x7f"
+		"ELFbad") -
+		 1,
+	 0}, /* 5 */
 };
 #define NTREE ((int)(sizeof(g_tree) / sizeof(g_tree[0])))
 
@@ -184,7 +190,8 @@ static void *mock9p(void *arg)
 	if (c < 0)
 		return NULL;
 	int fidnode[512];
-	unsigned char fid_odir[512]; /* fid was Tlopen'd with O_DIRECT (0x10000) — readdir must fail */
+	unsigned char
+		fid_odir[512]; /* fid was Tlopen'd with O_DIRECT (0x10000) — readdir must fail */
 	for (int i = 0; i < 512; i++) {
 		fidnode[i] = -1;
 		fid_odir[i] = 0;
@@ -262,36 +269,40 @@ static void *mock9p(void *arg)
 				rlerror(c, tag, 9);
 				continue;
 			}
-			uint32_t mode = g_tree[node].is_dir ? (0040000u | 0755u) : (0100000u | 0644u);
+			uint32_t mode = g_tree[node].is_dir ? (0040000u | 0755u)
+							    : (0100000u | 0644u);
 			uint64_t sz = g_tree[node].size;
 			w32(out, &oo, 0);
 			out[oo++] = P9_TLGETATTR + 1;
 			w16(out, &oo, tag);
-			w64(out, &oo, 0x7ff);		      /* valid */
+			w64(out, &oo, 0x7ff); /* valid */
 			wqid(out, &oo, g_tree[node].is_dir, (uint64_t)(node + 1));
 			w32(out, &oo, mode);
-			w32(out, &oo, 0);		      /* uid */
-			w32(out, &oo, 0);		      /* gid */
-			w64(out, &oo, 1);		      /* nlink */
-			w64(out, &oo, 0);		      /* rdev */
-			w64(out, &oo, sz);		      /* size */
-			w64(out, &oo, 512);		      /* blksize */
-			w64(out, &oo, (sz + 511) / 512);      /* blocks */
-			w64(out, &oo, 0);		      /* atime_sec */
-			w64(out, &oo, 0);		      /* atime_nsec */
-			w64(out, &oo, 0x5000);		      /* mtime_sec (a recognizable value) */
-			w64(out, &oo, 0);		      /* mtime_nsec */
-			w64(out, &oo, 0);		      /* ctime_sec */
-			w64(out, &oo, 0);		      /* ctime_nsec */
-			w64(out, &oo, 0);		      /* btime_sec */
-			w64(out, &oo, 0);		      /* btime_nsec */
-			w64(out, &oo, 0);		      /* gen */
-			w64(out, &oo, 0);		      /* data_version */
+			w32(out, &oo, 0);		 /* uid */
+			w32(out, &oo, 0);		 /* gid */
+			w64(out, &oo, 1);		 /* nlink */
+			w64(out, &oo, 0);		 /* rdev */
+			w64(out, &oo, sz);		 /* size */
+			w64(out, &oo, 512);		 /* blksize */
+			w64(out, &oo, (sz + 511) / 512); /* blocks */
+			w64(out, &oo, 0);		 /* atime_sec */
+			w64(out, &oo, 0);		 /* atime_nsec */
+			w64(out, &oo, 0x5000);		 /* mtime_sec (a recognizable value) */
+			w64(out, &oo, 0);		 /* mtime_nsec */
+			w64(out, &oo, 0);		 /* ctime_sec */
+			w64(out, &oo, 0);		 /* ctime_nsec */
+			w64(out, &oo, 0);		 /* btime_sec */
+			w64(out, &oo, 0);		 /* btime_nsec */
+			w64(out, &oo, 0);		 /* gen */
+			w64(out, &oo, 0);		 /* data_version */
 			reply(c, out, oo);
 		} else if (type == P9_TLOPEN) {
 			uint32_t fid = r32(in, &io);
 			uint32_t flags = r32(in, &io);
-			fid_odir[fid & 511] = (flags & 0x10000u) ? 1 : 0; /* O_DIRECT on ARM (mis-sent as O_DIRECTORY) */
+			fid_odir[fid & 511] =
+				(flags & 0x10000u)
+					? 1
+					: 0; /* O_DIRECT on ARM (mis-sent as O_DIRECTORY) */
 			int node = fidnode[fid & 511];
 			w32(out, &oo, 0);
 			out[oo++] = P9_TLOPEN + 1;
@@ -306,8 +317,8 @@ static void *mock9p(void *arg)
 				off |= (uint64_t)in[io++] << (8 * i);
 			uint32_t cnt = r32(in, &io);
 			int node = fidnode[fid & 511];
-			const uint8_t *data =
-				(node >= 0) ? (const uint8_t *)g_tree[node].content : NULL;
+			const uint8_t *data = (node >= 0) ? (const uint8_t *)g_tree[node].content
+							  : NULL;
 			size_t total = (node >= 0) ? g_tree[node].size : 0;
 			size_t avail = (off < total) ? total - (size_t)off : 0;
 			if (avail > cnt)
@@ -347,7 +358,7 @@ static void *mock9p(void *arg)
 				if (cookie <= off)
 					continue; /* already returned in a prior batch */
 				wqid(out, &oo, g_tree[i].is_dir, (uint64_t)(i + 1));
-				w64(out, &oo, cookie);				  /* entry offset */
+				w64(out, &oo, cookie);				 /* entry offset */
 				out[oo++] = g_tree[i].is_dir ? 4 /*DT_DIR*/ : 8; /*DT_REG*/
 				wstr(out, &oo, g_tree[i].name);
 			}
@@ -380,26 +391,25 @@ static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 	p->mm->region_lo = 1;
 	p->mm->region_hi = UINTPTR_MAX;
 	p->mm->pool_lo = p->mm->pool_hi = 0;
-	p->netfs_req = -1;
 }
 
 /* Drive a syscall; if it parked on netfs, pump the coordinator retry. */
-static long call_pump(lxp_proc_t *p, long nr, long a0, long a1, long a2, long a3, long a4,
-		      long a5)
+static long call_pump(lxp_proc_t *p, long nr, long a0, long a1, long a2, long a3, long a4, long a5)
 {
 	long r = lxp_syscall(p, nr, a0, a1, a2, a3, a4, a5);
-	if (!p->netfs_wait)
+	if (p->wait.kind != LXP_WAIT_NETFS)
 		return r;
 	for (int i = 0; i < 4000; i++) {
 		long rr = lxp_netfs_retry(p);
 		if (rr != -LXP_EAGAIN) {
-			p->netfs_wait = 0;
+			if (p->wait.kind == LXP_WAIT_NETFS)
+				(void)lxp_wait_complete(p, LXP_WAIT_NETFS);
 			return rr;
 		}
 		struct timespec ts = {.tv_sec = 0, .tv_nsec = 300000};
 		nanosleep(&ts, NULL);
 	}
-	p->netfs_wait = 0;
+	(void)lxp_wait_cancel(p);
 	return -LXP_EAGAIN;
 }
 
@@ -476,7 +486,7 @@ static void test_netfs_browse(void **state)
 		uint64_t st_ino;
 	} st;
 	memset(&st, 0, sizeof(st));
-	assert_int_equal(call_pump(&p, LXP_NR_stat64, (long)(uintptr_t) "/mnt/pi/hello.txt",
+	assert_int_equal(call_pump(&p, LXP_NR_stat64, (long)(uintptr_t)"/mnt/pi/hello.txt",
 				   (long)(uintptr_t)&st, 0, 0, 0, 0),
 			 0);
 	assert_int_equal(st.st_mode & LXP_S_IFMT, LXP_S_IFREG);
@@ -485,13 +495,13 @@ static void test_netfs_browse(void **state)
 	assert_true(st.st_ino != 0);
 
 	/* stat a missing file → ENOENT (Rlerror). */
-	assert_int_equal(call_pump(&p, LXP_NR_stat64, (long)(uintptr_t) "/mnt/pi/nope",
+	assert_int_equal(call_pump(&p, LXP_NR_stat64, (long)(uintptr_t)"/mnt/pi/nope",
 				   (long)(uintptr_t)&st, 0, 0, 0, 0),
 			 -LXP_ENOENT);
 
 	/* open + read the file → "hello world\n". */
-	long fd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD,
-			    (long)(uintptr_t) "/mnt/pi/hello.txt", LXP_O_RDONLY, 0, 0, 0);
+	long fd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/mnt/pi/hello.txt",
+			    LXP_O_RDONLY, 0, 0, 0);
 	assert_true(fd >= 3);
 	assert_int_equal(lxp_fd_kind(&p, fd), LXP_FD_NET);
 	char rb[32] = {0};
@@ -504,8 +514,7 @@ static void test_netfs_browse(void **state)
 
 	/* fstat the open fd → cached attrs. */
 	memset(&st, 0, sizeof(st));
-	assert_int_equal(lxp_syscall(&p, LXP_NR_fstat64, fd, (long)(uintptr_t)&st, 0, 0, 0, 0),
-			 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_fstat64, fd, (long)(uintptr_t)&st, 0, 0, 0, 0), 0);
 	assert_int_equal(st.st_size, 12);
 
 	/* lseek(SEEK_SET, 6) then read → "world\n". */
@@ -523,12 +532,12 @@ static void test_netfs_browse(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd2, 0, 0, 0, 0, 0), 0);
 
 	/* getdents64 on the mount root → sees hello.txt + sub. */
-	long dfd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t) "/mnt/pi",
+	long dfd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/mnt/pi",
 			     LXP_O_RDONLY, 0, 0, 0);
 	assert_true(dfd >= 3);
 	uint8_t dbuf[512] = {0};
-	long dn = call_pump(&p, LXP_NR_getdents64, dfd, (long)(uintptr_t)dbuf, sizeof(dbuf), 0, 0,
-			    0);
+	long dn =
+		call_pump(&p, LXP_NR_getdents64, dfd, (long)(uintptr_t)dbuf, sizeof(dbuf), 0, 0, 0);
 	assert_true(dn > 0);
 	/* scan the dirent64 records for the two names. */
 	int saw_hello = 0, saw_sub = 0;
@@ -546,29 +555,28 @@ static void test_netfs_browse(void **state)
 	assert_true(saw_hello);
 	assert_true(saw_sub);
 	/* a second getdents at EOF returns 0. */
-	assert_int_equal(
-		call_pump(&p, LXP_NR_getdents64, dfd, (long)(uintptr_t)dbuf, sizeof(dbuf), 0, 0, 0),
-		0);
+	assert_int_equal(call_pump(&p, LXP_NR_getdents64, dfd, (long)(uintptr_t)dbuf, sizeof(dbuf),
+				   0, 0, 0),
+			 0);
 	lxp_syscall(&p, LXP_NR_close, dfd, 0, 0, 0, 0, 0);
 
 	/* a write to a netfs fd is rejected read-only. */
-	long wfd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD,
-			     (long)(uintptr_t) "/mnt/pi/hello.txt", LXP_O_RDONLY, 0, 0, 0);
+	long wfd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/mnt/pi/hello.txt",
+			     LXP_O_RDONLY, 0, 0, 0);
 	assert_true(wfd >= 3);
-	assert_int_equal(
-		lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t) "x", 1, 0, 0, 0),
-		-LXP_EROFS);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t)"x", 1, 0, 0, 0),
+			 -LXP_EROFS);
 	lxp_syscall(&p, LXP_NR_close, wfd, 0, 0, 0, 0, 0);
 
 	/* an O_WRONLY open of a netfs path is rejected read-only. */
 	assert_int_equal(call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD,
-				   (long)(uintptr_t) "/mnt/pi/hello.txt", LXP_O_WRONLY, 0, 0, 0),
+				   (long)(uintptr_t)"/mnt/pi/hello.txt", LXP_O_WRONLY, 0, 0, 0),
 			 -LXP_EROFS);
 
 #if LXP_ENABLE_NETFS_EXEC
 	/* Remote exec is transactional through fetch and image validation. A missing
 	 * file and a malformed ELF both return to the old image with its CLOEXEC
-	 * descriptors untouched. A valid image advances to exec_pending but still
+	 * descriptors untouched. A valid image publishes an EXEC intent but still
 	 * leaves CLOEXEC closure to the coordinator's final commit point. */
 	{
 		lxp_proc_t xp;
@@ -578,36 +586,28 @@ static void test_netfs_browse(void **state)
 		memset(&cap, 0, sizeof(cap));
 		lxp_proc_bind_exec_capture(&xp, &cap);
 		int pfds[2] = {-1, -1};
-		assert_int_equal(lxp_syscall(&xp, LXP_NR_pipe2,
-					     (long)(uintptr_t)pfds,
+		assert_int_equal(lxp_syscall(&xp, LXP_NR_pipe2, (long)(uintptr_t)pfds,
 					     LXP_O_CLOEXEC, 0, 0, 0, 0),
 				 0);
-		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0],
-					     LXP_F_GETFD, 0, 0, 0, 0),
+		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0], LXP_F_GETFD, 0, 0, 0, 0),
 				 LXP_FD_CLOEXEC);
 		char *xargv[] = {(char *)"prog", NULL};
-		assert_int_equal(call_pump(&xp, LXP_NR_execve,
-					   (long)(uintptr_t)"/mnt/pi/missing",
+		assert_int_equal(call_pump(&xp, LXP_NR_execve, (long)(uintptr_t)"/mnt/pi/missing",
 					   (long)(uintptr_t)xargv, 0, 0, 0, 0),
 				 -LXP_ENOENT);
-		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0],
-					     LXP_F_GETFD, 0, 0, 0, 0),
+		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0], LXP_F_GETFD, 0, 0, 0, 0),
 				 LXP_FD_CLOEXEC);
-		assert_int_equal(call_pump(&xp, LXP_NR_execve,
-					   (long)(uintptr_t)"/mnt/pi/badprog",
+		assert_int_equal(call_pump(&xp, LXP_NR_execve, (long)(uintptr_t)"/mnt/pi/badprog",
 					   (long)(uintptr_t)xargv, 0, 0, 0, 0),
 				 -LXP_ENOEXEC);
-		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0],
-					     LXP_F_GETFD, 0, 0, 0, 0),
+		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0], LXP_F_GETFD, 0, 0, 0, 0),
 				 LXP_FD_CLOEXEC);
-		assert_int_equal(call_pump(&xp, LXP_NR_execve,
-					   (long)(uintptr_t)"/mnt/pi/prog",
+		assert_int_equal(call_pump(&xp, LXP_NR_execve, (long)(uintptr_t)"/mnt/pi/prog",
 					   (long)(uintptr_t)xargv, 0, 0, 0, 0),
 				 0);
-		assert_int_equal(xp.exec_pending, 1);
+		assert_int_equal(xp.intent.kind, LXP_INTENT_EXEC);
 		assert_int_equal(xp.exec_file_idx, LXP_NETFS_EXEC_SENTINEL);
-		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0],
-					     LXP_F_GETFD, 0, 0, 0, 0),
+		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0], LXP_F_GETFD, 0, 0, 0, 0),
 				 LXP_FD_CLOEXEC);
 		size_t xsz = 0;
 		const uint8_t *ximg = lxp_netfs_exec_image(&xsz);
@@ -624,19 +624,20 @@ static void test_netfs_browse(void **state)
 	 * a completed read DOES fill the buffer (just proven above); a cancelled one must not. */
 	{
 		long cfd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD,
-				     (long)(uintptr_t) "/mnt/pi/hello.txt", LXP_O_RDONLY, 0, 0, 0);
+				     (long)(uintptr_t)"/mnt/pi/hello.txt", LXP_O_RDONLY, 0, 0, 0);
 		assert_true(cfd >= 3);
 		char cb[32];
 		memset(cb, 0xCC, sizeof(cb));
 		/* submit the read but do NOT pump: it parks with the request still queued. */
-		long r = lxp_syscall(&p, LXP_NR_read, cfd, (long)(uintptr_t)cb, sizeof(cb), 0, 0, 0);
+		long r =
+			lxp_syscall(&p, LXP_NR_read, cfd, (long)(uintptr_t)cb, sizeof(cb), 0, 0, 0);
 		assert_int_equal(r, 0);
-		assert_true(p.netfs_wait != 0);
-		assert_true(p.netfs_req >= 0);
+		assert_int_equal(p.wait.kind, LXP_WAIT_NETFS);
+		assert_true(p.wait.data.io.request >= 0);
 
 		lxp_netfs_cancel(&p); /* what the coordinator does on a signal */
-		p.netfs_wait = 0;     /* the run loop clears this alongside the cancel */
-		assert_int_equal(p.netfs_req, -1);
+		assert_int_equal(p.wait.data.io.request, -1);
+		(void)lxp_wait_interrupt(&p, LXP_WAIT_NETFS);
 
 		/* pump the transport: the cancelled read must never write cb. */
 		for (int i = 0; i < 200; i++) {
@@ -645,7 +646,8 @@ static void test_netfs_browse(void **state)
 			nanosleep(&ts, NULL);
 		}
 		for (size_t i = 0; i < sizeof(cb); i++)
-			assert_int_equal((uint8_t)cb[i], 0xCC); /* untouched: no reply landed here */
+			assert_int_equal((uint8_t)cb[i],
+					 0xCC); /* untouched: no reply landed here */
 		lxp_syscall(&p, LXP_NR_close, cfd, 0, 0, 0, 0, 0);
 	}
 

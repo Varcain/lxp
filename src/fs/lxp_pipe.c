@@ -28,7 +28,8 @@ typedef struct {
 	size_t count; /* bytes currently buffered */
 	int used;
 } lxp_pipe_t;
-static lxp_pipe_t g_pipes[LXP_NPIPE] LXP_FAR_BSS; /* LXP_FAR_BSS relocates the pool (STM32: .sdram_bss) */
+static lxp_pipe_t
+	g_pipes[LXP_NPIPE] LXP_FAR_BSS; /* LXP_FAR_BSS relocates the pool (STM32: .sdram_bss) */
 
 /* Count a pipe's open read/write ends across ALL live procs' fd tables. lxp_proc_table
  * / lxp_proc_nslot are weak in lxp_syscall.c (the host test links them but never drives
@@ -93,10 +94,14 @@ long pipe_try_write(int pi, const void *buf, size_t len)
 /* Retry a parked pipe read/write for the run-loop coordinator (declared in lxp_syscall.h). */
 long lxp_pipe_retry(lxp_proc_t *p)
 {
-	if (p->pipe_wait == 1)
-		return pipe_try_read(p->pipe_idx, (void *)p->pipe_buf, p->pipe_len);
-	if (p->pipe_wait == 2)
-		return pipe_try_write(p->pipe_idx, (const void *)p->pipe_buf, p->pipe_len);
+	if (!p || p->wait.kind != LXP_WAIT_PIPE)
+		return -LXP_EINVAL;
+	if (p->wait.op == 1)
+		return pipe_try_read(p->wait.data.io.object, (void *)p->wait.data.io.buffer,
+				     p->wait.data.io.length);
+	if (p->wait.op == 2)
+		return pipe_try_write(p->wait.data.io.object, (const void *)p->wait.data.io.buffer,
+				      p->wait.data.io.length);
 	return 0;
 }
 
