@@ -300,6 +300,314 @@ static void make_valid_running_slot(int slot, int region)
 	g_lxp_used[slot] = 1;
 }
 
+static long child_test_write(void *ctx, int fd, const void *buf, size_t len)
+{
+	(void)ctx;
+	(void)fd;
+	(void)buf;
+	return (long)len;
+}
+
+static long child_test_read(void *ctx, int fd, void *buf, size_t len)
+{
+	(void)ctx;
+	(void)fd;
+	(void)buf;
+	return (long)len;
+}
+
+static int child_test_poll(void *ctx)
+{
+	return ctx != NULL;
+}
+
+static void prepare_child_test_parent(lxp_proc_t *parent)
+{
+	static const lxp_file_t rootfs[] = {
+		{.path = "/bin/parent"},
+	};
+	parent->write_fn = child_test_write;
+	parent->read_fn = child_test_read;
+	parent->console_poll = child_test_poll;
+	parent->io_ctx = parent;
+	parent->fs = rootfs;
+	parent->fs_count = 1;
+	memcpy(parent->comm, "parent-image", sizeof("parent-image"));
+	parent->sig_blocked = UINT64_C(0x1122334455667788);
+	parent->exec_file_idx = 17;
+	parent->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	parent->is_fdpic = 1;
+
+	/* Poison every non-inherited family. A constructor that starts copying the
+	 * whole task again makes this table fail immediately. */
+	parent->exited = 1;
+	parent->exit_group = 1;
+	parent->exit_status = 23;
+	parent->stopped = 1;
+	parent->stop_kind = LXP_STOP_PARKED;
+	parent->pending_sigs = UINT64_C(0xff);
+	parent->sigsuspend_saved_mask = UINT64_C(0xa5);
+	parent->sigsuspend_active = 1;
+	parent->exec_pending = 1;
+	parent->sleep_pending = 1;
+	parent->sleeping = 1;
+	parent->fork_pending = 1;
+	parent->clone_flags = UINT32_MAX;
+	parent->clone_child_stack = 0x1234u;
+	parent->wait_pending = 1;
+	parent->futex_wait = 1;
+	parent->pipe_wait = 1;
+	parent->console_wait = 1;
+	parent->dev_wait = 1;
+	parent->sock_wait = 1;
+	parent->sel_active = 1;
+	parent->pty_wait = 1;
+	parent->netfs_wait = 1;
+	parent->netfs_req = 7;
+	parent->alarm_deadline_us = 123;
+	parent->alarm_interval_us = 456;
+}
+
+static void assert_child_local_state(const lxp_proc_t *child, int child_pid)
+{
+	assert_int_equal(child->pid, child_pid);
+	assert_ptr_equal(child->write_fn, child_test_write);
+	assert_ptr_equal(child->read_fn, child_test_read);
+	assert_ptr_equal(child->console_poll, child_test_poll);
+	assert_non_null(child->io_ctx);
+	assert_non_null(child->fs);
+	assert_int_equal(child->fs_count, 1);
+	assert_string_equal(child->comm, "parent-image");
+	assert_int_equal(child->sig_blocked, UINT64_C(0x1122334455667788));
+	assert_int_equal(child->exec_file_idx, 17);
+	assert_int_equal(child->stack_lo,
+			 (uintptr_t)g_mock_regions[0] + 128u);
+	assert_int_equal(child->is_fdpic, 1);
+
+	assert_false(child->alive);
+	assert_false(child->exited);
+	assert_false(child->exit_group);
+	assert_false(child->stopped);
+	assert_false(child->pending_sigs);
+	assert_false(child->sigsuspend_active);
+	assert_false(child->exec_pending);
+	assert_false(child->sleep_pending);
+	assert_false(child->sleeping);
+	assert_false(child->fork_pending);
+	assert_false(child->clone_flags);
+	assert_false(child->clone_child_stack);
+	assert_false(child->wait_pending);
+	assert_false(child->futex_wait);
+	assert_false(child->pipe_wait);
+	assert_false(child->console_wait);
+	assert_false(child->dev_wait);
+	assert_false(child->sock_wait);
+	assert_false(child->sel_active);
+	assert_false(child->pty_wait);
+	assert_false(child->netfs_wait);
+	assert_int_equal(child->netfs_req, -1);
+	assert_false(child->alarm_deadline_us);
+	assert_false(child->alarm_interval_us);
+	assert_int_equal(child->vfork_parent_slot, -1);
+	assert_int_equal(child->snap_region, -1);
+}
+
+static void test_child_constructors_cover_clone_flag_matrix(void **state)
+{
+	(void)state;
+	static const uint32_t flag_bits[] = {
+		LXP_CLONE_VM,
+		LXP_CLONE_FILES,
+		LXP_CLONE_FS,
+		LXP_CLONE_SIGHAND,
+		LXP_CLONE_THREAD,
+	};
+
+	lxp_proc_t *parent = &g_lxp_proc[0];
+	prepare_child_test_parent(parent);
+	unsigned valid_cases = 0;
+	for (unsigned mask = 0; mask < (1u << 5); mask++) {
+		uint32_t flags = 0;
+		for (unsigned bit = 0; bit < 5; bit++)
+			if (mask & (1u << bit))
+				flags |= flag_bits[bit];
+		if (((flags & LXP_CLONE_SIGHAND) &&
+		     !(flags & LXP_CLONE_VM)) ||
+		    ((flags & LXP_CLONE_THREAD) &&
+		     (flags & (LXP_CLONE_VM | LXP_CLONE_SIGHAND)) !=
+			     (LXP_CLONE_VM | LXP_CLONE_SIGHAND)))
+			continue;
+		valid_cases++;
+		uint16_t mm_refs = parent->mm->refs;
+		uint16_t files_refs = parent->files->refs;
+		uint16_t fs_refs = parent->fs_context->refs;
+		uint16_t sighand_refs = parent->sighand->refs;
+		uint16_t group_refs = parent->group->refs;
+		lxp_proc_t child;
+		memset(&child, 0xa5, sizeof(child));
+
+		int child_pid = 100 + (int)mask;
+		int rc = (flags & LXP_CLONE_THREAD)
+				 ? lxp_proc_init_thread_child(
+					   &child, parent, flags, child_pid)
+				 : lxp_proc_init_process_child(
+					   &child, parent, flags, child_pid);
+		assert_int_equal(rc, LXP_OK);
+		assert_child_local_state(&child, child_pid);
+		assert_int_equal(child.mm == parent->mm,
+				 (flags & LXP_CLONE_VM) != 0);
+		assert_int_equal(child.files == parent->files,
+				 (flags & LXP_CLONE_FILES) != 0);
+		assert_int_equal(child.fs_context == parent->fs_context,
+				 (flags & LXP_CLONE_FS) != 0);
+		assert_int_equal(child.sighand == parent->sighand,
+				 (flags & LXP_CLONE_SIGHAND) != 0);
+		assert_int_equal(child.group == parent->group,
+				 (flags & LXP_CLONE_THREAD) != 0);
+		if (!(flags & LXP_CLONE_THREAD)) {
+			assert_int_equal(child.group->tgid, child_pid);
+			assert_int_equal(child.group->ppid, parent->group->tgid);
+			assert_int_equal(child.group->pgid, parent->group->pgid);
+		}
+
+		lxp_proc_child_discard(&child);
+		assert_null(child.mm);
+		assert_null(child.files);
+		assert_null(child.fs_context);
+		assert_null(child.sighand);
+		assert_null(child.group);
+		assert_int_equal(parent->mm->refs, mm_refs);
+		assert_int_equal(parent->files->refs, files_refs);
+		assert_int_equal(parent->fs_context->refs, fs_refs);
+		assert_int_equal(parent->sighand->refs, sighand_refs);
+		assert_int_equal(parent->group->refs, group_refs);
+	}
+	assert_int_equal(valid_cases, 16);
+}
+
+static void assert_failed_child_is_empty(const lxp_proc_t *child)
+{
+	assert_null(child->mm);
+	assert_null(child->files);
+	assert_null(child->fs_context);
+	assert_null(child->sighand);
+	assert_null(child->group);
+	assert_false(child->alive);
+	assert_int_equal(child->vfork_parent_slot, -1);
+	assert_int_equal(child->snap_region, -1);
+}
+
+static void test_child_constructor_rolls_back_each_acquisition(void **state)
+{
+	(void)state;
+	lxp_proc_t *parent = &g_lxp_proc[0];
+	prepare_child_test_parent(parent);
+	const uint32_t all_shared = LXP_CLONE_VM | LXP_CLONE_FILES |
+				    LXP_CLONE_FS | LXP_CLONE_SIGHAND |
+				    LXP_CLONE_THREAD;
+	lxp_proc_t child;
+
+#define EXPECT_STAGE_FAILURE(member, flags)                                             \
+	do {                                                                             \
+		uint16_t saved = parent->member->refs;                                     \
+		uint16_t mm_refs = parent->mm->refs;                                       \
+		uint16_t files_refs = parent->files->refs;                                 \
+		uint16_t fs_refs = parent->fs_context->refs;                               \
+		uint16_t sighand_refs = parent->sighand->refs;                             \
+		uint16_t group_refs = parent->group->refs;                                 \
+		parent->member->refs = UINT16_MAX;                                         \
+		memset(&child, 0, sizeof(child));                                          \
+		assert_int_equal(lxp_proc_init_thread_child(&child, parent, flags, 200),   \
+				 LXP_ERR_NO_MEMORY);                                      \
+		assert_failed_child_is_empty(&child);                                      \
+		parent->member->refs = saved;                                              \
+		assert_int_equal(parent->mm->refs, mm_refs);                               \
+		assert_int_equal(parent->files->refs, files_refs);                         \
+		assert_int_equal(parent->fs_context->refs, fs_refs);                       \
+		assert_int_equal(parent->sighand->refs, sighand_refs);                     \
+		assert_int_equal(parent->group->refs, group_refs);                         \
+	} while (0)
+
+	EXPECT_STAGE_FAILURE(mm, all_shared);
+	EXPECT_STAGE_FAILURE(files, all_shared);
+	EXPECT_STAGE_FAILURE(fs_context, all_shared);
+	EXPECT_STAGE_FAILURE(sighand, all_shared);
+	EXPECT_STAGE_FAILURE(group, all_shared);
+#undef EXPECT_STAGE_FAILURE
+
+	memset(&child, 0, sizeof(child));
+	assert_int_equal(lxp_proc_init_process_child(
+				 &child, parent, LXP_CLONE_SIGHAND, 201),
+			 LXP_ERR_INVALID_PARAM);
+	assert_int_equal(lxp_proc_init_process_child(
+				 &child, parent, LXP_CLONE_THREAD, 201),
+			 LXP_ERR_INVALID_PARAM);
+	assert_int_equal(lxp_proc_init_thread_child(
+				 &child, parent, LXP_CLONE_THREAD, 201),
+			 LXP_ERR_INVALID_PARAM);
+}
+
+static void test_fork_build_abort_restores_world(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *parent = &g_lxp_proc[0];
+	parent->mm->region_lo = (uintptr_t)g_mock_regions[0];
+	parent->mm->region_hi =
+		(uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	parent->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	g_ctx[0].sp = (uintptr_t)g_mock_regions[0] + 192u;
+	lxp_proc_child_discard(&g_lxp_proc[1]);
+
+	/* Region acquisition failure must not touch the destination or parent. */
+	g_region_refs[0] = LXP_NSLOT;
+	struct fork_child_build build;
+	assert_int_equal(fork_child_build_prepare(&build, &g_mock_eng, 0, 1, 0, 2),
+			 -LXP_EAGAIN);
+	fork_child_build_abort(&build, &g_mock_eng);
+	assert_int_equal(g_region_refs[0], LXP_NSLOT);
+	assert_failed_child_is_empty(&g_lxp_proc[1]);
+	g_region_refs[0] = 1;
+
+	/* A failed native-map restore releases every constructor acquisition. */
+	uint16_t mm_refs = parent->mm->refs;
+	uint16_t files_refs = parent->files->refs;
+	uint16_t fs_refs = parent->fs_context->refs;
+	uint16_t sighand_refs = parent->sighand->refs;
+	uint16_t group_refs = parent->group->refs;
+	parent->mm->dev_map_lo[0] = 0x1000u;
+	parent->mm->dev_map_hi[0] = 0x1100u;
+	parent->mm->dev_map_attrs[0] = LXP_MAP_NC;
+	g_mock.map_fail_slot = 1;
+	assert_int_equal(fork_child_build_prepare(&build, &g_mock_eng, 0, 1, 0, 2),
+			 -LXP_ENOMEM);
+	fork_child_build_abort(&build, &g_mock_eng);
+	assert_int_equal(g_region_refs[0], 1);
+	assert_int_equal(parent->mm->refs, mm_refs);
+	assert_int_equal(parent->files->refs, files_refs);
+	assert_int_equal(parent->fs_context->refs, fs_refs);
+	assert_int_equal(parent->sighand->refs, sighand_refs);
+	assert_int_equal(parent->group->refs, group_refs);
+	assert_failed_child_is_empty(&g_lxp_proc[1]);
+
+	/* Snapshot exhaustion happens after publication preparation and child
+	 * accounting; the same abort reverses both. */
+	assert_int_equal(fork_child_build_prepare(&build, &g_mock_eng, 0, 1, 0, 2),
+			 LXP_OK);
+	fork_child_build_count(&build);
+	for (int r = 1; r < LXP_NREG; r++)
+		assert_true(region_reserve(r, 0) != 0);
+	assert_int_equal(vfork_snapshot(&g_mock_eng, parent, 1, g_ctx[0].sp), -1);
+	fork_child_build_abort(&build, &g_mock_eng);
+	assert_int_equal(parent->group->live_children, 0);
+	assert_int_equal(g_region_refs[0], 1);
+	assert_failed_child_is_empty(&g_lxp_proc[1]);
+	for (int r = 1; r < LXP_NREG; r++)
+		region_put(r);
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+}
+
 static void test_world_diagnostics_snapshot_current_states(void **state)
 {
 	(void)state;
@@ -1846,6 +2154,12 @@ static void test_stop_notify_queues_without_wuntraced(void **state)
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
+		cmocka_unit_test_setup(test_child_constructors_cover_clone_flag_matrix,
+				       reset_state),
+		cmocka_unit_test_setup(test_child_constructor_rolls_back_each_acquisition,
+				       reset_state),
+		cmocka_unit_test_setup(test_fork_build_abort_restores_world,
+				       reset_state),
 		cmocka_unit_test_setup(test_world_diagnostics_snapshot_current_states,
 				       reset_state),
 		cmocka_unit_test_setup(test_world_validator_reports_conflicting_waits,

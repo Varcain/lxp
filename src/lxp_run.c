@@ -1592,7 +1592,7 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	g_lxp_proc[sidx].pid = pid;
 	g_lxp_proc[sidx].group->tgid = pid;
 	g_lxp_proc[sidx].group->ppid = ppid;
-	g_lxp_proc[sidx].group->pgid = pid; /* a fresh proc leads its own group; fork inherits via *ch=*par, execve restores the saved pgid below */
+	g_lxp_proc[sidx].group->pgid = pid; /* a fresh proc leads its own group; the child constructor inherits pgid, and execve restores it below */
 	/* Concurrent model: this slot is now a live process owning region ridx. */
 	g_lxp_proc[sidx].alive = 1;
 	g_lxp_proc[sidx].mm->region = ridx;
@@ -2343,6 +2343,118 @@ static void vfork_contain_stale(int child_slot, lxp_proc_t *child)
 	primary_slot_mark(child_slot);
 }
 
+/*
+ * Fork construction owns one region reference plus the not-yet-published child
+ * objects and native map. A failed step comes through fork_child_build_abort(),
+ * so adding an acquisition cannot grow another hand-written rollback list.
+ */
+struct fork_child_build {
+	lxp_proc_t *parent;
+	lxp_proc_t *child;
+	int parent_slot;
+	int child_slot;
+	int parent_region;
+	uint8_t region_acquired;
+	uint8_t child_constructed;
+	uint8_t maps_touched;
+	uint8_t child_counted;
+};
+
+static void fork_child_guard_reset(int child_slot)
+{
+	memset(&g_vfork_guard[child_slot], 0, sizeof(g_vfork_guard[child_slot]));
+	g_vfork_guard[child_slot].parent_slot =
+		g_vfork_guard[child_slot].parent_region =
+			g_vfork_guard[child_slot].snapshot_region = -1;
+}
+
+static int fork_child_build_prepare(struct fork_child_build *build,
+				    const lxp_os_ops_t *eng, int parent_slot,
+				    int child_slot, uint32_t clone_flags,
+				    int child_pid)
+{
+	memset(build, 0, sizeof(*build));
+	build->parent = &g_lxp_proc[parent_slot];
+	build->child = &g_lxp_proc[child_slot];
+	build->parent_slot = parent_slot;
+	build->child_slot = child_slot;
+	build->parent_region = build->parent->mm->region;
+
+	deferred_slot_reassign(child_slot);
+	fork_child_guard_reset(child_slot);
+	if (region_get(build->parent_region) != 0)
+		return -LXP_EAGAIN;
+	build->region_acquired = 1;
+
+	int rc;
+	if (clone_flags & LXP_CLONE_THREAD)
+		rc = lxp_proc_init_thread_child(build->child, build->parent,
+						clone_flags, child_pid);
+	else
+		rc = lxp_proc_init_process_child(build->child, build->parent,
+						 clone_flags, child_pid);
+	if (rc != LXP_OK)
+		return -LXP_EAGAIN;
+	build->child_constructed = 1;
+
+	/* Every slot owns its cold exec capture and active signal return chain even
+	 * when its process-wide objects are shared. */
+	lxp_proc_bind_exec_capture(build->child, eng->exec_capture(child_slot));
+	g_sig_save[child_slot] = g_sig_save[parent_slot];
+
+	/* Hardware mappings are installed while the record is still unpublished.
+	 * A later failure clears them through the same transaction abort. */
+	build->maps_touched = 1;
+	if (coordinator_restore_mm_maps(eng, child_slot, build->child->mm) != 0)
+		return -LXP_ENOMEM;
+	build->child->alive = 1;
+	return LXP_OK;
+}
+
+static void fork_child_build_count(struct fork_child_build *build)
+{
+	build->parent->group->live_children++;
+	build->child_counted = 1;
+}
+
+static void fork_child_build_abort(struct fork_child_build *build,
+				   const lxp_os_ops_t *eng)
+{
+	if (build->child_counted && build->parent->group->live_children > 0)
+		build->parent->group->live_children--;
+	if (build->child_constructed && build->child->snap_region >= 0)
+		region_release_if_owned(build->child->snap_region,
+					build->child_slot);
+	if (build->maps_touched && eng->map_device)
+		(void)eng->map_device(build->child_slot, 0, 0, 0);
+	if (build->region_acquired)
+		region_put(build->parent_region);
+	if (build->child_constructed)
+		lxp_proc_child_discard(build->child);
+	memset(&g_sig_save[build->child_slot], 0,
+	       sizeof(g_sig_save[build->child_slot]));
+	g_lxp_used[build->child_slot] = 0;
+	primary_slot_clear(build->child_slot);
+	fork_child_guard_reset(build->child_slot);
+}
+
+static void fork_child_build_commit(struct fork_child_build *build)
+{
+	build->region_acquired = 0;
+	build->child_constructed = 0;
+	build->maps_touched = 0;
+	build->child_counted = 0;
+}
+
+static void fork_parent_resume_error(const lxp_os_ops_t *eng, int parent_slot,
+				     long error)
+{
+	lxp_proc_t *parent = &g_lxp_proc[parent_slot];
+	coordinator_park_slot(eng, parent_slot);
+	coordinator_resume_slot(eng, parent_slot, parent->mm->region,
+				&g_ctx[parent_slot], error);
+}
+
 int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		       const char *path, int argc, const char *const argv[])
 {
@@ -2492,8 +2604,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			 * result and becomes retryable as soon as wait4 drains one entry. */
 			if (!(clone_flags & LXP_CLONE_THREAD) &&
 			    !fork_capacity_available(par)) {
-				coordinator_park_slot(eng, es);
-				coordinator_resume_slot(eng, es, par->mm->region, &g_ctx[es], -LXP_EAGAIN);
+				fork_parent_resume_error(eng, es, -LXP_EAGAIN);
 				idle = 0;
 				continue;
 			}
@@ -2504,103 +2615,33 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 					break;
 				}
 			if (c < 0) { /* no free slot: Linux reports retryable process pressure. */
-				coordinator_park_slot(eng, es);
-				coordinator_resume_slot(eng, es, par->mm->region, &g_ctx[es], -LXP_EAGAIN);
-				idle = 0;
-				continue;
-			}
-			lxp_proc_t *ch = &g_lxp_proc[c];
-			deferred_slot_reassign(c);
-			memset(&g_vfork_guard[c], 0, sizeof(g_vfork_guard[c]));
-			g_vfork_guard[c].parent_slot = g_vfork_guard[c].parent_region =
-				g_vfork_guard[c].snapshot_region = -1;
-			*ch = *par; /* vfork shares the image + region */
-			if (region_get(par->mm->region) != 0) {
-				memset(ch, 0, sizeof(*ch));
-				coordinator_park_slot(eng, es);
-				coordinator_resume_slot(eng, es, par->mm->region, &g_ctx[es], -LXP_EAGAIN);
-				idle = 0;
-				continue;
-			}
-			if (lxp_proc_mm_fork(ch, par, clone_flags) != 0) {
-				region_put(par->mm->region);
-				memset(ch, 0, sizeof(*ch));
-				coordinator_park_slot(eng, es);
-				coordinator_resume_slot(eng, es, par->mm->region, &g_ctx[es], -LXP_EAGAIN);
-				idle = 0;
-				continue;
-			}
-			if (lxp_proc_resources_fork(ch, par, clone_flags) != 0) {
-				proc_mm_put(ch);
-				memset(ch, 0, sizeof(*ch));
-				coordinator_park_slot(eng, es);
-				coordinator_resume_slot(eng, es, par->mm->region, &g_ctx[es], -LXP_EAGAIN);
+				fork_parent_resume_error(eng, es, -LXP_EAGAIN);
 				idle = 0;
 				continue;
 			}
 			int child_pid = next_pid;
-			if (lxp_proc_group_fork(ch, par, clone_flags, child_pid) != 0) {
-				lxp_proc_resources_put(ch);
-				proc_mm_put(ch);
-				memset(ch, 0, sizeof(*ch));
-				coordinator_park_slot(eng, es);
-				coordinator_resume_slot(eng, es, par->mm->region, &g_ctx[es],
-						  -LXP_EAGAIN);
+			struct fork_child_build build;
+			int build_rc = fork_child_build_prepare(
+				&build, eng, es, c, clone_flags, child_pid);
+			if (build_rc != LXP_OK) {
+				fork_child_build_abort(&build, eng);
+				fork_parent_resume_error(eng, es, build_rc);
 				idle = 0;
 				continue;
 			}
-			/* The struct copy inherits the parent's pointer, but every slot owns an
-			 * independent transient exec capture. The child has no pending exec yet. */
-			lxp_proc_bind_exec_capture(ch, eng->exec_capture(c));
-			/* fork/clone resumes from the same instruction stream. If it was called
-			 * inside a handler, both parent and child may reach the restorer and each
-			 * therefore needs an independent copy of the active return chain. */
-			g_sig_save[c] = g_sig_save[es];
-			ch->pid = child_pid;
+			lxp_proc_t *ch = build.child;
 			next_pid++;
-			ch->exited = ch->exit_group = ch->exec_pending = ch->fork_pending = 0;
-			ch->sleep_pending = ch->wait_pending = ch->sleeping = 0;
-			ch->pipe_wait = 0;
-			ch->dev_wait = 0;
-			ch->sock_wait = 0;
-			ch->netfs_wait = 0;
-			ch->netfs_req = -1;
-			ch->sel_active = 0;
-			ch->pty_wait = 0;
-			ch->console_wait = 0;
-			ch->pending_sigs = 0;
-			ch->futex_wait = ch->futex_woken = 0;
-			ch->futex_uaddr = 0;
-			ch->futex_deadline_us = 0;
-			ch->alarm_deadline_us = 0; /* itimers are not inherited across fork */
-			ch->alarm_interval_us = 0;
-			ch->stopped = 0; /* a forked child is never born stopped */
-			ch->stop_kind = LXP_STOP_NONE;
-			ch->clone_flags = 0;
-			ch->snap_region = -1; /* set by vfork_snapshot below for a non-thread fork */
-			ch->alive = 1;
-			if (coordinator_restore_mm_maps(eng, c, ch->mm) != 0) {
-				lxp_proc_resources_put(ch);
-				proc_mm_put(ch);
-				lxp_proc_group_put(ch);
-				memset(ch, 0, sizeof(*ch));
-				coordinator_park_slot(eng, es);
-				coordinator_resume_slot(eng, es, par->mm->region, &g_ctx[es],
-						  -LXP_ENOMEM);
-				idle = 0;
-				continue;
-			}
 			if (clone_flags & LXP_CLONE_VM) {
 				/* A shared-mm clone runs on its own stack while the parent
 				 * co-runs. CLONE_THREAD controls thread-group membership;
 				 * CLONE_VM alone is a distinct waitable process. */
 				int child_is_thread = (clone_flags & LXP_CLONE_THREAD) != 0;
 				if (!child_is_thread)
-					par->group->live_children++;
-				ch->vfork_parent_slot = -1;
+					fork_child_build_count(&build);
 				g_ctx[c] = g_ctx[es]; /* clone resumes from the parent's ctx... */
 				g_ctx[c].sp =
 					par->clone_child_stack; /* ...but on the child stack */
+				fork_child_build_commit(&build);
 				coordinator_park_slot(eng, es);
 				coordinator_resume_slot(eng, es, par->mm->region, &g_ctx[es],
 						  ch->pid); /* parent co-runs, gets the tid */
@@ -2609,7 +2650,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				idle = 0;
 				continue;
 			}
-			par->group->live_children++; /* a new process is waitable; a thread is not */
+			fork_child_build_count(&build); /* a new process is waitable */
 			ch->vfork_parent_slot =
 				es; /* resume the parent when this child execs/exits */
 			/* NOMMU vfork isolation: snapshot the parent's writable data so the child's
@@ -2621,18 +2662,12 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 				 * session: init+getty+inetd+dropbear+shell+members). Refuse the fork
 				 * (-ENOMEM) rather than share the parent's region and let the child
 				 * corrupt it; the caller sees a clean fork failure, not a fault. */
-				lxp_proc_resources_put(ch);
-				proc_mm_put(ch);
-				lxp_proc_group_put(ch);
-				ch->alive = 0;
-				g_lxp_used[c] = 0;
-				if (par->group->live_children > 0)
-					par->group->live_children--;
-				coordinator_park_slot(eng, es);
-				coordinator_resume_slot(eng, es, par->mm->region, &g_ctx[es], -LXP_ENOMEM);
+				fork_child_build_abort(&build, eng);
+				fork_parent_resume_error(eng, es, -LXP_ENOMEM);
 				idle = 0;
 				continue;
 			}
+			fork_child_build_commit(&build);
 			coordinator_park_slot(eng, es); /* suspend the parent task */
 			coordinator_resume_slot(eng, c, ch->mm->region, &g_ctx[es],
 					  0); /* child returns 0 from fork */

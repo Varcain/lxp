@@ -824,12 +824,12 @@ lxp_ofd_t *lxp_fd_description(lxp_proc_t *proc, int fd);
 uint8_t lxp_fd_kind(const lxp_proc_t *proc, int fd);
 int lxp_fd_backing(const lxp_proc_t *proc, int fd);
 int lxp_fd_direction(const lxp_proc_t *proc, int fd);
-/** Take references for a shallow-copied descriptor table, or fail without changes. */
+/** Take references for a descriptor table being copied, or fail without changes. */
 int lxp_fd_fork_inherit(lxp_proc_t *child);
-/** Acquire fork/clone resource ownership after a shallow task-state copy. */
+/** Acquire fork/clone resource ownership for an otherwise unowned child. */
 int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent,
 			    uint32_t clone_flags);
-/** Acquire a shared or copied address-space object after a task-state copy. */
+/** Acquire a shared or copied address-space object for an unowned child. */
 int lxp_proc_mm_fork(lxp_proc_t *child, const lxp_proc_t *parent,
 		     uint32_t clone_flags);
 /** Drop only the address-space object reference (the coordinator owns region refs). */
@@ -841,6 +841,29 @@ int lxp_proc_group_fork(lxp_proc_t *child, const lxp_proc_t *parent,
 void lxp_proc_group_put(lxp_proc_t *proc);
 /** Drop one task's files/fs/sighand ownership, closing descriptors at the last table user. */
 void lxp_proc_resources_put(lxp_proc_t *proc);
+/**
+ * Construct an unpublished process child without copying coordinator/runtime
+ * state. The destination must not own resources. Fork inheritance is explicit:
+ * callbacks, image identity, signal mask and immutable rootfs bindings are
+ * copied; mm/files/fs/sighand follow @p clone_flags; a fresh process group is
+ * derived from @p parent.
+ */
+int lxp_proc_init_process_child(lxp_proc_t *child,
+				const lxp_proc_t *parent,
+				uint32_t clone_flags, int child_pid);
+/**
+ * Construct an unpublished CLONE_THREAD child. CLONE_VM and CLONE_SIGHAND are
+ * mandatory; task-local waits, pending work, timers, signals and exit state
+ * start empty.
+ */
+int lxp_proc_init_thread_child(lxp_proc_t *child,
+			       const lxp_proc_t *parent,
+			       uint32_t clone_flags, int child_tid);
+/**
+ * Release every object acquired by a child constructor and restore an empty,
+ * unpublished record. Region reservations remain coordinator-owned.
+ */
+void lxp_proc_child_discard(lxp_proc_t *child);
 /** Make a shared descriptor table private while retaining its open descriptions. */
 int lxp_proc_files_unshare(lxp_proc_t *proc);
 /** Close one descriptor through the generic last-reference path. */

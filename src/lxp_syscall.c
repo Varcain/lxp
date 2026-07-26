@@ -2092,6 +2092,94 @@ void lxp_proc_group_put(lxp_proc_t *p)
 	p->group = NULL;
 }
 
+static void proc_child_reset(lxp_proc_t *child)
+{
+	memset(child, 0, sizeof(*child));
+	child->vfork_parent_slot = -1;
+	child->snap_region = -1;
+	child->netfs_oi = -1;
+	child->netfs_req = -1;
+}
+
+void lxp_proc_child_discard(lxp_proc_t *child)
+{
+	if (!child)
+		return;
+	lxp_proc_resources_put(child);
+	lxp_proc_mm_put(child);
+	lxp_proc_group_put(child);
+	proc_child_reset(child);
+}
+
+/*
+ * Classify every lxp_proc field instead of inheriting the coordinator's
+ * transient state by assignment. Shared/copy-owned objects are acquired below.
+ * These are the task-local values Linux actually inherits across fork/clone:
+ * host I/O bindings, rootfs/image identity, comm, the signal mask, address-space
+ * layout boundary and FDPIC mode. Everything else deliberately remains in the
+ * reset state until the coordinator publishes the child.
+ */
+static void proc_child_copy_values(lxp_proc_t *child,
+				   const lxp_proc_t *parent, int child_pid)
+{
+	proc_child_reset(child);
+	child->write_fn = parent->write_fn;
+	child->read_fn = parent->read_fn;
+	child->console_poll = parent->console_poll;
+	child->io_ctx = parent->io_ctx;
+	child->fs = parent->fs;
+	child->fs_count = parent->fs_count;
+	child->pid = child_pid;
+	memcpy(child->comm, parent->comm, sizeof(child->comm));
+	child->sig_blocked = parent->sig_blocked;
+	child->exec_file_idx = parent->exec_file_idx;
+	child->stack_lo = parent->stack_lo;
+	child->is_fdpic = parent->is_fdpic;
+}
+
+static int proc_init_child(lxp_proc_t *child, const lxp_proc_t *parent,
+			   uint32_t clone_flags, int child_pid, int thread)
+{
+	if (!child || !parent || child == parent || child_pid <= 0 ||
+	    !parent->mm || !parent->files || !parent->fs_context ||
+	    !parent->sighand || !parent->group)
+		return LXP_ERR_INVALID_PARAM;
+	if ((clone_flags & LXP_CLONE_SIGHAND) &&
+	    !(clone_flags & LXP_CLONE_VM))
+		return LXP_ERR_INVALID_PARAM;
+	if (thread) {
+		if ((clone_flags &
+		     (LXP_CLONE_THREAD | LXP_CLONE_VM | LXP_CLONE_SIGHAND)) !=
+		    (LXP_CLONE_THREAD | LXP_CLONE_VM | LXP_CLONE_SIGHAND))
+			return LXP_ERR_INVALID_PARAM;
+	} else if (clone_flags & LXP_CLONE_THREAD) {
+		return LXP_ERR_INVALID_PARAM;
+	}
+
+	proc_child_copy_values(child, parent, child_pid);
+	if (lxp_proc_mm_fork(child, parent, clone_flags) != 0 ||
+	    lxp_proc_resources_fork(child, parent, clone_flags) != 0 ||
+	    lxp_proc_group_fork(child, parent, clone_flags, child_pid) != 0) {
+		lxp_proc_child_discard(child);
+		return LXP_ERR_NO_MEMORY;
+	}
+	return LXP_OK;
+}
+
+int lxp_proc_init_process_child(lxp_proc_t *child,
+				const lxp_proc_t *parent,
+				uint32_t clone_flags, int child_pid)
+{
+	return proc_init_child(child, parent, clone_flags, child_pid, 0);
+}
+
+int lxp_proc_init_thread_child(lxp_proc_t *child,
+			       const lxp_proc_t *parent,
+			       uint32_t clone_flags, int child_tid)
+{
+	return proc_init_child(child, parent, clone_flags, child_tid, 1);
+}
+
 /* pipe(2)/pipe2(2): allocate a pipe object + a read-end / write-end fd pair. @p flags
  * carries O_CLOEXEC for pipe2 (dropbear's exec-status pipe is a CLOEXEC pipe2). */
 static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
