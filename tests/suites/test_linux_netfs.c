@@ -75,16 +75,53 @@ static uint32_t r32(const uint8_t *b, size_t *o)
 struct mnode {
 	const char *name;
 	int is_dir;
-	const char *content;
+	const void *content;
+	size_t size;
 	int parent;
 };
-#define PROG_CONTENT "\x7f\x45\x4c\x46 fake-fdpic-image-bytes-for-the-exec-fetch-test\n"
+static uint8_t g_prog[128];
+
+static void build_mock_fdpic(void)
+{
+	memset(g_prog, 0, sizeof(g_prog));
+	g_prog[0] = 0x7f;
+	g_prog[1] = 'E';
+	g_prog[2] = 'L';
+	g_prog[3] = 'F';
+	g_prog[4] = 1;  /* ELFCLASS32 */
+	g_prog[7] = 65; /* ELFOSABI_ARM_FDPIC */
+	size_t off = 16;
+	w16(g_prog, &off, 3);  /* ET_DYN */
+	w16(g_prog, &off, 40); /* EM_ARM */
+	off = 24;
+	w32(g_prog, &off, 0);  /* entry */
+	w32(g_prog, &off, 52); /* phoff */
+	off = 42;
+	w16(g_prog, &off, 32);
+	w16(g_prog, &off, 2);
+	off = 52;
+	w32(g_prog, &off, 1); /* PT_LOAD text */
+	off = 52 + 16;
+	w32(g_prog, &off, 16); /* filesz */
+	w32(g_prog, &off, 16); /* memsz */
+	w32(g_prog, &off, 1);  /* PF_X */
+	off = 84;
+	w32(g_prog, &off, 1);   /* PT_LOAD data */
+	w32(g_prog, &off, 116); /* file offset */
+	w32(g_prog, &off, 0x1000);
+	off = 84 + 16;
+	w32(g_prog, &off, 8);  /* filesz */
+	w32(g_prog, &off, 16); /* memsz */
+	w32(g_prog, &off, 6);  /* PF_R | PF_W */
+}
+
 static const struct mnode g_tree[] = {
-	{"", 1, NULL, -1},		     /* 0: root */
-	{"hello.txt", 0, "hello world\n", 0},/* 1 */
-	{"sub", 1, NULL, 0},		     /* 2 */
-	{"a.txt", 0, "aaa", 2},		     /* 3 */
-	{"prog", 0, PROG_CONTENT, 0},	     /* 4: a file the exec-fetch test pulls into staging */
+	{"", 1, NULL, 0, -1},					 /* 0: root */
+	{"hello.txt", 0, "hello world\n", sizeof("hello world\n") - 1, 0}, /* 1 */
+	{"sub", 1, NULL, 0, 0},					 /* 2 */
+	{"a.txt", 0, "aaa", sizeof("aaa") - 1, 2},			 /* 3 */
+	{"prog", 0, g_prog, sizeof(g_prog), 0},				 /* 4 */
+	{"badprog", 0, "\x7f" "ELFbad", sizeof("\x7f" "ELFbad") - 1, 0}, /* 5 */
 };
 #define NTREE ((int)(sizeof(g_tree) / sizeof(g_tree[0])))
 
@@ -226,7 +263,7 @@ static void *mock9p(void *arg)
 				continue;
 			}
 			uint32_t mode = g_tree[node].is_dir ? (0040000u | 0755u) : (0100000u | 0644u);
-			uint64_t sz = g_tree[node].content ? strlen(g_tree[node].content) : 0;
+			uint64_t sz = g_tree[node].size;
 			w32(out, &oo, 0);
 			out[oo++] = P9_TLGETATTR + 1;
 			w16(out, &oo, tag);
@@ -269,8 +306,9 @@ static void *mock9p(void *arg)
 				off |= (uint64_t)in[io++] << (8 * i);
 			uint32_t cnt = r32(in, &io);
 			int node = fidnode[fid & 511];
-			const char *data = (node >= 0) ? g_tree[node].content : NULL;
-			size_t total = data ? strlen(data) : 0;
+			const uint8_t *data =
+				(node >= 0) ? (const uint8_t *)g_tree[node].content : NULL;
+			size_t total = (node >= 0) ? g_tree[node].size : 0;
 			size_t avail = (off < total) ? total - (size_t)off : 0;
 			if (avail > cnt)
 				avail = cnt;
@@ -370,6 +408,7 @@ static int g_mock_ls = -1;
 
 static void start_mock_and_mount(void)
 {
+	build_mock_fdpic();
 	g_mock_ls = socket(AF_INET, SOCK_STREAM, 0);
 	assert_true(g_mock_ls >= 0);
 	int one = 1;
@@ -527,31 +566,55 @@ static void test_netfs_browse(void **state)
 			 -LXP_EROFS);
 
 #if LXP_ENABLE_NETFS_EXEC
-	/* exec-fetch: execve("/mnt/pi/prog") pulls the whole file into the staging buffer and, on
-	 * completion, the retry sets exec_pending + a SENTINEL exec_file_idx (it does NOT resume —
-	 * the run loop's EV_EXEC launches from the staging buffer). */
+	/* Remote exec is transactional through fetch and image validation. A missing
+	 * file and a malformed ELF both return to the old image with its CLOEXEC
+	 * descriptors untouched. A valid image advances to exec_pending but still
+	 * leaves CLOEXEC closure to the coordinator's final commit point. */
 	{
 		lxp_proc_t xp;
 		lxp_arena_t xa;
 		setup(&xp, &xa);
-		long xr = lxp_netfs_exec_fetch(&xp, "/mnt/pi/prog");
-		assert_int_equal(xr, 0); /* parked */
-		assert_int_equal(xp.netfs_wait, LXP_NETFSW_EXECFETCH);
-		long xrr = -LXP_EAGAIN;
-		for (int i = 0; i < 4000 && xrr == -LXP_EAGAIN; i++) {
-			xrr = lxp_netfs_retry(&xp);
-			if (xrr == -LXP_EAGAIN) {
-				struct timespec ts = {0, 300000};
-				nanosleep(&ts, NULL);
-			}
-		}
-		assert_int_equal(xrr, 0);
+		lxp_exec_capture_t cap;
+		memset(&cap, 0, sizeof(cap));
+		lxp_proc_bind_exec_capture(&xp, &cap);
+		int pfds[2] = {-1, -1};
+		assert_int_equal(lxp_syscall(&xp, LXP_NR_pipe2,
+					     (long)(uintptr_t)pfds,
+					     LXP_O_CLOEXEC, 0, 0, 0, 0),
+				 0);
+		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0],
+					     LXP_F_GETFD, 0, 0, 0, 0),
+				 LXP_FD_CLOEXEC);
+		char *xargv[] = {(char *)"prog", NULL};
+		assert_int_equal(call_pump(&xp, LXP_NR_execve,
+					   (long)(uintptr_t)"/mnt/pi/missing",
+					   (long)(uintptr_t)xargv, 0, 0, 0, 0),
+				 -LXP_ENOENT);
+		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0],
+					     LXP_F_GETFD, 0, 0, 0, 0),
+				 LXP_FD_CLOEXEC);
+		assert_int_equal(call_pump(&xp, LXP_NR_execve,
+					   (long)(uintptr_t)"/mnt/pi/badprog",
+					   (long)(uintptr_t)xargv, 0, 0, 0, 0),
+				 -LXP_ENOEXEC);
+		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0],
+					     LXP_F_GETFD, 0, 0, 0, 0),
+				 LXP_FD_CLOEXEC);
+		assert_int_equal(call_pump(&xp, LXP_NR_execve,
+					   (long)(uintptr_t)"/mnt/pi/prog",
+					   (long)(uintptr_t)xargv, 0, 0, 0, 0),
+				 0);
 		assert_int_equal(xp.exec_pending, 1);
 		assert_int_equal(xp.exec_file_idx, LXP_NETFS_EXEC_SENTINEL);
+		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0],
+					     LXP_F_GETFD, 0, 0, 0, 0),
+				 LXP_FD_CLOEXEC);
 		size_t xsz = 0;
 		const uint8_t *ximg = lxp_netfs_exec_image(&xsz);
-		assert_int_equal((int)xsz, (int)(sizeof(PROG_CONTENT) - 1));
-		assert_memory_equal(ximg, PROG_CONTENT, sizeof(PROG_CONTENT) - 1);
+		assert_int_equal((int)xsz, (int)sizeof(g_prog));
+		assert_memory_equal(ximg, g_prog, sizeof(g_prog));
+		(void)lxp_syscall(&xp, LXP_NR_close, pfds[0], 0, 0, 0, 0, 0);
+		(void)lxp_syscall(&xp, LXP_NR_close, pfds[1], 0, 0, 0, 0, 0);
 	}
 #endif
 

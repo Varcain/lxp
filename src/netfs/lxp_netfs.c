@@ -23,6 +23,7 @@
 #if LXP_ENABLE_NETFS
 
 #include "lxp/lxp_netfs.h"
+#include "lxp/lxp_loader.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_net_ops.h"
 #include "lxp_pool.h" /* shared refcounted open-pool primitives */
@@ -1331,8 +1332,15 @@ long lxp_netfs_retry(lxp_proc_t *p)
 	}
 #if LXP_ENABLE_NETFS_EXEC
 	if (op == LXP_NETFSW_EXECFETCH && result >= 0) {
-		/* the ELF is staged: flag the exec so the run loop's EV_EXEC launches it from the
-		 * staging buffer. Returning 0 with exec_pending set tells the run loop NOT to resume. */
+		/* Preflight the complete staged image while the old program and fd table
+		 * are still intact. A malformed fetch returns ENOEXEC to execve; only a
+		 * loadable image may advance to the coordinator's commit point. */
+		if (lxp_loader_validate_fdpic(g_exec_buf, g_exec_size,
+					      LXP_PROG_REGION_SIZE, 1) != LXP_OK)
+			return -LXP_ENOEXEC;
+		/* The ELF is staged and validated: flag the exec so the run loop's
+		 * EV_EXEC launches it. Returning 0 with exec_pending set tells the run
+		 * loop not to resume the old image. */
 		p->exec_pending = 1;
 		p->exec_file_idx = LXP_NETFS_EXEC_SENTINEL;
 		return 0;

@@ -83,6 +83,24 @@ static void test_fdpic_valid_loads(void **st)
 	assert_int_equal(load(img, sz), LXP_OK);
 }
 
+static void test_fdpic_preflight_is_non_mutating(void **st)
+{
+	(void)st;
+	uint8_t img[IMG_SZ];
+	size_t sz = build_fdpic(img);
+	memset(g_region, 0xa5, sizeof(g_region));
+	assert_int_equal(lxp_loader_validate_fdpic(img, sz, sizeof(g_region), 1),
+			 LXP_OK);
+	for (size_t i = 0; i < sizeof(g_region); i++)
+		assert_int_equal(g_region[i], 0xa5);
+
+	img[0] = 0;
+	assert_int_equal(lxp_loader_validate_fdpic(img, sz, sizeof(g_region), 1),
+			 LXP_ERR_INVALID_PARAM);
+	for (size_t i = 0; i < sizeof(g_region); i++)
+		assert_int_equal(g_region[i], 0xa5);
+}
+
 static void test_fdpic_reject_truncated(void **st)
 {
 	(void)st;
@@ -324,6 +342,7 @@ int test_loader_fdpic_run(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_fdpic_valid_loads),
+		cmocka_unit_test(test_fdpic_preflight_is_non_mutating),
 		cmocka_unit_test(test_fdpic_reject_truncated),
 		cmocka_unit_test(test_fdpic_reject_bad_magic),
 		cmocka_unit_test(test_fdpic_reject_small_phentsize),

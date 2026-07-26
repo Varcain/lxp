@@ -746,11 +746,141 @@ static uint32_t fdpic_rt_n(const uint8_t *lm, int nseg, uint64_t vaddr, uint64_t
 	return 0;
 }
 
+/* Translate a link-time range to its file-backed bytes. Validation uses this
+ * instead of constructing a loadmap or touching the destination region. */
+static const uint8_t *fdpic_file_range(const uint8_t *img, size_t image_size,
+				       uint32_t phoff, uint16_t phentsize,
+				       uint16_t phnum, uint32_t vaddr,
+				       uint32_t need)
+{
+	for (uint16_t i = 0; i < phnum; i++) {
+		const uint8_t *ph = img + phoff + (size_t)i * phentsize;
+		if (le32(ph) != ELF_PT_LOAD)
+			continue;
+		uint32_t off = le32(ph + 4);
+		uint32_t pv = le32(ph + 8);
+		uint32_t filesz = le32(ph + 16);
+		if (vaddr < pv)
+			continue;
+		uint64_t delta = (uint64_t)vaddr - pv;
+		if (delta + need > filesz ||
+		    (uint64_t)off + delta + need > image_size)
+			continue;
+		return img + off + (size_t)delta;
+	}
+	return NULL;
+}
+
+int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t region_size,
+			      int copy_text)
+{
+	if (!image || image_size < 52u)
+		return LXP_ERR_INVALID_PARAM;
+	const uint8_t *img = (const uint8_t *)image;
+	if (img[0] != 0x7f || img[1] != 'E' || img[2] != 'L' ||
+	    img[3] != 'F' || img[4] != ELFCLASS32)
+		return LXP_ERR_INVALID_PARAM;
+	if (le16(img + 16) != ELF_ET_DYN || le16(img + 18) != ELF_EM_ARM)
+		return LXP_ERR_INVALID_PARAM;
+	if (img[7] != ELF_OSABI_ARM_FDPIC &&
+	    !(le32(img + 36) & ELF_EF_ARM_FDPIC))
+		return LXP_ERR_NOT_SUPPORTED;
+	if (lxp_loader_abi_incompatible(image, image_size))
+		return LXP_ERR_NOT_SUPPORTED;
+
+	uint32_t phoff = le32(img + 28);
+	uint16_t phentsize = le16(img + 42);
+	uint16_t phnum = le16(img + 44);
+	if (phentsize < 32u ||
+	    (uint64_t)phoff + (uint64_t)phnum * phentsize > image_size)
+		return LXP_ERR_INVALID_PARAM;
+
+	uint32_t text_sz = 0;
+	uint32_t rw_lo = UINT32_MAX, rw_hi = 0;
+	uint32_t dyn_vaddr = 0, dyn_sz = 0;
+	int have_text = 0;
+	uint32_t nload = 0;
+	for (uint16_t i = 0; i < phnum; i++) {
+		const uint8_t *ph = img + phoff + (size_t)i * phentsize;
+		uint32_t type = le32(ph);
+		if (type == ELF_PT_DYNAMIC) {
+			dyn_vaddr = le32(ph + 8);
+			dyn_sz = le32(ph + 20);
+		}
+		if (type != ELF_PT_LOAD)
+			continue;
+		nload++;
+		uint32_t off = le32(ph + 4);
+		uint32_t vaddr = le32(ph + 8);
+		uint32_t filesz = le32(ph + 16);
+		uint32_t memsz = le32(ph + 20);
+		if (filesz > memsz ||
+		    (uint64_t)off + filesz > image_size ||
+		    (uint64_t)vaddr + memsz > UINT32_MAX)
+			return LXP_ERR_INVALID_PARAM;
+		if (le32(ph + 24) & ELF_PF_X) {
+			if (filesz != memsz)
+				return LXP_ERR_INVALID_PARAM;
+			text_sz = memsz;
+			have_text = 1;
+		} else {
+			uint32_t end = vaddr + memsz;
+			if (vaddr < rw_lo)
+				rw_lo = vaddr;
+			if (end > rw_hi)
+				rw_hi = end;
+		}
+	}
+	if (!have_text || nload == 0u)
+		return LXP_ERR_INVALID_PARAM;
+
+	uint32_t rw_span = rw_hi > rw_lo ? rw_hi - rw_lo : 0u;
+	if (rw_span > region_size)
+		return LXP_ERR_NO_MEMORY;
+	uint32_t rw_a = (rw_span + 3u) & ~3u;
+	uint32_t loadmap_sz = 4u + nload * 12u;
+	uint64_t text_a = copy_text ? (((uint64_t)text_sz + 15u) & ~(uint64_t)15u) : 0u;
+	if (text_a + rw_a + loadmap_sz > region_size)
+		return LXP_ERR_NO_MEMORY;
+
+	uint32_t rel_sz = 0, rel_ent = 8;
+	if (dyn_vaddr != 0u) {
+		if (rw_lo == UINT32_MAX || dyn_vaddr < rw_lo ||
+		    (uint64_t)dyn_vaddr + dyn_sz > rw_hi)
+			return LXP_ERR_INVALID_PARAM;
+		const uint8_t *dyn = fdpic_file_range(img, image_size, phoff,
+						     phentsize, phnum,
+						     dyn_vaddr, dyn_sz);
+		if (!dyn)
+			return LXP_ERR_INVALID_PARAM;
+		for (uint32_t off = 0; off + 8u <= dyn_sz; off += 8u) {
+			uint32_t tag = le32(dyn + off);
+			uint32_t val = le32(dyn + off + 4u);
+			if (tag == ELF_DT_NULL)
+				break;
+			if (tag == ELF_DT_RELSZ)
+				rel_sz = val;
+			else if (tag == ELF_DT_RELENT)
+				rel_ent = val;
+		}
+	}
+	if (rel_sz != 0u && rel_ent < 8u)
+		return LXP_ERR_INVALID_PARAM;
+	uint32_t pool_off = (rw_a + loadmap_sz + 7u) & ~7u;
+	uint32_t max_fd = rel_ent != 0u ? rel_sz / rel_ent : 0u;
+	if (text_a + pool_off + (uint64_t)max_fd * 8u > region_size)
+		return LXP_ERR_NO_MEMORY;
+	return LXP_OK;
+}
+
 int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size, void *region,
 			  size_t region_size, int is_interp, int copy_text)
 {
 	if (!prog || !image || !region || image_size < 52u /* Elf32_Ehdr */)
 		return LXP_ERR_INVALID_PARAM;
+	int vrc = lxp_loader_validate_fdpic(image, image_size, region_size, copy_text);
+	if (vrc != LXP_OK)
+		return vrc;
 	const uint8_t *img = (const uint8_t *)image;
 	if (img[0] != 0x7f || img[1] != 'E' || img[2] != 'L' || img[3] != 'F' || img[4] != 1u)
 		return LXP_ERR_INVALID_PARAM; /* not ELF / not ELFCLASS32 */
