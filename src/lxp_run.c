@@ -90,6 +90,47 @@ struct lxp_slot_runtime {
 
 static struct lxp_slot_runtime g_lxp_slots[LXP_NSLOT];
 
+/*
+ * Lifecycle transactions expose deterministic boundaries to the coordinator
+ * tests without carrying a diagnostic control surface into production builds.
+ * A failpoint is single-shot: the transaction that observes it must either
+ * roll back to the old image or contain the already-committed guest.
+ */
+enum lxp_lifecycle_failpoint {
+	LXP_FAIL_NONE,
+	LXP_FAIL_FORK_REGION_ACQUIRED,
+	LXP_FAIL_FORK_CHILD_PREPARED,
+	LXP_FAIL_FORK_MAPS_PREPARED,
+	LXP_FAIL_FORK_CHILD_COUNTED,
+	LXP_FAIL_FORK_SNAPSHOT_ACQUIRED,
+	LXP_FAIL_FORK_PUBLISHED,
+	LXP_FAIL_EXEC_REGION_ACQUIRED,
+	LXP_FAIL_EXEC_IMAGE_VALIDATED,
+	LXP_FAIL_EXEC_COMMITTED,
+	LXP_FAIL_EXEC_IMAGE_PREPARED,
+	LXP_FAIL_EXEC_PUBLISHED,
+	LXP_FAIL_EXEC_NATIVE_STARTED,
+	LXP_FAIL_EXEC_REGION_COMMITTED,
+};
+
+#if defined(LXP_TEST_FAILPOINTS)
+static enum lxp_lifecycle_failpoint g_lifecycle_failpoint;
+
+static int lifecycle_failpoint(enum lxp_lifecycle_failpoint point)
+{
+	if (g_lifecycle_failpoint != point)
+		return 0;
+	g_lifecycle_failpoint = LXP_FAIL_NONE;
+	return 1;
+}
+#else
+static int lifecycle_failpoint(enum lxp_lifecycle_failpoint point)
+{
+	(void)point;
+	return 0;
+}
+#endif
+
 /* Latest native-task census collected by refresh_stats(). A separate known bit
  * distinguishes a clean "no task" result from an engine without introspection
  * or a truncated kernel-thread list. Diagnostic reads never invoke the engine
@@ -213,6 +254,8 @@ static uint32_t slot_generation(int sidx);
 static lxp_slot_ref_t slot_ref_at(int slot);
 static lxp_region_ref_t region_ref_at(int region);
 static int region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_owner);
+static void proc_mm_put(lxp_proc_t *proc);
+static int region_release_if_owned(lxp_region_ref_t region, lxp_slot_ref_t owner);
 static void *lxp_lifecycle_prepare_park(const lxp_os_ops_t *eng, int sidx,
 					const struct lxp_resume_ctx *ctx);
 
@@ -1398,75 +1441,111 @@ int lxp_slot_report_memory_fault(lxp_slot_ref_t ref, const lxp_guest_fault_t *fa
 #include "run/lxp_lifecycle.c"
 
 /* ---- the run loop ---------------------------------------------------------- */
-/* Load an FDPIC ELF into region ridx + set up slot sidx's proc, then spawn it. @p remote_exec:
- * the image is a RAM staging buffer (a program off the remote mount), so the exec's own text is
- * copied into the region and the region is mapped executable (RWX) — gated by the caller. */
-static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *data, size_t len,
-		  int pid, int ppid, int argc, const char *const argv[], const char *const envp[],
-		  int remote_exec)
-{
-	lxp_slot_ref_t launch_owner = slot_ref_at(sidx);
-	lxp_region_ref_t launch_region = region_ref_at(ridx);
-	if (launch_region.index < 0 ||
-	    !lxp_slot_ref_equal(g_regions[ridx].lease_owner, launch_owner))
-		return -1;
-	uint8_t *region = eng->region(ridx);
+/*
+ * An image is built off-slot. The transaction owns the region lease and every
+ * freshly allocated process object until publish transfers them to the slot.
+ * This keeps a partially loaded image invisible and gives both initial launch
+ * and exec one idempotent cleanup path.
+ */
+struct image_txn {
+	lxp_proc_t proc;
 	lxp_flat_t prog;
+	struct lxp_dbg_s debug;
+	lxp_slot_ref_t owner;
+	lxp_region_ref_t region;
+	void *entry;
+	void *sp;
+	uint8_t *stack_lo;
+	int slot;
+	uint8_t prepared;
+	uint8_t published;
+	uint8_t native_started;
+	uint8_t region_committed;
+};
+
+static void image_txn_init(struct image_txn *tx, int slot, lxp_region_ref_t region,
+			   lxp_slot_ref_t owner)
+{
+	memset(tx, 0, sizeof(*tx));
+	tx->slot = slot;
+	tx->region = region;
+	tx->owner = owner;
+	tx->proc.snapshot = lxp_region_ref_none();
+	tx->proc.vfork_parent = lxp_slot_ref_none();
+}
+
+/* Load an FDPIC ELF and construct its process objects without publishing the
+ * slot or starting a native task. @p remote_exec means executable text is
+ * copied from a RAM staging buffer into the region. */
+static int image_txn_prepare(struct image_txn *tx, const lxp_os_ops_t *eng,
+			     const uint8_t *data, size_t len, int pid, int ppid, int argc,
+			     const char *const argv[], const char *const envp[], int remote_exec)
+{
+	int sidx = tx->slot;
+	int ridx = tx->region.index;
+	if (sidx < 0 || sidx >= LXP_NSLOT || ridx < 0 || ridx >= LXP_NREG ||
+	    tx->region.generation == 0 ||
+	    g_regions[ridx].generation != tx->region.generation ||
+	    !lxp_slot_ref_equal(g_regions[ridx].lease_owner, tx->owner))
+		return -LXP_EINVAL;
+	uint8_t *region = eng->region(ridx);
 	/* Every personality program is an FDPIC ELF (0x7f'ELF', ELFOSABI_ARM_FDPIC); reject
 	 * anything else. spawn_launch reads prog.is_fdpic / prog.got to put the GOT base in r9. */
 	if (!(len >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F'))
-		return -1;
+		return -LXP_ENOEXEC;
 	/* The loader reads the FDPIC ELF from `data` — on the STM32F746 that points into the
 	 * QUADSPI-mapped NOR (0x90000000).  Correctness of that read is a memory-attribute concern,
 	 * not a timing one: the coordinator reads the NOR through a bounded, non-cacheable MPU region
 	 * (os_ops->rootfs_window), so no D-cache burst or speculative prefetch can garble it and a
 	 * context switch mid-load is harmless.  No preemption masking needed. */
-	int lrc = lxp_loader_load_fdpic(&prog, data, len, region, LXP_PROG_REGION_SIZE, 0,
+	int lrc = lxp_loader_load_fdpic(&tx->prog, data, len, region, LXP_PROG_REGION_SIZE, 0,
 					remote_exec);
 	if (lrc != LXP_OK)
-		return -1;
+		return -LXP_ENOEXEC;
 
 	/* FDPIC dynamic exec (DT_NEEDED): load the interpreter ld.so just past the exec in the
 	 * region, build its loadmap, and enter IT (not the program) — r7 = the exec loadmap,
 	 * r8 = ld.so's loadmap, r9 = ld.so's GOT, AT_ENTRY = the program's own entry, AT_BASE =
 	 * ld.so's base. ld.so then loads the .so deps, relocates, and jumps to the program. */
-	uintptr_t pc = prog.entry;	 /* what the seam jumps to (ld.so for a dynamic exec) */
-	uintptr_t at_entry = prog.entry; /* AT_ENTRY = the program's own entry, always */
+	uintptr_t pc = tx->prog.entry; /* what the seam jumps to (ld.so for a dynamic exec) */
+	uintptr_t at_entry = tx->prog.entry; /* AT_ENTRY = the program's own entry, always */
 	uintptr_t at_base = 0;		 /* AT_BASE = ld.so base (0 when static) */
-	prog.interp_loadmap = 0;
-	int dynamic = prog.is_fdpic && prog.is_dynamic;
+	tx->prog.interp_loadmap = 0;
+	int dynamic = tx->prog.is_fdpic && tx->prog.is_dynamic;
 	if (dynamic) {
 		const uint8_t *ld_data = NULL;
 		size_t ld_len = 0;
 		if (lxp_rootfs_resolve(g_cfg->rootfs, g_cfg->rootfs_count, "/lib/ld-uClibc.so.0",
 				       &ld_data, &ld_len) != 0 ||
 		    !ld_data)
-			return -1; /* no interpreter in the rootfs */
-		uintptr_t ld_base = (uintptr_t)region + ((prog.region_used + 15u) & ~15u);
+			return -LXP_ENOEXEC; /* no interpreter in the rootfs */
+		uintptr_t ld_base =
+			(uintptr_t)region + ((tx->prog.region_used + 15u) & ~15u);
 		lxp_flat_t ld;
 		int ldrc = lxp_loader_load_fdpic(
 			&ld, ld_data, ld_len, (void *)ld_base,
 			LXP_PROG_REGION_SIZE - (size_t)(ld_base - (uintptr_t)region), 1,
 			0); /* ld.so text is XIP from the rootfs (no copy) */
 		if (ldrc != LXP_OK)
-			return -1;
+			return -LXP_ENOEXEC;
 		pc = ld.entry;
 		/* AT_BASE = ld.so's ELF header, which ld.so reads at _dl_start (dl-startup.c). With the
 		 * text shared IN-PLACE, that header is in the cpio (ld.text_base), NOT at ld_base — which
 		 * now holds only ld.so's RW block. (Pre-sharing, text+data were contiguous at ld_base, so
 		 * the old `at_base = ld_base` happened to coincide with the header.) */
 		at_base = ld.text_base;
-		prog.interp_loadmap = ld.loadmap; /* r8 */
+		tx->prog.interp_loadmap = ld.loadmap; /* r8 */
 		/* r9 = ld.so's _DYNAMIC, NOT its GOT: uClibc-ng's FDPIC DL_BOOT_COMPUTE_DYN sets
 		 * the dynamic-table ptr = dl_boot_ldso_dyn_pointer = the entry r9. (The working
 		 * GOT is derived by __self_reloc.) Passing the GOT/base here mis-parses ld.so's
 		 * dynamic → its RELATIVE relocs target wrong → _dl_malloc derefs an unrelocated
 		 * GOT entry. */
-		prog.got = ld.dynamic;
-		prog.region_used = (size_t)(ld_base - (uintptr_t)region) + ld.region_used;
+		tx->prog.got = ld.dynamic;
+		tx->prog.region_used =
+			(size_t)(ld_base - (uintptr_t)region) + ld.region_used;
 	}
 
-	uint8_t *rw = region + ((prog.region_used + 15u) & ~15u);
+	uint8_t *rw = region + ((tx->prog.region_used + 15u) & ~15u);
 	uint8_t *rw_end = region + LXP_PROG_REGION_SIZE;
 	/* A dynamic proc's arena lives in the engine's PSRAM dyn_pool (ld.so mmaps libc.so
 	 * ~500K from it); a static FDPIC proc uses the in-region 96K arena. The stack always sits
@@ -1476,45 +1555,36 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 	uint8_t *stack_lo = rw + LXP_PROG_ARENA_SIZE;
 	if (dynamic) {
 		if (!eng->dyn_pool)
-			return -1; /* this engine has no room to host a dynamic proc */
+			return -LXP_ENOMEM; /* this engine has no room to host a dynamic proc */
 		arena_mem = eng->dyn_pool(ridx, &arena_sz);
 		stack_lo = rw; /* the region tail is the stack; the arena is in PSRAM */
 	}
 	if (lxp_arena_init(&g_arenas[ridx], arena_mem, arena_sz) != LXP_OK ||
-	    lxp_proc_init(&g_lxp_slots[sidx].proc, &g_arenas[ridx], 0x8000) != LXP_OK)
-		return -1;
-	lxp_proc_bind_exec_capture(&g_lxp_slots[sidx].proc, eng->exec_capture(sidx));
-	/* A fresh image has no handler return chain from the previous slot owner.
-	 * execve likewise discards the old image's in-flight signal contexts. */
-	g_sig_save[sidx].depth = 0;
-	g_lxp_slots[sidx].proc.write_fn = g_cfg->write_fn;
-	g_lxp_slots[sidx].proc.read_fn = g_cfg->read_fn;
-	g_lxp_slots[sidx].proc.console_poll = g_cfg->console_poll;
-	g_lxp_slots[sidx].proc.io_ctx = g_cfg->io_ctx;
-	g_lxp_slots[sidx].proc.pid = pid;
-	g_lxp_slots[sidx].proc.group->tgid = pid;
-	g_lxp_slots[sidx].proc.group->ppid = ppid;
-	g_lxp_slots[sidx].proc.group->pgid =
+	    lxp_proc_init(&tx->proc, &g_arenas[ridx], 0x8000) != LXP_OK)
+		return -LXP_ENOMEM;
+	tx->proc.write_fn = g_cfg->write_fn;
+	tx->proc.read_fn = g_cfg->read_fn;
+	tx->proc.console_poll = g_cfg->console_poll;
+	tx->proc.io_ctx = g_cfg->io_ctx;
+	tx->proc.pid = pid;
+	tx->proc.group->tgid = pid;
+	tx->proc.group->ppid = ppid;
+	tx->proc.group->pgid =
 		pid; /* a fresh proc leads its own group; the child constructor inherits pgid, and execve restores it below */
-	/* Concurrent model: this slot is now a live process owning region ridx. */
-	g_lxp_slots[sidx].proc.alive = 1;
-	g_lxp_slots[sidx].proc.mm->region = (lxp_region_ref_t){
-		.index = (int16_t)ridx,
-		.generation = g_regions[ridx].generation,
-	};
+	tx->proc.alive = 1;
+	tx->proc.mm->region = tx->region;
 	/* access_ok bounds: this proc's own writable memory (image region + dynamic arena). The syscall
 	 * layer rejects any user pointer outside these (+ the shared RO rootfs for reads). */
-	g_lxp_slots[sidx].proc.mm->region_lo = (uintptr_t)region;
-	g_lxp_slots[sidx].proc.mm->region_hi = (uintptr_t)region + LXP_PROG_REGION_SIZE;
-	g_lxp_slots[sidx].proc.mm->pool_lo = (uintptr_t)arena_mem;
-	g_lxp_slots[sidx].proc.mm->pool_hi = (uintptr_t)arena_mem + arena_sz;
-	g_lxp_slots[sidx].proc.is_fdpic = prog.is_fdpic;
-	g_lxp_slots[sidx].proc.mm->is_dynamic =
+	tx->proc.mm->region_lo = (uintptr_t)region;
+	tx->proc.mm->region_hi = (uintptr_t)region + LXP_PROG_REGION_SIZE;
+	tx->proc.mm->pool_lo = (uintptr_t)arena_mem;
+	tx->proc.mm->pool_hi = (uintptr_t)arena_mem + arena_sz;
+	tx->proc.is_fdpic = tx->prog.is_fdpic;
+	tx->proc.mm->is_dynamic =
 		dynamic; /* arena/libc RW data lives in the dyn_pool */
-	g_lxp_slots[sidx].proc.stack_lo =
-		(uintptr_t)stack_lo; /* writable-data / stack boundary (snapshot) */
-	g_lxp_slots[sidx].proc.snapshot = lxp_region_ref_none();
-	g_lxp_slots[sidx].proc.vfork_parent = lxp_slot_ref_none();
+	tx->proc.stack_lo = (uintptr_t)stack_lo; /* writable-data / stack boundary (snapshot) */
+	tx->proc.snapshot = lxp_region_ref_none();
+	tx->proc.vfork_parent = lxp_slot_ref_none();
 	/* comm = argv[0] basename (strip the login-shell leading '-') for ps/top. */
 	{
 		const char *a0 = (argc > 0 && argv && argv[0]) ? argv[0] : "?";
@@ -1525,39 +1595,135 @@ static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *da
 			if (*s == '/')
 				base = s + 1;
 		size_t cl = strlen(base);
-		if (cl >= sizeof(g_lxp_slots[sidx].proc.comm))
-			cl = sizeof(g_lxp_slots[sidx].proc.comm) - 1;
-		memcpy(g_lxp_slots[sidx].proc.comm, base, cl);
-		g_lxp_slots[sidx].proc.comm[cl] = '\0';
+		if (cl >= sizeof(tx->proc.comm))
+			cl = sizeof(tx->proc.comm) - 1;
+		memcpy(tx->proc.comm, base, cl);
+		tx->proc.comm[cl] = '\0';
 	}
-	lxp_proc_set_rootfs(&g_lxp_slots[sidx].proc, g_cfg->rootfs, g_cfg->rootfs_count);
+	lxp_proc_set_rootfs(&tx->proc, g_cfg->rootfs, g_cfg->rootfs_count);
 	void *sp = lxp_setup_stack(stack_lo, (size_t)(rw_end - stack_lo), argc, argv, envp,
-				   prog.is_fdpic, prog.phdr, prog.phnum, at_entry, at_base);
+				   tx->prog.is_fdpic, tx->prog.phdr, tx->prog.phnum, at_entry,
+				   at_base);
 	if (!sp)
-		return -1;
-	/* Publish the program's runtime segment bases for the GDB source-level-debug helper. */
-	g_lxp_dbg[sidx].text_base = prog.text_base;
-	g_lxp_dbg[sidx].data_base = prog.data_base;
-	g_lxp_dbg[sidx].entry = at_entry;
-	g_lxp_dbg[sidx].dynamic = prog.dynamic; /* _DYNAMIC → DT_DEBUG → ld.so's link-map chain */
-	g_lxp_dbg[sidx].interp_base = at_base;	/* ld.so text base (0 if static) */
+		return -LXP_ENOMEM;
+	tx->debug.text_base = tx->prog.text_base;
+	tx->debug.data_base = tx->prog.data_base;
+	tx->debug.entry = at_entry;
+	tx->debug.dynamic =
+		tx->prog.dynamic; /* _DYNAMIC → DT_DEBUG → ld.so's link-map chain */
+	tx->debug.interp_base = at_base; /* ld.so text base (0 if static) */
+	tx->entry = (void *)pc;
+	tx->sp = sp;
+	tx->stack_lo = stack_lo;
+	tx->prepared = 1;
+	return LXP_OK;
+}
+
+static int image_txn_publish(struct image_txn *tx, const lxp_os_ops_t *eng)
+{
+	int sidx = tx->slot;
+	if (!tx->prepared || tx->published || g_lxp_slots[sidx].proc.alive ||
+	    g_lxp_slots[sidx].proc.mm || g_lxp_slots[sidx].proc.files ||
+	    g_lxp_slots[sidx].proc.fs_context || g_lxp_slots[sidx].proc.sighand ||
+	    g_lxp_slots[sidx].proc.group)
+		return -LXP_EINVAL;
+
+	/* This is an ownership move, not inheritance. The source is zeroed before
+	 * any callback can observe the published slot. */
+	memcpy(&g_lxp_slots[sidx].proc, &tx->proc, sizeof(tx->proc));
+	memset(&tx->proc, 0, sizeof(tx->proc));
+	tx->proc.snapshot = lxp_region_ref_none();
+	tx->proc.vfork_parent = lxp_slot_ref_none();
+	lxp_proc_bind_exec_capture(&g_lxp_slots[sidx].proc, eng->exec_capture(sidx));
+	g_sig_save[sidx].depth = 0;
+	g_lxp_dbg[sidx] = tx->debug;
 	/* P3: a fresh image in this slot inherits no device mmap. Clear the dev_map ranges
 	 * (they gate user_ok) and tear down any framebuffer region a prior occupant of this
 	 * slot installed (map_device with size 0), so an exec/relaunch never leaks it. */
 	g_lxp_slots[sidx].proc.mm->dev_map_lo[0] = g_lxp_slots[sidx].proc.mm->dev_map_hi[0] = 0;
 	g_lxp_slots[sidx].proc.mm->dev_map_lo[1] = g_lxp_slots[sidx].proc.mm->dev_map_hi[1] = 0;
 	if (eng->map_device)
-		eng->map_device(sidx, 0, 0, 0);
-	int rc = coordinator_launch_slot(eng, sidx, ridx, &prog, (void *)pc, sp, stack_lo);
+		(void)eng->map_device(sidx, 0, 0, 0);
+	tx->published = 1;
+	if (lifecycle_failpoint(LXP_FAIL_EXEC_PUBLISHED))
+		return -LXP_EIO;
+	return LXP_OK;
+}
+
+static int image_txn_start(struct image_txn *tx, const lxp_os_ops_t *eng)
+{
+	if (!tx->published)
+		return -LXP_EINVAL;
+	int rc = coordinator_launch_slot(eng, tx->slot, tx->region.index, &tx->prog, tx->entry,
+					 tx->sp, tx->stack_lo);
 	if (rc != LXP_OK)
 		return rc;
-	if (region_commit_address_space(launch_region, launch_owner) != 0) {
+	tx->native_started = 1;
+	if (lifecycle_failpoint(LXP_FAIL_EXEC_NATIVE_STARTED))
+		return -LXP_EIO;
+	if (region_commit_address_space(tx->region, tx->owner) != 0) {
 		/* This cannot happen without coordinator-owned state corruption. Do
 		 * not leave a native task running against an unowned image. */
-		(void)coordinator_abort_slot(eng, sidx);
-		return -1;
+		return -LXP_EIO;
 	}
+	tx->region_committed = 1;
+	if (lifecycle_failpoint(LXP_FAIL_EXEC_REGION_COMMITTED))
+		return -LXP_EIO;
 	return LXP_OK;
+}
+
+static int image_txn_abort(struct image_txn *tx, const lxp_os_ops_t *eng)
+{
+	lxp_proc_t *proc = &tx->proc;
+	if (tx->published) {
+		if (g_lxp_slots[tx->slot].proc.alive &&
+		    coordinator_abort_slot(eng, tx->slot) != LXP_OK)
+			return -LXP_EAGAIN;
+		proc = &g_lxp_slots[tx->slot].proc;
+	}
+
+	lxp_proc_resources_put(proc);
+	if (proc->mm) {
+		if (lxp_region_ref_equal(proc->mm->region, tx->region))
+			proc_mm_put(proc);
+		else
+			lxp_proc_mm_put(proc);
+	}
+	lxp_proc_group_put(proc);
+	proc->alive = 0;
+	if (tx->published) {
+		memset(proc, 0, sizeof(*proc));
+		proc->snapshot = lxp_region_ref_none();
+		proc->vfork_parent = lxp_slot_ref_none();
+		g_lxp_slots[tx->slot].runnable = 0;
+		primary_slot_clear(tx->slot);
+		memset(&g_sig_save[tx->slot], 0, sizeof(g_sig_save[tx->slot]));
+	}
+	if (tx->region.index >= 0 && tx->region.index < LXP_NREG &&
+	    g_regions[tx->region.index].refs != 0 &&
+	    lxp_slot_ref_equal(g_regions[tx->region.index].lease_owner, tx->owner))
+		(void)region_release_if_owned(tx->region, tx->owner);
+	tx->prepared = 0;
+	tx->published = 0;
+	tx->native_started = 0;
+	tx->region_committed = 0;
+	return LXP_OK;
+}
+
+static int launch(const lxp_os_ops_t *eng, int sidx, int ridx, const uint8_t *data, size_t len,
+		  int pid, int ppid, int argc, const char *const argv[], const char *const envp[],
+		  int remote_exec)
+{
+	struct image_txn tx;
+	image_txn_init(&tx, sidx, region_ref_at(ridx), slot_ref_at(sidx));
+	int rc = image_txn_prepare(&tx, eng, data, len, pid, ppid, argc, argv, envp, remote_exec);
+	if (rc == LXP_OK)
+		rc = image_txn_publish(&tx, eng);
+	if (rc == LXP_OK)
+		rc = image_txn_start(&tx, eng);
+	if (rc != LXP_OK)
+		(void)image_txn_abort(&tx, eng);
+	return rc;
 }
 
 /* Select one of the two device ranges represented in lxp_proc_t without
@@ -2305,17 +2471,28 @@ static void vfork_contain_stale(lxp_slot_ref_t child_ref, lxp_proc_t *child)
 	primary_slot_mark(child_ref.index);
 }
 
+enum fork_txn_phase {
+	FORK_TXN_EMPTY,
+	FORK_TXN_PREPARING,
+	FORK_TXN_PREPARED,
+	FORK_TXN_PUBLISHED,
+	FORK_TXN_COMMITTED,
+	FORK_TXN_ABORTED,
+};
+
 /*
  * Fork construction owns one region reference plus the not-yet-published child
- * objects and native map. A failed step comes through fork_child_build_abort(),
- * so adding an acquisition cannot grow another hand-written rollback list.
+ * objects, native map, child accounting, and optional vfork snapshot. No
+ * acquisition escapes until fork_txn_commit(); abort is deliberately
+ * idempotent so every failed phase can converge on the same cleanup.
  */
-struct fork_child_build {
+struct fork_txn {
 	lxp_proc_t *parent;
 	lxp_proc_t *child;
 	lxp_slot_ref_t parent_ref;
 	lxp_slot_ref_t child_ref;
 	lxp_region_ref_t parent_region;
+	enum fork_txn_phase phase;
 	uint8_t region_acquired;
 	uint8_t child_constructed;
 	uint8_t maps_touched;
@@ -2330,78 +2507,127 @@ static void fork_child_guard_reset(int child_slot)
 	g_vfork_guard[child_slot].snapshot = lxp_region_ref_none();
 }
 
-static int fork_child_build_prepare(struct fork_child_build *build, const lxp_os_ops_t *eng,
-				    int parent_slot, int child_slot, uint32_t clone_flags,
-				    int child_pid)
+static int fork_txn_prepare(struct fork_txn *tx, const lxp_os_ops_t *eng, int parent_slot,
+			    int child_slot, uint32_t clone_flags, int child_pid)
 {
-	memset(build, 0, sizeof(*build));
-	build->parent = &g_lxp_slots[parent_slot].proc;
-	build->child = &g_lxp_slots[child_slot].proc;
-	build->parent_ref = slot_ref_at(parent_slot);
+	memset(tx, 0, sizeof(*tx));
+	tx->phase = FORK_TXN_PREPARING;
+	tx->parent = &g_lxp_slots[parent_slot].proc;
+	tx->child = &g_lxp_slots[child_slot].proc;
+	tx->parent_ref = slot_ref_at(parent_slot);
 
 	deferred_slot_reassign(child_slot);
-	build->child_ref = slot_ref_at(child_slot);
-	build->parent_region = build->parent->mm->region;
+	tx->child_ref = slot_ref_at(child_slot);
+	tx->parent_region = tx->parent->mm->region;
 	fork_child_guard_reset(child_slot);
-	if (region_get(build->parent_region) != 0)
+	if (region_get(tx->parent_region) != 0)
 		return -LXP_EAGAIN;
-	build->region_acquired = 1;
+	tx->region_acquired = 1;
+	if (lifecycle_failpoint(LXP_FAIL_FORK_REGION_ACQUIRED))
+		return -LXP_ENOMEM;
 
 	int rc;
 	if (clone_flags & LXP_CLONE_THREAD)
-		rc = lxp_proc_init_thread_child(build->child, build->parent, clone_flags,
-						child_pid);
+		rc = lxp_proc_init_thread_child(tx->child, tx->parent, clone_flags, child_pid);
 	else
-		rc = lxp_proc_init_process_child(build->child, build->parent, clone_flags,
-						 child_pid);
+		rc = lxp_proc_init_process_child(tx->child, tx->parent, clone_flags, child_pid);
 	if (rc != LXP_OK)
 		return -LXP_EAGAIN;
-	build->child_constructed = 1;
+	tx->child_constructed = 1;
+	if (lifecycle_failpoint(LXP_FAIL_FORK_CHILD_PREPARED))
+		return -LXP_ENOMEM;
 
 	/* Every slot owns its cold exec capture and active signal return chain even
 	 * when its process-wide objects are shared. */
-	lxp_proc_bind_exec_capture(build->child, eng->exec_capture(build->child_ref.index));
-	g_sig_save[build->child_ref.index] = g_sig_save[build->parent_ref.index];
+	lxp_proc_bind_exec_capture(tx->child, eng->exec_capture(tx->child_ref.index));
+	g_sig_save[tx->child_ref.index] = g_sig_save[tx->parent_ref.index];
 
 	/* Hardware mappings are installed while the record is still unpublished.
 	 * A later failure clears them through the same transaction abort. */
-	build->maps_touched = 1;
-	if (coordinator_restore_mm_maps(eng, build->child_ref.index, build->child->mm) != 0)
+	tx->maps_touched = 1;
+	if (coordinator_restore_mm_maps(eng, tx->child_ref.index, tx->child->mm) != 0)
 		return -LXP_ENOMEM;
-	build->child->alive = 1;
+	if (lifecycle_failpoint(LXP_FAIL_FORK_MAPS_PREPARED))
+		return -LXP_ENOMEM;
+	tx->phase = FORK_TXN_PREPARED;
 	return LXP_OK;
 }
 
-static void fork_child_build_count(struct fork_child_build *build)
+static int fork_txn_count_child(struct fork_txn *tx)
 {
-	build->parent->group->live_children++;
-	build->child_counted = 1;
+	if (tx->phase != FORK_TXN_PREPARED || tx->child_counted)
+		return -LXP_EINVAL;
+	tx->parent->group->live_children++;
+	tx->child_counted = 1;
+	return lifecycle_failpoint(LXP_FAIL_FORK_CHILD_COUNTED) ? -LXP_ENOMEM : LXP_OK;
 }
 
-static void fork_child_build_abort(struct fork_child_build *build, const lxp_os_ops_t *eng)
+static int fork_txn_snapshot(struct fork_txn *tx, const lxp_os_ops_t *eng, uintptr_t parent_sp)
 {
-	if (build->child_counted && build->parent->group->live_children > 0)
-		build->parent->group->live_children--;
-	if (build->child_constructed && build->child->snapshot.index >= 0)
-		(void)region_release_if_owned(build->child->snapshot, build->child_ref);
-	if (build->maps_touched && eng->map_device)
-		(void)eng->map_device(build->child_ref.index, 0, 0, 0);
-	if (build->region_acquired)
-		(void)region_put(build->parent_region);
-	if (build->child_constructed)
-		lxp_proc_child_discard(build->child);
-	memset(&g_sig_save[build->child_ref.index], 0, sizeof(g_sig_save[build->child_ref.index]));
-	g_lxp_slots[build->child_ref.index].runnable = 0;
-	primary_slot_clear(build->child_ref.index);
-	fork_child_guard_reset(build->child_ref.index);
+	if (tx->phase != FORK_TXN_PREPARED || !tx->child_constructed)
+		return -LXP_EINVAL;
+	tx->child->snapshot = vfork_snapshot(eng, tx->parent, tx->child_ref, parent_sp);
+	if (tx->child->snapshot.index < 0)
+		return -LXP_ENOMEM;
+	return lifecycle_failpoint(LXP_FAIL_FORK_SNAPSHOT_ACQUIRED) ? -LXP_ENOMEM : LXP_OK;
 }
 
-static void fork_child_build_commit(struct fork_child_build *build)
+static int fork_txn_validate(const struct fork_txn *tx)
 {
-	build->region_acquired = 0;
-	build->child_constructed = 0;
-	build->maps_touched = 0;
-	build->child_counted = 0;
+	if (!tx || tx->phase != FORK_TXN_PREPARED || !tx->region_acquired ||
+	    !tx->child_constructed || tx->child->alive || !tx->child->mm ||
+	    !tx->child->files || !tx->child->fs_context || !tx->child->sighand ||
+	    !tx->child->group || !lxp_slot_ref_is_current(tx->parent_ref) ||
+	    !lxp_region_ref_equal(tx->child->mm->region, tx->parent_region))
+		return -LXP_EINVAL;
+	return LXP_OK;
+}
+
+static int fork_txn_publish(struct fork_txn *tx)
+{
+	if (fork_txn_validate(tx) != LXP_OK)
+		return -LXP_EINVAL;
+	tx->child->alive = 1;
+	tx->phase = FORK_TXN_PUBLISHED;
+	return lifecycle_failpoint(LXP_FAIL_FORK_PUBLISHED) ? -LXP_ENOMEM : LXP_OK;
+}
+
+static void fork_txn_abort(struct fork_txn *tx, const lxp_os_ops_t *eng)
+{
+	if (!tx || tx->phase == FORK_TXN_ABORTED || tx->phase == FORK_TXN_COMMITTED ||
+	    tx->phase == FORK_TXN_EMPTY)
+		return;
+	if (tx->child_counted && tx->parent->group->live_children > 0)
+		tx->parent->group->live_children--;
+	if (tx->child_constructed && tx->child->snapshot.index >= 0)
+		(void)region_release_if_owned(tx->child->snapshot, tx->child_ref);
+	if (tx->maps_touched && eng->map_device)
+		(void)eng->map_device(tx->child_ref.index, 0, 0, 0);
+	if (tx->region_acquired)
+		(void)region_put(tx->parent_region);
+	if (tx->child_constructed)
+		lxp_proc_child_discard(tx->child);
+	memset(&g_sig_save[tx->child_ref.index], 0, sizeof(g_sig_save[tx->child_ref.index]));
+	g_lxp_slots[tx->child_ref.index].runnable = 0;
+	primary_slot_clear(tx->child_ref.index);
+	fork_child_guard_reset(tx->child_ref.index);
+	tx->region_acquired = 0;
+	tx->child_constructed = 0;
+	tx->maps_touched = 0;
+	tx->child_counted = 0;
+	tx->phase = FORK_TXN_ABORTED;
+}
+
+static int fork_txn_commit(struct fork_txn *tx)
+{
+	if (!tx || tx->phase != FORK_TXN_PUBLISHED)
+		return -LXP_EINVAL;
+	tx->region_acquired = 0;
+	tx->child_constructed = 0;
+	tx->maps_touched = 0;
+	tx->child_counted = 0;
+	tx->phase = FORK_TXN_COMMITTED;
+	return LXP_OK;
 }
 
 static void fork_parent_resume_error(const lxp_os_ops_t *eng, int parent_slot, long error)

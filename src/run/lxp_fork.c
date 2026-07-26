@@ -30,28 +30,34 @@ static void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_
 		return;
 	}
 
-	struct fork_child_build build;
+	struct fork_txn tx;
 	int child_pid = *next_pid;
-	int build_rc = fork_child_build_prepare(&build, eng, parent_slot, child_slot, clone_flags,
-						child_pid);
-	if (build_rc != LXP_OK) {
-		fork_child_build_abort(&build, eng);
-		fork_parent_resume_error(eng, parent_slot, build_rc);
+	int rc = fork_txn_prepare(&tx, eng, parent_slot, child_slot, clone_flags, child_pid);
+	if (rc != LXP_OK) {
+		fork_txn_abort(&tx, eng);
+		fork_parent_resume_error(eng, parent_slot, rc);
 		return;
 	}
 
-	lxp_proc_t *child = build.child;
-	lxp_slot_ref_t child_ref = build.child_ref;
-	(*next_pid)++;
+	lxp_proc_t *child = tx.child;
 	if (clone_flags & LXP_CLONE_VM) {
 		/* A shared-mm clone runs on its own stack while the parent co-runs.
 		 * CLONE_THREAD controls group membership; CLONE_VM alone remains a
 		 * distinct waitable process. */
 		if (!(clone_flags & LXP_CLONE_THREAD))
-			fork_child_build_count(&build);
+			rc = fork_txn_count_child(&tx);
 		g_lxp_slots[child_slot].resume = g_lxp_slots[parent_slot].resume;
 		g_lxp_slots[child_slot].resume.sp = child_stack;
-		fork_child_build_commit(&build);
+		if (rc == LXP_OK)
+			rc = fork_txn_publish(&tx);
+		if (rc == LXP_OK)
+			rc = fork_txn_commit(&tx);
+		if (rc != LXP_OK) {
+			fork_txn_abort(&tx, eng);
+			fork_parent_resume_error(eng, parent_slot, rc);
+			return;
+		}
+		(*next_pid)++;
 		(void)coordinator_park_slot(eng, parent_slot);
 		(void)coordinator_resume_slot(eng, parent_slot, parent->mm->region.index,
 					      &g_lxp_slots[parent_slot].resume, child->pid);
@@ -60,18 +66,26 @@ static void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_
 		return;
 	}
 
-	fork_child_build_count(&build);
+	rc = fork_txn_count_child(&tx);
 	child->vfork_parent = slot_ref_at(parent_slot);
-	child->snapshot =
-		vfork_snapshot(eng, parent, child_ref, g_lxp_slots[parent_slot].resume.sp);
-	if (child->snapshot.index < 0) {
+	if (rc == LXP_OK)
+		rc = fork_txn_snapshot(&tx, eng, g_lxp_slots[parent_slot].resume.sp);
+	if (rc != LXP_OK) {
 		/* Refuse a deep vfork if no spare region can isolate the child's
 		 * pre-exec writes from its suspended parent. */
-		fork_child_build_abort(&build, eng);
-		fork_parent_resume_error(eng, parent_slot, -LXP_ENOMEM);
+		fork_txn_abort(&tx, eng);
+		fork_parent_resume_error(eng, parent_slot, rc);
 		return;
 	}
-	fork_child_build_commit(&build);
+	rc = fork_txn_publish(&tx);
+	if (rc == LXP_OK)
+		rc = fork_txn_commit(&tx);
+	if (rc != LXP_OK) {
+		fork_txn_abort(&tx, eng);
+		fork_parent_resume_error(eng, parent_slot, rc);
+		return;
+	}
+	(*next_pid)++;
 	(void)coordinator_park_slot(eng, parent_slot);
 	(void)coordinator_resume_slot(eng, child_slot, child->mm->region.index,
 				      &g_lxp_slots[parent_slot].resume, 0);

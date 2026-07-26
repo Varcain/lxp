@@ -272,6 +272,7 @@ static int reset_state(void **state)
 	lxp_console_set_fg_pgrp(0);
 	g_eng = &g_mock_eng;
 	g_cfg = NULL;
+	g_lifecycle_failpoint = LXP_FAIL_NONE;
 	g_lxp_active = 0;
 	g_pending_sig = 0;
 	g_tty_isig = 1;
@@ -290,6 +291,8 @@ static void make_valid_running_slot(int slot, int region)
 	g_lxp_slots[slot].proc.pid = slot + 1;
 	g_lxp_slots[slot].proc.group->tgid = slot + 1;
 	g_lxp_slots[slot].proc.mm->region = region_ref;
+	g_lxp_slots[slot].proc.snapshot = lxp_region_ref_none();
+	g_lxp_slots[slot].proc.vfork_parent = lxp_slot_ref_none();
 	g_lxp_slots[slot].host_state = SLOT_RUNNING;
 	g_lxp_slots[slot].runnable = 1;
 }
@@ -519,9 +522,9 @@ static void test_fork_build_abort_restores_world(void **state)
 
 	/* Region acquisition failure must not touch the destination or parent. */
 	g_regions[0].refs = LXP_NSLOT;
-	struct fork_child_build build;
-	assert_int_equal(fork_child_build_prepare(&build, &g_mock_eng, 0, 1, 0, 2), -LXP_EAGAIN);
-	fork_child_build_abort(&build, &g_mock_eng);
+	struct fork_txn tx;
+	assert_int_equal(fork_txn_prepare(&tx, &g_mock_eng, 0, 1, 0, 2), -LXP_EAGAIN);
+	fork_txn_abort(&tx, &g_mock_eng);
 	assert_int_equal(g_regions[0].refs, LXP_NSLOT);
 	assert_failed_child_is_empty(&g_lxp_slots[1].proc);
 	g_regions[0].refs = 1;
@@ -536,8 +539,8 @@ static void test_fork_build_abort_restores_world(void **state)
 	parent->mm->dev_map_hi[0] = 0x1100u;
 	parent->mm->dev_map_attrs[0] = LXP_MAP_NC;
 	g_mock.map_fail_slot = 1;
-	assert_int_equal(fork_child_build_prepare(&build, &g_mock_eng, 0, 1, 0, 2), -LXP_ENOMEM);
-	fork_child_build_abort(&build, &g_mock_eng);
+	assert_int_equal(fork_txn_prepare(&tx, &g_mock_eng, 0, 1, 0, 2), -LXP_ENOMEM);
+	fork_txn_abort(&tx, &g_mock_eng);
 	assert_int_equal(g_regions[0].refs, 1);
 	assert_int_equal(parent->mm->refs, mm_refs);
 	assert_int_equal(parent->files->refs, files_refs);
@@ -548,14 +551,14 @@ static void test_fork_build_abort_restores_world(void **state)
 
 	/* Snapshot exhaustion happens after publication preparation and child
 	 * accounting; the same abort reverses both. */
-	assert_int_equal(fork_child_build_prepare(&build, &g_mock_eng, 0, 1, 0, 2), LXP_OK);
-	fork_child_build_count(&build);
+	assert_int_equal(fork_txn_prepare(&tx, &g_mock_eng, 0, 1, 0, 2), LXP_OK);
+	assert_int_equal(fork_txn_count_child(&tx), LXP_OK);
 	for (int r = 1; r < LXP_NREG; r++)
 		assert_int_equal(region_reserve(r, slot_ref_at(0)).index, r);
 	assert_int_equal(
-		vfork_snapshot(&g_mock_eng, parent, build.child_ref, g_lxp_slots[0].resume.sp).index,
+		vfork_snapshot(&g_mock_eng, parent, tx.child_ref, g_lxp_slots[0].resume.sp).index,
 		-1);
-	fork_child_build_abort(&build, &g_mock_eng);
+	fork_txn_abort(&tx, &g_mock_eng);
 	assert_int_equal(parent->group->live_children, 0);
 	assert_int_equal(g_regions[0].refs, 1);
 	assert_failed_child_is_empty(&g_lxp_slots[1].proc);
@@ -563,6 +566,271 @@ static void test_fork_build_abort_restores_world(void **state)
 		assert_int_equal(region_put(region_ref_at(r)), LXP_OK);
 	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+}
+
+static void test_fork_transaction_failpoints_restore_world(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *parent = &g_lxp_slots[0].proc;
+	parent->mm->region_lo = (uintptr_t)g_mock_regions[0];
+	parent->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	parent->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	uintptr_t parent_sp = (uintptr_t)g_mock_regions[0] + 192u;
+	lxp_proc_child_discard(&g_lxp_slots[1].proc);
+	lxp_diag_error_t error;
+
+	const enum lxp_lifecycle_failpoint prepare_points[] = {
+		LXP_FAIL_FORK_REGION_ACQUIRED,
+		LXP_FAIL_FORK_CHILD_PREPARED,
+		LXP_FAIL_FORK_MAPS_PREPARED,
+	};
+	for (size_t i = 0; i < sizeof(prepare_points) / sizeof(prepare_points[0]); i++) {
+		struct fork_txn tx;
+		g_lifecycle_failpoint = prepare_points[i];
+		assert_true(fork_txn_prepare(&tx, &g_mock_eng, 0, 1, 0, 2) < 0);
+		fork_txn_abort(&tx, &g_mock_eng);
+		fork_txn_abort(&tx, &g_mock_eng); /* idempotent */
+		assert_int_equal(parent->group->live_children, 0);
+		assert_int_equal(g_regions[0].refs, 1);
+		assert_failed_child_is_empty(&g_lxp_slots[1].proc);
+		assert_int_equal(lxp_validate_world(&error), LXP_OK);
+	}
+
+	/* Child accounting, snapshot ownership, and publication are later
+	 * boundaries of the same transaction and must converge on the same state. */
+	for (enum lxp_lifecycle_failpoint point = LXP_FAIL_FORK_CHILD_COUNTED;
+	     point <= LXP_FAIL_FORK_PUBLISHED; point++) {
+		struct fork_txn tx;
+		assert_int_equal(fork_txn_prepare(&tx, &g_mock_eng, 0, 1, 0, 2), LXP_OK);
+		g_lifecycle_failpoint = point;
+		int rc = fork_txn_count_child(&tx);
+		if (point >= LXP_FAIL_FORK_SNAPSHOT_ACQUIRED && rc == LXP_OK) {
+			tx.child->vfork_parent = tx.parent_ref;
+			rc = fork_txn_snapshot(&tx, &g_mock_eng, parent_sp);
+		}
+		if (point == LXP_FAIL_FORK_PUBLISHED && rc == LXP_OK)
+			rc = fork_txn_publish(&tx);
+		assert_true(rc < 0);
+		fork_txn_abort(&tx, &g_mock_eng);
+		fork_txn_abort(&tx, &g_mock_eng);
+		assert_int_equal(parent->group->live_children, 0);
+		assert_int_equal(g_regions[0].refs, 1);
+		for (int r = 1; r < LXP_NREG; r++)
+			assert_int_equal(g_regions[r].refs, 0);
+		assert_failed_child_is_empty(&g_lxp_slots[1].proc);
+		assert_int_equal(lxp_validate_world(&error), LXP_OK);
+	}
+}
+
+static void coord_w16(uint8_t *p, uint16_t value)
+{
+	p[0] = (uint8_t)value;
+	p[1] = (uint8_t)(value >> 8);
+}
+
+static void coord_w32(uint8_t *p, uint32_t value)
+{
+	for (int i = 0; i < 4; i++)
+		p[i] = (uint8_t)(value >> (8 * i));
+}
+
+static size_t build_coord_fdpic(uint8_t image[128])
+{
+	memset(image, 0, 128);
+	image[0] = 0x7f;
+	image[1] = 'E';
+	image[2] = 'L';
+	image[3] = 'F';
+	image[4] = 1;
+	image[7] = 65;
+	coord_w16(image + 16, 3);
+	coord_w16(image + 18, 40);
+	coord_w32(image + 28, 52);
+	coord_w16(image + 42, 32);
+	coord_w16(image + 44, 2);
+	uint8_t *text = image + 52;
+	coord_w32(text, 1);
+	coord_w32(text + 16, 16);
+	coord_w32(text + 20, 16);
+	coord_w32(text + 24, 1);
+	uint8_t *data = image + 84;
+	coord_w32(data, 1);
+	coord_w32(data + 4, 116);
+	coord_w32(data + 8, 0x1000);
+	coord_w32(data + 16, 8);
+	coord_w32(data + 20, 16);
+	coord_w32(data + 24, 6);
+	return 128;
+}
+
+static void test_exec_precommit_failpoints_preserve_old_image(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *old = &g_lxp_slots[0].proc;
+	lxp_mm_t *mm = old->mm;
+	lxp_files_t *files = old->files;
+	lxp_fs_context_t *fs = old->fs_context;
+	lxp_sighand_t *sighand = old->sighand;
+	lxp_thread_group_t *group = old->group;
+	uint32_t generation = slot_generation(0);
+	uint8_t image[128];
+	size_t image_size = build_coord_fdpic(image);
+	lxp_diag_error_t error;
+
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
+	struct exec_txn tx;
+	exec_txn_init(&tx, 0);
+	g_lifecycle_failpoint = LXP_FAIL_EXEC_REGION_ACQUIRED;
+	assert_true(exec_txn_reserve(&tx) < 0);
+	exec_txn_abort(&tx, &g_mock_eng, -LXP_ENOMEM, LXP_EXIT_REASON_EXEC_RESOURCE);
+	exec_txn_abort(&tx, &g_mock_eng, -LXP_ENOMEM, LXP_EXIT_REASON_EXEC_RESOURCE);
+	assert_int_equal(g_lxp_slots[0].host_state, SLOT_RUNNING);
+	assert_int_equal(slot_generation(0), generation);
+	assert_ptr_equal(old->mm, mm);
+	assert_ptr_equal(old->files, files);
+	assert_ptr_equal(old->fs_context, fs);
+	assert_ptr_equal(old->sighand, sighand);
+	assert_ptr_equal(old->group, group);
+	assert_true(old->alive);
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
+	exec_txn_init(&tx, 0);
+	assert_int_equal(exec_txn_reserve(&tx), LXP_OK);
+	g_lifecycle_failpoint = LXP_FAIL_EXEC_IMAGE_VALIDATED;
+	assert_true(exec_txn_validate_image(&tx, image, image_size, 0) < 0);
+	exec_txn_abort(&tx, &g_mock_eng, -LXP_ENOEXEC, LXP_EXIT_REASON_EXEC_LOAD);
+	assert_int_equal(g_lxp_slots[0].host_state, SLOT_RUNNING);
+	assert_int_equal(slot_generation(0), generation);
+	assert_ptr_equal(old->mm, mm);
+	assert_ptr_equal(old->files, files);
+	assert_ptr_equal(old->fs_context, fs);
+	assert_ptr_equal(old->sighand, sighand);
+	assert_ptr_equal(old->group, group);
+	assert_true(old->alive);
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+}
+
+static void test_exec_stale_snapshot_contains_vfork_pair(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *parent = &g_lxp_slots[0].proc;
+	parent->mm->region_lo = (uintptr_t)g_mock_regions[0];
+	parent->mm->region_hi = (uintptr_t)g_mock_regions[0] + sizeof(g_mock_regions[0]);
+	parent->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
+	uintptr_t parent_sp = (uintptr_t)g_mock_regions[0] + 192u;
+	lxp_proc_child_discard(&g_lxp_slots[1].proc);
+
+	struct fork_txn fork;
+	assert_int_equal(fork_txn_prepare(&fork, &g_mock_eng, 0, 1, 0, 2), LXP_OK);
+	assert_int_equal(fork_txn_count_child(&fork), LXP_OK);
+	fork.child->vfork_parent = fork.parent_ref;
+	assert_int_equal(g_lifecycle_failpoint, LXP_FAIL_NONE);
+	assert_true(lxp_slot_ref_is_current(fork.parent_ref));
+	assert_true(region_free(1));
+	assert_int_equal(fork_txn_snapshot(&fork, &g_mock_eng, parent_sp), LXP_OK);
+	int snapshot_region = fork.child->snapshot.index;
+	assert_int_equal(fork_txn_publish(&fork), LXP_OK);
+	assert_int_equal(fork_txn_commit(&fork), LXP_OK);
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
+	g_lxp_slots[1].host_state = SLOT_RUNNING;
+	g_lxp_slots[1].runnable = 1;
+
+	/* Corrupt only the child's stored capability. The guarded reservation is
+	 * still valid and must be released by containment without copying it. */
+	g_lxp_slots[1].proc.snapshot.generation++;
+	struct exec_txn exec;
+	exec_txn_init(&exec, 1);
+	assert_int_equal(exec_txn_reserve(&exec), -LXP_EIO);
+	assert_true(exec.terminal);
+	exec_txn_abort(&exec, &g_mock_eng, -LXP_EIO, LXP_EXIT_REASON_EXEC_RESOURCE);
+
+	assert_int_equal(parent->intent.kind, LXP_INTENT_EXIT);
+	assert_int_equal(parent->exit_reason, LXP_EXIT_REASON_STATE_CORRUPTION);
+	assert_int_equal(g_lxp_slots[1].proc.intent.kind, LXP_INTENT_EXIT);
+	assert_int_equal(g_lxp_slots[1].proc.exit_reason, LXP_EXIT_REASON_STATE_CORRUPTION);
+	assert_int_equal(g_lxp_slots[1].proc.snapshot.index, -1);
+	assert_int_equal(g_lxp_slots[1].proc.vfork_parent.index, -1);
+	assert_int_equal(g_regions[snapshot_region].refs, 0);
+	lxp_diag_error_t error;
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+}
+
+static void test_exec_commit_failure_contains_only_transitioning_guest(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	make_valid_running_slot(2, 2);
+	lxp_slot_ref_t unrelated = slot_ref_at(2);
+	uint8_t image[128];
+	size_t image_size = build_coord_fdpic(image);
+	lxp_diag_error_t error;
+
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
+	struct exec_txn tx;
+	exec_txn_init(&tx, 0);
+	assert_int_equal(exec_txn_reserve(&tx), LXP_OK);
+	assert_int_equal(exec_txn_validate_image(&tx, image, image_size, 0), LXP_OK);
+	g_lifecycle_failpoint = LXP_FAIL_EXEC_COMMITTED;
+	assert_true(exec_txn_commit(&tx, &g_mock_eng) < 0);
+	exec_txn_abort(&tx, &g_mock_eng, -LXP_EIO, LXP_EXIT_REASON_EXEC_RESOURCE);
+	exec_txn_abort(&tx, &g_mock_eng, -LXP_EIO, LXP_EXIT_REASON_EXEC_RESOURCE);
+
+	assert_false(g_lxp_slots[0].proc.alive);
+	assert_int_equal(g_lxp_slots[0].host_state, SLOT_DEAD);
+	assert_true(lxp_slot_ref_is_current(unrelated));
+	assert_int_equal(g_lxp_slots[2].host_state, SLOT_RUNNING);
+	assert_true(g_lxp_slots[2].runnable);
+	assert_int_equal(g_regions[2].refs, 1);
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+}
+
+static void prepare_mock_image_txn(struct image_txn *tx, int slot, int region)
+{
+	lxp_proc_child_discard(&g_lxp_slots[slot].proc);
+	deferred_slot_reassign(slot);
+	lxp_slot_ref_t owner = slot_ref_at(slot);
+	lxp_region_ref_t region_ref = region_reserve(region, owner);
+	assert_int_equal(region_ref.index, region);
+	image_txn_init(tx, slot, region_ref, owner);
+	assert_int_equal(lxp_proc_init(&tx->proc, &g_mock_arenas[slot], 0), LXP_OK);
+	tx->proc.alive = 1;
+	tx->proc.mm->region = region_ref;
+	tx->prepared = 1;
+}
+
+static void test_image_publish_failpoints_release_every_owner(void **state)
+{
+	(void)state;
+	const enum lxp_lifecycle_failpoint points[] = {
+		LXP_FAIL_EXEC_IMAGE_PREPARED,
+		LXP_FAIL_EXEC_PUBLISHED,
+		LXP_FAIL_EXEC_NATIVE_STARTED,
+		LXP_FAIL_EXEC_REGION_COMMITTED,
+	};
+	lxp_diag_error_t error;
+	for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); i++) {
+		struct image_txn tx;
+		prepare_mock_image_txn(&tx, 1, 1);
+		g_lifecycle_failpoint = points[i];
+		int rc;
+		if (points[i] == LXP_FAIL_EXEC_IMAGE_PREPARED)
+			rc = lifecycle_failpoint(points[i]) ? -LXP_EIO : LXP_OK;
+		else {
+			rc = image_txn_publish(&tx, &g_mock_eng);
+			if (rc == LXP_OK)
+				rc = image_txn_start(&tx, &g_mock_eng);
+		}
+		assert_true(rc < 0);
+		assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+		assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+		assert_false(g_lxp_slots[1].proc.alive);
+		assert_int_equal(g_regions[1].refs, 0);
+		assert_int_equal(lxp_validate_world(&error), LXP_OK);
+	}
 }
 
 static void test_world_diagnostics_snapshot_current_states(void **state)
@@ -2402,6 +2670,17 @@ int main(void)
 		cmocka_unit_test_setup(test_child_constructor_rolls_back_each_acquisition,
 				       reset_state),
 		cmocka_unit_test_setup(test_fork_build_abort_restores_world, reset_state),
+		cmocka_unit_test_setup(test_fork_transaction_failpoints_restore_world,
+				       reset_state),
+		cmocka_unit_test_setup(test_exec_precommit_failpoints_preserve_old_image,
+				       reset_state),
+		cmocka_unit_test_setup(test_exec_stale_snapshot_contains_vfork_pair,
+				       reset_state),
+		cmocka_unit_test_setup(
+			test_exec_commit_failure_contains_only_transitioning_guest,
+			reset_state),
+		cmocka_unit_test_setup(test_image_publish_failpoints_release_every_owner,
+				       reset_state),
 		cmocka_unit_test_setup(test_world_diagnostics_snapshot_current_states, reset_state),
 		cmocka_unit_test_setup(test_world_validator_reports_conflicting_waits, reset_state),
 		cmocka_unit_test_setup(test_typed_intent_transitions_are_exclusive, reset_state),

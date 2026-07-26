@@ -118,6 +118,7 @@ target_compile_definitions(lxp_coord_test PRIVATE
   LXP_RESOURCE_POOL_COUNT=64
   LXP_ENABLE_DEV=1
   LXP_ENABLE_FPU_CONTEXT=1
+  LXP_TEST_FAILPOINTS=1
 )
 target_link_libraries(lxp_coord_test PRIVATE cmocka-static pthread rt m)
 if(LXP_SANITIZE)
