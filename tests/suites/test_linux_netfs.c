@@ -16,6 +16,7 @@
 
 #include "../framework/lxp_test.h"
 #include "lxp/lxp_arena.h"
+#include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_netfs.h"
 #include "lxp/lxp_syscall.h"
 
@@ -436,7 +437,7 @@ static void start_mock_and_mount(void)
 
 	uint8_t ip[4] = {127, 0, 0, 1};
 	lxp_netfs_mount_config("/mnt/pi", ip, (uint16_t)port, "/srv", "root");
-	lxp_netfs_init(); /* connects + Tversion/Tattach handshake (blocking) */
+	lxp_netfs_init(); /* initiates; call_pump drives non-blocking connect + handshake */
 }
 
 static void stop_mock(void)
@@ -447,6 +448,36 @@ static void stop_mock(void)
 	if (g_mock_ls >= 0)
 		close(g_mock_ls);
 	g_mock_ls = -1;
+}
+
+static uint64_t g_init_connect_timeout_ns;
+
+static int init_nonblocking_connect(lxp_socket_t sock, const lxp_sockaddr_t *addr,
+				    uint64_t timeout_ns)
+{
+	(void)sock;
+	(void)addr;
+	g_init_connect_timeout_ns = timeout_ns;
+	return LXP_ERR_TIMEOUT;
+}
+
+static void test_netfs_init_never_waits_for_server(void **state)
+{
+	(void)state;
+	const lxp_net_ops_t *real_ops = g_lxp_net_ops;
+	lxp_net_ops_t probe_ops = *real_ops;
+	probe_ops.sock_connect = init_nonblocking_connect;
+	g_lxp_net_ops = &probe_ops;
+	g_init_connect_timeout_ns = UINT64_MAX;
+
+	uint8_t ip[4] = {192, 0, 2, 1};
+	lxp_netfs_mount_config("/mnt/pi", ip, 564, "/srv", "root");
+	lxp_netfs_init();
+
+	uint64_t observed_timeout_ns = g_init_connect_timeout_ns;
+	lxp_netfs_shutdown();
+	g_lxp_net_ops = real_ops;
+	assert_int_equal(observed_timeout_ns, 0);
 }
 
 #if LXP_ENABLE_NETFS_EXEC
@@ -664,6 +695,7 @@ static void test_netfs_browse(void **state)
 int test_linux_netfs_run(void)
 {
 	const struct CMUnitTest tests[] = {
+		cmocka_unit_test(test_netfs_init_never_waits_for_server),
 		cmocka_unit_test(test_netfs_browse),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

@@ -89,12 +89,21 @@ static struct {
 	int configured;
 } g_mnt;
 
-enum { CONN_DOWN = 0, CONN_UP };
+enum {
+	CONN_DOWN = 0,
+	CONN_CONNECTING,
+	CONN_VERSION_SEND,
+	CONN_VERSION_RECV,
+	CONN_ATTACH_SEND,
+	CONN_ATTACH_RECV,
+	CONN_UP,
+};
 static lxp_socket_t g_sk; /* host-owned handle; the adapter owns the storage */
 static int g_conn;
 static uint32_t g_msize = NETFS_MSIZE;
 static uint32_t g_generation;	   /* bumped on every (re)connect; opens carry theirs. */
 static uint64_t g_reconnect_at_us; /* next reconnect attempt (backoff). */
+static uint64_t g_conn_deadline_us; /* connect or current handshake-step deadline. */
 
 /* ---- fid allocator (bitmap; fid 0 = attached root) ------------------------- */
 static uint32_t g_fid_bm[(NETFS_NFID + 31) / 32];
@@ -357,6 +366,7 @@ static void conn_drop(void)
 		g_lxp_net_ops->sock_close(g_sk);
 	g_sk = NULL;
 	g_conn = CONN_DOWN;
+	g_conn_deadline_us = 0;
 	g_txlen = g_txoff = g_rxlen = 0;
 	/* Fail every outstanding request; opens become stale. A cancelled request (owner
 	 * detached) has no proc to retrieve its result, so reclaim it rather than leak the slot. */
@@ -375,37 +385,21 @@ static void conn_drop(void)
 			g_open[i].stale = 1;
 }
 
-/* Blocking exchange for the boot handshake: flush g_tx then wait (bounded) for one
- * full reply into g_rx. Returns the reply length or -1. */
-static long xchg_blocking(uint64_t timeout_us)
+/* A failed best-effort connection attempt leaves queued requests intact so the
+ * lazy reconnect can service them later. An established-connection failure
+ * instead goes through conn_drop(), which completes their waits with EIO. */
+static void conn_attempt_failed(uint64_t now_us)
 {
-	uint64_t now = 0, deadline;
-	lxp_time_us(&now);
-	deadline = now + timeout_us;
-	while (g_txoff < g_txlen) {
-		if (tx_flush() < 0)
-			return -1;
-		lxp_time_us(&now);
-		if (now >= deadline)
-			return -1;
-	}
-	for (;;) {
-		unsigned rev = 0;
-		g_lxp_net_ops->sock_poll(g_sk, LXP_SOCK_POLLIN, &rev, 50 * 1000000ull /* 50ms */);
-		if (rx_fill() < 0)
-			return -1;
-		size_t len = rx_message();
-		if (len == (size_t)-1)
-			return -1;
-		if (len)
-			return (long)len;
-		lxp_time_us(&now);
-		if (now >= deadline)
-			return -1;
-	}
+	if (g_sk)
+		g_lxp_net_ops->sock_close(g_sk);
+	g_sk = NULL;
+	g_conn = CONN_DOWN;
+	g_conn_deadline_us = 0;
+	g_txlen = g_txoff = g_rxlen = 0;
+	g_reconnect_at_us = now_us + NETFS_RECONNECT_US;
 }
 
-static int handshake(void)
+static void conn_begin_version(uint64_t now_us)
 {
 	/* Tversion(msize, "9P2000.L") */
 	static const char VER[] = "9P2000.L";
@@ -413,35 +407,22 @@ static int handshake(void)
 	put32(&o, NETFS_MSIZE);
 	putstr(&o, VER, sizeof(VER) - 1);
 	msg_end(o);
-	if (xchg_blocking(3000000ull) < 0)
-		return -1;
-	{
-		size_t p = 7;
-		if (g_rx[4] != P9_RVERSION)
-			return -1;
-		uint32_t sm = get32(g_rx, &p);
-		g_msize = sm < NETFS_MSIZE ? sm : NETFS_MSIZE;
-		if (g_msize < 512)
-			return -1;
-	}
-	rx_consume(rx_message());
+	g_conn = CONN_VERSION_SEND;
+	g_conn_deadline_us = now_us + 3000000ull;
+}
 
+static void conn_begin_attach(uint64_t now_us)
+{
 	/* Tattach(root_fid, NOFID, uname, aname, n_uname=0) */
-	o = msg_begin(P9_TATTACH, P9_TAG);
+	size_t o = msg_begin(P9_TATTACH, P9_TAG);
 	put32(&o, P9_ROOT_FID);
 	put32(&o, P9_NOFID);
 	putstr(&o, g_mnt.uname, strlen(g_mnt.uname));
 	putstr(&o, g_mnt.aname, strlen(g_mnt.aname));
 	put32(&o, 0); /* n_uname (numeric uid) */
 	msg_end(o);
-	if (xchg_blocking(3000000ull) < 0)
-		return -1;
-	if (g_rx[4] != P9_RATTACH) {
-		rx_consume(rx_message());
-		return -1;
-	}
-	rx_consume(rx_message());
-	return 0;
+	g_conn = CONN_ATTACH_SEND;
+	g_conn_deadline_us = now_us + 3000000ull;
 }
 
 /* Build an IPv4 lxp_sockaddr_t (host-order port) — was ove_sockaddr_ipv4, now module-local
@@ -458,7 +439,7 @@ static void netfs_sockaddr_ipv4(lxp_sockaddr_t *a, uint8_t b0, uint8_t b1, uint8
 	a->addr[3] = b3;
 }
 
-static void conn_connect(uint64_t now_us)
+static void conn_start(uint64_t now_us)
 {
 	if (!g_mnt.configured)
 		return;
@@ -470,23 +451,123 @@ static void conn_connect(uint64_t now_us)
 		g_sk = NULL;
 		return;
 	}
+	if (g_lxp_net_ops->sock_set_nonblock(g_sk, 1) != LXP_OK) {
+		conn_attempt_failed(now_us);
+		return;
+	}
 	lxp_sockaddr_t peer;
 	netfs_sockaddr_ipv4(&peer, g_mnt.ip[0], g_mnt.ip[1], g_mnt.ip[2], g_mnt.ip[3], g_mnt.port);
-	if (g_lxp_net_ops->sock_connect(g_sk, &peer, 5000000000ull /* 5s */) != LXP_OK) {
-		g_lxp_net_ops->sock_close(g_sk);
-		g_sk = NULL;
+	int rc = g_lxp_net_ops->sock_connect(g_sk, &peer, 0);
+	if (rc == LXP_ERR_TIMEOUT) {
+		g_conn = CONN_CONNECTING;
+		g_conn_deadline_us = now_us + 5000000ull;
 		return;
 	}
-	g_lxp_net_ops->sock_set_nonblock(g_sk, 1);
+	if (rc != LXP_OK) {
+		conn_attempt_failed(now_us);
+		return;
+	}
 	memset(g_fid_bm, 0, sizeof(g_fid_bm));
 	g_txlen = g_txoff = g_rxlen = 0;
-	if (handshake() != 0) {
-		g_lxp_net_ops->sock_close(g_sk);
-		g_sk = NULL;
+	conn_begin_version(now_us);
+}
+
+/* Advance at most the small, fixed number of connect/handshake phases without
+ * waiting in the coordinator. Socket readiness wakes event-driven ports; the
+ * normal coordinator timeout remains the portable fallback. */
+static void conn_advance(uint64_t now_us)
+{
+	if (g_conn == CONN_DOWN) {
+		conn_start(now_us);
+		if (g_conn == CONN_DOWN)
+			return;
+	}
+	if (g_conn_deadline_us && now_us >= g_conn_deadline_us) {
+		conn_attempt_failed(now_us);
 		return;
 	}
-	g_conn = CONN_UP;
-	g_generation++;
+
+	for (unsigned step = 0; step < 5; step++) {
+		switch (g_conn) {
+		case CONN_CONNECTING: {
+			unsigned rev = 0;
+			int rc = g_lxp_net_ops->sock_poll(
+				g_sk, LXP_SOCK_POLLOUT | LXP_SOCK_POLLERR | LXP_SOCK_POLLHUP,
+				&rev, 0);
+			if (rc != LXP_OK) {
+				conn_attempt_failed(now_us);
+				return;
+			}
+			if (!(rev & (LXP_SOCK_POLLOUT | LXP_SOCK_POLLERR |
+				     LXP_SOCK_POLLHUP)))
+				return;
+			if (g_lxp_net_ops->sock_get_error(g_sk) != LXP_OK) {
+				conn_attempt_failed(now_us);
+				return;
+			}
+			memset(g_fid_bm, 0, sizeof(g_fid_bm));
+			g_txlen = g_txoff = g_rxlen = 0;
+			conn_begin_version(now_us);
+			continue;
+		}
+		case CONN_VERSION_SEND:
+		case CONN_ATTACH_SEND: {
+			int rc = tx_flush();
+			if (rc < 0) {
+				conn_attempt_failed(now_us);
+				return;
+			}
+			if (rc == 0)
+				return;
+			g_conn = (g_conn == CONN_VERSION_SEND) ? CONN_VERSION_RECV
+							      : CONN_ATTACH_RECV;
+			continue;
+		}
+		case CONN_VERSION_RECV:
+		case CONN_ATTACH_RECV: {
+			if (rx_fill() < 0) {
+				conn_attempt_failed(now_us);
+				return;
+			}
+			size_t len = rx_message();
+			if (len == (size_t)-1) {
+				conn_attempt_failed(now_us);
+				return;
+			}
+			if (!len)
+				return;
+			if (g_conn == CONN_VERSION_RECV) {
+				if (len < 13 || g_rx[4] != P9_RVERSION) {
+					conn_attempt_failed(now_us);
+					return;
+				}
+				size_t p = 7;
+				uint32_t sm = get32(g_rx, &p);
+				g_msize = sm < NETFS_MSIZE ? sm : NETFS_MSIZE;
+				if (g_msize < 512) {
+					conn_attempt_failed(now_us);
+					return;
+				}
+				rx_consume(len);
+				conn_begin_attach(now_us);
+				continue;
+			}
+			if (g_rx[4] != P9_RATTACH) {
+				conn_attempt_failed(now_us);
+				return;
+			}
+			rx_consume(len);
+			g_conn = CONN_UP;
+			g_conn_deadline_us = 0;
+			g_generation++;
+			return;
+		}
+		case CONN_UP:
+		case CONN_DOWN:
+		default:
+			return;
+		}
+	}
 }
 
 /* ---- request build for the current step ------------------------------------ */
@@ -928,7 +1009,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 static void pump(uint64_t now_us)
 {
 	if (g_conn != CONN_UP) {
-		conn_connect(now_us);
+		conn_advance(now_us);
 		if (g_conn != CONN_UP)
 			return;
 	}
@@ -1085,7 +1166,7 @@ void lxp_netfs_init(void)
 	uint64_t now = 0;
 	lxp_time_us(&now);
 	g_reconnect_at_us = 0;
-	conn_connect(now); /* best-effort; a down server reconnects lazily */
+	conn_advance(now); /* initiate only; connect and handshake never block the coordinator */
 }
 
 void lxp_netfs_shutdown(void)
@@ -1099,6 +1180,7 @@ void lxp_netfs_shutdown(void)
 	g_conn = CONN_DOWN;
 	g_msize = NETFS_MSIZE;
 	g_reconnect_at_us = 0;
+	g_conn_deadline_us = 0;
 	g_txlen = g_txoff = g_rxlen = 0;
 	g_inflight = -1;
 	g_req_seq = 0;
@@ -1429,8 +1511,9 @@ void lxp_netfs_fuzz_reset(void)
 	g_inflight = -1;
 	g_generation = 1;
 	g_msize = NETFS_MSIZE;
-	g_conn = 0;
+	g_conn = CONN_DOWN;
 	g_reconnect_at_us = 0;
+	g_conn_deadline_us = 0;
 	g_txlen = g_txoff = g_rxlen = 0;
 	memset(&g_mnt, 0, sizeof(g_mnt));
 #if LXP_ENABLE_NETFS_EXEC
