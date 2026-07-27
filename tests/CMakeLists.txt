@@ -111,14 +111,17 @@ target_include_directories(lxp_coord_test PRIVATE
   "${LXP_ROOT}/fuzz"
   "${cmocka_SOURCE_DIR}/include"
 )
-# Minimal feature set plus DEV: the coordinator's address-space tests exercise
-# task-local hardware mappings inherited and shared through lxp_mm. NET/NETFS/PTY
-# remain off because they pull in host-provided globals unrelated to coordinator
-# process bookkeeping.
+# Full coordinator-facing feature set: the protocol suite crosses deferred
+# lifecycle work with socket/netfs waits and verifies that the same state
+# machine remains valid when optional subsystems are compiled in.
 target_compile_options(lxp_coord_test PRIVATE -Wall -Wextra)
 target_compile_definitions(lxp_coord_test PRIVATE
   LXP_RESOURCE_POOL_COUNT=64
   LXP_ENABLE_DEV=1
+  LXP_ENABLE_NET=1
+  LXP_ENABLE_NETFS=1
+  LXP_ENABLE_NETFS_EXEC=1
+  LXP_ENABLE_PTY=1
   LXP_ENABLE_FPU_CONTEXT=1
   LXP_TEST_FAILPOINTS=1
 )

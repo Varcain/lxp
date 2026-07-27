@@ -75,6 +75,7 @@ static uint8_t g_mock_regions[LXP_NREG][256];
 static uint8_t g_mock_dyn_pools[LXP_NREG][64];
 static lxp_exec_capture_t g_mock_exec_captures[LXP_NSLOT];
 static lxp_arena_t g_mock_arenas[LXP_NSLOT];
+static uint8_t g_mock_exec_stage[128];
 
 static uint8_t *mock_region(int ridx)
 {
@@ -89,6 +90,12 @@ static uint8_t *mock_dyn_pool(int ridx, size_t *size)
 static lxp_exec_capture_t *mock_exec_capture(int sidx)
 {
 	return (sidx >= 0 && sidx < LXP_NSLOT) ? &g_mock_exec_captures[sidx] : NULL;
+}
+static uint8_t *mock_exec_stage(size_t *cap)
+{
+	if (cap)
+		*cap = sizeof(g_mock_exec_stage);
+	return g_mock_exec_stage;
 }
 static void mock_cache_clean(const void *base, size_t len)
 {
@@ -228,6 +235,7 @@ static const lxp_os_ops_t g_mock_eng = {
 	.region = mock_region,
 	.dyn_pool = mock_dyn_pool,
 	.exec_capture = mock_exec_capture,
+	.exec_stage = mock_exec_stage,
 	.spawn_launch = mock_spawn_launch,
 	.spawn_resume = mock_spawn_resume,
 	.abort_slot = mock_abort_slot,
@@ -1957,6 +1965,50 @@ static void test_thread_group_exit_marks_every_peer(void **state)
 	assert_int_equal(g_lxp_slots[2].proc.intent.kind, LXP_INTENT_NONE);
 }
 
+/* Group exit and CLONE_VM must compose: the first reaped thread drops exactly
+ * one address-space reference and the region remains unavailable until its
+ * final peer commits exit. */
+static void test_group_exit_releases_shared_address_space_last(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	make_valid_running_slot(1, 1);
+	lxp_proc_t *leader = &g_lxp_slots[0].proc;
+	lxp_proc_t *thread = &g_lxp_slots[1].proc;
+	leader->pid = 10;
+	leader->group->tgid = 10;
+	thread->pid = 11;
+
+	proc_mm_put(thread);
+	assert_int_equal(region_get(leader->mm->region), LXP_OK);
+	assert_int_equal(lxp_proc_mm_fork(thread, leader, LXP_CLONE_VM), LXP_OK);
+	lxp_proc_group_put(thread);
+	assert_int_equal(lxp_proc_group_fork(thread, leader, LXP_CLONE_THREAD, 11), LXP_OK);
+	assert_ptr_equal(thread->mm, leader->mm);
+	assert_ptr_equal(thread->group, leader->group);
+	assert_int_equal(g_regions[0].refs, 2);
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+
+	assert_int_equal(lxp_intent_exit(thread, 1), LXP_OK);
+	thread->exit_status = 37;
+	primary_slot_clear(1);
+	(void)lxp_handle_exit(&g_mock_eng, 1);
+	assert_false(thread->alive);
+	assert_true(leader->alive);
+	assert_int_equal(leader->intent.kind, LXP_INTENT_EXIT);
+	assert_true(leader->intent.data.exit.group);
+	assert_int_equal(g_regions[0].refs, 1);
+	assert_false(region_free(0));
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+
+	primary_slot_clear(0);
+	(void)lxp_handle_exit(&g_mock_eng, 0);
+	assert_false(leader->alive);
+	assert_int_equal(g_regions[0].refs, 0);
+	assert_true(region_free(0));
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+}
+
 static void test_exec_stops_only_thread_group_peers(void **state)
 {
 	(void)state;
@@ -2431,6 +2483,231 @@ static void test_deferred_signal_cancels_before_execute(void **state)
 	assert_int_equal(p->exit_status, 128 + LXP_SIGTERM);
 }
 
+/* A signal owns cancellation of an in-flight netfs wait before the generic
+ * retry pass sees it. The late transport reply is covered by the netfs suite;
+ * this crossing proves the coordinator cannot resume a killed guest first. */
+static void test_signal_interrupts_blocked_netfs_before_retry(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
+	assert_int_equal(lxp_wait_begin(p, &(lxp_wait_t){
+						 .kind = LXP_WAIT_NETFS,
+						 .data.io.request = -1,
+					 }),
+			 LXP_OK);
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
+	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
+
+	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, 1);
+
+	assert_true(scan.progress);
+	assert_int_equal(p->wait.kind, LXP_WAIT_NONE);
+	assert_int_equal(p->intent.kind, LXP_INTENT_EXIT);
+	assert_int_equal(p->exit_status, 128 + LXP_SIGTERM);
+	assert_true(primary_slot_pending(0));
+	assert_int_equal(g_mock.resume_calls, 0);
+	assert_int_equal(g_lxp_slots[0].host_state, SLOT_PARKED);
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+}
+
+/* exec's commit changes the slot incarnation. A deferred event captured before
+ * that boundary must be rejected even if it becomes visible after commit. */
+static void test_exec_commit_discards_older_deferred_request(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	struct lxp_frame frame;
+	memset(&frame, 0, sizeof(frame));
+	frame.r[7] = 999;
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal(deferred_state_load(0), DEFER_READY);
+	lxp_slot_ref_t stale_owner = g_lxp_slots[0].deferred.owner;
+
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
+	uint8_t image[128];
+	struct exec_txn tx;
+	exec_txn_init(&tx, 0);
+	assert_int_equal(exec_txn_reserve(&tx), LXP_OK);
+	assert_int_equal(exec_txn_validate_image(&tx, image, build_coord_fdpic(image), 0),
+			 LXP_OK);
+	assert_int_equal(exec_txn_commit(&tx, &g_mock_eng), LXP_OK);
+	assert_false(lxp_slot_ref_equal(stale_owner, slot_ref_at(0)));
+	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
+
+	g_lxp_slots[0].deferred.owner = stale_owner;
+	deferred_state_store(0, DEFER_READY);
+	int resumes = g_mock.resume_calls;
+	int aborts = g_mock.abort_calls;
+	execute_deferred(&g_mock_eng, 0);
+	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
+	assert_int_equal(g_mock.resume_calls, resumes);
+	assert_int_equal(g_mock.abort_calls, aborts);
+
+	exec_txn_abort(&tx, &g_mock_eng, -LXP_EIO, LXP_EXIT_REASON_EXEC_RESOURCE);
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+}
+
+/* Reaping and then reusing a slot is a stronger boundary than merely advancing
+ * its mailbox generation: no late completion may touch the new process. */
+static void test_reused_slot_ignores_late_completion_from_dead_generation(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	struct lxp_frame frame;
+	memset(&frame, 0, sizeof(frame));
+	frame.r[7] = 999;
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	lxp_slot_ref_t stale_owner = g_lxp_slots[0].deferred.owner;
+
+	lxp_proc_t *old = &g_lxp_slots[0].proc;
+	assert_int_equal(lxp_intent_exit(old, 0), LXP_OK);
+	old->exit_status = 0;
+	primary_slot_clear(0);
+	(void)lxp_handle_exit(&g_mock_eng, 0);
+	assert_false(old->alive);
+	assert_int_equal(g_regions[0].refs, 0);
+
+	assert_int_equal(lxp_proc_init(old, &g_mock_arenas[0], 0), LXP_OK);
+	make_valid_running_slot(0, 0);
+	lxp_slot_ref_t replacement = slot_ref_at(0);
+	assert_false(lxp_slot_ref_equal(stale_owner, replacement));
+	int resumes = g_mock.resume_calls;
+	int aborts = g_mock.abort_calls;
+
+	g_lxp_slots[0].deferred.owner = stale_owner;
+	deferred_state_store(0, DEFER_READY);
+	execute_deferred(&g_mock_eng, 0);
+
+	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
+	assert_true(lxp_slot_ref_equal(replacement, slot_ref_at(0)));
+	assert_true(g_lxp_slots[0].proc.alive);
+	assert_true(g_lxp_slots[0].runnable);
+	assert_int_equal(g_mock.resume_calls, resumes);
+	assert_int_equal(g_mock.abort_calls, aborts);
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+}
+
+enum protocol_command {
+	PROTOCOL_PARK_TIMER,
+	PROTOCOL_TIMEOUT,
+	PROTOCOL_SIGNAL_TERM,
+	PROTOCOL_EXIT_COMMIT,
+	PROTOCOL_REUSE_SLOT,
+	PROTOCOL_STALE_COMPLETION,
+	PROTOCOL_COMMAND_COUNT,
+};
+
+enum protocol_phase {
+	PROTOCOL_RUNNING,
+	PROTOCOL_PARKED,
+	PROTOCOL_EXIT_PENDING,
+	PROTOCOL_DEAD,
+	PROTOCOL_REUSED,
+};
+
+struct protocol_model {
+	enum protocol_phase phase;
+	lxp_slot_ref_t first_owner;
+};
+
+static int protocol_apply(struct protocol_model *model, enum protocol_command command)
+{
+	lxp_proc_t *proc = &g_lxp_slots[0].proc;
+
+	switch (command) {
+	case PROTOCOL_PARK_TIMER:
+		if (model->phase != PROTOCOL_RUNNING)
+			return 0;
+		assert_int_equal(lxp_wait_begin(proc, &(lxp_wait_t){
+							 .kind = LXP_WAIT_TIMER,
+							 .data.timer.deadline_us = 10,
+						 }),
+				 LXP_OK);
+		assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
+		model->phase = PROTOCOL_PARKED;
+		break;
+	case PROTOCOL_TIMEOUT:
+		if (model->phase != PROTOCOL_PARKED)
+			return 0;
+		assert_int_equal(lxp_wait_timeout(proc, LXP_WAIT_TIMER), LXP_OK);
+		assert_int_equal(coordinator_resume_slot(&g_mock_eng, 0, 0,
+							&g_lxp_slots[0].resume, 0),
+				 LXP_OK);
+		model->phase = PROTOCOL_RUNNING;
+		break;
+	case PROTOCOL_SIGNAL_TERM:
+		if (model->phase != PROTOCOL_PARKED)
+			return 0;
+		proc->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
+		assert_true(lxp_scan_blocked(&g_mock_eng, 1).progress);
+		assert_int_equal(proc->wait.kind, LXP_WAIT_NONE);
+		assert_int_equal(proc->intent.kind, LXP_INTENT_EXIT);
+		model->phase = PROTOCOL_EXIT_PENDING;
+		break;
+	case PROTOCOL_EXIT_COMMIT:
+		if (model->phase != PROTOCOL_EXIT_PENDING)
+			return 0;
+		primary_slot_clear(0);
+		(void)lxp_handle_exit(&g_mock_eng, 0);
+		assert_false(proc->alive);
+		model->phase = PROTOCOL_DEAD;
+		break;
+	case PROTOCOL_REUSE_SLOT:
+		if (model->phase != PROTOCOL_DEAD)
+			return 0;
+		assert_int_equal(lxp_proc_init(proc, &g_mock_arenas[0], 0), LXP_OK);
+		make_valid_running_slot(0, 0);
+		model->phase = PROTOCOL_REUSED;
+		break;
+	case PROTOCOL_STALE_COMPLETION:
+		if (model->phase != PROTOCOL_REUSED)
+			return 0;
+		g_lxp_slots[0].deferred.owner = model->first_owner;
+		deferred_state_store(0, DEFER_READY);
+		execute_deferred(&g_mock_eng, 0);
+		assert_int_equal(deferred_state_load(0), DEFER_IDLE);
+		assert_true(g_lxp_slots[0].runnable);
+		break;
+	default:
+		fail_msg("invalid protocol command %d", command);
+	}
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+	return 1;
+}
+
+/* Enumerate every five-command word over the lifecycle alphabet. Illegal
+ * transitions stop that word; every transition which is applied is checked
+ * against the independent world validator immediately. */
+static void test_generated_protocol_sequences_preserve_world(void **state)
+{
+	(void)state;
+	enum { PROTOCOL_DEPTH = 5 };
+	unsigned coverage = 0;
+	unsigned words = 1;
+	for (int i = 0; i < PROTOCOL_DEPTH; i++)
+		words *= PROTOCOL_COMMAND_COUNT;
+
+	for (unsigned word = 0; word < words; word++) {
+		assert_int_equal(reset_state(NULL), 0);
+		make_valid_running_slot(0, 0);
+		assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+		struct protocol_model model = {
+			.phase = PROTOCOL_RUNNING,
+			.first_owner = slot_ref_at(0),
+		};
+		unsigned encoded = word;
+		for (int step = 0; step < PROTOCOL_DEPTH; step++) {
+			enum protocol_command command = encoded % PROTOCOL_COMMAND_COUNT;
+			encoded /= PROTOCOL_COMMAND_COUNT;
+			if (!protocol_apply(&model, command))
+				break;
+			coverage |= 1u << command;
+		}
+	}
+	assert_int_equal(coverage, (1u << PROTOCOL_COMMAND_COUNT) - 1u);
+}
+
 static int console_not_ready(void *ctx)
 {
 	(void)ctx;
@@ -2787,6 +3064,15 @@ int main(void)
 		cmocka_unit_test_setup(test_deferred_generation_rejects_stale_work, reset_state),
 		cmocka_unit_test_setup(test_deferred_same_slot_rejects_overwrite, reset_state),
 		cmocka_unit_test_setup(test_deferred_signal_cancels_before_execute, reset_state),
+		cmocka_unit_test_setup(test_signal_interrupts_blocked_netfs_before_retry,
+				       reset_state),
+		cmocka_unit_test_setup(test_exec_commit_discards_older_deferred_request,
+				       reset_state),
+		cmocka_unit_test_setup(
+			test_reused_slot_ignores_late_completion_from_dead_generation,
+			reset_state),
+		cmocka_unit_test_setup(test_generated_protocol_sequences_preserve_world,
+				       reset_state),
 		cmocka_unit_test_setup(test_console_icrnl_immediate_read, reset_state),
 		cmocka_unit_test_setup(test_deferred_blocking_handoff_keeps_parked_task,
 				       reset_state),
@@ -2814,6 +3100,8 @@ int main(void)
 		cmocka_unit_test_setup(test_shared_region_lives_until_last_task_reference,
 				       reset_state),
 		cmocka_unit_test_setup(test_thread_group_exit_marks_every_peer, reset_state),
+		cmocka_unit_test_setup(test_group_exit_releases_shared_address_space_last,
+				       reset_state),
 		cmocka_unit_test_setup(test_exec_stops_only_thread_group_peers, reset_state),
 		cmocka_unit_test_setup(test_device_map_index_tracks_both_ranges, reset_state),
 		cmocka_unit_test_setup(test_device_maps_follow_shared_address_space, reset_state),

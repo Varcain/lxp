@@ -21,6 +21,13 @@ reuse the existing `-DLXP_SANITIZE=ON` ASan/UBSan flags.
 | `fuzz_9p`      | `handle_reply` / `parse_getattr` | 9P2000.L reply parser (via the `LXP_FUZZ` shim) |
 | `fuzz_syscall` | `lxp_syscall`           | syscall dispatcher — the `lxp_guest_access_ok` pointer gate |
 
+Stateful lifecycle protocol coverage lives beside these byte-oriented
+harnesses in `tests/suites/test_run_coord.c`. Its bounded command generator
+enumerates park, timeout, signal, exit, slot-reuse, and stale-completion
+sequences and validates the whole coordinator world after every legal
+transition. Keeping it in the coordinator test binary lets the commands drive
+real slot and ownership transitions without inventing a serialized fuzz ABI.
+
 ## Build & run
 
 Everything is gated behind `-DLXP_BUILD_FUZZ=ON`; `LXP_FUZZ_ENGINE` picks the driver.
