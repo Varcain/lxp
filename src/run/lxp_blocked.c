@@ -201,6 +201,8 @@ static void lxp_blocked_retry_device(const lxp_os_ops_t *eng, int slot, lxp_proc
 			proc->mm->dev_map_lo[map] = buffer;
 			proc->mm->dev_map_hi[map] = buffer + length;
 			proc->mm->dev_map_attrs[map] = attrs;
+			if (++proc->mm->device_generation == 0)
+				proc->mm->device_generation = 1u;
 		}
 		(void)lxp_wait_complete(proc, LXP_WAIT_DEVICE);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,

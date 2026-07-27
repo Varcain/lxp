@@ -1445,6 +1445,38 @@ int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out)
 	return LXP_OK;
 }
 
+int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out)
+{
+	if (!out || !lxp_slot_ref_is_current(ref))
+		return -LXP_ESRCH;
+	const lxp_mm_t *mm = g_lxp_slots[ref.index].proc.mm;
+	if (!mm || mm->device_generation == 0 || mm->exec_generation == 0)
+		return -LXP_EINVAL;
+	lxp_region_ref_t region = mm->region;
+	if (region.index < 0 || region.index >= LXP_NREG || region.generation == 0 ||
+	    g_regions[region.index].generation != region.generation)
+		return -LXP_EINVAL;
+
+	*out = (lxp_memory_policy_t){
+		.abi_version = LXP_MEMORY_POLICY_ABI_VERSION,
+		.struct_size = sizeof(*out),
+		.slot = ref,
+		.address_space = region,
+		.device_generation = mm->device_generation,
+		.exec_generation = mm->exec_generation,
+		.copied_text_executable = mm->copied_text_executable,
+	};
+	for (unsigned i = 0; i < LXP_MEMORY_DEVICE_MAX; i++) {
+		if (mm->dev_map_hi[i] <= mm->dev_map_lo[i])
+			continue;
+		lxp_device_capability_t *cap = &out->devices[out->device_count++];
+		cap->base = mm->dev_map_lo[i];
+		cap->size = mm->dev_map_hi[i] - mm->dev_map_lo[i];
+		cap->attrs = mm->dev_map_attrs[i];
+	}
+	return LXP_OK;
+}
+
 int lxp_dispatch_slot(lxp_slot_ref_t ref, struct lxp_frame *frame)
 {
 	if (!frame || !lxp_slot_ref_is_runnable(ref))
@@ -1619,6 +1651,7 @@ static int image_txn_prepare(struct image_txn *tx, const lxp_os_ops_t *eng,
 	tx->proc.is_fdpic = tx->prog.is_fdpic;
 	tx->proc.mm->is_dynamic =
 		dynamic; /* arena/libc RW data lives in the dyn_pool */
+	tx->proc.mm->copied_text_executable = (uint8_t)(tx->prog.region_exec != 0);
 	tx->proc.stack_lo = (uintptr_t)stack_lo; /* writable-data / stack boundary (snapshot) */
 	tx->proc.snapshot = lxp_region_ref_none();
 	tx->proc.vfork_parent = lxp_slot_ref_none();
@@ -2907,7 +2940,10 @@ static int os_ops_valid(const lxp_os_ops_t *ops)
 	    ops->struct_size != sizeof(*ops) || !ops->region || !ops->spawn_launch ||
 	    !ops->spawn_resume || !ops->abort_slot || !ops->park_prepare || !ops->park_slot ||
 	    !ops->crit_enter || !ops->crit_exit || !ops->event_post || !ops->event_wait ||
-	    !ops->time_us || !ops->time_ns || !ops->exec_capture || !ops->random_fill)
+	    !ops->time_us || !ops->time_ns || !ops->exec_capture || !ops->random_fill ||
+	    !ops->validate_memory_model ||
+	    (ops->cpu_memory_model != LXP_CPU_MEM_UNCACHED &&
+	     ops->cpu_memory_model != LXP_CPU_MEM_COHERENT_SAME_ATTRS))
 		return 0;
 #if LXP_ENABLE_NETFS_EXEC
 	if (!ops->exec_stage)
@@ -3035,6 +3071,17 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 #endif
 			return LXP_RUN_ELAUNCH;
 		}
+	}
+	if (os_ops->validate_memory_model(os_ops->cpu_memory_model) != LXP_OK) {
+		if (os_ops->teardown)
+			os_ops->teardown();
+#if LXP_ENABLE_NET
+		g_lxp_net_ops = NULL;
+#endif
+#if LXP_ENABLE_DEV
+		g_lxp_disp_ops = NULL;
+#endif
+		return LXP_RUN_ELAUNCH;
 	}
 	int rc = lxp_run_common(os_ops, run_config, path, argc, argv);
 	if (os_ops->teardown)

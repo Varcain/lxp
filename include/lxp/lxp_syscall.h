@@ -565,6 +565,10 @@ static inline int lxp_region_ref_equal(lxp_region_ref_t a, lxp_region_ref_t b)
 typedef struct lxp_mm {
 	uint16_t refs;
 	uint16_t _pad;
+	/** Logical device-capability and copied-text policy versions. Zero is
+	 * reserved for an uninitialized/freed address space. */
+	uint32_t device_generation;
+	uint32_t exec_generation;
 	lxp_arena_t *arena;
 	uintptr_t brk_base;
 	uintptr_t brk_cur;
@@ -573,6 +577,8 @@ typedef struct lxp_mm {
 	uintptr_t region_lo, region_hi;
 	uintptr_t pool_lo, pool_hi;
 	int is_dynamic;
+	uint8_t copied_text_executable;
+	uint8_t _policy_pad[3];
 	uintptr_t dev_map_lo[2], dev_map_hi[2];
 	unsigned dev_map_attrs[2];
 } lxp_mm_t;

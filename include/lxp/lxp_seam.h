@@ -99,6 +99,79 @@ extern volatile int g_lxp_halt;	  /* reboot(2)/poweroff: stop the run loop */
  * this backing store, and engine MPU policies grant that span user RO+X access. NULL pre-run. */
 extern const uint8_t *g_lxp_rootfs_lo, *g_lxp_rootfs_hi;
 
+/** Maximum device capabilities represented by an address-space policy. */
+#define LXP_MEMORY_DEVICE_MAX 2u
+#define LXP_MEMORY_POLICY_ABI_VERSION 1u
+
+typedef struct lxp_device_capability {
+	uintptr_t base;
+	size_t size;
+	uint32_t attrs; /**< LXP_MAP_*; backing range came from a registered driver. */
+} lxp_device_capability_t;
+
+/**
+ * Immutable logical policy from which a seam prepares its native MPU/domain
+ * descriptors. The complete validity key is slot + address-space + device +
+ * execute-policy generation; a seam may skip native reprogramming only when
+ * all four still match.
+ */
+typedef struct lxp_memory_policy {
+	uint32_t abi_version;
+	uint32_t struct_size;
+	lxp_slot_ref_t slot;
+	lxp_region_ref_t address_space;
+	uint32_t device_generation;
+	uint32_t exec_generation;
+	uint8_t copied_text_executable;
+	uint8_t device_count;
+	uint16_t _pad;
+	lxp_device_capability_t devices[LXP_MEMORY_DEVICE_MAX];
+} lxp_memory_policy_t;
+
+/** Compact cache key for a prepared native MPU/domain descriptor set. */
+typedef struct lxp_memory_policy_key {
+	lxp_slot_ref_t slot;
+	lxp_region_ref_t address_space;
+	uint32_t device_generation;
+	uint32_t exec_generation;
+	uint8_t copied_text_executable;
+	uint8_t _pad[3];
+} lxp_memory_policy_key_t;
+
+static inline lxp_memory_policy_key_t
+lxp_memory_policy_make_key(const lxp_memory_policy_t *policy)
+{
+	if (!policy)
+		return (lxp_memory_policy_key_t){0};
+	return (lxp_memory_policy_key_t){
+		.slot = policy->slot,
+		.address_space = policy->address_space,
+		.device_generation = policy->device_generation,
+		.exec_generation = policy->exec_generation,
+		.copied_text_executable = policy->copied_text_executable,
+	};
+}
+
+static inline int lxp_memory_policy_matches_key(const lxp_memory_policy_t *policy,
+						const lxp_memory_policy_key_t *key)
+{
+	return policy && key && lxp_slot_ref_equal(policy->slot, key->slot) &&
+	       lxp_region_ref_equal(policy->address_space, key->address_space) &&
+	       policy->device_generation == key->device_generation &&
+	       policy->exec_generation == key->exec_generation &&
+	       policy->copied_text_executable == key->copied_text_executable;
+}
+
+static inline int lxp_memory_policy_address_space_matches_key(
+	const lxp_memory_policy_t *policy, const lxp_memory_policy_key_t *key)
+{
+	return policy && key &&
+	       lxp_region_ref_equal(policy->address_space, key->address_space) &&
+	       policy->device_generation == key->device_generation &&
+	       policy->exec_generation == key->exec_generation &&
+	       policy->copied_text_executable == key->copied_text_executable;
+}
+
 /* Where a parked program waits in shared .text until the coordinator blocks it.
  * A token-based engine may override the weak fallback to complete its resume;
  * native saved-frame engines resume directly without consuming the token. */
@@ -118,6 +191,8 @@ int lxp_slot_ref_is_current(lxp_slot_ref_t ref);
 int lxp_slot_ref_is_runnable(lxp_slot_ref_t ref);
 /** Obtain the current address-space region capability for @p ref. */
 int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out);
+/** Snapshot the current slot's abstract MPU/cache policy. */
+int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out);
 
 /** Dispatch one guest SVC only if @p ref remains current and runnable. */
 int lxp_dispatch_slot(lxp_slot_ref_t ref, struct lxp_frame *frame);

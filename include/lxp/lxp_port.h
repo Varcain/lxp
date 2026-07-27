@@ -85,7 +85,22 @@ typedef struct {
 #define LXP_MAP_WT 1u  /**< Write-through. */
 #define LXP_MAP_DEV 2u /**< Device / strongly-ordered. */
 
-#define LXP_OS_OPS_ABI_VERSION 2u
+/**
+ * Ordinary CPU-access coherency contract for guest program/dynamic pools.
+ *
+ * This deliberately excludes framebuffer, peripheral, and DMA ownership
+ * transfers: those remain explicit device capabilities with their own memory
+ * attributes and maintenance boundaries.
+ */
+typedef enum lxp_cpu_memory_model {
+	/** The host D-cache is disabled while the personality runs. */
+	LXP_CPU_MEM_UNCACHED = 1,
+	/** Guest and privileged coordinator use matching cacheable Normal-memory
+	 * attributes on one coherent CPU cache. */
+	LXP_CPU_MEM_COHERENT_SAME_ATTRS = 2,
+} lxp_cpu_memory_model_t;
+
+#define LXP_OS_OPS_ABI_VERSION 3u
 #define LXP_NET_OPS_ABI_VERSION 1u
 #define LXP_DISPLAY_OPS_ABI_VERSION 1u
 
@@ -193,6 +208,13 @@ typedef struct lxp_os_ops {
 	void *(*park_prepare)(int sidx, uint32_t generation,
 			      const struct lxp_resume_ctx *c);
 	int (*park_slot)(int sidx, uint32_t generation);
+
+	/* Declared CPU-memory contract plus a live-hardware validator. lxp_run()
+	 * invokes validate_memory_model after prepare() has installed the port's
+	 * MPU/cache state and before any guest image is loaded. A mismatch fails
+	 * the run closed. */
+	lxp_cpu_memory_model_t cpu_memory_model;
+	int (*validate_memory_model)(lxp_cpu_memory_model_t declared);
 } lxp_os_ops_t;
 
 /* ─────────────────────────────────────────────────────────────────────────

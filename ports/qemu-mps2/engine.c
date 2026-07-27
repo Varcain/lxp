@@ -564,6 +564,13 @@ static int qemu_random_fill(void *buf, size_t len)
 	return LXP_OK;
 }
 
+static int qemu_validate_memory_model(lxp_cpu_memory_model_t declared)
+{
+	/* The reference machine runs without a data cache. Keep that fact in the
+	 * same explicit port contract used by the hardware seams. */
+	return declared == LXP_CPU_MEM_UNCACHED ? LXP_OK : LXP_ERR_INVALID_PARAM;
+}
+
 const lxp_os_ops_t g_lxp_qemu_engine = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
@@ -584,6 +591,8 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.random_fill = qemu_random_fill,
 	.mem_stats = qemu_mem_stats,
 	.system_version = qemu_system_version,
+	.cpu_memory_model = LXP_CPU_MEM_UNCACHED,
+	.validate_memory_model = qemu_validate_memory_model,
 	.dyn_pool = qemu_dyn_pool, /* M3: hosts a dynamic proc's libc.so mmap + arena */
 	.exec_capture = qemu_exec_capture,
 	/* map_device / thread_list / cache_* / rootfs_window / exec_stage: NULL — the

@@ -212,6 +212,11 @@ static int mock_map_device(int sidx, uintptr_t addr, size_t size, unsigned attrs
 	}
 	return 0;
 }
+
+static int mock_validate_memory_model(lxp_cpu_memory_model_t declared)
+{
+	return declared == LXP_CPU_MEM_UNCACHED ? LXP_OK : LXP_ERR_INVALID_PARAM;
+}
 static const char *mock_system_version(void)
 {
 	return "MockRTOS 9.8.7 ove-fedcba9 lxp-7654321";
@@ -239,6 +244,8 @@ static const lxp_os_ops_t g_mock_eng = {
 	.cache_clean = mock_cache_clean,
 	.cache_invalidate = mock_cache_invalidate,
 	.coord_map = mock_coord_map,
+	.cpu_memory_model = LXP_CPU_MEM_UNCACHED,
+	.validate_memory_model = mock_validate_memory_model,
 	.system_version = mock_system_version,
 };
 
@@ -1057,6 +1064,45 @@ static void test_fault_publication_rejects_stale_slot_reference(void **state)
 	assert_true(primary_slot_pending(0));
 }
 
+static void test_memory_policy_snapshot_and_key_track_every_generation(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 2);
+	lxp_slot_ref_t slot = slot_ref_at(0);
+	lxp_mm_t *mm = g_lxp_slots[0].proc.mm;
+	mm->device_generation = 7u;
+	mm->exec_generation = 11u;
+	mm->copied_text_executable = 1u;
+	mm->dev_map_lo[0] = 0x40001000u;
+	mm->dev_map_hi[0] = 0x40002000u;
+	mm->dev_map_attrs[0] = LXP_MAP_DEV;
+
+	lxp_memory_policy_t policy;
+	assert_int_equal(lxp_slot_memory_policy(slot, &policy), LXP_OK);
+	assert_int_equal(policy.abi_version, LXP_MEMORY_POLICY_ABI_VERSION);
+	assert_int_equal(policy.struct_size, sizeof(policy));
+	assert_true(lxp_slot_ref_equal(policy.slot, slot));
+	assert_true(lxp_region_ref_equal(policy.address_space, mm->region));
+	assert_int_equal(policy.device_generation, 7u);
+	assert_int_equal(policy.exec_generation, 11u);
+	assert_int_equal(policy.copied_text_executable, 1u);
+	assert_int_equal(policy.device_count, 1u);
+	assert_int_equal(policy.devices[0].base, 0x40001000u);
+	assert_int_equal(policy.devices[0].size, 0x1000u);
+	assert_int_equal(policy.devices[0].attrs, LXP_MAP_DEV);
+
+	lxp_memory_policy_key_t key = lxp_memory_policy_make_key(&policy);
+	assert_true(lxp_memory_policy_matches_key(&policy, &key));
+	mm->device_generation++;
+	assert_int_equal(lxp_slot_memory_policy(slot, &policy), LXP_OK);
+	assert_false(lxp_memory_policy_matches_key(&policy, &key));
+	assert_true(lxp_memory_policy_address_space_matches_key(&policy, &key) == 0);
+
+	lxp_slot_ref_t stale = slot;
+	deferred_slot_reassign(0);
+	assert_int_equal(lxp_slot_memory_policy(stale, &policy), -LXP_ESRCH);
+}
+
 static void test_region_references_reject_reuse_and_skip_zero(void **state)
 {
 	(void)state;
@@ -1192,6 +1238,12 @@ static void test_port_abi_and_required_ops_are_validated(void **state)
 	assert_false(os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.random_fill = NULL;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	ops.cpu_memory_model = (lxp_cpu_memory_model_t)99;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	ops.validate_memory_model = NULL;
 	assert_false(os_ops_valid(&ops));
 }
 
@@ -2689,6 +2741,9 @@ int main(void)
 			reset_state),
 		cmocka_unit_test_setup(test_fault_publication_rejects_stale_slot_reference,
 				       reset_state),
+		cmocka_unit_test_setup(
+			test_memory_policy_snapshot_and_key_track_every_generation,
+			reset_state),
 		cmocka_unit_test_setup(test_region_references_reject_reuse_and_skip_zero,
 				       reset_state),
 		cmocka_unit_test_setup(test_world_validator_rejects_stale_region_capabilities,

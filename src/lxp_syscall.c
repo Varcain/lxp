@@ -200,6 +200,8 @@ static lxp_mm_t *mm_new(void)
 			memset(&g_mm[i], 0, sizeof(g_mm[i]));
 			g_mm[i].refs = 1;
 			g_mm[i].region = lxp_region_ref_none();
+			g_mm[i].device_generation = 1u;
+			g_mm[i].exec_generation = 1u;
 			return &g_mm[i];
 		}
 	return NULL;
