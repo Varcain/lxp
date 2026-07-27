@@ -11,7 +11,7 @@
  *
  * SECURITY: DMA2D is a DMA engine that reads/writes whatever address it is given.
  * The descriptor comes from an UNPRIVILEGED guest, so every plane's full byte
- * extent (h lines of w pixels with an inter-line gap) is validated with user_ok()
+ * extent (h lines of w pixels with an inter-line gap) is validated with lxp_guest_access_ok()
  * to lie ENTIRELY within the submitting guest's own region before the address ever
  * reaches the hardware — a guest can only ever make DMA2D touch its own memory.
  */
@@ -23,7 +23,7 @@
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_disp_ops.h"
-#include "lxp/lxp_syscall.h" /* user_ok */
+#include "lxp/lxp_syscall.h" /* lxp_guest_access_ok */
 #include "lxp/lxp_types.h"
 #include "lxp_uapi.h"
 
@@ -71,7 +71,7 @@ static long dma2d_check_plane(lxp_proc_t *p, uint32_t base, uint32_t w, uint32_t
 	uint64_t span = ((uint64_t)(h - 1) * line + w) * bpp;	 /* bytes DMA2D touches */
 	if (span == 0 || span > DMA2D_MAX_SPAN)
 		return -LXP_EINVAL;
-	if (!user_ok(p, (const void *)(uintptr_t)base, (size_t)span, write))
+	if (!lxp_guest_access_ok(p, (const void *)(uintptr_t)base, (size_t)span, write))
 		return -LXP_EFAULT;
 	*out_abs = (uintptr_t)base;
 	return 0;
@@ -140,10 +140,9 @@ static long dma2d_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p
 	unsigned long nr = LXP_DMA2D_IOC_NR(cmd);
 
 	if (nr == LXP_DMA2D_SUBMIT_NR) {
-		struct lxp_dma2d_submit *u = (void *)arg;
-		if (!user_ok(p, u, sizeof(*u), 0))
+		struct lxp_dma2d_submit s;
+		if (lxp_copy_from_guest(p, &s, (uintptr_t)arg, sizeof(s)) != 0)
 			return -LXP_EFAULT;
-		struct lxp_dma2d_submit s = *u; /* copy in once; never re-read guest memory */
 		lxp_dma2d_op_t op;
 		long r = dma2d_prepare_op(p, &s, &op);
 		if (r)

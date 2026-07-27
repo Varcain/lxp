@@ -35,7 +35,6 @@ static struct lxp_primary_result lxp_handle_primary_event(const lxp_os_ops_t *en
 		return result;
 
 	case LXP_EV_DEFER:
-		lxp_coord_map(g_lxp_slots[slot].proc.mm->region.index);
 		execute_deferred(eng, slot);
 		return result;
 

@@ -12,6 +12,7 @@
  */
 #include "lxp_run_internal.h"
 
+#include "lxp/lxp_guest.h"
 #include "lxp/lxp_seam.h"
 #include "lxp/lxp_syscall.h"
 
@@ -20,20 +21,26 @@
  * {entry, GOT} — deref, since the handler may live in a different module (e.g. libpthread) than the
  * interrupted code and needs its own r9=GOT. Non-FDPIC (e.g. the posix host test): raw entries, no
  * GOT change. */
-void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
-		     uintptr_t *restorer)
+int resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
+		    uintptr_t *restorer)
 {
 	uintptr_t h = lxp_sig_handler_get(proc, sig);
 	uintptr_t r = lxp_sig_restorer_get(proc);
 	if (proc->is_fdpic) {
-		*entry = ((const uint32_t *)h)[0];
-		*got = ((const uint32_t *)h)[1];
-		*restorer = ((const uint32_t *)r)[0];
+		uint32_t descriptor[2];
+		uint32_t restore_entry;
+		if (lxp_copy_from_guest(proc, descriptor, h, sizeof(descriptor)) != 0 ||
+		    lxp_guest_get_u32(proc, r, &restore_entry) != 0)
+			return -LXP_EFAULT;
+		*entry = descriptor[0];
+		*got = descriptor[1];
+		*restorer = restore_entry;
 	} else {
 		*entry = h;
 		*got = 0;
 		*restorer = r;
 	}
+	return 0;
 }
 
 /* Signals whose POSIX default action never terminates the process: SIGCHLD (ignore),
@@ -145,6 +152,17 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		park_frame(f, proc); /* the coordinator reaps it */
 		return;
 	}
+	uintptr_t entry, restorer;
+	uint32_t got;
+	if (resolve_handler(proc, sig, &entry, &got, &restorer) != 0) {
+		(void)lxp_intent_exit(proc, 0);
+		proc->exit_status = 128 + LXP_SIGSEGV;
+		proc->exit_reason = LXP_EXIT_REASON_MEMORY_FAULT;
+		proc->exit_signal = LXP_SIGSEGV;
+		proc->exit_address = h;
+		park_frame(f, proc);
+		return;
+	}
 	struct sig_save_s *sv = sig_save_push(proc, sig);
 	if (!sv) {
 		/* The bounded host stack must never wrap or overwrite an older context.
@@ -173,9 +191,6 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	else
 		sv->fp.active = 0;
 #endif
-	uintptr_t entry, restorer;
-	uint32_t got;
-	resolve_handler(proc, sig, &entry, &got, &restorer);
 	if (proc->is_fdpic)
 		f->r[9] = got;	  /* FDPIC: r9 = the handler's own GOT */
 	f->r[15] = entry & ~1u;	  /* pc -> handler entry (Thumb via xPSR.T) */

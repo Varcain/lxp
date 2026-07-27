@@ -19,7 +19,7 @@ reuse the existing `-DLXP_SANITIZE=ON` ASan/UBSan flags.
 | `fuzz_cpio`    | `lxp_cpio_to_rootfs`    | newc cpio initramfs parser |
 | `fuzz_path`    | `resolve_path` + `lxp_rootfs_resolve` | path normalize + rootfs symlink follow |
 | `fuzz_9p`      | `handle_reply` / `parse_getattr` | 9P2000.L reply parser (via the `LXP_FUZZ` shim) |
-| `fuzz_syscall` | `lxp_syscall`           | syscall dispatcher — the `user_ok` pointer gate |
+| `fuzz_syscall` | `lxp_syscall`           | syscall dispatcher — the `lxp_guest_access_ok` pointer gate |
 
 ## Build & run
 
@@ -71,7 +71,7 @@ real target bugs, not host artifacts:
 - **`fuzz_9p`** drives `handle_reply` through the `#ifdef LXP_FUZZ` shim in `src/netfs/lxp_netfs.c`
   (`lxp_netfs_fuzz_reset` + `lxp_netfs_fuzz_feed`) — the only gated hook in a shipping TU, inert in
   production (`LXP_FUZZ` is never defined outside this build).
-- **`fuzz_syscall`** sets `region_lo/hi` to a real guest buffer so `user_ok` bounds derefs as
+- **`fuzz_syscall`** sets `region_lo/hi` to a real guest buffer so `lxp_guest_access_ok` bounds derefs as
   on-target, and drops two UBSan sub-checks as target-benign C-standard pedantry: `alignment`
   (ARMv7-M does unaligned word LDR/STR in hardware) and `nonnull-attribute` (`memcpy(p,q,0)` is a
   no-op everywhere). ASan + the rest of UBSan still catch real corruption. It uses a
@@ -88,5 +88,5 @@ with a committed regression seed:
 | `corpus/fdpic/regress_dynwalk_oob.elf`      | unbounded text `p_memsz` → OOB read in the dyn-table walk |
 | `corpus/etrel/regress_symval_overflow.o`    | `lxp_loader_sym`: unbounded `st_value` → pointer-arith UB / wild address |
 | `corpus/9p/regress_shortreply`              | `handle_reply`: truncated-reply reads past the declared body length |
-| `corpus/syscall/regress_statx_path`         | `sys_statx`: `path[0]` dereferenced before `user_ok` |
+| `corpus/syscall/regress_statx_path`         | `sys_statx`: `path[0]` dereferenced before `lxp_guest_access_ok` |
 | `corpus/syscall/regress_procfs_pidovf`      | `/proc/<pid>` decimal parse: signed int overflow |

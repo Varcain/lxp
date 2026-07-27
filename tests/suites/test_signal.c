@@ -37,13 +37,18 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 #define SIG_NESTED 12 /* a different catchable signal, eligible during SIG_CUSTOM */
 
 static lxp_sighand_t g_test_sighand;
+static lxp_mm_t g_test_mm;
 
 static void setup_signal_proc(lxp_proc_t *p)
 {
 	memset(p, 0, sizeof(*p));
 	memset(&g_test_sighand, 0, sizeof(g_test_sighand));
+	memset(&g_test_mm, 0, sizeof(g_test_mm));
 	g_test_sighand.refs = 1;
 	p->sighand = &g_test_sighand;
+	g_test_mm.region_lo = 1;
+	g_test_mm.region_hi = UINTPTR_MAX;
+	p->mm = &g_test_mm;
 }
 
 static void test_sig_swallowed(void **st)
@@ -73,7 +78,7 @@ static void test_resolve_handler_nonfdpic(void **st)
 	p.sighand->restorer = 0xbbbb0000;
 	uintptr_t entry, restorer;
 	uint32_t got;
-	resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer);
+	assert_int_equal(resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer), 0);
 	assert_int_equal((uint32_t)entry, 0xaaaa0000); /* raw entry, no descriptor deref */
 	assert_int_equal(got, 0);
 	assert_int_equal((uint32_t)restorer, 0xbbbb0000);
@@ -92,7 +97,7 @@ static void test_resolve_handler_fdpic(void **st)
 	p.sighand->restorer = (uintptr_t)rdesc;
 	uintptr_t entry, restorer;
 	uint32_t got;
-	resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer);
+	assert_int_equal(resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer), 0);
 	assert_int_equal((uint32_t)entry, 0xc0de0000);
 	assert_int_equal(got, 0x60700000);
 	assert_int_equal((uint32_t)restorer, 0x5e570000);

@@ -45,13 +45,14 @@ static void fb_copy16(uint8_t *dst, const uint8_t *src, size_t len)
 static long fb_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, void *buf,
 		    size_t len)
 {
-	(void)p;
 	uint8_t *fb = g_lxp_disp_ops->fb_get_buffer();
 	if (!fb || o->pos >= d->size)
 		return 0; /* EOF at/after the buffer end */
 	size_t n = d->size - o->pos;
 	if (n > len)
 		n = len;
+	if (!lxp_guest_access_ok(p, buf, n, 1))
+		return -LXP_EFAULT;
 	fb_copy16(buf, fb + o->pos, n);
 	o->pos += (uint32_t)n;
 	return (long)n;
@@ -60,13 +61,14 @@ static long fb_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, vo
 static long fb_write(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 		     const void *buf, size_t len)
 {
-	(void)p;
 	uint8_t *fb = g_lxp_disp_ops->fb_get_buffer();
 	if (!fb || o->pos >= d->size)
 		return -LXP_EFBIG; /* a write past the framebuffer end */
 	size_t n = d->size - o->pos;
 	if (n > len)
 		n = len;
+	if (!lxp_guest_access_ok(p, buf, n, 0))
+		return -LXP_EFAULT;
 	fb_copy16(fb + o->pos, buf, n);
 	/* Flush every row [pos, pos+n) touched. The row count must include the intra-row start
 	 * offset — ceil(n/stride) undercounts by a row when the write starts mid-row and crosses
@@ -112,27 +114,23 @@ static long fb_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 	(void)o;
 	switch (cmd) {
 	case LXP_FBIOGET_VSCREENINFO: {
-		struct lxp_fb_var_screeninfo *v = (void *)arg;
-		if (!user_ok(p, v, sizeof(*v), 1))
-			return -LXP_EFAULT;
-		fill_vinfo(v);
-		return 0;
+		struct lxp_fb_var_screeninfo v;
+		fill_vinfo(&v);
+		return lxp_copy_to_guest(p, (uintptr_t)arg, &v, sizeof(v));
 	}
 	case LXP_FBIOGET_FSCREENINFO: {
-		struct lxp_fb_fix_screeninfo *f = (void *)arg;
-		if (!user_ok(p, f, sizeof(*f), 1))
-			return -LXP_EFAULT;
-		fill_finfo(f);
-		return 0;
+		struct lxp_fb_fix_screeninfo f;
+		fill_finfo(&f);
+		return lxp_copy_to_guest(p, (uintptr_t)arg, &f, sizeof(f));
 	}
 	case LXP_FBIOPUT_VSCREENINFO: {
 		/* Accept iff the requested geometry matches ours (busybox fbset / LVGL's
 		 * force-refresh do GET-modify-PUT); we run a single fixed mode. */
-		struct lxp_fb_var_screeninfo *v = (void *)arg;
-		if (!user_ok(p, v, sizeof(*v), 0))
+		struct lxp_fb_var_screeninfo v;
+		if (lxp_copy_from_guest(p, &v, (uintptr_t)arg, sizeof(v)) != 0)
 			return -LXP_EFAULT;
-		if (v->xres != g_fbinfo.width || v->yres != g_fbinfo.height ||
-		    v->bits_per_pixel != 16)
+		if (v.xres != g_fbinfo.width || v.yres != g_fbinfo.height ||
+		    v.bits_per_pixel != 16)
 			return -LXP_EINVAL;
 		return 0;
 	}
@@ -147,16 +145,15 @@ static long fb_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 		 * framebuffer it owns, so it is trusted but still bounds-checked. */
 		if (!g_lxp_disp_ops->dma2d_submit)
 			return -LXP_ENOSYS; /* no accelerator → guest keeps its pwrite/memcpy path */
-		struct lxp_fb_blit *u = (void *)arg;
-		if (!user_ok(p, u, sizeof(*u), 0))
+		struct lxp_fb_blit b;
+		if (lxp_copy_from_guest(p, &b, (uintptr_t)arg, sizeof(b)) != 0)
 			return -LXP_EFAULT;
-		struct lxp_fb_blit b = *u;
 		const uint32_t bpp = 2; /* RGB565 framebuffer (see fill_vinfo) */
 		if (b.w == 0 || b.h == 0 || b.x + b.w > g_fbinfo.width ||
 		    b.y + b.h > g_fbinfo.height || (b.src_stride & 1u) || b.src_stride < b.w * bpp)
 			return -LXP_EINVAL;
 		uint64_t src_span = (uint64_t)(b.h - 1) * b.src_stride + (uint64_t)b.w * bpp;
-		if (!user_ok(p, (const void *)(uintptr_t)b.src, (size_t)src_span, 0))
+		if (!lxp_guest_access_ok(p, (const void *)(uintptr_t)b.src, (size_t)src_span, 0))
 			return -LXP_EFAULT;
 		uint8_t *fb = g_lxp_disp_ops->fb_get_buffer();
 		if (!fb)

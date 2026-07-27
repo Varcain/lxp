@@ -12,7 +12,7 @@
 #include "fs/lxp_path.h"
 
 #include "lxp/lxp_syscall.h"
-#include "lxp_internal.h" /* user_strnlen, file_mode */
+#include "lxp_internal.h" /* lxp_guest_strnlen, file_mode */
 
 #include <string.h>
 
@@ -68,7 +68,7 @@ long resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen)
 	/* Every path syscall funnels through here, so one check guards them all: reject a path pointer
 	 * that isn't a NUL-terminated string wholly inside the program's memory (-EFAULT) before any
 	 * deref — else a bad `in` faults the kernel or walks a strlen off the region. */
-	if (user_strnlen(p, in, LXP_PATH_MAX) < 0)
+	if (lxp_guest_strnlen(p, in, LXP_PATH_MAX) < 0)
 		return -LXP_EFAULT;
 	char joined[LXP_PATH_MAX];
 	size_t jl = 0;
@@ -91,7 +91,7 @@ long resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen)
 
 long resolve_path_trusted(const char *in, char *out, size_t outlen)
 {
-	/* No user_strnlen() here, and that is the point: `in` is a string the kernel
+	/* No lxp_guest_strnlen() here, and that is the point: `in` is a string the kernel
 	 * copied out of a file's own bytes, so it does not live in the guest's
 	 * region and resolve_path()'s pointer guard rejects it with -EFAULT — which
 	 * the #! path reported as ENOENT, making every interpreter script

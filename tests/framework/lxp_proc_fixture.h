@@ -6,9 +6,9 @@
  *
  * Shared fixture for the syscall golden-conformance suite: a proc backed by a bounded
  * LOW-4 GiB region so the host tests run as close to the 32-bit target as a host can.
- *   - region_lo/hi bound user_ok() to a REAL window, so a bad guest pointer is genuinely
+ *   - region_lo/hi bound lxp_guest_access_ok() to a REAL window, so a bad guest pointer is genuinely
  *     -EFAULT (unlike the all-permitting setup in test_linux_syscall.c) and ASan faults
- *     on any user_ok bypass.
+ *     on any lxp_guest_access_ok bypass.
  *   - brk / mmap addresses come from an arena inside the low region, so they fit a 32-bit
  *     r0 exactly and round-trip as they do on the Cortex-M target.
  * Reuses fuzz_lowbuf (MAP_32BIT + PROT_NONE guard page) from fuzz/fuzz_common.h, so the
@@ -103,7 +103,7 @@ static inline lxp_conf_t *lxp_conf_begin(lxp_proc_t *p, const lxp_file_t *rootfs
 		lxp_conf_release(&g_conf);
 		return NULL;
 	}
-	/* Bound user_ok to the whole low region; a static proc's pool == its region. */
+	/* Bound lxp_guest_access_ok to the whole low region; a static proc's pool == its region. */
 	p->mm->region_lo = (uintptr_t)g_conf.low.base;
 	p->mm->region_hi = (uintptr_t)g_conf.low.base + g_conf.low.cap;
 	p->mm->pool_lo = p->mm->region_lo;
@@ -128,7 +128,7 @@ static inline void *lxp_conf_alloc(lxp_conf_t *fx, size_t n)
 }
 
 /* Copy a C string into in-region guest memory; returns the in-region pointer (for path
- * args, which the syscall validates through user_strnlen against region_lo/hi). */
+ * args, which the syscall validates through lxp_guest_strnlen against region_lo/hi). */
 static inline char *lxp_conf_str(lxp_conf_t *fx, const char *s)
 {
 	size_t n = strlen(s) + 1;
@@ -139,7 +139,7 @@ static inline char *lxp_conf_str(lxp_conf_t *fx, const char *s)
 }
 
 /* A guaranteed-invalid guest pointer (just past the region's upper bound), for -EFAULT
- * assertions. A read/write of it must fail user_ok. */
+ * assertions. A read/write of it must fail lxp_guest_access_ok. */
 static inline void *lxp_conf_bad_ptr(const lxp_conf_t *fx)
 {
 	return (void *)((uintptr_t)fx->low.base + fx->low.cap);

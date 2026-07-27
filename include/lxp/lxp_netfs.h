@@ -38,6 +38,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lxp/lxp_guest.h"
 #include "lxp/lxp_syscall.h"
 
 #ifdef __cplusplus
@@ -138,13 +139,9 @@ int lxp_netfs_busy(void);
 /* ---- implemented in lxp_syscall.c, called by the netfs retry --------- */
 
 /** Marshal remote attributes into the guest's stat/statx buffer (the netfs retry owns the
- *  9P transport; the syscall TU owns the kstat/statx layout + user_ok). @return 0 or -errno. */
+ *  9P transport; the syscall TU owns the kstat/statx layout + lxp_guest_access_ok). @return 0 or -errno. */
 long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t mode, uint64_t size,
 			 uint64_t mtime, uint64_t ino);
-
-/** access_ok for the netfs handlers to validate a guest pointer (confused-deputy guard —
- *  handlers run PRIVILEGED). Defined in lxp_syscall.c. */
-int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 
 /* ---- Phase B: exec a program off the mount (LXP_ENABLE_NETFS_EXEC) ---- */
 #if LXP_ENABLE_NETFS_EXEC

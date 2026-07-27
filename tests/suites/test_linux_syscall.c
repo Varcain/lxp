@@ -12,16 +12,13 @@
 
 #include "../framework/lxp_test.h"
 #include "lxp/lxp_arena.h"
+#include "lxp/lxp_guest.h"
 #include "lxp/lxp_syscall.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 
-/* Syscall-boundary pointer validators — non-static in ove_linux_syscall.c so their
- * bounds/overflow logic can be unit-tested here directly (access_ok / user_strnlen). */
-int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
-long user_strnlen(const lxp_proc_t *p, const char *s, size_t max);
 extern size_t g_lxp_test_cache_clean_calls;
 extern const void *g_lxp_test_cache_clean_base;
 extern size_t g_lxp_test_cache_clean_len;
@@ -942,35 +939,35 @@ static void test_lnx_user_ok(void **state)
 	p.mm->pool_lo = p.mm->pool_hi = 0;
 
 	/* good: wholly inside, both read and write */
-	assert_true(user_ok(&p, rgn, sizeof(rgn), 0));
-	assert_true(user_ok(&p, rgn, sizeof(rgn), 1));
-	assert_true(user_ok(&p, rgn + 100, 1, 1));
+	assert_true(lxp_guest_access_ok(&p, rgn, sizeof(rgn), 0));
+	assert_true(lxp_guest_access_ok(&p, rgn, sizeof(rgn), 1));
+	assert_true(lxp_guest_access_ok(&p, rgn + 100, 1, 1));
 	/* zero length dereferences nothing → always ok, even for a wild pointer */
-	assert_true(user_ok(&p, (void *)0x20000000u, 0, 1));
+	assert_true(lxp_guest_access_ok(&p, (void *)0x20000000u, 0, 1));
 	/* NULL and out-of-region are rejected */
-	assert_false(user_ok(&p, NULL, 1, 0));
-	assert_false(user_ok(&p, (void *)(lo - 1), 1, 0));
-	assert_false(user_ok(&p, (void *)hi, 1, 1));
-	assert_false(user_ok(&p, (void *)(hi + 4096), 8, 1));
-	assert_false(user_ok(&p, (void *)0x20000000u, 64, 1)); /* a "kernel" pointer */
+	assert_false(lxp_guest_access_ok(&p, NULL, 1, 0));
+	assert_false(lxp_guest_access_ok(&p, (void *)(lo - 1), 1, 0));
+	assert_false(lxp_guest_access_ok(&p, (void *)hi, 1, 1));
+	assert_false(lxp_guest_access_ok(&p, (void *)(hi + 4096), 8, 1));
+	assert_false(lxp_guest_access_ok(&p, (void *)0x20000000u, 64, 1)); /* a "kernel" pointer */
 	/* boundary: the last byte is in range; a run ending one past hi is not */
-	assert_true(user_ok(&p, (void *)(hi - 1), 1, 1));
-	assert_false(user_ok(&p, (void *)(hi - 1), 2, 1));
-	assert_true(user_ok(&p, (void *)lo, hi - lo, 0));	 /* exactly fills the region */
-	assert_false(user_ok(&p, (void *)lo, (hi - lo) + 1, 0)); /* one byte past the end */
+	assert_true(lxp_guest_access_ok(&p, (void *)(hi - 1), 1, 1));
+	assert_false(lxp_guest_access_ok(&p, (void *)(hi - 1), 2, 1));
+	assert_true(lxp_guest_access_ok(&p, (void *)lo, hi - lo, 0));	 /* exactly fills the region */
+	assert_false(lxp_guest_access_ok(&p, (void *)lo, (hi - lo) + 1, 0)); /* one byte past the end */
 	/* overflow: ptr+len must not wrap the address space into a "valid" range */
-	assert_false(user_ok(&p, (void *)(UINTPTR_MAX - 8), 64, 0));
-	assert_false(user_ok(&p, (void *)(hi - 4), SIZE_MAX, 1));
+	assert_false(lxp_guest_access_ok(&p, (void *)(UINTPTR_MAX - 8), 64, 0));
+	assert_false(lxp_guest_access_ok(&p, (void *)(hi - 4), SIZE_MAX, 1));
 
 	/* a separate dynamic-pool range is honoured too */
 	static char pool[512] __attribute__((aligned(16)));
 	p.mm->pool_lo = (uintptr_t)pool;
 	p.mm->pool_hi = (uintptr_t)pool + sizeof(pool);
-	assert_true(user_ok(&p, pool, sizeof(pool), 1));
-	assert_false(user_ok(&p, pool, sizeof(pool) + 1, 1));
+	assert_true(lxp_guest_access_ok(&p, pool, sizeof(pool), 1));
+	assert_false(lxp_guest_access_ok(&p, pool, sizeof(pool) + 1, 1));
 }
 
-/* user_strnlen: terminated / unterminated-runs-off-the-end / at-edge / max-bounded. */
+/* lxp_guest_strnlen: terminated / unterminated-runs-off-the-end / at-edge / max-bounded. */
 static void test_lnx_user_strnlen(void **state)
 {
 	(void)state;
@@ -987,25 +984,76 @@ static void test_lnx_user_strnlen(void **state)
 	/* terminated inside the region → its length */
 	memset(rgn, 'x', sizeof(rgn));
 	memcpy(rgn + 10, "hello", 6); /* copies the trailing NUL too */
-	assert_int_equal(user_strnlen(&p, rgn + 10, 256), 5);
+	assert_int_equal(lxp_guest_strnlen(&p, rgn + 10, 256), 5);
 
 	/* a start pointer outside every range → EFAULT */
-	assert_int_equal(user_strnlen(&p, (const char *)0x20000000u, 256), -LXP_EFAULT);
+	assert_int_equal(lxp_guest_strnlen(&p, (const char *)0x20000000u, 256), -LXP_EFAULT);
 
 	/* unterminated: no NUL before the region end → EFAULT (must not walk past hi) */
 	memset(rgn, 'A', sizeof(rgn));
-	assert_int_equal(user_strnlen(&p, rgn, 256), -LXP_EFAULT);
-	assert_int_equal(user_strnlen(&p, rgn + 250, 256), -LXP_EFAULT);
+	assert_int_equal(lxp_guest_strnlen(&p, rgn, 256), -LXP_EFAULT);
+	assert_int_equal(lxp_guest_strnlen(&p, rgn + 250, 256), -LXP_EFAULT);
 
 	/* at-edge: the NUL is the very last byte of the region → still OK */
 	memset(rgn, 'B', sizeof(rgn));
 	rgn[255] = '\0';
-	assert_int_equal(user_strnlen(&p, rgn + 250, 256), 5); /* B B B B B \0 */
+	assert_int_equal(lxp_guest_strnlen(&p, rgn + 250, 256), 5); /* B B B B B \0 */
 
 	/* bounded by max: no NUL within `max` (though one exists later) → EFAULT */
 	memset(rgn, 'C', sizeof(rgn));
 	rgn[100] = '\0';
-	assert_int_equal(user_strnlen(&p, rgn, 10), -LXP_EFAULT);
+	assert_int_equal(lxp_guest_strnlen(&p, rgn, 10), -LXP_EFAULT);
+}
+
+static void test_guest_view_rejects_stale_dispatch(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+	uint8_t region[32] = {0};
+	p.mm->region_lo = (uintptr_t)region;
+	p.mm->region_hi = (uintptr_t)region + sizeof(region);
+	p.mm->region = (lxp_region_ref_t){.index = 2, .generation = 11};
+	uint32_t slot_generation = 7;
+	lxp_slot_ref_t slot = {.index = 1, .generation = slot_generation};
+	lxp_guest_view_t view;
+
+	lxp_slot_ref_t stale_slot = {.index = slot.index, .generation = slot.generation - 1};
+	assert_int_equal(lxp_guest_view_begin(&p, stale_slot, &slot_generation,
+					      LXP_GUEST_READ_WRITE, &view),
+			 -LXP_ESRCH);
+	assert_null(p.guest_view);
+
+	assert_int_equal(lxp_guest_view_begin(&p, slot, &slot_generation,
+					      LXP_GUEST_READ_WRITE, &view),
+			 LXP_OK);
+	assert_true(lxp_guest_view_is_current(&view));
+	assert_int_equal(lxp_guest_put_u32(&p, (uintptr_t)region, 0x12345678u), 0);
+	uint32_t value = 0;
+	assert_int_equal(lxp_guest_get_u32(&p, (uintptr_t)region, &value), 0);
+	assert_int_equal(value, 0x12345678u);
+	assert_int_equal(lxp_guest_view_begin(&p, slot, &slot_generation,
+					      LXP_GUEST_READ_WRITE, &view),
+			 -LXP_EINVAL);
+
+	slot_generation++;
+	assert_false(lxp_guest_view_is_current(&view));
+	assert_int_equal(lxp_guest_get_u32(&p, (uintptr_t)region, &value), -LXP_EFAULT);
+	slot_generation = slot.generation;
+	p.mm->region.generation++;
+	assert_false(lxp_guest_view_is_current(&view));
+	assert_int_equal(lxp_guest_put_u32(&p, (uintptr_t)region, 0), -LXP_EFAULT);
+
+	lxp_guest_view_end(&view);
+	lxp_guest_view_end(&view); /* idempotent revocation */
+	assert_null(p.guest_view);
+
+	assert_int_equal(lxp_guest_view_begin(&p, slot, &slot_generation, LXP_GUEST_WRITE, &view),
+			 LXP_OK);
+	assert_int_equal(lxp_guest_strnlen(&p, (const char *)region, sizeof(region)),
+			 -LXP_EFAULT);
+	lxp_guest_view_end(&view);
 }
 
 /* rt_sigprocmask maintains a real per-proc blocked mask: block/unblock/setmask, the old
@@ -1178,6 +1226,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_cpio),
 		cmocka_unit_test(test_lnx_user_ok),
 		cmocka_unit_test(test_lnx_user_strnlen),
+		cmocka_unit_test(test_guest_view_rejects_stale_dispatch),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

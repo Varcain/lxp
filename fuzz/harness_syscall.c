@@ -5,12 +5,12 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Fuzz target: the syscall dispatcher, lxp_syscall(proc, nr, a0..a5). The system under
- * test is the user-pointer gate (user_ok / user_strnlen, src/lxp_syscall.c): every guest
+ * test is the user-pointer gate (lxp_guest_access_ok / lxp_guest_strnlen, src/lxp_syscall.c): every guest
  * pointer a syscall dereferences must be bounded to the proc's region. So the guest
  * region is a real ASan-instrumented buffer, region_lo/hi are set to exactly it (as the
  * run loop does on-target), and each argument is fuzzed as EITHER a small immediate
  * (fd / whence / flags / size) OR a pointer INTO the guest buffer — a syscall that
- * derefs past a user_ok it skipped (or miscomputes an offset) reads/writes past g_guest
+ * derefs past a lxp_guest_access_ok it skipped (or miscomputes an offset) reads/writes past g_guest
  * and aborts.
  *
  * CAVEATS (documented in fuzz/README.md): this exercises a 32-bit-target ABI as 64-bit
@@ -46,7 +46,7 @@ static const long k_nr[] = {
 
 /* Each argument is either a small signed immediate (fds/whence/flags/small sizes) or a
  * pointer into the front half of the guest region (leaving room for the syscall's length,
- * which user_ok bounds against region_hi). */
+ * which lxp_guest_access_ok bounds against region_hi). */
 static long mkarg(fuzz_cursor_t *c)
 {
 	uint8_t sel = fuzz_u8(c);
@@ -77,10 +77,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		return 0;
 	if (lxp_proc_init(&p, &arena, 4096) != LXP_OK)
 		return 0;
-	/* guest region = g_guest exactly, so user_ok bounds every deref to it, as on-target */
-	p.region_lo = (uintptr_t)g_guest;
-	p.region_hi = (uintptr_t)g_guest + GUEST_SZ;
-	p.pool_lo = p.pool_hi = 0;
+	/* guest region = g_guest exactly, so lxp_guest_access_ok bounds every deref to it, as on-target */
+	p.mm->region_lo = (uintptr_t)g_guest;
+	p.mm->region_hi = (uintptr_t)g_guest + GUEST_SZ;
+	p.mm->pool_lo = p.mm->pool_hi = 0;
 
 	long nr = k_nr[nsel % (sizeof(k_nr) / sizeof(k_nr[0]))];
 	(void)lxp_syscall(&p, nr, a[0], a[1], a[2], a[3], a[4], a[5]);

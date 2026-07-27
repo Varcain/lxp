@@ -36,7 +36,7 @@ static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), OVE_OK);
 	assert_int_equal(lxp_proc_init(p, arena, 4096), OVE_OK);
 	/* All-permitting access_ok range except NULL (region_lo = 1) — a NULL user
-	 * pointer still fails user_ok → -EFAULT. Matches the dev/syscall harnesses. */
+	 * pointer still fails lxp_guest_access_ok → -EFAULT. Matches the dev/syscall harnesses. */
 	p->mm->region_lo = 1;
 	p->mm->region_hi = UINTPTR_MAX;
 	p->mm->pool_lo = p->mm->pool_hi = 0;
@@ -143,7 +143,7 @@ static void test_net_connect_errors(void **state)
 	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
 	assert_true(fd >= 3);
 
-	/* NULL address → EFAULT (user_ok rejects). */
+	/* NULL address → EFAULT (lxp_guest_access_ok rejects). */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_connect, fd, 0, sizeof(a), 0, 0, 0), -LXP_EFAULT);
 
 	/* Wrong address family in the sockaddr → EAFNOSUPPORT. */

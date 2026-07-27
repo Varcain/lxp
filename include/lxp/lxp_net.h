@@ -35,6 +35,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lxp/lxp_guest.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_syscall.h"
 
@@ -206,10 +207,6 @@ void lxp_sock_kick(void);
 long lxp_poll_retry(lxp_proc_t *p);
 /** exit: release every FD_SOCKET open the process still holds. */
 void lxp_sock_proc_exit(lxp_proc_t *p);
-
-/** access_ok for the socket handlers to validate a guest pointer (confused-deputy
- *  guard — handlers run PRIVILEGED). Defined in lxp_syscall.c. */
-int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 
 #ifdef __cplusplus
 }

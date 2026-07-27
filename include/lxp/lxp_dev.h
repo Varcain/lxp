@@ -34,6 +34,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lxp/lxp_guest.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_syscall.h"
 
@@ -51,20 +52,20 @@ struct lxp_dev_open;
  * coordinator thread) and return a Linux-ABI value: @c >=0 on success or a
  * negated @c LXP_E* on failure. A blocking read/write/ioctl returns
  * @c -LXP_EAGAIN to have the core park + retry the caller. Any user pointer
- * a handler dereferences must first pass @c user_ok (handlers run PRIVILEGED).
+ * a handler dereferences must first pass @c lxp_guest_access_ok (handlers run PRIVILEGED).
  */
 struct lxp_dev_ops {
 	/** Open: initialise @p o for this open (optional). */
 	long (*open)(struct lxp_dev *d, struct lxp_dev_open *o, int flags);
 	/** Release: last close of this open (optional). */
 	long (*release)(struct lxp_dev *d, struct lxp_dev_open *o);
-	/** read(2): bytes read, 0 (EOF), or -EAGAIN to block. @p buf is pre-@c user_ok'd. */
+	/** read(2): bytes read, 0 (EOF), or -EAGAIN to block. @p buf is pre-@c lxp_guest_access_ok'd. */
 	long (*read)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, void *buf,
 		     size_t len);
-	/** write(2): bytes written, or -EAGAIN to block. @p buf is pre-@c user_ok'd. */
+	/** write(2): bytes written, or -EAGAIN to block. @p buf is pre-@c lxp_guest_access_ok'd. */
 	long (*write)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, const void *buf,
 		      size_t len);
-	/** ioctl(2): every user deref of @p arg must pass @c user_ok. -ENOTTY = unknown cmd. */
+	/** ioctl(2): every user deref of @p arg must pass @c lxp_guest_access_ok. -ENOTTY = unknown cmd. */
 	long (*ioctl)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, unsigned long cmd,
 		      unsigned long arg);
 	/** poll(2): POLLIN|POLLOUT bits currently ready; must never block. */
@@ -188,12 +189,6 @@ const char *lxp_dev_path(int i, uint32_t *mode);
 /** Register a coordinator-thread tick callback (fb present @ ~30 Hz, FT5336 poll
  *  @ ~60 Hz); a class driver calls this from its autoreg. */
 void lxp_dev_tick_register(void (*fn)(uint64_t now_us));
-
-/** access_ok for a driver's ioctl handler to validate its user pointer (the
- *  confused-deputy guard — device handlers run PRIVILEGED). read/write buffers
- *  are already validated by the core; ioctl args are not. Defined in
- *  lxp_syscall.c. */
-int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 
 /** Retry a parked device op for the coordinator; result or -EAGAIN (still blocked). */
 long lxp_dev_retry(lxp_proc_t *p);

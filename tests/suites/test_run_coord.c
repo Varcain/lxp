@@ -59,6 +59,8 @@ static struct {
 	int cache_invalidate_calls;
 	const void *cache_invalidate_base[8];
 	size_t cache_invalidate_len[8];
+	int coord_map_calls;
+	int coord_map_region;
 	int exit_notify_calls;
 	lxp_guest_exit_info_t exit_info;
 	int map_calls;
@@ -103,6 +105,11 @@ static void mock_cache_invalidate(const void *base, size_t len)
 		g_mock.cache_invalidate_base[i] = base;
 		g_mock.cache_invalidate_len[i] = len;
 	}
+}
+static void mock_coord_map(int region)
+{
+	g_mock.coord_map_calls++;
+	g_mock.coord_map_region = region;
 }
 static int mock_spawn_launch(int sidx, uint32_t generation, int ridx, const lxp_flat_t *prog,
 			     void *entry, void *sp, void *stack_lo)
@@ -231,6 +238,7 @@ static const lxp_os_ops_t g_mock_eng = {
 	.random_fill = mock_random_fill,
 	.cache_clean = mock_cache_clean,
 	.cache_invalidate = mock_cache_invalidate,
+	.coord_map = mock_coord_map,
 	.system_version = mock_system_version,
 };
 
@@ -2189,16 +2197,11 @@ static void test_pending_deliverable(void **state)
 static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 {
 	(void)state;
-	uint8_t arena_mem[256] __attribute__((aligned(16)));
-	lxp_arena_t arena;
-	assert_int_equal(lxp_arena_init(&arena, arena_mem, sizeof(arena_mem)), LXP_OK);
+	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_slots[0].proc;
-	assert_int_equal(lxp_proc_init(proc, &arena, 0), LXP_OK);
-	proc->alive = 1;
 	proc->mm->region_lo = 0x1000u;
 	proc->mm->region_hi = 0x2000u;
 	proc->mm->pool_lo = proc->mm->pool_hi = 0;
-	deferred_slot_reassign(0);
 
 	const uint32_t cmds[] = {LXP_TCSETS, LXP_TCSETSW, LXP_TCSETSF};
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
@@ -2213,7 +2216,7 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 		g_lxp_slots[0].runnable = 1;
 		g_lxp_slots[0].host_state = SLOT_RUNNING;
 
-		lxp_dispatch(&f, proc);
+		assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &f), LXP_OK);
 
 		assert_int_equal(deferred_state_load(0), DEFER_READY);
 		assert_int_equal(g_mock.event_posts, (int)i + 1);
@@ -2245,15 +2248,14 @@ static void test_console_icrnl_translation(void **state)
 static void test_dispatch_class_defaults_deferred(void **state)
 {
 	(void)state;
+	make_valid_running_slot(0, 0);
 	lxp_proc_t *p = &g_lxp_slots[0].proc;
-	p->alive = 1;
 	p->pid = 42;
 	p->group->tgid = 42;
-	deferred_slot_reassign(0);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[7] = LXP_NR_getpid;
-	lxp_dispatch(&f, p);
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &f), LXP_OK);
 	assert_int_equal(f.r[0], 42);
 	assert_int_equal(g_mock.event_posts, 0);
 	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
@@ -2270,11 +2272,14 @@ static void test_dispatch_class_defaults_deferred(void **state)
 	f.fp = &fp;
 	g_lxp_slots[0].runnable = 1;
 	g_lxp_slots[0].host_state = SLOT_RUNNING;
-	lxp_dispatch(&f, p);
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &f), LXP_OK);
 	assert_int_equal(deferred_state_load(0), DEFER_READY);
 	assert_int_equal(g_mock.event_posts, 1);
 	execute_deferred(&g_mock_eng, 0);
 	assert_int_equal(g_mock.resume_r0, -LXP_ENOSYS);
+	assert_int_equal(g_mock.coord_map_calls, 1);
+	assert_int_equal(g_mock.coord_map_region, 0);
+	assert_null(p->guest_view);
 	assert_int_equal(g_mock.resume_xpsr, f.xpsr);
 	assert_memory_equal(&g_mock.resume_fp, &fp, sizeof(fp));
 }
@@ -2285,15 +2290,12 @@ static void test_deferred_requests_are_per_slot(void **state)
 {
 	(void)state;
 	for (int s = 0; s < 2; s++) {
-		g_lxp_slots[s].proc.alive = 1;
+		make_valid_running_slot(s, s);
 		g_lxp_slots[s].proc.pid = s + 1;
-		deferred_slot_reassign(s);
-		g_lxp_slots[s].runnable = 1;
-		g_lxp_slots[s].host_state = SLOT_RUNNING;
 		struct lxp_frame f;
 		memset(&f, 0, sizeof(f));
 		f.r[7] = 900u + (uint32_t)s;
-		lxp_dispatch(&f, &g_lxp_slots[s].proc);
+		assert_int_equal(lxp_dispatch_slot(slot_ref_at(s), &f), LXP_OK);
 	}
 	assert_int_equal(g_mock.event_posts, 2);
 	assert_int_equal(deferred_state_load(0), DEFER_READY);
@@ -2313,9 +2315,8 @@ static void test_deferred_requests_are_per_slot(void **state)
 static void test_deferred_generation_rejects_stale_work(void **state)
 {
 	(void)state;
+	make_valid_running_slot(0, 0);
 	lxp_proc_t *p = &g_lxp_slots[0].proc;
-	p->alive = 1;
-	deferred_slot_reassign(0);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[7] = 999;
@@ -2360,15 +2361,12 @@ static void test_deferred_same_slot_rejects_overwrite(void **state)
 static void test_deferred_signal_cancels_before_execute(void **state)
 {
 	(void)state;
+	make_valid_running_slot(0, 0);
 	lxp_proc_t *p = &g_lxp_slots[0].proc;
-	p->alive = 1;
-	deferred_slot_reassign(0);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[7] = 999;
-	g_lxp_slots[0].runnable = 1;
-	g_lxp_slots[0].host_state = SLOT_RUNNING;
-	lxp_dispatch(&f, p);
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &f), LXP_OK);
 	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
 
 	execute_deferred(&g_mock_eng, 0);
@@ -2434,12 +2432,9 @@ static void test_console_icrnl_immediate_read(void **state)
 static void test_deferred_blocking_handoff_keeps_parked_task(void **state)
 {
 	(void)state;
+	make_valid_running_slot(0, 0);
 	lxp_proc_t *p = &g_lxp_slots[0].proc;
-	p->alive = 1;
 	p->console_poll = console_not_ready;
-	deferred_slot_reassign(0);
-	g_lxp_slots[0].runnable = 1;
-	g_lxp_slots[0].host_state = SLOT_RUNNING;
 
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
@@ -2447,7 +2442,7 @@ static void test_deferred_blocking_handoff_keeps_parked_task(void **state)
 	f.r[1] = 0;
 	f.r[2] = 1000;
 	f.r[7] = LXP_NR_poll;
-	lxp_dispatch(&f, p);
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &f), LXP_OK);
 	execute_deferred(&g_mock_eng, 0);
 
 	assert_int_equal(deferred_state_load(0), DEFER_IDLE);

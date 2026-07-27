@@ -119,17 +119,15 @@ static long copy_sockaddr_out(lxp_proc_t *p, void *uaddr, void *uaddrlen, const 
 {
 	if (!uaddr || !uaddrlen)
 		return 0;
-	if (!user_ok(p, uaddrlen, sizeof(uint32_t), 1))
+	uint32_t cap;
+	if (lxp_guest_get_u32(p, (uintptr_t)uaddrlen, &cap) != 0)
 		return -LXP_EFAULT;
-	uint32_t cap = *(uint32_t *)uaddrlen;
 	lxp_sockaddr_in sin;
 	addr_to_guest_sin(oa, &sin);
 	uint32_t n = cap < sizeof(sin) ? cap : (uint32_t)sizeof(sin);
-	if (n && !user_ok(p, uaddr, n, 1))
+	if (lxp_copy_to_guest(p, (uintptr_t)uaddr, &sin, n) != 0)
 		return -LXP_EFAULT;
-	memcpy(uaddr, &sin, n);
-	*(uint32_t *)uaddrlen = (uint32_t)sizeof(sin);
-	return 0;
+	return lxp_guest_put_u32(p, (uintptr_t)uaddrlen, (uint32_t)sizeof(sin));
 }
 
 /* ---- socket(2) + open-pool lifecycle --------------------------------------- */
@@ -244,14 +242,14 @@ long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen
 		return se == LXP_OK ? -LXP_EISCONN : net_errno_to_lnx(se);
 	}
 
-	if (!uaddr || addrlen < sizeof(lxp_sockaddr_in) ||
-	    !user_ok(p, uaddr, sizeof(lxp_sockaddr_in), 0))
+	lxp_sockaddr_in sin;
+	if (!uaddr || addrlen < sizeof(sin) ||
+	    lxp_copy_from_guest(p, &sin, (uintptr_t)uaddr, sizeof(sin)) != 0)
 		return -LXP_EFAULT;
-	const lxp_sockaddr_in *sin = (const lxp_sockaddr_in *)uaddr;
-	if (sin->sin_family != LXP_AF_INET)
+	if (sin.sin_family != LXP_AF_INET)
 		return -LXP_EAFNOSUPPORT;
 	lxp_sockaddr_t oa;
-	guest_sin_to_addr(sin, &oa);
+	guest_sin_to_addr(&sin, &oa);
 
 	/* A 0 timeout initiates the connect and probes readiness once. */
 	int r = g_lxp_net_ops->sock_connect(o->sock, &oa, 0);
@@ -278,14 +276,14 @@ long lxp_sock_bind(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen)
 	struct sock_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
-	if (!uaddr || addrlen < sizeof(lxp_sockaddr_in) ||
-	    !user_ok(p, uaddr, sizeof(lxp_sockaddr_in), 0))
+	lxp_sockaddr_in sin;
+	if (!uaddr || addrlen < sizeof(sin) ||
+	    lxp_copy_from_guest(p, &sin, (uintptr_t)uaddr, sizeof(sin)) != 0)
 		return -LXP_EFAULT;
-	const lxp_sockaddr_in *sin = (const lxp_sockaddr_in *)uaddr;
-	if (sin->sin_family != LXP_AF_INET)
+	if (sin.sin_family != LXP_AF_INET)
 		return -LXP_EAFNOSUPPORT;
 	lxp_sockaddr_t oa;
-	guest_sin_to_addr(sin, &oa);
+	guest_sin_to_addr(&sin, &oa);
 	return net_errno_to_lnx(g_lxp_net_ops->sock_bind(o->sock, &oa));
 }
 
@@ -343,7 +341,7 @@ long lxp_sock_accept(lxp_proc_t *p, int oi, void *uaddr, void *uaddrlen, int fla
 	struct sock_open *lo = open_slot(oi);
 	if (!lo)
 		return -LXP_EBADF;
-	if (uaddr && (!uaddrlen || !user_ok(p, uaddrlen, sizeof(uint32_t), 1)))
+	if (uaddr && (!uaddrlen || !lxp_guest_access_ok(p, uaddrlen, sizeof(uint32_t), 1)))
 		return -LXP_EFAULT;
 	long r = do_accept(p, lo, uaddr, uaddrlen, flags);
 	if (r == -LXP_EAGAIN) {
@@ -369,17 +367,18 @@ long lxp_sock_send(lxp_proc_t *p, int oi, const void *ubuf, size_t len, int flag
 	struct sock_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
-	if (len && (!ubuf || !user_ok(p, ubuf, len, 0)))
+	if (len && (!ubuf || !lxp_guest_access_ok(p, ubuf, len, 0)))
 		return -LXP_EFAULT;
 
 	size_t sent = 0;
 	int r;
 	lxp_sockaddr_t oa;
 	if (udest) {
-		if (destlen < sizeof(lxp_sockaddr_in) ||
-		    !user_ok(p, udest, sizeof(lxp_sockaddr_in), 0))
+		lxp_sockaddr_in sin;
+		if (destlen < sizeof(sin) ||
+		    lxp_copy_from_guest(p, &sin, (uintptr_t)udest, sizeof(sin)) != 0)
 			return -LXP_EFAULT;
-		guest_sin_to_addr((const lxp_sockaddr_in *)udest, &oa);
+		guest_sin_to_addr(&sin, &oa);
 	}
 	/* The engine transport (lwIP copy) runs in the privileged coordinator, which reads this guest
 	 * buffer from physical memory through an uncached view; flush the guest's dirty D-cache lines
@@ -423,23 +422,27 @@ long lxp_sock_sendmsg(lxp_proc_t *p, int oi, const lxp_iovec *iov, int iovcnt, i
 	char buf[1024];
 	size_t off = 0;
 	for (int i = 0; i < iovcnt; i++) {
-		size_t n = iov[i].iov_len;
+		lxp_iovec entry;
+		if (lxp_copy_from_guest(p, &entry, (uintptr_t)&iov[i], sizeof(entry)) != 0)
+			return -LXP_EFAULT;
+		size_t n = entry.iov_len;
 		if (n == 0)
 			continue;
 		if (off + n > sizeof(buf))
 			return -LXP_EMSGSIZE;
-		if (!iov[i].iov_base || !user_ok(p, iov[i].iov_base, n, 0))
+		if (!entry.iov_base ||
+		    lxp_copy_from_guest(p, buf + off, (uintptr_t)entry.iov_base, n) != 0)
 			return -LXP_EFAULT;
-		memcpy(buf + off, iov[i].iov_base, n);
 		off += n;
 	}
 	size_t sent = 0;
 	lxp_sockaddr_t oa;
 	if (udest) {
-		if (destlen < sizeof(lxp_sockaddr_in) ||
-		    !user_ok(p, udest, sizeof(lxp_sockaddr_in), 0))
+		lxp_sockaddr_in sin;
+		if (destlen < sizeof(sin) ||
+		    lxp_copy_from_guest(p, &sin, (uintptr_t)udest, sizeof(sin)) != 0)
 			return -LXP_EFAULT;
-		guest_sin_to_addr((const lxp_sockaddr_in *)udest, &oa);
+		guest_sin_to_addr(&sin, &oa);
 	}
 	lxp_cache_clean(buf, off);
 	int r = udest ? g_lxp_net_ops->sock_sendto(o->sock, buf, off, &sent, &oa)
@@ -458,7 +461,7 @@ long lxp_sock_recv(lxp_proc_t *p, int oi, void *ubuf, size_t len, int flags, voi
 	struct sock_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
-	if (len && (!ubuf || !user_ok(p, ubuf, len, 1)))
+	if (len && (!ubuf || !lxp_guest_access_ok(p, ubuf, len, 1)))
 		return -LXP_EFAULT;
 
 	size_t got = 0;
@@ -533,7 +536,8 @@ long lxp_sock_getsockopt(lxp_proc_t *p, int oi, int level, int optname, void *uv
 	struct sock_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
-	if (!uval || !ulen || !user_ok(p, ulen, sizeof(uint32_t), 1))
+	uint32_t cap;
+	if (!uval || !ulen || lxp_guest_get_u32(p, (uintptr_t)ulen, &cap) != 0)
 		return -LXP_EFAULT;
 	int val = 0;
 	if (level == LXP_SOL_SOCKET && optname == LXP_SO_ERROR) {
@@ -541,13 +545,10 @@ long lxp_sock_getsockopt(lxp_proc_t *p, int oi, int level, int optname, void *uv
 		val = (int)(-net_errno_to_lnx(se)); /* positive Linux errno, or 0 */
 	}
 	/* Other options report 0 (accept-and-report; real passthrough in P4). */
-	uint32_t cap = *(uint32_t *)ulen;
 	uint32_t n = cap < sizeof(int) ? cap : (uint32_t)sizeof(int);
-	if (n && !user_ok(p, uval, n, 1))
+	if (lxp_copy_to_guest(p, (uintptr_t)uval, &val, n) != 0)
 		return -LXP_EFAULT;
-	memcpy(uval, &val, n);
-	*(uint32_t *)ulen = (uint32_t)sizeof(int);
-	return 0;
+	return lxp_guest_put_u32(p, (uintptr_t)ulen, (uint32_t)sizeof(int));
 }
 
 long lxp_sock_setsockopt(lxp_proc_t *p, int oi, int level, int optname, const void *uval,
@@ -558,7 +559,7 @@ long lxp_sock_setsockopt(lxp_proc_t *p, int oi, int level, int optname, const vo
 		return -LXP_EBADF;
 	(void)level;
 	(void)optname;
-	if (len && (!uval || !user_ok(p, uval, len, 0)))
+	if (len && (!uval || !lxp_guest_access_ok(p, uval, len, 0)))
 		return -LXP_EFAULT;
 	/* Accept-and-ignore: the socket is driven non-blocking with coordinator
 	 * park/retry, so SO_RCVTIMEO / SO_REUSEADDR / TCP_NODELAY are no-ops here
@@ -645,45 +646,45 @@ static int16_t iff_from_ove(unsigned f)
 /* SIOCGIFCONF: report the single interface (eth0) into the caller's ifreq[]. */
 static long sock_ifconf(lxp_proc_t *p, unsigned long arg)
 {
-	if (!user_ok(p, (void *)arg, sizeof(lxp_ifconf), 1))
+	lxp_ifconf ifc;
+	if (lxp_copy_from_guest(p, &ifc, (uintptr_t)arg, sizeof(ifc)) != 0)
 		return -LXP_EFAULT;
-	lxp_ifconf *ifc = (lxp_ifconf *)arg;
-	if (!ifc->ifc_buf || ifc->ifc_len < (int)sizeof(lxp_ifreq)) {
-		ifc->ifc_len = sizeof(lxp_ifreq); /* the space one interface needs */
-		return 0;
+	if (!ifc.ifc_buf || ifc.ifc_len < (int)sizeof(lxp_ifreq)) {
+		ifc.ifc_len = sizeof(lxp_ifreq); /* the space one interface needs */
+		return lxp_copy_to_guest(p, (uintptr_t)arg, &ifc, sizeof(ifc));
 	}
-	if (!user_ok(p, (void *)(uintptr_t)ifc->ifc_buf, sizeof(lxp_ifreq), 1))
-		return -LXP_EFAULT;
-	lxp_ifreq *r = (lxp_ifreq *)(uintptr_t)ifc->ifc_buf;
-	memset(r, 0, sizeof(*r));
-	r->ifr_name[0] = 'e';
-	r->ifr_name[1] = 't';
-	r->ifr_name[2] = 'h';
-	r->ifr_name[3] = '0';
+	lxp_ifreq request;
+	memset(&request, 0, sizeof(request));
+	request.ifr_name[0] = 'e';
+	request.ifr_name[1] = 't';
+	request.ifr_name[2] = 'h';
+	request.ifr_name[3] = '0';
 	lxp_sockaddr_t ip = {0};
 	if (g_lnx_netif && g_lxp_net_ops->netif_get_addr(g_lnx_netif, &ip, NULL, NULL) == LXP_OK) {
-		r->ifr_ifru.ifru_addr.sin_family = LXP_AF_INET;
-		memcpy(&r->ifr_ifru.ifru_addr.sin_addr, ip.addr, 4);
+		request.ifr_ifru.ifru_addr.sin_family = LXP_AF_INET;
+		memcpy(&request.ifr_ifru.ifru_addr.sin_addr, ip.addr, 4);
 	}
-	ifc->ifc_len = sizeof(lxp_ifreq);
-	return 0;
+	if (lxp_copy_to_guest(p, (uintptr_t)ifc.ifc_buf, &request, sizeof(request)) != 0)
+		return -LXP_EFAULT;
+	ifc.ifc_len = sizeof(lxp_ifreq);
+	return lxp_copy_to_guest(p, (uintptr_t)arg, &ifc, sizeof(ifc));
 }
 
 /* SIOCADDRT / SIOCDELRT: the only route op we honour is setting/clearing the default
  * gateway (rt_dst == 0.0.0.0). Others are accepted as a no-op so `route` doesn't error. */
 static long sock_route(lxp_proc_t *p, unsigned long req, unsigned long arg)
 {
-	if (!user_ok(p, (void *)arg, sizeof(lxp_rtentry), 0))
+	lxp_rtentry route;
+	if (lxp_copy_from_guest(p, &route, (uintptr_t)arg, sizeof(route)) != 0)
 		return -LXP_EFAULT;
-	const lxp_rtentry *rt = (const lxp_rtentry *)arg;
 	if (!g_lnx_netif)
 		return -LXP_ENODEV;
-	int is_default = (rt->rt_dst.sin_addr == 0);
-	if (is_default && (rt->rt_flags & LXP_RTF_GATEWAY)) {
+	int is_default = (route.rt_dst.sin_addr == 0);
+	if (is_default && (route.rt_flags & LXP_RTF_GATEWAY)) {
 		lxp_sockaddr_t gw = {0};
 		gw.family = LXP_AF_INET;
 		if (req == LXP_SIOCADDRT)
-			memcpy(gw.addr, &rt->rt_gateway.sin_addr, 4); /* set gw */
+			memcpy(gw.addr, &route.rt_gateway.sin_addr, 4); /* set gw */
 		/* SIOCDELRT leaves gw all-zero (clears it). */
 		int r = g_lxp_net_ops->netif_set_addr(g_lnx_netif, NULL, NULL, &gw);
 		return r == LXP_OK ? 0 : net_errno_to_lnx(r);
@@ -699,32 +700,37 @@ long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg)
 		return sock_route(p, req, arg);
 
 	/* All the SIOC*IF* ops take a struct ifreq*. */
-	if (!user_ok(p, (void *)arg, sizeof(lxp_ifreq), 1))
+	lxp_ifreq request;
+	if (lxp_copy_from_guest(p, &request, (uintptr_t)arg, sizeof(request)) != 0)
 		return -LXP_EFAULT;
-	lxp_ifreq *ifr = (lxp_ifreq *)arg;
 	lxp_netif_t nif = g_lnx_netif;
 	if (!nif)
 		return -LXP_ENODEV;
+	int copy_out = 0;
+	long result = 0;
 
 	switch (req) {
 	case LXP_SIOCGIFFLAGS: {
 		unsigned f = 0;
 		g_lxp_net_ops->netif_get_flags(nif, &f);
-		ifr->ifr_ifru.ifru_flags = iff_from_ove(f);
-		return 0;
+		request.ifr_ifru.ifru_flags = iff_from_ove(f);
+		copy_out = 1;
+		break;
 	}
 	case LXP_SIOCSIFFLAGS:
-		return g_lxp_net_ops->netif_set_up(
-			       nif, (ifr->ifr_ifru.ifru_flags & LXP_IFF_UP) ? 1 : 0) == LXP_OK
-			       ? 0
-			       : -LXP_EINVAL;
+		result = g_lxp_net_ops->netif_set_up(
+				 nif, (request.ifr_ifru.ifru_flags & LXP_IFF_UP) ? 1 : 0) ==
+				 LXP_OK
+				 ? 0
+				 : -LXP_EINVAL;
+		break;
 	case LXP_SIOCGIFADDR:
 	case LXP_SIOCGIFNETMASK:
 	case LXP_SIOCGIFBRDADDR: {
 		lxp_sockaddr_t ip = {0}, gw = {0}, nm = {0};
 		if (g_lxp_net_ops->netif_get_addr(nif, &ip, &gw, &nm) != LXP_OK)
 			return -LXP_ENODEV;
-		lxp_sockaddr_in *out = &ifr->ifr_ifru.ifru_addr;
+		lxp_sockaddr_in *out = &request.ifr_ifru.ifru_addr;
 		memset(out, 0, sizeof(*out));
 		out->sin_family = LXP_AF_INET;
 		if (req == LXP_SIOCGIFNETMASK) {
@@ -736,11 +742,12 @@ long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg)
 		} else {
 			memcpy(&out->sin_addr, ip.addr, 4);
 		}
-		return 0;
+		copy_out = 1;
+		break;
 	}
 	case LXP_SIOCSIFADDR:
 	case LXP_SIOCSIFNETMASK: {
-		lxp_sockaddr_in *in = &ifr->ifr_ifru.ifru_addr;
+		lxp_sockaddr_in *in = &request.ifr_ifru.ifru_addr;
 		if (in->sin_family != LXP_AF_INET)
 			return -LXP_EINVAL;
 		lxp_sockaddr_t sa = {0};
@@ -749,26 +756,33 @@ long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg)
 		int r = (req == LXP_SIOCSIFADDR)
 				? g_lxp_net_ops->netif_set_addr(nif, &sa, NULL, NULL)
 				: g_lxp_net_ops->netif_set_addr(nif, NULL, &sa, NULL);
-		return r == LXP_OK ? 0 : net_errno_to_lnx(r);
+		result = r == LXP_OK ? 0 : net_errno_to_lnx(r);
+		break;
 	}
 	case LXP_SIOCGIFHWADDR: {
 		uint8_t mac[6] = {0};
 		g_lxp_net_ops->netif_get_hwaddr(nif, mac);
 		/* ifr_hwaddr is a struct sockaddr: sa_family (ARPHRD_ETHER) then the 6-byte MAC. */
-		memset(ifr->ifr_ifru.ifru_raw, 0, sizeof(ifr->ifr_ifru.ifru_raw));
-		ifr->ifr_ifru.ifru_raw[0] = (uint8_t)LXP_ARPHRD_ETHER;
-		memcpy(ifr->ifr_ifru.ifru_raw + 2, mac, 6);
-		return 0;
+		memset(request.ifr_ifru.ifru_raw, 0, sizeof(request.ifr_ifru.ifru_raw));
+		request.ifr_ifru.ifru_raw[0] = (uint8_t)LXP_ARPHRD_ETHER;
+		memcpy(request.ifr_ifru.ifru_raw + 2, mac, 6);
+		copy_out = 1;
+		break;
 	}
 	case LXP_SIOCGIFINDEX:
-		ifr->ifr_ifru.ifru_ivalue = 1;
-		return 0;
+		request.ifr_ifru.ifru_ivalue = 1;
+		copy_out = 1;
+		break;
 	case LXP_SIOCGIFMTU:
-		ifr->ifr_ifru.ifru_ivalue = 1500;
-		return 0;
+		request.ifr_ifru.ifru_ivalue = 1500;
+		copy_out = 1;
+		break;
 	default:
 		return -LXP_EOPNOTSUPP;
 	}
+	if (result != 0 || !copy_out)
+		return result;
+	return lxp_copy_to_guest(p, (uintptr_t)arg, &request, sizeof(request));
 }
 
 /* ---- coordinator: retry a parked socket op --------------------------------- */

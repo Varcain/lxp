@@ -40,10 +40,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		return 0;
 	if (lxp_proc_init(&p, &arena, 4096) != LXP_OK)
 		return 0;
-	p.region_lo = 1;
-	p.region_hi = UINTPTR_MAX;
-	p.pool_lo = p.pool_hi = 0;
-	strcpy(p.cwd, "/"); /* relative inputs join onto a valid absolute cwd */
+	p.mm->region_lo = 1;
+	p.mm->region_hi = UINTPTR_MAX;
+	p.mm->pool_lo = p.mm->pool_hi = 0;
+	strcpy(p.fs_context->cwd, "/"); /* relative inputs join onto a valid absolute cwd */
 
 	/* Bound the fuzzer bytes to a NUL-terminated string a bit longer than LXP_PATH_MAX so
 	 * the "no NUL in range" rejection is itself exercised, never overrun. */

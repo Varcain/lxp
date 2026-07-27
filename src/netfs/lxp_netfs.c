@@ -606,31 +606,34 @@ static long req_build(struct netfs_req *r)
  * d_ino[8] d_off[8] d_reclen[2] d_type[1] name[]\0) or the legacy 32-bit getdents
  * layout (d_ino[4] d_off[4] d_reclen[2] name[]\0 ... d_type at reclen-1). Returns
  * the record length, or 0 if it does not fit. */
-static size_t dirent_emit_rec(int is64, uintptr_t ubuf, size_t cap, size_t off, uint64_t ino,
-			      uint64_t doff, uint8_t type, const char *name, size_t nlen)
+static long dirent_emit_rec(lxp_proc_t *proc, int is64, uintptr_t ubuf, size_t cap, size_t off,
+			    uint64_t ino, uint64_t doff, uint8_t type, const char *name,
+			    size_t nlen)
 {
 	size_t head = is64 ? 19 : 10;
 	size_t reclen = (head + nlen + 1 + (is64 ? 0 : 1) + 7) & ~(size_t)7;
-	if (off + reclen > cap)
+	uint8_t record[LXP_PATH_MAX + 32];
+	if (off + reclen > cap || reclen > sizeof(record))
 		return 0;
-	uint8_t *d = (uint8_t *)(ubuf + off);
 	size_t p = 0;
 	int inobytes = is64 ? 8 : 4;
 	for (int i = 0; i < inobytes; i++)
-		d[p++] = (uint8_t)(ino >> (8 * i));
+		record[p++] = (uint8_t)(ino >> (8 * i));
 	for (int i = 0; i < inobytes; i++)
-		d[p++] = (uint8_t)(doff >> (8 * i));
-	d[p++] = (uint8_t)reclen;
-	d[p++] = (uint8_t)(reclen >> 8);
+		record[p++] = (uint8_t)(doff >> (8 * i));
+	record[p++] = (uint8_t)reclen;
+	record[p++] = (uint8_t)(reclen >> 8);
 	if (is64)
-		d[p++] = type;
-	memcpy(d + p, name, nlen);
+		record[p++] = type;
+	memcpy(record + p, name, nlen);
 	p += nlen;
 	while (p < reclen)
-		d[p++] = 0;
+		record[p++] = 0;
 	if (!is64)
-		d[reclen - 1] = type; /* 32-bit getdents d_type hack: last byte of the record */
-	return reclen;
+		record[reclen - 1] = type; /* 32-bit getdents d_type hack */
+	if (lxp_copy_to_guest(proc, ubuf + off, record, reclen) != 0)
+		return -LXP_EFAULT;
+	return (long)reclen;
 }
 
 /* Map a 9P readdir entry type (a qid.type byte) to a Linux d_type. */
@@ -769,8 +772,10 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 			cnt = (uint32_t)(blen - 4);
 		if (cnt > r->ulen)
 			cnt = (uint32_t)r->ulen;
-		if (cnt)
-			memcpy((void *)r->ubuf, body + o, cnt);
+		if (cnt && lxp_copy_to_guest(r->owner, r->ubuf, body + o, cnt) != 0) {
+			req_complete(r, -LXP_EFAULT);
+			return;
+		}
 		struct netfs_open *op = open_slot(r->oi);
 		if (op)
 			op->rd_off += cnt; /* advance the shared file cursor */
@@ -798,11 +803,15 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 			const char *nm = (const char *)(body + o);
 			o += nlen;
 			uint8_t dtype = dt9 ? dt9 : dtype_from_qid(qt);
-			size_t rl = dirent_emit_rec(r->is64, r->ubuf, r->ulen, filled, qpath, doff,
-						    dtype, nm, nlen);
-			if (!rl) /* record didn't fit; stop before it, resume here next call */
+			long emitted = dirent_emit_rec(r->owner, r->is64, r->ubuf, r->ulen,
+						       filled, qpath, doff, dtype, nm, nlen);
+			if (emitted < 0) {
+				req_complete(r, emitted);
+				return;
+			}
+			if (emitted == 0) /* record didn't fit; resume here next call */
 				break;
-			filled += rl;
+			filled += (size_t)emitted;
 			last_off = doff;
 		}
 		if (op)
@@ -1162,7 +1171,7 @@ long lxp_netfs_read(lxp_proc_t *p, int oi, void *ubuf, size_t len)
 		return -LXP_EISDIR;
 	if (len == 0)
 		return 0;
-	if (!user_ok(p, ubuf, len, 1))
+	if (!lxp_guest_access_ok(p, ubuf, len, 1))
 		return -LXP_EFAULT;
 	struct netfs_req *r = req_new(p, LXP_NETFSW_READ);
 	if (!r)
@@ -1202,7 +1211,7 @@ long lxp_netfs_getdents(lxp_proc_t *p, int oi, uintptr_t ubuf, size_t cap, int i
 		return -LXP_ESTALE;
 	if (!op->is_dir)
 		return -LXP_ENOTDIR;
-	if (!user_ok(p, (void *)ubuf, cap, 1))
+	if (!lxp_guest_access_ok(p, (void *)ubuf, cap, 1))
 		return -LXP_EFAULT;
 	struct netfs_req *r = req_new(p, LXP_NETFSW_GETDENTS);
 	if (!r)
@@ -1371,7 +1380,16 @@ long lxp_netfs_retry(lxp_proc_t *p)
 
 void lxp_netfs_tick(uint64_t now_us)
 {
-	/* Keep the transport moving (background clunks + reconnect) even with no parked proc. */
+	/*
+	 * A guest-owned reply may marshal data. It is pumped only by
+	 * lxp_netfs_retry(), while that owner's coordinator dispatch view is active.
+	 * The periodic path remains responsible for reconnect and owner-less clunks.
+	 */
+	if (g_inflight >= 0 && g_req[g_inflight].owner)
+		return;
+	for (int i = 0; i < NETFS_NREQ; i++)
+		if (g_req[i].state == REQ_QUEUED && g_req[i].owner)
+			return;
 	pump(now_us);
 }
 

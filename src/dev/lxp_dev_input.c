@@ -76,7 +76,6 @@ static long in_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, vo
 		    size_t len)
 {
 	(void)d;
-	(void)p;
 	uint32_t tail = o->u.input.tail;
 	/* Overflow: the reader fell more than a ring behind → drop to the oldest kept
 	 * event and arm a SYN_DROPPED, emitted below so the client discards its state. */
@@ -91,7 +90,6 @@ static long in_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, vo
 	size_t nmax = len / sizeof(struct lxp_input_event);
 	if (nmax == 0)
 		return -LXP_EINVAL;
-	struct lxp_input_event *out = buf;
 	size_t n = 0; /* records written (a leading SYN_DROPPED plus events) */
 
 	/* A pending overrun emits exactly one SYN_DROPPED, ahead of the resumed stream, so an
@@ -100,19 +98,30 @@ static long in_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, vo
 	if (o->u.input.overrun) {
 		uint64_t us = 0;
 		lxp_time_us(&us);
-		out[0].sec = (uint32_t)(us / 1000000u);
-		out[0].usec = (uint32_t)(us % 1000000u);
-		out[0].type = LXP_EV_SYN;
-		out[0].code = LXP_SYN_DROPPED;
-		out[0].value = 0;
+		const struct lxp_input_event dropped = {
+			.sec = (uint32_t)(us / 1000000u),
+			.usec = (uint32_t)(us % 1000000u),
+			.type = LXP_EV_SYN,
+			.code = LXP_SYN_DROPPED,
+			.value = 0,
+		};
+		if (lxp_copy_to_guest(p, (uintptr_t)buf, &dropped, sizeof(dropped)) != 0)
+			return -LXP_EFAULT;
 		n = 1;
 		o->u.input.overrun = 0;
 	}
 
 	size_t avail = g_in_head - tail;
 	size_t nev = 0; /* events consumed from the ring (advances the tail cursor) */
-	while (n < nmax && nev < avail)
-		out[n++] = g_in_ring[(tail + nev++) % LXP_IN_RING];
+	while (n < nmax && nev < avail) {
+		const struct lxp_input_event *event =
+			&g_in_ring[(tail + nev) % LXP_IN_RING];
+		if (lxp_copy_to_guest(p, (uintptr_t)buf + n * sizeof(*event), event,
+				      sizeof(*event)) != 0)
+			return -LXP_EFAULT;
+		n++;
+		nev++;
+	}
 	o->u.input.tail = tail + nev;
 	return (long)(n * sizeof(struct lxp_input_event));
 }
@@ -127,11 +136,12 @@ static long in_write(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 {
 	(void)d;
 	(void)o;
-	(void)p;
-	const struct lxp_input_event *e = buf;
+	struct lxp_input_event e[4];
 
 	if (len != 4u * sizeof(*e))
 		return -LXP_EINVAL;
+	if (lxp_copy_from_guest(p, e, (uintptr_t)buf, sizeof(e)) != 0)
+		return -LXP_EFAULT;
 	if (e[0].type != LXP_EV_ABS || e[0].code != LXP_ABS_X ||
 	    e[1].type != LXP_EV_ABS || e[1].code != LXP_ABS_Y ||
 	    e[2].type != LXP_EV_KEY || e[2].code != LXP_BTN_TOUCH ||
@@ -165,19 +175,16 @@ static long in_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 	(void)o;
 	/* LVGL needs none of these; provided for evtest / evread. */
 	if (cmd == LXP_EVIOCGVERSION) {
-		int *v = (void *)arg;
-		if (!user_ok(p, v, sizeof(*v), 1))
-			return -LXP_EFAULT;
-		*v = 0x010001; /* EV_VERSION */
-		return 0;
+		return lxp_guest_put_u32(p, (uintptr_t)arg, 0x010001); /* EV_VERSION */
 	}
 	if (cmd == LXP_EVIOCGID) {
-		struct lxp_input_id *id = (void *)arg;
-		if (!user_ok(p, id, sizeof(*id), 1))
-			return -LXP_EFAULT;
-		id->bustype = LXP_BUS_I2C;
-		id->vendor = id->product = id->version = 1;
-		return 0;
+		const struct lxp_input_id id = {
+			.bustype = LXP_BUS_I2C,
+			.vendor = 1,
+			.product = 1,
+			.version = 1,
+		};
+		return lxp_copy_to_guest(p, (uintptr_t)arg, &id, sizeof(id));
 	}
 	if (cmd == LXP_EVIOCGRAB)
 		return 0; /* single reader — grab is a no-op */
@@ -186,17 +193,13 @@ static long in_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 		unsigned nr = LXP_EVIOC_NR(cmd);
 		if (nr == LXP_EVIOCGABS_BASE + LXP_ABS_X ||
 		    nr == LXP_EVIOCGABS_BASE + LXP_ABS_Y) {
-			struct lxp_input_absinfo *a = (void *)arg;
-			if (!user_ok(p, a, sizeof(*a), 1))
-				return -LXP_EFAULT;
-			memset(a, 0, sizeof(*a));
-			a->maximum = (nr == LXP_EVIOCGABS_BASE + LXP_ABS_X)
-					     ? g_disp_w - 1
-					     : g_disp_h - 1;
-			return 0;
+			struct lxp_input_absinfo info = {0};
+			info.maximum = (nr == LXP_EVIOCGABS_BASE + LXP_ABS_X)
+					       ? g_disp_w - 1
+					       : g_disp_h - 1;
+			return lxp_copy_to_guest(p, (uintptr_t)arg, &info, sizeof(info));
 		}
 		if (nr == LXP_EVIOCGNAME_NR) {
-			char *nm = (void *)arg;
 			static const char name[] = "overtos-touch";
 			/* Honor the caller's buffer length (the kernel copies min(len, strlen+1));
 			 * copying the fixed 14 bytes into a smaller buffer corrupts adjacent memory. */
@@ -205,10 +208,9 @@ static long in_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 				want = sizeof(name);
 			if (want == 0)
 				return 0;
-			if (!user_ok(p, nm, want, 1))
-				return -LXP_EFAULT;
-			memcpy(nm, name, want);
-			return (long)want;
+			return lxp_copy_to_guest(p, (uintptr_t)arg, name, want) == 0
+				       ? (long)want
+				       : -LXP_EFAULT;
 		}
 	}
 	return -LXP_ENOTTY;

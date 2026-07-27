@@ -312,10 +312,22 @@ static struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, uint64_
 		if (!proc->alive)
 			continue;
 		scan.any_alive = 1;
-		if (!g_lxp_slots[slot].runnable)
-			lxp_coord_map(proc->mm->region.index);
-		if (lxp_blocked_handle_stopped(eng, slot, proc, &scan))
+		lxp_guest_view_t view;
+		int view_active = 0;
+		if (!g_lxp_slots[slot].runnable) {
+			int rc = coordinator_guest_view_begin(slot, &view);
+			if (rc != LXP_OK) {
+				guest_view_failure(slot, rc);
+				scan.progress = 1;
+				continue;
+			}
+			view_active = 1;
+		}
+		if (lxp_blocked_handle_stopped(eng, slot, proc, &scan)) {
+			if (view_active)
+				lxp_guest_view_end(&view);
 			continue;
+		}
 		if (g_lxp_slots[slot].runnable)
 			scan.any_busy = 1;
 		lxp_blocked_note_wait(&scan, proc->wait.kind);
@@ -328,8 +340,11 @@ static struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, uint64_
 			}
 			lxp_blocked_note_deadline(&scan, proc->alarm_deadline_us);
 		}
-		if (lxp_blocked_handle_signal(eng, slot, proc, &scan))
+		if (lxp_blocked_handle_signal(eng, slot, proc, &scan)) {
+			if (view_active)
+				lxp_guest_view_end(&view);
 			continue;
+		}
 		lxp_blocked_retry_timer(eng, slot, proc, now, &scan);
 		lxp_blocked_retry_futex(eng, slot, proc, now, &scan);
 		lxp_blocked_retry_pipe(eng, slot, proc, &scan);
@@ -346,6 +361,8 @@ static struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, uint64_
 		lxp_blocked_retry_pty(eng, slot, proc, &scan);
 #endif
 		(void)lxp_blocked_retry_console(eng, slot, proc, &scan);
+		if (view_active)
+			lxp_guest_view_end(&view);
 	}
 
 	/* Async ^C/^Z for a foreground program that never reads stdin. */

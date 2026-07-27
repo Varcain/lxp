@@ -12,7 +12,7 @@
  * refusals are asserted too, so the suite documents intent, not just successes.
  *
  * The proc runs on a bounded LOW-4 GiB region (tests/framework/lxp_proc_fixture.h), so
- * user_ok() bounds are real (a bad guest pointer is genuinely -EFAULT) and brk/mmap return
+ * lxp_guest_access_ok() bounds are real (a bad guest pointer is genuinely -EFAULT) and brk/mmap return
  * addresses that fit a 32-bit r0 exactly. The trap->dispatch->resume ABI and the run-loop-
  * intercepted fork/signal machinery are NOT reachable here (host cmocka calls lxp_syscall()
  * directly); those are confirmed on-target by the QEMU M4 conformance guest.
@@ -22,7 +22,7 @@
 #include "../framework/lxp_test.h"
 #include "../framework/lxp_proc_fixture.h"
 
-#include "lxp/lxp_dev.h" /* user_ok: assert the host canary is outside the guest ranges */
+#include "lxp/lxp_dev.h" /* lxp_guest_access_ok: assert the host canary is outside the guest ranges */
 
 #include <stdint.h>
 #include <string.h>
@@ -170,7 +170,7 @@ static void test_conf_fileio(void **state)
 	assert_int_equal(SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)motd, LXP_O_WRONLY, 0,
 			    0, 0),
 			 -LXP_EROFS);
-	/* a read into an out-of-region buffer faults (bounded user_ok). */
+	/* a read into an out-of-region buffer faults (bounded lxp_guest_access_ok). */
 	assert_int_equal(
 		SC(&p, LXP_NR_open, (long)(uintptr_t)motd, LXP_O_RDONLY, 0, 0, 0, 0) >= 3 ? 0 : 1,
 		0);
@@ -799,7 +799,7 @@ static void test_conf_variants(void **state)
 	uint8_t canary_expected[sizeof(host_canary)];
 	memset(host_canary, 0xa5, sizeof(host_canary));
 	memset(canary_expected, 0xa5, sizeof(canary_expected));
-	assert_false(user_ok(&p, host_canary, sizeof(host_canary), 1));
+	assert_false(lxp_guest_access_ok(&p, host_canary, sizeof(host_canary), 1));
 	assert_int_equal(SC(&p, LXP_NR_ioctl, 0, LXP_TCGETS, (long)(uintptr_t)host_canary, 0, 0, 0),
 			 -LXP_EFAULT);
 	assert_memory_equal(host_canary, canary_expected, sizeof(host_canary));

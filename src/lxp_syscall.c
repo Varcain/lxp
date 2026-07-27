@@ -15,7 +15,7 @@
 #include "lxp/lxp_syscall.h"
 #include "lxp/lxp_types.h"
 
-#include "lxp_internal.h" /* user_ok / user_strnlen / file_mode / lxp_encode_wstatus */
+#include "lxp_internal.h" /* lxp_guest_access_ok / lxp_guest_strnlen / file_mode / lxp_encode_wstatus */
 #include "lxp_vfs.h"	  /* per-fd-kind file-operation vtable (dispatch by kind) */
 
 #include "fs/lxp_path.h"     /* path resolution (resolve_path / fs_lookup / fs_follow) */
@@ -238,77 +238,6 @@ __attribute__((weak)) lxp_proc_t *lxp_proc_at(int slot)
 __attribute__((weak)) int lxp_proc_nslot(void)
 {
 	return 0;
-}
-
-/* The shared read-only rootfs span [lo,hi): a program's .rodata (its FDPIC text is shared in-place
- * from the embedded cpio) lives here, so a READ-source user pointer may legitimately point into it.
- * Weak fallback (empty range) so the host test links; the run loop supplies the strong version. */
-__attribute__((weak)) void lxp_rootfs_bounds(uintptr_t *lo, uintptr_t *hi)
-{
-	*lo = 0;
-	*hi = 0;
-}
-
-/* ---- user-pointer validation (access_ok) ----------------------------------
- * The syscall handlers run PRIVILEGED, so an unchecked user pointer would let a program make the
- * KERNEL read/write kernel, device, or unmapped memory on its behalf — a confused deputy the
- * per-program MPU cannot stop. Every syscall that dereferences a user pointer must first prove the
- * whole [ptr, ptr+len) lies inside the calling program's own writable memory (its image region or
- * dynamic arena), or — for a read SOURCE only — the shared read-only rootfs. */
-
-/* Upper bound of the valid range that CONTAINS `a`, or 0 if `a` is in none. */
-static uintptr_t user_range_hi(const lxp_proc_t *p, uintptr_t a, int write)
-{
-	if (!p || !p->mm)
-		return 0;
-	if (a >= p->mm->region_lo && a < p->mm->region_hi)
-		return p->mm->region_hi;
-	if (p->mm->pool_hi > p->mm->pool_lo && a >= p->mm->pool_lo && a < p->mm->pool_hi)
-		return p->mm->pool_hi;
-#if LXP_ENABLE_DEV
-	/* A mapped device buffer (framebuffer, P3) is RW-valid for the program. */
-	for (int i = 0; i < 2; i++)
-		if (p->mm->dev_map_hi[i] > p->mm->dev_map_lo[i] && a >= p->mm->dev_map_lo[i] &&
-		    a < p->mm->dev_map_hi[i])
-			return p->mm->dev_map_hi[i];
-#endif
-	if (!write) {
-		uintptr_t rlo, rhi;
-		lxp_rootfs_bounds(&rlo, &rhi);
-		if (rhi > rlo && a >= rlo && a < rhi)
-			return rhi;
-	}
-	return 0;
-}
-
-/* True iff [ptr, ptr+len) is wholly readable (write==0) or writable (write==1) by program `p`.
- * Non-static so the host unit tests exercise the boundary/overflow logic directly. */
-int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write)
-{
-	uintptr_t a = (uintptr_t)ptr, end = a + len;
-	if (len == 0)
-		return 1; /* zero length: nothing is dereferenced */
-	if (end < a)
-		return 0; /* ptr+len wrapped the address space */
-	uintptr_t hi = user_range_hi(p, a, write);
-	return hi != 0 && end <= hi;
-}
-
-/* strlen of a user string, or -EFAULT if it is not NUL-terminated wholly within a valid readable
- * range (so a later strlen/copy can't walk off the region into kernel memory). Bounded by `max`.
- * Non-static so the host unit tests exercise the terminated/unterminated/at-edge cases directly. */
-long user_strnlen(const lxp_proc_t *p, const char *s, size_t max)
-{
-	uintptr_t a = (uintptr_t)s;
-	uintptr_t hi = user_range_hi(p, a, 0);
-	if (!hi)
-		return -LXP_EFAULT;
-	size_t avail = (size_t)(hi - a);
-	size_t lim = avail < max ? avail : max;
-	for (size_t i = 0; i < lim; i++)
-		if (s[i] == '\0')
-			return (long)i;
-	return -LXP_EFAULT; /* no NUL within the range / max */
 }
 
 /* Synthetic /proc fd backing (content generated on open; see proc_* below). */
@@ -705,13 +634,13 @@ static int sock_slot(lxp_proc_t *p, int fd)
  * usual and the coordinator retry completes it. */
 static long sys_sendmsg(lxp_proc_t *p, int oi, const lxp_msghdr *umsg, int flags)
 {
-	if (!user_ok(p, umsg, sizeof(*umsg), 0))
+	lxp_msghdr m;
+	if (lxp_copy_from_guest(p, &m, (uintptr_t)umsg, sizeof(m)) != 0)
 		return -LXP_EFAULT;
-	lxp_msghdr m = *umsg;
 	if (m.msg_iovlen > LXP_SYSCALL_MAX_IOV) /* bound before iovlen*sizeof(iovec) overflows */
 		return -LXP_EINVAL;
 	const lxp_iovec *iov = m.msg_iov;
-	if (m.msg_iovlen && !user_ok(p, iov, m.msg_iovlen * sizeof(*iov), 0))
+	if (m.msg_iovlen && !lxp_guest_access_ok(p, iov, m.msg_iovlen * sizeof(*iov), 0))
 		return -LXP_EFAULT; /* the iov array; each iov_base is checked in lxp_sock_send */
 	const void *dest = (m.msg_name && m.msg_namelen) ? m.msg_name : NULL;
 
@@ -724,10 +653,13 @@ static long sys_sendmsg(lxp_proc_t *p, int oi, const lxp_msghdr *umsg, int flags
 	long total = 0;
 	size_t budget = LXP_SYSCALL_QUANTUM_BYTES;
 	for (size_t i = 0; i < m.msg_iovlen; i++) {
-		if (iov[i].iov_len == 0)
+		lxp_iovec entry;
+		if (lxp_copy_from_guest(p, &entry, (uintptr_t)&iov[i], sizeof(entry)) != 0)
+			return -LXP_EFAULT;
+		if (entry.iov_len == 0)
 			continue;
-		size_t len = iov[i].iov_len < budget ? iov[i].iov_len : budget;
-		long r = lxp_sock_send(p, oi, iov[i].iov_base, len, flags, dest, m.msg_namelen);
+		size_t len = entry.iov_len < budget ? entry.iov_len : budget;
+		long r = lxp_sock_send(p, oi, entry.iov_base, len, flags, dest, m.msg_namelen);
 		if (r < 0)
 			return total ? total : r;
 		if ((size_t)r > len)
@@ -743,7 +675,7 @@ static long sys_sendmsg(lxp_proc_t *p, int oi, const lxp_msghdr *umsg, int flags
 		}
 		total += r;
 		budget -= (size_t)r;
-		if ((size_t)r < len || len < iov[i].iov_len || budget == 0)
+		if ((size_t)r < len || len < entry.iov_len || budget == 0)
 			break; /* short send */
 	}
 	return total;
@@ -756,16 +688,18 @@ static long sys_sendmsg(lxp_proc_t *p, int oi, const lxp_msghdr *umsg, int flags
  * source address (and msg_namelen updated) as recvfrom does. */
 static long sys_recvmsg(lxp_proc_t *p, int oi, lxp_msghdr *umsg, int flags)
 {
-	if (!user_ok(p, umsg, sizeof(*umsg), 1)) /* msg_controllen / msg_flags are written back */
+	lxp_msghdr m;
+	if (lxp_copy_from_guest(p, &m, (uintptr_t)umsg, sizeof(m)) != 0)
 		return -LXP_EFAULT;
-	lxp_msghdr m = *umsg;
 	if (m.msg_iovlen > LXP_SYSCALL_MAX_IOV)
 		return -LXP_EINVAL;
 	const lxp_iovec *iov = m.msg_iov;
-	if (m.msg_iovlen && !user_ok(p, iov, m.msg_iovlen * sizeof(*iov), 0))
+	if (m.msg_iovlen && !lxp_guest_access_ok(p, iov, m.msg_iovlen * sizeof(*iov), 0))
 		return -LXP_EFAULT;
-	umsg->msg_controllen = 0; /* no ancillary data is ever produced */
-	umsg->msg_flags = 0;
+	m.msg_controllen = 0; /* no ancillary data is ever produced */
+	m.msg_flags = 0;
+	if (lxp_copy_to_guest(p, (uintptr_t)umsg, &m, sizeof(m)) != 0)
+		return -LXP_EFAULT;
 
 	/* Receive into the first non-empty segment only. A blocking recv parks with a single
 	 * guest buffer, so a multi-segment scatter cannot be resumed after a park — and the
@@ -776,12 +710,15 @@ static long sys_recvmsg(lxp_proc_t *p, int oi, lxp_msghdr *umsg, int flags)
 	void *src = (m.msg_name && m.msg_namelen) ? m.msg_name : NULL;
 	void *srclen = src ? &umsg->msg_namelen : NULL;
 	for (size_t i = 0; i < m.msg_iovlen; i++) {
-		if (iov[i].iov_len == 0)
+		lxp_iovec entry;
+		if (lxp_copy_from_guest(p, &entry, (uintptr_t)&iov[i], sizeof(entry)) != 0)
+			return -LXP_EFAULT;
+		if (entry.iov_len == 0)
 			continue;
-		size_t len = iov[i].iov_len;
+		size_t len = entry.iov_len;
 		if (len > LXP_SYSCALL_QUANTUM_BYTES)
 			len = LXP_SYSCALL_QUANTUM_BYTES;
-		return lxp_sock_recv(p, oi, iov[i].iov_base, len, flags, src, srclen);
+		return lxp_sock_recv(p, oi, entry.iov_base, len, flags, src, srclen);
 	}
 	return 0; /* no buffer space in the iov: nothing received */
 }
@@ -871,7 +808,6 @@ static long fop_read_pipe(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 /* A writable-node file read returns bytes from its buffer at the fd offset. */
 static long fop_read_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
-	(void)p;
 	lxp_wnode_t *t = wnode_at(s->file_idx);
 	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 		return -LXP_EISDIR;
@@ -880,7 +816,8 @@ static long fop_read_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 	size_t n = t->size - s->offset;
 	if (n > len)
 		n = len;
-	memcpy(buf, t->data + s->offset, n);
+	if (lxp_copy_to_guest(p, (uintptr_t)buf, t->data + s->offset, n) != 0)
+		return -LXP_EFAULT;
 	s->offset += n;
 	return (long)n;
 }
@@ -888,7 +825,6 @@ static long fop_read_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 /* A /proc file read returns bytes from the content generated at open. */
 static long fop_read_proc(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
-	(void)p;
 	if (g_procf[s->file_idx].is_dir)
 		return -LXP_EISDIR;
 	size_t plen = g_procf[s->file_idx].len;
@@ -897,7 +833,8 @@ static long fop_read_proc(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 	size_t n = plen - s->offset;
 	if (n > len)
 		n = len;
-	memcpy(buf, g_procf[s->file_idx].buf + s->offset, n);
+	if (lxp_copy_to_guest(p, (uintptr_t)buf, g_procf[s->file_idx].buf + s->offset, n) != 0)
+		return -LXP_EFAULT;
 	s->offset += n;
 	return (long)n;
 }
@@ -913,7 +850,8 @@ static long fop_read_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 	size_t n = f->size - s->offset;
 	if (n > len)
 		n = len;
-	memcpy(buf, f->data + s->offset, n);
+	if (lxp_copy_to_guest(p, (uintptr_t)buf, f->data + s->offset, n) != 0)
+		return -LXP_EFAULT;
 	s->offset += n;
 	return (long)n;
 }
@@ -1006,7 +944,6 @@ static long fop_write_pipe(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t 
 /* A writable-node file write copies into its (growable) buffer at the offset. */
 static long fop_write_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
 {
-	(void)p;
 	lxp_wnode_t *t = wnode_at(s->file_idx);
 	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 		return -LXP_EBADF;
@@ -1015,7 +952,8 @@ static long fop_write_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t
 	if (s->offset >
 	    t->size) /* zero the hole of a sparse write (else it leaks stale pool bytes) */
 		memset(t->data + t->size, 0, s->offset - t->size);
-	memcpy(t->data + s->offset, buf, len);
+	if (lxp_copy_from_guest(p, t->data + s->offset, (uintptr_t)buf, len) != 0)
+		return -LXP_EFAULT;
 	s->offset += len;
 	if (s->offset > t->size)
 		t->size = s->offset;
@@ -1237,8 +1175,6 @@ static long fop_ioctl_console(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, un
 	void *ua = (void *)(uintptr_t)arg;
 	switch (cmd) {
 	case LXP_TCGETS: {
-		if (!user_ok(p, ua, sizeof(lxp_termios), 1))
-			return -LXP_EFAULT;
 		lxp_termios t = {0};
 		t.c_iflag = LXP_ICRNL;
 		t.c_oflag = LXP_OPOST | LXP_ONLCR;
@@ -1249,21 +1185,17 @@ static long fop_ioctl_console(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, un
 		t.c_cc[LXP_VEOF] = 4;	   /* ^D */
 		t.c_cc[LXP_VSUSP] = 26;	   /* ^Z */
 		t.c_cc[LXP_VMIN] = 1;
-		memcpy(ua, &t, sizeof(t));
-		return 0;
+		return lxp_copy_to_guest(p, (uintptr_t)ua, &t, sizeof(t));
 	}
 	case LXP_TCSETS:
 	case LXP_TCSETSW:
 	case LXP_TCSETSF:
-		if (!user_ok(p, ua, sizeof(lxp_termios), 0))
+		if (!lxp_guest_access_ok(p, ua, sizeof(lxp_termios), 0))
 			return -LXP_EFAULT;
 		return 0; /* accept mode changes; the console echo is the engine's job */
 	case LXP_TIOCGWINSZ: {
-		if (!user_ok(p, ua, sizeof(lxp_winsize), 1))
-			return -LXP_EFAULT;
 		const lxp_winsize w = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0};
-		memcpy(ua, &w, sizeof(w));
-		return 0;
+		return lxp_copy_to_guest(p, (uintptr_t)ua, &w, sizeof(w));
 	}
 	case LXP_TIOCSCTTY: /* getty/login: become/drop/set the tty session */
 	case LXP_TIOCNOTTY:
@@ -1273,24 +1205,20 @@ static long fop_ioctl_console(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, un
 		 * foreground of the console. A console ^C then raises SIGINT on exactly that
 		 * group (see console_signal_fg). Runs in coordinator context (ioctl defers),
 		 * so writing the shared fg-pgrp state here is safe. */
-		if (!user_ok(p, ua, sizeof(int), 0))
+		uint32_t pgrp;
+		if (lxp_guest_get_u32(p, (uintptr_t)ua, &pgrp) != 0)
 			return -LXP_EFAULT;
-		int pgrp;
-		memcpy(&pgrp, ua, sizeof(pgrp));
-		lxp_console_set_fg_pgrp(pgrp);
+		lxp_console_set_fg_pgrp((int)pgrp);
 		return 0;
 	}
 	case LXP_TIOCGPGRP: {
-		if (!user_ok(p, ua, sizeof(int), 1))
-			return -LXP_EFAULT;
 		/* Report the tracked foreground group once set; before the shell's first
 		 * tcsetpgrp, fall back to the caller's pid so tcgetpgrp() returns non-zero
 		 * and the shell enables job control at startup. */
 		int pgrp = lxp_console_fg_pgrp();
 		if (pgrp <= 0)
 			pgrp = p->pid;
-		memcpy(ua, &pgrp, sizeof(pgrp));
-		return 0;
+		return lxp_guest_put_u32(p, (uintptr_t)ua, (uint32_t)pgrp);
 	}
 	default:
 		return -LXP_ENOTTY;
@@ -1459,7 +1387,7 @@ static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-	if (!user_ok(p, buf, len, 0)) /* the kernel READS buf → reject a bad source pointer */
+	if (!lxp_guest_access_ok(p, buf, len, 0)) /* the kernel READS buf → reject a bad source pointer */
 		return -LXP_EFAULT;
 	/* A guest may write this buffer through a cacheable MPU view while the privileged host reads
 	 * the same SDRAM through an uncached background view.  Publish dirty guest lines before any
@@ -1479,7 +1407,7 @@ static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
 	 * validates the fd (EBADF) and routes by kind. */
 	if (iovcnt < 0 || iovcnt > LXP_SYSCALL_MAX_IOV)
 		return -LXP_EINVAL;
-	if (iovcnt && !user_ok(p, iov, (size_t)iovcnt * sizeof(*iov), 0))
+	if (iovcnt && !lxp_guest_access_ok(p, iov, (size_t)iovcnt * sizeof(*iov), 0))
 		return -LXP_EFAULT; /* the iov array itself; each iov_base is checked in sys_write */
 	/* Publish the descriptors before the host reads their bases and lengths.  sys_write() below
 	 * publishes each referenced payload independently. */
@@ -1498,10 +1426,13 @@ static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
 	long total = 0;
 	size_t budget = LXP_SYSCALL_QUANTUM_BYTES;
 	for (int i = 0; i < iovcnt; i++) {
-		if (iov[i].iov_len == 0)
+		lxp_iovec entry;
+		if (lxp_copy_from_guest(p, &entry, (uintptr_t)&iov[i], sizeof(entry)) != 0)
+			return total ? total : -LXP_EFAULT;
+		if (entry.iov_len == 0)
 			continue;
-		size_t len = iov[i].iov_len < budget ? iov[i].iov_len : budget;
-		long r = sys_write(p, fd, iov[i].iov_base, len);
+		size_t len = entry.iov_len < budget ? entry.iov_len : budget;
+		long r = sys_write(p, fd, entry.iov_base, len);
 		if (r < 0)
 			return total ? total : r;
 		if ((size_t)r > len)
@@ -1509,7 +1440,7 @@ static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
 				     : -LXP_EIO; /* host backend violated the write contract */
 		total += r;
 		budget -= (size_t)r;
-		if (single_segment || (size_t)r < len || len < iov[i].iov_len || budget == 0)
+		if (single_segment || (size_t)r < len || len < entry.iov_len || budget == 0)
 			break; /* short write */
 	}
 	return total;
@@ -1520,7 +1451,7 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
 	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-	if (!user_ok(p, buf, len, 1)) /* the kernel WRITES buf → reject a bad destination pointer */
+	if (!lxp_guest_access_ok(p, buf, len, 1)) /* the kernel WRITES buf → reject a bad destination pointer */
 		return -LXP_EFAULT;
 	if (s->ops && s->ops->read)
 		return s->ops->read(p, s, buf, len);
@@ -1538,7 +1469,7 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off
 	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-	if (!user_ok(p, buf, len, 1))
+	if (!lxp_guest_access_ok(p, buf, len, 1))
 		return -LXP_EFAULT;
 
 #if LXP_ENABLE_DEV
@@ -1572,7 +1503,8 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off
 	size_t n = size - off;
 	if (n > len)
 		n = len;
-	memcpy(buf, data + off, n);
+	if (lxp_copy_to_guest(p, (uintptr_t)buf, data + off, n) != 0)
+		return -LXP_EFAULT;
 	return (long)n;
 }
 
@@ -1587,7 +1519,7 @@ static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint3
 	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-	if (!user_ok(p, buf, len, 0))
+	if (!lxp_guest_access_ok(p, buf, len, 0))
 		return -LXP_EFAULT;
 #if LXP_ENABLE_DEV
 	if (s->kind == LXP_FD_DEV)
@@ -1605,7 +1537,8 @@ static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint3
 		if ((size_t)off >
 		    t->size) /* zero the sparse hole (else it leaks stale pool bytes) */
 			memset(t->data + t->size, 0, (size_t)off - t->size);
-		memcpy(t->data + off, buf, len);
+		if (lxp_copy_from_guest(p, t->data + off, (uintptr_t)buf, len) != 0)
+			return -LXP_EFAULT;
 		if ((size_t)off + len > t->size)
 			t->size = (size_t)off + len;
 		return (long)len;
@@ -1810,11 +1743,10 @@ static long efd_read(lxp_proc_t *p, int ei, void *buf, size_t len)
 		return -LXP_EINVAL;
 	if (g_efd[ei].ctr == 0)
 		return -LXP_EAGAIN; /* counter empty; the poller re-checks on the tick */
-	if (!user_ok(p, buf, 8, 1))
-		return -LXP_EFAULT;
 	uint64_t v = (g_efd[ei].flags & LXP_EFD_SEMAPHORE) ? 1u : g_efd[ei].ctr;
+	if (lxp_copy_to_guest(p, (uintptr_t)buf, &v, sizeof(v)) != 0)
+		return -LXP_EFAULT;
 	g_efd[ei].ctr -= v;
-	memcpy(buf, &v, 8);
 	return 8;
 }
 
@@ -1824,10 +1756,9 @@ static long efd_write(lxp_proc_t *p, int ei, const void *buf, size_t len)
 		return -LXP_EBADF;
 	if (len < 8)
 		return -LXP_EINVAL;
-	if (!user_ok(p, buf, 8, 0))
-		return -LXP_EFAULT;
 	uint64_t v;
-	memcpy(&v, buf, 8);
+	if (lxp_copy_from_guest(p, &v, (uintptr_t)buf, sizeof(v)) != 0)
+		return -LXP_EFAULT;
 	if (v == UINT64_MAX) /* -1 is reserved */
 		return -LXP_EINVAL;
 	if (UINT64_MAX - g_efd[ei].ctr - 1 < v) /* would overflow past max-1 */
@@ -2290,7 +2221,7 @@ int lxp_proc_init_thread_child(lxp_proc_t *child, const lxp_proc_t *parent, uint
  * carries O_CLOEXEC for pipe2 (dropbear's exec-status pipe is a CLOEXEC pipe2). */
 static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 {
-	if (!user_ok(p, fds, 2 * sizeof(int), 1)) /* the kernel writes fds[0],fds[1] */
+	if (!lxp_guest_access_ok(p, fds, 2 * sizeof(int), 1)) /* the kernel writes fds[0],fds[1] */
 		return -LXP_EFAULT;
 	uint8_t cx = (flags & LXP_O_CLOEXEC) ? 1 : 0;
 	uint8_t nb = (flags & LXP_O_NONBLOCK) ? 1
@@ -2324,8 +2255,12 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 	fd_slot(p, wfd)->nonblock = nb;
 	p->files->fd[rfd].cloexec = cx;
 	p->files->fd[wfd].cloexec = cx;
-	fds[0] = rfd;
-	fds[1] = wfd;
+	const int result[2] = {rfd, wfd};
+	if (lxp_copy_to_guest(p, (uintptr_t)fds, result, sizeof(result)) != 0) {
+		(void)sys_close(p, rfd);
+		(void)sys_close(p, wfd);
+		return -LXP_EFAULT;
+	}
 	return 0;
 }
 
@@ -2399,10 +2334,10 @@ static long sys_llseek(lxp_proc_t *p, int fd, unsigned long off_hi, unsigned lon
 	long pos = sys_lseek(p, fd, (long)off_lo, (int)whence);
 	if (pos < 0)
 		return pos;
-	if (result && !user_ok(p, result, sizeof(*result), 1))
+	if (result &&
+	    lxp_copy_to_guest(p, (uintptr_t)result, &(uint64_t){(uint64_t)pos},
+			      sizeof(*result)) != 0)
 		return -LXP_EFAULT;
-	if (result)
-		*result = (uint64_t)pos;
 	return 0;
 }
 
@@ -2451,7 +2386,7 @@ static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-	if (!user_ok(p, statbuf, sizeof(struct lxp_kstat64), 1))
+	if (!lxp_guest_access_ok(p, statbuf, sizeof(struct lxp_kstat64), 1))
 		return -LXP_EFAULT;
 	if (s->ops && s->ops->fstat)
 		return s->ops->fstat(p, s, statbuf);
@@ -2463,7 +2398,7 @@ static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 /* path-based stat: resolve, optionally follow a trailing symlink, fill kstat64. */
 static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *statbuf)
 {
-	if (!user_ok(p, statbuf, sizeof(struct lxp_kstat64), 1))
+	if (!lxp_guest_access_ok(p, statbuf, sizeof(struct lxp_kstat64), 1))
 		return -LXP_EFAULT; /* path is validated by resolve_path below */
 	char abspath[LXP_PATH_MAX];
 	long rr = resolve_path(p, path, abspath, sizeof(abspath));
@@ -2512,7 +2447,7 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 /* readlink: write the symlink target (not NUL-terminated) + return its length. */
 static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufsiz)
 {
-	if (!user_ok(p, buf, bufsiz, 1))
+	if (!lxp_guest_access_ok(p, buf, bufsiz, 1))
 		return -LXP_EFAULT; /* path is validated by resolve_path below */
 	char abspath[LXP_PATH_MAX];
 	long rr = resolve_path(p, path, abspath, sizeof(abspath));
@@ -2523,7 +2458,8 @@ static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufs
 		size_t n = p_dec(tmp, 0, sizeof(tmp), (uint64_t)p->pid);
 		if (n > bufsiz)
 			n = bufsiz;
-		memcpy(buf, tmp, n);
+		if (lxp_copy_to_guest(p, (uintptr_t)buf, tmp, n) != 0)
+			return -LXP_EFAULT;
 		return (long)n;
 	}
 	if (strcmp(abspath, "/proc/self/exe") == 0) { /* -> the running program's path */
@@ -2536,7 +2472,8 @@ static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufs
 		size_t n = strlen(exe);
 		if (n > bufsiz)
 			n = bufsiz;
-		memcpy(buf, exe, n);
+		if (lxp_copy_to_guest(p, (uintptr_t)buf, exe, n) != 0)
+			return -LXP_EFAULT;
 		return (long)n;
 	}
 	int wi = wfs_find(abspath); /* a writable symlink (ln -s) shadows the rootfs */
@@ -2545,7 +2482,8 @@ static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufs
 		if ((w->mode & LXP_S_IFMT) != LXP_S_IFLNK || !w->data)
 			return -LXP_EINVAL;
 		size_t n = w->size > bufsiz ? bufsiz : w->size;
-		memcpy(buf, w->data, n);
+		if (lxp_copy_to_guest(p, (uintptr_t)buf, w->data, n) != 0)
+			return -LXP_EFAULT;
 		return (long)n;
 	}
 	int idx = fs_lookup(p, abspath);
@@ -2555,7 +2493,8 @@ static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufs
 	if ((file_mode(lnk) & LXP_S_IFMT) != LXP_S_IFLNK || !lnk->data)
 		return -LXP_EINVAL;
 	size_t n = lnk->size > bufsiz ? bufsiz : lnk->size;
-	memcpy(buf, lnk->data, n);
+	if (lxp_copy_to_guest(p, (uintptr_t)buf, lnk->data, n) != 0)
+		return -LXP_EFAULT;
 	return (long)n;
 }
 
@@ -2645,7 +2584,7 @@ static long sys_symlink(lxp_proc_t *p, const char *target, const char *linkp)
 {
 	if (!target || !linkp)
 		return -LXP_EFAULT;
-	if (user_strnlen(p, target, LXP_PATH_MAX) < 0)
+	if (lxp_guest_strnlen(p, target, LXP_PATH_MAX) < 0)
 		return -LXP_EFAULT; /* target is stored verbatim (strlen'd) — bound it in guest memory */
 	char linkabs[LXP_PATH_MAX];
 	long rr = resolve_path(p, linkp, linkabs, sizeof(linkabs));
@@ -2797,7 +2736,7 @@ static long sys_getrandom(lxp_proc_t *p, void *buf, size_t count, unsigned flags
 		return -LXP_EINVAL;
 	if (count == 0u)
 		return 0;
-	if (!user_ok(p, buf, count, 1))
+	if (!lxp_guest_access_ok(p, buf, count, 1))
 		return -LXP_EFAULT;
 	return random_fill(buf, count, LXP_ENOSYS);
 }
@@ -2814,20 +2753,19 @@ LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_namelen) == 56,
 		  "statfs64 f_namelen offset drifted");
 static long sys_statfs(lxp_proc_t *p, void *buf)
 {
-	if (!user_ok(p, buf, sizeof(struct lxp_statfs64), 1))
+	if (!lxp_guest_access_ok(p, buf, sizeof(struct lxp_statfs64), 1))
 		return -LXP_EFAULT;
-	struct lxp_statfs64 *st = buf;
-	memset(st, 0, sizeof(*st));
-	st->f_type = 0x01021994u; /* TMPFS_MAGIC */
-	st->f_bsize = 4096;
-	st->f_frsize = 4096;
-	st->f_blocks = 256;
-	st->f_bfree = 192;
-	st->f_bavail = 192;
-	st->f_files = 64;
-	st->f_ffree = 48;
-	st->f_namelen = 255;
-	return 0;
+	struct lxp_statfs64 st = {0};
+	st.f_type = 0x01021994u; /* TMPFS_MAGIC */
+	st.f_bsize = 4096;
+	st.f_frsize = 4096;
+	st.f_blocks = 256;
+	st.f_bfree = 192;
+	st.f_bavail = 192;
+	st.f_files = 64;
+	st.f_ffree = 48;
+	st.f_namelen = 255;
+	return lxp_copy_to_guest(p, (uintptr_t)buf, &st, sizeof(st));
 }
 
 /* Directory-entry format for the in-progress getdents: 1 = linux_dirent64 (getdents64),
@@ -2894,7 +2832,7 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-	if (!user_ok(p, buf, count, 1))
+	if (!lxp_guest_access_ok(p, buf, count, 1))
 		return -LXP_EFAULT;
 	const char *dirpath;
 	if (s->kind == LXP_FD_FILE) {
@@ -3042,7 +2980,7 @@ LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_rdev_major) == 128,
  */
 static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, void *buf)
 {
-	if (!user_ok(p, buf, sizeof(struct lxp_statx), 1))
+	if (!lxp_guest_access_ok(p, buf, sizeof(struct lxp_statx), 1))
 		return -LXP_EFAULT;
 
 	uint32_t mode;
@@ -3051,7 +2989,7 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 	uint32_t ino = 0x300000u; /* unique, non-zero inode: ld.so dedups by (st_dev, st_ino) */
 	/* Validate the path pointer before the path[0] empty-check deref below — resolve_path
 	 * validates it too, but only after this reads path[0] (a bad pointer would fault here). */
-	if (path && user_strnlen(p, path, LXP_PATH_MAX) < 0)
+	if (path && lxp_guest_strnlen(p, path, LXP_PATH_MAX) < 0)
 		return -LXP_EFAULT;
 	if (path && path[0] && !(flags & LXP_AT_EMPTY_PATH)) {
 		char abspath[LXP_PATH_MAX];
@@ -3159,7 +3097,7 @@ long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t 
 {
 	uint32_t nino = 0x600000u + (uint32_t)ino;
 	if (statkind == 1) {
-		if (!user_ok(p, (void *)ustat, sizeof(struct lxp_statx), 1))
+		if (!lxp_guest_access_ok(p, (void *)ustat, sizeof(struct lxp_statx), 1))
 			return -LXP_EFAULT;
 		struct lxp_statx *st = (struct lxp_statx *)ustat;
 		memset(st, 0, sizeof(*st));
@@ -3175,7 +3113,7 @@ long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t 
 		       sizeof(uint64_t)); /* mtime tv_sec (4th 16B slot) */
 		return 0;
 	}
-	if (!user_ok(p, (void *)ustat, sizeof(struct lxp_kstat64), 1))
+	if (!lxp_guest_access_ok(p, (void *)ustat, sizeof(struct lxp_kstat64), 1))
 		return -LXP_EFAULT;
 	struct lxp_kstat64 *st = (struct lxp_kstat64 *)ustat;
 	fill_kstat64(st, nino, mode, size);
@@ -3208,33 +3146,22 @@ static long exec_copy_vec(lxp_proc_t *p, char *const uvec[], uint16_t *vec, char
 		return 0;
 	size_t off = 0;
 	for (int j = 0; j <= max; j++) {
-		if (!user_ok(p, &uvec[j], sizeof(uvec[j]), 0))
+		const char *us;
+		if (lxp_copy_from_guest(p, &us, (uintptr_t)&uvec[j], sizeof(us)) != 0)
 			return -LXP_EFAULT;
-		const char *us = ((char *const volatile *)uvec)[j]; /* load guest pointer once */
 		if (!us)
 			return 0;
 		if (j == max || off == bufsz)
 			return -LXP_E2BIG;
-		uintptr_t a = (uintptr_t)us;
-		uintptr_t hi = user_range_hi(p, a, 0);
-		if (!hi)
-			return -LXP_EFAULT;
 		size_t room = bufsz - off;
-		size_t readable = (size_t)(hi - a);
-		size_t limit = readable < room ? readable : room;
 		/* Copy each byte once and decide termination from the copied value. A
 		 * co-running CLONE_VM thread may mutate the source: a separate strnlen +
 		 * memcpy could observe a NUL during the scan and then copy a non-terminated
 		 * string, making the later trusted-buffer strlen walk out of bounds. */
-		size_t len = 0;
-		for (; len < limit; len++) {
-			unsigned char c = ((const volatile unsigned char *)us)[len];
-			buf[off + len] = (char)c;
-			if (c == 0)
-				break;
-		}
-		if (len == limit)
-			return readable < room ? -LXP_EFAULT : -LXP_E2BIG;
+		size_t len;
+		long rc = lxp_copy_string_from_guest(p, buf + off, room, (uintptr_t)us, &len);
+		if (rc != 0)
+			return rc;
 		vec[j] = (uint16_t)off;
 		off += len + 1;
 		*count = j + 1;
@@ -3377,7 +3304,7 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 		char interpabs[LXP_PATH_MAX];
 		/* _trusted, not resolve_path(): interp was copied out of the script's
 		 * own bytes into this stack buffer, so it is not a guest pointer and
-		 * resolve_path()'s user_strnlen guard rejects it -EFAULT. That made
+		 * resolve_path()'s lxp_guest_strnlen guard rejects it -EFAULT. That made
 		 * every #! script unrunnable — BusyBox init's /etc/init.d/rcS included. */
 		if (resolve_path_trusted(interp, interpabs, sizeof(interpabs)) < 0)
 			return -LXP_ENOENT;
@@ -3540,7 +3467,7 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 	unsigned nfds = (unsigned)a1;
 	if (nfds > LXP_MAX_FDS) /* bound before nfds*sizeof(pollfd) wraps a 32-bit size_t */
 		return -LXP_EINVAL;
-	if (nfds && !user_ok(proc, pfds, (size_t)nfds * sizeof(lxp_pollfd), 1))
+	if (nfds && !lxp_guest_access_ok(proc, pfds, (size_t)nfds * sizeof(lxp_pollfd), 1))
 		return -LXP_EFAULT;
 	/* Timeout: poll(2) passes ms in a2 (<0 = block); ppoll passes a struct
 		 * timespec* (NULL = block). A SHORT finite timeout means the caller is
@@ -3558,7 +3485,7 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 		tmo_ms = (long)(int32_t)a2;
 	} else {
 		const int64_t *ts = (const int64_t *)(uintptr_t)a2; /* {sec, nsec} */
-		if (ts && !user_ok(proc, ts, 2 * sizeof(int64_t), 0))
+		if (ts && !lxp_guest_access_ok(proc, ts, 2 * sizeof(int64_t), 0))
 			return -LXP_EFAULT;
 		tmo_ms = ts ? (long)(ts[0] * 1000 + ts[1] / 1000000) : -1;
 	}
@@ -3877,7 +3804,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			char _f[8];
 		} *si = (void *)(uintptr_t)a0;
 		LXP_STATIC_ASSERT(sizeof(struct lxp_sysinfo) == 64, "sysinfo ABI size drifted");
-		if (!user_ok(proc, si, sizeof(*si), 1))
+		if (!lxp_guest_access_ok(proc, si, sizeof(*si), 1))
 			return -LXP_EFAULT;
 		memset(si, 0, sizeof(*si));
 		uint64_t ns = 0;
@@ -3940,9 +3867,8 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		size_t len = strlen(proc->fs_context->cwd) + 1;
 		if ((size_t)a1 < len)
 			return -LXP_ERANGE;
-		if (!user_ok(proc, buf, len, 1))
+		if (lxp_copy_to_guest(proc, (uintptr_t)buf, proc->fs_context->cwd, len) != 0)
 			return -LXP_EFAULT;
-		memcpy(buf, proc->fs_context->cwd, len);
 		return (long)len;
 	}
 	case LXP_NR_chdir: {
@@ -4005,9 +3931,9 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_getresgid32: {
 		uint32_t *r = (uint32_t *)(uintptr_t)a0, *e = (uint32_t *)(uintptr_t)a1,
 			 *s = (uint32_t *)(uintptr_t)a2;
-		if ((r && !user_ok(proc, r, sizeof(*r), 1)) ||
-		    (e && !user_ok(proc, e, sizeof(*e), 1)) ||
-		    (s && !user_ok(proc, s, sizeof(*s), 1)))
+		if ((r && !lxp_guest_access_ok(proc, r, sizeof(*r), 1)) ||
+		    (e && !lxp_guest_access_ok(proc, e, sizeof(*e), 1)) ||
+		    (s && !lxp_guest_access_ok(proc, s, sizeof(*s), 1)))
 			return -LXP_EFAULT;
 		if (r)
 			*r = 0;
@@ -4022,7 +3948,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 				     * and dropbear query RLIMIT_NOFILE etc. */
 		void *uold = (void *)(uintptr_t)a3;
 		if (uold) {
-			if (!user_ok(proc, uold, 2 * sizeof(uint64_t), 1))
+			if (!lxp_guest_access_ok(proc, uold, 2 * sizeof(uint64_t), 1))
 				return -LXP_EFAULT;
 			/* Report the TRUTH for RLIMIT_NOFILE: the fd table is LXP_MAX_FDS, so
 			 * advertising more just hands a guest a lie that turns into a surprise
@@ -4042,7 +3968,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		lxp_time_us(&us);
 		long ticks = (long)(us / 10000u); /* CLK_TCK = 100 */
 		if (ubuf) {
-			if (!user_ok(proc, ubuf, 4 * sizeof(long), 1))
+			if (!lxp_guest_access_ok(proc, ubuf, 4 * sizeof(long), 1))
 				return -LXP_EFAULT;
 			long *tms = (long *)ubuf; /* tms_utime, tms_stime, tms_cutime, tms_cstime */
 			tms[0] = ticks;
@@ -4061,8 +3987,6 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		uint64_t now = 0;
 		lxp_time_us(&now);
 		if (uold) {
-			if (!user_ok(proc, uold, 16, 1))
-				return -LXP_EFAULT;
 			uint32_t ov[4] = {0, 0, 0, 0};
 			uint64_t rem = (proc->alarm_deadline_us && proc->alarm_deadline_us > now)
 					       ? proc->alarm_deadline_us - now
@@ -4071,14 +3995,14 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			ov[1] = (uint32_t)(proc->alarm_interval_us % 1000000u);
 			ov[2] = (uint32_t)(rem / 1000000u);
 			ov[3] = (uint32_t)(rem % 1000000u);
-			memcpy(uold, ov, 16);
+			if (lxp_copy_to_guest(proc, (uintptr_t)uold, ov, sizeof(ov)) != 0)
+				return -LXP_EFAULT;
 		}
 		if (!unew)
 			return 0;
-		if (!user_ok(proc, unew, 16, 0))
-			return -LXP_EFAULT;
 		uint32_t nv[4];
-		memcpy(nv, unew, 16);
+		if (lxp_copy_from_guest(proc, nv, (uintptr_t)unew, sizeof(nv)) != 0)
+			return -LXP_EFAULT;
 		proc->alarm_interval_us = (uint64_t)nv[0] * 1000000u + nv[1];
 		uint64_t val_us = (uint64_t)nv[2] * 1000000u + nv[3];
 		proc->alarm_deadline_us = val_us ? now + val_us : 0; /* it_value 0 disarms */
@@ -4106,7 +4030,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return proc->pid;
 	case LXP_NR_clock_gettime: { /* (clockid, struct timespec*) — 32-bit time_t */
 		int32_t *ts = (int32_t *)(uintptr_t)a1;
-		if (!user_ok(proc, ts, 2 * sizeof(int32_t), 1))
+		if (!lxp_guest_access_ok(proc, ts, 2 * sizeof(int32_t), 1))
 			return -LXP_EFAULT;
 		uint64_t sec;
 		uint32_t nsec;
@@ -4117,7 +4041,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	}
 	case LXP_NR_clock_gettime64: { /* (clockid, struct __kernel_timespec*) — 64-bit */
 		int64_t *ts = (int64_t *)(uintptr_t)a1;
-		if (!user_ok(proc, ts, 2 * sizeof(int64_t), 1))
+		if (!lxp_guest_access_ok(proc, ts, 2 * sizeof(int64_t), 1))
 			return -LXP_EFAULT;
 		uint64_t sec;
 		uint32_t nsec;
@@ -4128,7 +4052,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	}
 	case LXP_NR_gettimeofday: { /* (struct timeval*, tz) */
 		int32_t *tv = (int32_t *)(uintptr_t)a0;
-		if (!user_ok(proc, tv, 2 * sizeof(int32_t), 1))
+		if (!lxp_guest_access_ok(proc, tv, 2 * sizeof(int32_t), 1))
 			return -LXP_EFAULT;
 		uint64_t sec;
 		uint32_t nsec;
@@ -4145,7 +4069,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		 * duration so the RTOS idle/kernel/other threads run and real time + CPU
 		 * stats advance — which is what top needs between its two samples. */
 		uintptr_t reqp = (nr == LXP_NR_nanosleep) ? (uintptr_t)a0 : (uintptr_t)a2;
-		if (!user_ok(proc, (const void *)reqp,
+		if (!lxp_guest_access_ok(proc, (const void *)reqp,
 			     (nr == LXP_NR_clock_nanosleep_time64) ? 16u : 8u, 0))
 			return -LXP_EFAULT;
 		uint64_t sec, nsec;
@@ -4181,7 +4105,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		/* struct utsname: 6 fixed 65-byte fields (sysname, nodename, release,
 		 * version, machine, domainname). The shell reads these at startup. */
 		char *u = (char *)(uintptr_t)a0;
-		if (!user_ok(proc, u, 6 * 65, 1))
+		if (!lxp_guest_access_ok(proc, u, 6 * 65, 1))
 			return -LXP_EFAULT;
 		const char *const f[6] = {"Linux",  "overtos", "6.1.0", lxp_system_version(),
 					  "armv7l", "(none)"};
@@ -4202,9 +4126,9 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			return -LXP_EINVAL;
 		const uint32_t *act = (const uint32_t *)(uintptr_t)a1;
 		uint32_t *oact = (uint32_t *)(uintptr_t)a2;
-		if (act && !user_ok(proc, act, 3 * sizeof(uint32_t), 0))
+		if (act && !lxp_guest_access_ok(proc, act, 3 * sizeof(uint32_t), 0))
 			return -LXP_EFAULT;
-		if (oact && !user_ok(proc, oact, 3 * sizeof(uint32_t), 1))
+		if (oact && !lxp_guest_access_ok(proc, oact, 3 * sizeof(uint32_t), 1))
 			return -LXP_EFAULT;
 		if (oact) {
 			oact[0] = (uint32_t)lxp_sig_handler_get(proc, sig);
@@ -4225,7 +4149,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_ppoll_time64:
 		return sys_poll(proc, nr, a0, a1, a2);
 	case LXP_NR_wait4: {
-		if (a1 && !user_ok(proc, (void *)(uintptr_t)a1, sizeof(int), 1))
+		if (a1 && !lxp_guest_access_ok(proc, (void *)(uintptr_t)a1, sizeof(int), 1))
 			return -LXP_EFAULT; /* the kernel WRITES *status */
 		int options = (int)a2;
 		int wpid = (int)a0;
@@ -4294,7 +4218,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		size_t sz = (size_t)a1;
 		if (sz != 8)
 			return -LXP_EINVAL; /* Linux: sigsetsize must equal sizeof(kernel sigset_t) */
-		if (!uset || !user_ok(proc, uset, sz, 0))
+		if (!uset || !lxp_guest_access_ok(proc, uset, sz, 0))
 			return -LXP_EFAULT; /* validate the whole 8-byte mask before reading either word */
 		uint64_t m = (uint64_t)uset[0] | ((uint64_t)uset[1] << 32);
 		m &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP)); /* never blockable */
@@ -4330,7 +4254,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 			return -LXP_EINVAL;
 		uint64_t set = 0;
 		if (uset) {
-			if (!user_ok(proc, uset, sz, 0))
+			if (!lxp_guest_access_ok(proc, uset, sz, 0))
 				return -LXP_EFAULT;
 			if (sz >= 4)
 				set |= (uint64_t)uset[0];
@@ -4353,9 +4277,9 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		size_t sz = (size_t)a3; /* bytes of the guest sigset_t (8 for the 64-bit mask) */
 		if (sz > 8)
 			return -LXP_EINVAL;
-		if (uset && !user_ok(proc, uset, sz, 0))
+		if (uset && !lxp_guest_access_ok(proc, uset, sz, 0))
 			return -LXP_EFAULT;
-		if (uold && !user_ok(proc, uold, sz, 1))
+		if (uold && !lxp_guest_access_ok(proc, uold, sz, 1))
 			return -LXP_EFAULT;
 		/* Read the new set BEFORE writing oldset — the guest may alias them, the legal
 		 * sigprocmask(SIG_SETMASK, &m, &m) swap — and validate `how` up front so an invalid
@@ -4594,13 +4518,13 @@ static long sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwf
 	if (nfds > LXP_SEL_MAXFDS)
 		nfds = LXP_SEL_MAXFDS; /* one fd_set word; higher fds are not selectable here */
 	size_t setb = sizeof(uint32_t);
-	if ((urfds && !user_ok(p, (void *)urfds, setb, 1)) ||
-	    (uwfds && !user_ok(p, (void *)uwfds, setb, 1)) ||
-	    (uefds && !user_ok(p, (void *)uefds, setb, 1)))
+	if ((urfds && !lxp_guest_access_ok(p, (void *)urfds, setb, 1)) ||
+	    (uwfds && !lxp_guest_access_ok(p, (void *)uwfds, setb, 1)) ||
+	    (uefds && !lxp_guest_access_ok(p, (void *)uefds, setb, 1)))
 		return -LXP_EFAULT;
 	long tmo_ms = -1; /* NULL timeout = block forever */
 	if (utimeout) {
-		if (!user_ok(p, (void *)utimeout, 2 * sizeof(int64_t), 0))
+		if (!lxp_guest_access_ok(p, (void *)utimeout, 2 * sizeof(int64_t), 0))
 			return -LXP_EFAULT;
 		const int64_t *ts = (const int64_t *)utimeout; /* time64: tv_sec, tv_nsec */
 		int64_t ms = ts[0] * 1000 + ts[1] / 1000000;

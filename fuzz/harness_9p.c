@@ -53,9 +53,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		return 0;
 	if (lxp_proc_init(&p, &arena, 4096) != LXP_OK)
 		return 0;
-	p.region_lo = 1;
-	p.region_hi = UINTPTR_MAX;
-	p.pool_lo = p.pool_hi = 0;
+	p.mm->region_lo = 1;
+	p.mm->region_hi = UINTPTR_MAX;
+	p.mm->pool_lo = p.mm->pool_hi = 0;
 
 	lxp_netfs_fuzz_reset();
 	lxp_netfs_fuzz_feed(&p, (uintptr_t)g_guest, sizeof(g_guest), op, step, is64, statkind, type,

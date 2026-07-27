@@ -14,7 +14,7 @@
  * coordinator via a semaphore.
  *
  * Guests are restricted, unprivileged tasks. Per-task MPU regions grant only the
- * program, dynamic pool and rootfs XIP windows; user_ok/user_strnlen remain the
+ * program, dynamic pool and rootfs XIP windows; lxp_guest_access_ok/lxp_guest_strnlen remain the
  * privileged dispatcher's confused-deputy guards rather than a substitute for
  * MPU isolation.
  */

@@ -42,8 +42,8 @@ int slot_of(const lxp_proc_t *p);	/* slot index of proc in the private runtime t
 void park_frame(struct lxp_frame *f, lxp_proc_t *proc); /* park + publish this slot to the coordinator */
 
 /* ---- signal delivery (lxp_signal.c) ---------------------------------------- */
-void resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
-		     uintptr_t *restorer);
+int resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
+		    uintptr_t *restorer);
 int sig_swallowed(const lxp_proc_t *proc, int sig);
 int sig_default_ignore(int sig); /* SIG_DFL of this signal never terminates (SIGCHLD/SIGCONT/SIGURG/SIGWINCH) */
 int sig_is_stop(int sig);	 /* a job-control stop signal (SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU) */

@@ -185,6 +185,13 @@ static int coordinator_park_slot(const lxp_os_ops_t *eng, int sidx)
 static int coordinator_resume_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
 				   const struct lxp_resume_ctx *ctx, long r0val)
 {
+	/*
+	 * The dispatch capability must be gone before the RTOS makes this guest
+	 * runnable. A higher-priority resumed task may issue its next SVC before
+	 * spawn_resume() returns to the coordinator.
+	 */
+	if (sidx >= 0 && sidx < LXP_NSLOT && g_lxp_slots[sidx].proc.guest_view)
+		lxp_guest_view_end(g_lxp_slots[sidx].proc.guest_view);
 	return lxp_lifecycle_apply(eng, &(struct lxp_lifecycle_request){
 						.outcome = LXP_OUTCOME_RESUME,
 						.slot = sidx,

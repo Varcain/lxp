@@ -11,7 +11,7 @@
  *   - writable VFS       (src/fs/lxp_tmpfs.c): wfs_create/find/reserve + wnode_at.
  *   - pipe ring          (src/fs/lxp_pipe.c):  alloc + the no-reader/no-writer guards.
  *   - synthetic /proc    (src/proc/lxp_procfs.c): proc_is / p_dec / proc_gen.
- *   - pointer validators (src/lxp_syscall.c):  user_ok / user_strnlen / file_mode.
+ *   - pointer validators (src/lxp_syscall.c):  lxp_guest_access_ok / lxp_guest_strnlen / file_mode.
  * The syscall suite drives these through lxp_syscall(); here they are exercised directly.
  */
 #include "../framework/lxp_test.h"
@@ -235,7 +235,7 @@ static void test_procfs(void **s)
 			    "(uClibc)\n");
 }
 
-/* ---- pointer validators: user_ok / user_strnlen / file_mode ------------------- */
+/* ---- pointer validators: lxp_guest_access_ok / lxp_guest_strnlen / file_mode ------------------- */
 static void test_user_helpers(void **s)
 {
 	(void)s;
@@ -244,13 +244,13 @@ static void test_user_helpers(void **s)
 	setup_proc(&p, &arena);
 
 	int stackvar = 0;
-	assert_int_equal(user_ok(&p, NULL, 4, 0), 0);	     /* NULL rejected (region_lo=1) */
-	assert_int_equal(user_ok(&p, &stackvar, 4, 0), 1);   /* in the all-permitting range */
-	assert_int_equal(user_ok(&p, &stackvar, 4, 1), 1);   /* writable too */
+	assert_int_equal(lxp_guest_access_ok(&p, NULL, 4, 0), 0);	     /* NULL rejected (region_lo=1) */
+	assert_int_equal(lxp_guest_access_ok(&p, &stackvar, 4, 0), 1);   /* in the all-permitting range */
+	assert_int_equal(lxp_guest_access_ok(&p, &stackvar, 4, 1), 1);   /* writable too */
 
-	assert_int_equal((int)user_strnlen(&p, "abc", 256), 3);
-	assert_int_equal((int)user_strnlen(&p, "", 256), 0);
-	assert_true(user_strnlen(&p, "abcdef", 3) < 0); /* no NUL within max → -EFAULT */
+	assert_int_equal((int)lxp_guest_strnlen(&p, "abc", 256), 3);
+	assert_int_equal((int)lxp_guest_strnlen(&p, "", 256), 0);
+	assert_true(lxp_guest_strnlen(&p, "abcdef", 3) < 0); /* no NUL within max → -EFAULT */
 
 	const lxp_file_t reg = {"/f", NULL, 0, 0}; /* mode 0 → a regular file */
 	const lxp_file_t dir = {"/d", NULL, 0, LXP_S_IFDIR | 0755u};

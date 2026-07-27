@@ -750,6 +750,7 @@ typedef struct lxp_wait {
  * objects.
  */
 typedef struct lxp_proc {
+	struct lxp_guest_view *guest_view; /**< Active privileged dispatch view; never inherited. */
 	lxp_mm_t *mm;			/**< Refcounted address space, arena and mappings. */
 	lxp_write_fn write_fn;		/**< fd 1/2 sink; NULL → @c -LXP_EBADF. */
 	lxp_read_fn read_fn;		/**< fd 0 source; NULL → EOF. */

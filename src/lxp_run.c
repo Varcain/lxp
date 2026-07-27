@@ -253,6 +253,7 @@ static uint32_t g_primary_pending[LXP_EVENT_WORDS];
 static uint32_t slot_generation(int sidx);
 static lxp_slot_ref_t slot_ref_at(int slot);
 static lxp_region_ref_t region_ref_at(int region);
+static void primary_slot_mark(int slot);
 static int region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_owner);
 static void proc_mm_put(lxp_proc_t *proc);
 static int region_release_if_owned(lxp_region_ref_t region, lxp_slot_ref_t owner);
@@ -372,6 +373,28 @@ static void lxp_coord_map(int ridx)
 {
 	if (g_eng && g_eng->coord_map && ridx >= 0)
 		g_eng->coord_map(ridx);
+}
+
+static void guest_view_failure(int slot, int rc)
+{
+	if (slot < 0 || slot >= LXP_NSLOT || !g_lxp_slots[slot].proc.alive)
+		return;
+	lxp_proc_t *proc = &g_lxp_slots[slot].proc;
+	proc->exit_status = 127;
+	proc->exit_reason = LXP_EXIT_REASON_STATE_CORRUPTION;
+	proc->exit_detail = (uint32_t)(-rc);
+	(void)lxp_intent_exit(proc, 0);
+	primary_slot_mark(slot);
+}
+
+static int coordinator_guest_view_begin(int slot, lxp_guest_view_t *view)
+{
+	lxp_slot_ref_t ref = slot_ref_at(slot);
+	if (!lxp_slot_ref_is_current(ref) || !g_lxp_slots[slot].proc.mm)
+		return -LXP_ESRCH;
+	lxp_coord_map(g_lxp_slots[slot].proc.mm->region.index);
+	return lxp_guest_view_begin(&g_lxp_slots[slot].proc, ref,
+				    &g_lxp_slots[slot].generation, LXP_GUEST_READ_WRITE, view);
 }
 int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actual_count)
 {
@@ -812,6 +835,8 @@ int lxp_validate_world(lxp_diag_error_t *error)
 		    p->intent.kind != LXP_INTENT_EXIT)
 			return diag_error(error, LXP_DIAG_MULTIPLE_INTENTS, slot, -1, intents,
 					  LXP_DIAG_INTENT_DEFERRED_SYSCALL);
+		if (p->guest_view)
+			return diag_error(error, LXP_DIAG_GUEST_VIEW_LEAKED, slot, -1, 1, 0);
 
 		if (!p->alive) {
 			if (g_lxp_slots[slot].runnable)
@@ -1080,11 +1105,12 @@ static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 	uint32_t val = (uint32_t)f->r[2];
 
 	if (op == 0 || op == 9) { /* FUTEX_WAIT / FUTEX_WAIT_BITSET */
-		if (!user_ok(proc, (const void *)uaddr, sizeof(uint32_t), 0)) {
+		uint32_t observed;
+		if (lxp_guest_get_u32(proc, uaddr, &observed) != 0) {
 			f->r[0] = (uint32_t)-LXP_EFAULT;
 			return;
 		}
-		if (*(const volatile uint32_t *)uaddr != val) {
+		if (observed != val) {
 			f->r[0] = (uint32_t)-LXP_EAGAIN; /* value already moved: do not sleep */
 			return;
 		}
@@ -1099,17 +1125,21 @@ static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 		uint64_t deadline = 0;
 		uintptr_t utimeout = (uintptr_t)f->r[3];
 		if (utimeout) {
-			if (!user_ok(proc, (const void *)utimeout, is_time64 ? 16u : 8u, 0)) {
-				f->r[0] = (uint32_t)-LXP_EFAULT;
-				return;
-			}
 			uint64_t sec, nsec;
 			if (is_time64) {
-				const int64_t *t = (const int64_t *)utimeout;
+				int64_t t[2];
+				if (lxp_copy_from_guest(proc, t, utimeout, sizeof(t)) != 0) {
+					f->r[0] = (uint32_t)-LXP_EFAULT;
+					return;
+				}
 				sec = (uint64_t)t[0];
 				nsec = (uint64_t)t[1];
 			} else {
-				const int32_t *t = (const int32_t *)utimeout;
+				int32_t t[2];
+				if (lxp_copy_from_guest(proc, t, utimeout, sizeof(t)) != 0) {
+					f->r[0] = (uint32_t)-LXP_EFAULT;
+					return;
+				}
 				sec = (uint64_t)(uint32_t)t[0];
 				nsec = (uint64_t)(uint32_t)t[1];
 			}
@@ -1419,7 +1449,14 @@ int lxp_dispatch_slot(lxp_slot_ref_t ref, struct lxp_frame *frame)
 {
 	if (!frame || !lxp_slot_ref_is_runnable(ref))
 		return -LXP_ESRCH;
+	lxp_guest_view_t view;
+	int rc = lxp_guest_view_begin(&g_lxp_slots[ref.index].proc, ref,
+				      &g_lxp_slots[ref.index].generation,
+				      LXP_GUEST_READ_WRITE, &view);
+	if (rc != LXP_OK)
+		return rc;
 	lxp_dispatch(frame, &g_lxp_slots[ref.index].proc);
+	lxp_guest_view_end(&view);
 	return LXP_OK;
 }
 
@@ -1638,7 +1675,7 @@ static int image_txn_publish(struct image_txn *tx, const lxp_os_ops_t *eng)
 	g_sig_save[sidx].depth = 0;
 	g_lxp_dbg[sidx] = tx->debug;
 	/* P3: a fresh image in this slot inherits no device mmap. Clear the dev_map ranges
-	 * (they gate user_ok) and tear down any framebuffer region a prior occupant of this
+	 * (they gate lxp_guest_access_ok) and tear down any framebuffer region a prior occupant of this
 	 * slot installed (map_device with size 0), so an exec/relaunch never leaks it. */
 	g_lxp_slots[sidx].proc.mm->dev_map_lo[0] = g_lxp_slots[sidx].proc.mm->dev_map_hi[0] = 0;
 	g_lxp_slots[sidx].proc.mm->dev_map_lo[1] = g_lxp_slots[sidx].proc.mm->dev_map_hi[1] = 0;
@@ -2011,6 +2048,17 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t 
 		primary_slot_mark(slot);
 		return;
 	}
+	uintptr_t entry, restorer;
+	uint32_t got;
+	if (resolve_handler(proc, sig, &entry, &got, &restorer) != 0) {
+		proc->exit_status = 128 + LXP_SIGSEGV;
+		proc->exit_reason = LXP_EXIT_REASON_MEMORY_FAULT;
+		proc->exit_signal = LXP_SIGSEGV;
+		proc->exit_address = h;
+		(void)lxp_intent_exit(proc, 0);
+		primary_slot_mark(slot);
+		return;
+	}
 	struct sig_save_s *sv = sig_save_push(proc, sig);
 	if (!sv) {
 		/* Bounded signal state is exhausted. Never overwrite an older return
@@ -2040,9 +2088,6 @@ static void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t 
 	/* Reuse the slot ctx as the handler-entry frame; sp + r4-r11 stay = the thread's, except r9
 	 * (the handler's own GOT for FDPIC — resolve_handler derefs the {entry,GOT} funcdescs; the
 	 * restart handler lives in libpthread, a different module than the interrupted libc). */
-	uintptr_t entry, restorer;
-	uint32_t got;
-	resolve_handler(proc, sig, &entry, &got, &restorer);
 	if (proc->is_fdpic)
 		g_lxp_slots[slot].resume.r4_11[5] = got; /* r9 = handler's GOT */
 	g_lxp_slots[slot].resume.lr = restorer | 1u; /* return -> sa_restorer entry -> sigreturn */
@@ -2063,7 +2108,7 @@ static void deferred_track_tty(lxp_proc_t *proc, long nr, long a0, long a1, long
 	    (cmd != LXP_TCSETS && cmd != LXP_TCSETSW && cmd != LXP_TCSETSF))
 		return;
 	const void *ut = (const void *)(uintptr_t)(uint32_t)a2;
-	if (user_ok(proc, ut, sizeof(lxp_termios), 0)) {
+	if (lxp_guest_access_ok(proc, ut, sizeof(lxp_termios), 0)) {
 		lxp_termios t;
 		memcpy(&t, ut, sizeof(t));
 		g_tty_isig = (t.c_lflag & LXP_ISIG) ? 1 : 0;
@@ -2096,6 +2141,13 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 	}
 	if (coordinator_park_slot(eng, slot) != LXP_OK) {
 		deferred_state_store(slot, DEFER_IDLE);
+		return;
+	}
+	lxp_guest_view_t view;
+	int view_rc = coordinator_guest_view_begin(slot, &view);
+	if (view_rc != LXP_OK) {
+		deferred_state_store(slot, DEFER_IDLE);
+		guest_view_failure(slot, view_rc);
 		return;
 	}
 #if LXP_ENABLE_LATENCY
@@ -2136,6 +2188,7 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 	 * the follow-on state before returning to the coordinator wait loop. */
 	if (proc->wait.kind != LXP_WAIT_NONE || proc->intent.kind != LXP_INTENT_NONE) {
 		primary_slot_mark(slot);
+		lxp_guest_view_end(&view);
 		return;
 	}
 
@@ -2143,14 +2196,17 @@ static void execute_deferred(const lxp_os_ops_t *eng, int slot)
 	if (psig) {
 		proc->pending_sigs &= ~lxp_sig_bit(psig);
 		deliver_signal_parked(eng, slot, proc, psig, r);
+		lxp_guest_view_end(&view);
 		return;
 	}
 	if (g_pending_sig && !lxp_sig_blocked(proc, g_pending_sig)) {
 		int sig = g_pending_sig;
 		g_pending_sig = 0;
 		deliver_signal_parked(eng, slot, proc, sig, r);
+		lxp_guest_view_end(&view);
 		return;
 	}
+	lxp_guest_view_end(&view);
 	coordinator_resume_slot(eng, slot, proc->mm->region.index, &g_lxp_slots[slot].resume, r);
 }
 

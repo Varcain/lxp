@@ -27,7 +27,7 @@
 #include <string.h>
 
 #include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read */
-#include "lxp/lxp_dev.h" /* user_ok() (confused-deputy guard for ioctl arg pointers) */
+#include "lxp/lxp_dev.h" /* lxp_guest_access_ok() (confused-deputy guard for ioctl arg pointers) */
 
 /* One pty pair = 2 concurrent SSH logins' worth on this tier (each login holds a
  * master + a slave). Rings are small — a terminal is interactive, not bulk; the s2m
@@ -292,50 +292,37 @@ long lxp_pty_ioctl(lxp_proc_t *p, int idx, int is_master, unsigned long cmd, uns
 	if (idx < 0 || idx >= LXP_NPTY || !g_ptys[idx].used)
 		return -LXP_EBADF;
 	lxp_pty_t *pt = &g_ptys[idx];
-	void *ua = (void *)(uintptr_t)arg;
+	uintptr_t ua = (uintptr_t)arg;
 	switch (cmd) {
 	case LXP_TCGETS:
-		if (!user_ok(p, ua, sizeof(pt->tio), 1))
-			return -LXP_EFAULT;
-		memcpy(ua, &pt->tio, sizeof(pt->tio));
-		return 0;
+		return lxp_copy_to_guest(p, ua, &pt->tio, sizeof(pt->tio));
 	case LXP_TCSETS:
 	case LXP_TCSETSW:
 	case LXP_TCSETSF:
-		if (!user_ok(p, ua, sizeof(pt->tio), 0))
-			return -LXP_EFAULT;
-		memcpy(&pt->tio, ua, sizeof(pt->tio));
-		return 0;
+		return lxp_copy_from_guest(p, &pt->tio, ua, sizeof(pt->tio));
 	case LXP_TIOCGPTN:
-		if (!user_ok(p, ua, sizeof(uint32_t), 1))
+		return lxp_guest_put_u32(p, ua, (uint32_t)idx);
+	case LXP_TIOCSPTLCK: {
+		uint32_t locked;
+		if (lxp_guest_get_u32(p, ua, &locked) != 0)
 			return -LXP_EFAULT;
-		*(uint32_t *)ua = (uint32_t)idx;
+		pt->locked = (int)locked;
 		return 0;
-	case LXP_TIOCSPTLCK:
-		if (!user_ok(p, ua, sizeof(int), 0))
-			return -LXP_EFAULT;
-		pt->locked = *(int *)ua;
-		return 0;
+	}
 	case LXP_TIOCGWINSZ:
-		if (!user_ok(p, ua, sizeof(pt->ws), 1))
-			return -LXP_EFAULT;
-		memcpy(ua, &pt->ws, sizeof(pt->ws));
-		return 0;
+		return lxp_copy_to_guest(p, ua, &pt->ws, sizeof(pt->ws));
 	case LXP_TIOCSWINSZ:
-		if (!user_ok(p, ua, sizeof(pt->ws), 0))
+		return lxp_copy_from_guest(p, &pt->ws, ua, sizeof(pt->ws));
+	case LXP_TIOCSPGRP: {
+		uint32_t pgrp;
+		if (lxp_guest_get_u32(p, ua, &pgrp) != 0)
 			return -LXP_EFAULT;
-		memcpy(&pt->ws, ua, sizeof(pt->ws));
+		pt->fg_pgrp = (int)pgrp;
 		return 0;
-	case LXP_TIOCSPGRP:
-		if (!user_ok(p, ua, sizeof(int), 0))
-			return -LXP_EFAULT;
-		pt->fg_pgrp = *(int *)ua;
-		return 0;
+	}
 	case LXP_TIOCGPGRP:
-		if (!user_ok(p, ua, sizeof(int), 1))
-			return -LXP_EFAULT;
-		*(int *)ua = pt->fg_pgrp ? pt->fg_pgrp : p->pid;
-		return 0;
+		return lxp_guest_put_u32(p, ua,
+					 (uint32_t)(pt->fg_pgrp ? pt->fg_pgrp : p->pid));
 	case LXP_TIOCSCTTY:
 	case LXP_TIOCNOTTY:
 		return 0; /* the slave becomes/loses the ctty — accepted (single-session tier) */

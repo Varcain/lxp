@@ -38,7 +38,7 @@ list(FILTER FUZZ_MODULE_SRC EXCLUDE REGEX "/src/run/.*\\.c$")
 #                            writing a struct timeval) is not a target bug.
 #   * nonnull-attribute    — memcpy(p, q, 0) with a 0-length user buffer is a no-op on every
 #                            real platform; only the C standard's nonnull attribute objects.
-# ASan + the rest of UBSan still catch the real OOB / overflow / null-deref / user_ok-bypass.
+# ASan + the rest of UBSan still catch the real OOB / overflow / null-deref / lxp_guest_access_ok-bypass.
 set(FUZZ_SAN_COMMON -fno-sanitize-recover=all -fno-omit-frame-pointer
     -fno-sanitize=alignment -fno-sanitize=nonnull-attribute)
 if(LXP_FUZZ_ENGINE STREQUAL "libfuzzer")

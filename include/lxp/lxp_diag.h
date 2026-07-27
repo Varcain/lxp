@@ -141,6 +141,7 @@ typedef enum lxp_diag_issue {
 	LXP_DIAG_MULTIPLE_WAITS,
 	LXP_DIAG_REGION_LEASE_STALE,
 	LXP_DIAG_LIVE_TASK_STALE_REGION_REF,
+	LXP_DIAG_GUEST_VIEW_LEAKED,
 } lxp_diag_issue_t;
 
 /** First offending location and values from a validation pass. */

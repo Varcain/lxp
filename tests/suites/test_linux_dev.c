@@ -23,7 +23,7 @@
 
 /* access_ok — non-static in ove_linux_syscall.c so a device ioctl handler can
  * validate its user pointer (the confused-deputy guard). */
-int user_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
+int lxp_guest_access_ok(const lxp_proc_t *p, const void *ptr, size_t len, int write);
 
 /* The evdev class registers /dev/input/event0 (LXP_ENABLE_DEV_INPUT); not in the public
  * header (it is called from lxp_dev_autoreg_all on target). Declared here to test its ioctls. */
@@ -111,13 +111,13 @@ static long mock_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 	(void)d;
 	(void)o;
 	if (cmd == MOCK_IOC_GET) {
-		if (!user_ok(p, (void *)arg, sizeof(uint32_t), 1)) /* kernel writes *arg */
+		if (!lxp_guest_access_ok(p, (void *)arg, sizeof(uint32_t), 1)) /* kernel writes *arg */
 			return -LXP_EFAULT;
 		*(uint32_t *)arg = g_mock_val;
 		return 0;
 	}
 	if (cmd == MOCK_IOC_SET) {
-		if (!user_ok(p, (const void *)arg, sizeof(uint32_t), 0)) /* kernel reads *arg */
+		if (!lxp_guest_access_ok(p, (const void *)arg, sizeof(uint32_t), 0)) /* kernel reads *arg */
 			return -LXP_EFAULT;
 		g_mock_val = *(const uint32_t *)arg;
 		return 0;
@@ -177,7 +177,7 @@ static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), OVE_OK);
 	assert_int_equal(lxp_proc_init(p, arena, 4096), OVE_OK);
 	/* All-permitting access_ok range except NULL (region_lo = 1), matching the
-	 * syscall-suite harness; a NULL ioctl arg still fails user_ok → -EFAULT. */
+	 * syscall-suite harness; a NULL ioctl arg still fails lxp_guest_access_ok → -EFAULT. */
 	p->mm->region_lo = 1;
 	p->mm->region_hi = UINTPTR_MAX;
 	p->mm->pool_lo = p->mm->pool_hi = 0;
@@ -266,7 +266,7 @@ static void test_dev_ioctl(void **state)
 	/* An unknown command → -ENOTTY (not the console gate's blanket reject). */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, 0x9999, 0, 0, 0, 0), -LXP_ENOTTY);
 
-	/* A bad user pointer (NULL) is rejected by the handler's user_ok → -EFAULT. */
+	/* A bad user pointer (NULL) is rejected by the handler's lxp_guest_access_ok → -EFAULT. */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, MOCK_IOC_GET, 0, 0, 0, 0), -LXP_EFAULT);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
@@ -775,7 +775,7 @@ static void test_dev_dma2d_rejects_bad_descriptor(void **state)
 		d.output_cf = LXP_DMA2D_CF_RGB565; \
 	} while (0)
 
-	/* NULL plane address → EFAULT (user_ok IS applied to the plane, not just the desc). */
+	/* NULL plane address → EFAULT (lxp_guest_access_ok IS applied to the plane, not just the desc). */
 	BASE();
 	d.output_address = 0;
 	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_DMA2D_SUBMIT, a, 0, 0, 0),
