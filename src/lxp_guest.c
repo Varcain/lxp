@@ -64,15 +64,14 @@ int lxp_guest_view_begin(lxp_proc_t *proc, lxp_slot_ref_t slot, const uint32_t *
 	lxp_region_ref_t region = proc->mm->region;
 	if (region.index < 0 || region.generation == 0 || slot.index < 0 || slot.generation == 0)
 		return -LXP_EFAULT;
-	*view = (lxp_guest_view_t){
-		.proc = proc,
-		.mm = proc->mm,
-		.slot = slot,
-		.region = region,
-		.slot_generation = slot_generation,
-		.access = (uint8_t)access,
-		.active = 1,
-	};
+	view->proc = proc;
+	view->mm = proc->mm;
+	view->slot = slot;
+	view->region = region;
+	view->slot_generation = slot_generation;
+	view->access = (uint8_t)access;
+	view->_pad = 0;
+	view->active = 1;
 	proc->guest_view = view;
 	return LXP_OK;
 }
@@ -90,11 +89,17 @@ void lxp_guest_view_end(lxp_guest_view_t *view)
 {
 	if (!view || !view->active)
 		return;
+	/*
+	 * active is the capability revocation point. The remaining fields are
+	 * inert afterwards, so clearing the whole dispatch-local record only adds
+	 * a memset to every SVC and coordinator dispatch.
+	 */
+	view->active = 0;
 	if (view->proc && view->proc->guest_view == view)
 		view->proc->guest_view = NULL;
-	memset(view, 0, sizeof(*view));
-	view->slot = lxp_slot_ref_none();
-	view->region = lxp_region_ref_none();
+	view->proc = NULL;
+	view->mm = NULL;
+	view->slot_generation = NULL;
 }
 
 int lxp_guest_access_ok(const lxp_proc_t *proc, const void *pointer, size_t length, int write)
@@ -147,9 +152,8 @@ long lxp_guest_strnlen(const lxp_proc_t *proc, const char *string, size_t max)
 	uintptr_t src = (uintptr_t)string;
 	if (!proc || !proc->mm)
 		return -LXP_EFAULT;
-	if (proc->guest_view &&
-	    (!lxp_guest_view_is_current(proc->guest_view) ||
-	     (proc->guest_view->access & LXP_GUEST_READ) == 0))
+	if (proc->guest_view && (!lxp_guest_view_is_current(proc->guest_view) ||
+				 (proc->guest_view->access & LXP_GUEST_READ) == 0))
 		return -LXP_EFAULT;
 	uintptr_t hi = guest_range_hi(proc->mm, src, LXP_GUEST_READ);
 	if (!hi)
