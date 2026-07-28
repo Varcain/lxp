@@ -1406,11 +1406,6 @@ lxp_slot_ref_t slot_ref_at(int slot)
 		       : lxp_slot_ref_none();
 }
 
-struct lxp_resume_ctx *lxp_slot_resume(int slot)
-{
-	return slot >= 0 && slot < LXP_NSLOT ? &g_lxp_slots[slot].resume : NULL;
-}
-
 uint8_t lxp_slot_host_state(int slot)
 {
 	return slot >= 0 && slot < LXP_NSLOT ? g_lxp_slots[slot].host_state : SLOT_FAILED;
@@ -1448,6 +1443,23 @@ int lxp_slot_ref_is_current(lxp_slot_ref_t ref)
 {
 	return ref.index >= 0 && ref.index < LXP_NSLOT && ref.generation != 0 &&
 	       slot_generation(ref.index) == ref.generation && g_lxp_slots[ref.index].proc.alive;
+}
+
+const struct lxp_resume_ctx *lxp_slot_resume_view(lxp_slot_ref_t ref)
+{
+	return lxp_slot_ref_is_current(ref) ? &g_lxp_slots[ref.index].resume : NULL;
+}
+
+int lxp_slot_resume_clone_for_fork(lxp_slot_ref_t child, lxp_slot_ref_t parent,
+				   uintptr_t child_sp)
+{
+	if (child.index < 0 || child.index >= LXP_NSLOT || child.generation == 0 ||
+	    child.index == parent.index || slot_generation(child.index) != child.generation ||
+	    g_lxp_slots[child.index].proc.alive || !lxp_slot_ref_is_current(parent))
+		return -LXP_ESRCH;
+	g_lxp_slots[child.index].resume = g_lxp_slots[parent.index].resume;
+	g_lxp_slots[child.index].resume.sp = child_sp;
+	return LXP_OK;
 }
 
 int lxp_slot_ref_is_runnable(lxp_slot_ref_t ref)

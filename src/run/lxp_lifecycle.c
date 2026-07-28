@@ -190,6 +190,8 @@ int coordinator_park_slot(const lxp_os_ops_t *eng, int sidx)
 int coordinator_resume_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
 			    const struct lxp_resume_ctx *ctx, long r0val)
 {
+	if (!ctx)
+		return -LXP_ESRCH;
 	/*
 	 * The dispatch capability must be gone before the RTOS makes this guest
 	 * runnable. A higher-priority resumed task may issue its next SVC before

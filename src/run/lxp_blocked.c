@@ -63,7 +63,7 @@ static int lxp_blocked_handle_stopped(const lxp_os_ops_t *eng, int slot, lxp_pro
 		proc->stop_kind = LXP_STOP_NONE;
 		if (boundary)
 			(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-						      lxp_slot_resume(slot), proc->stop_r0);
+						      lxp_slot_resume_view(slot_ref_at(slot)), proc->stop_r0);
 		scan->progress = 1;
 		return 1;
 	}
@@ -123,7 +123,7 @@ static void lxp_blocked_retry_timer(const lxp_os_ops_t *eng, int slot, lxp_proc_
 	if (now >= deadline) {
 		(void)lxp_wait_timeout(proc, LXP_WAIT_TIMER);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      lxp_slot_resume(slot), 0);
+					      lxp_slot_resume_view(slot_ref_at(slot)), 0);
 		scan->progress = 1;
 	} else {
 		lxp_blocked_note_deadline(scan, deadline);
@@ -140,12 +140,12 @@ static void lxp_blocked_retry_futex(const lxp_os_ops_t *eng, int slot, lxp_proc_
 	if (proc->wait.data.futex.woken) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_FUTEX);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      lxp_slot_resume(slot), 0);
+					      lxp_slot_resume_view(slot_ref_at(slot)), 0);
 		scan->progress = 1;
 	} else if (deadline && now >= deadline) {
 		(void)lxp_wait_timeout(proc, LXP_WAIT_FUTEX);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      lxp_slot_resume(slot), -LXP_ETIMEDOUT);
+					      lxp_slot_resume_view(slot_ref_at(slot)), -LXP_ETIMEDOUT);
 		scan->progress = 1;
 	} else {
 		lxp_blocked_note_deadline(scan, deadline);
@@ -169,7 +169,7 @@ static void lxp_blocked_retry_pipe(const lxp_os_ops_t *eng, int slot, lxp_proc_t
 		primary_slot_mark(slot);
 	} else {
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      lxp_slot_resume(slot), rc);
+					      lxp_slot_resume_view(slot_ref_at(slot)), rc);
 	}
 	scan->progress = 1;
 }
@@ -199,7 +199,7 @@ static void lxp_blocked_retry_device(const lxp_os_ops_t *eng, int slot, lxp_proc
 		}
 		(void)lxp_wait_complete(proc, LXP_WAIT_DEVICE);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      lxp_slot_resume(slot), rc);
+					      lxp_slot_resume_view(slot_ref_at(slot)), rc);
 		scan->progress = 1;
 		return;
 	}
@@ -207,7 +207,7 @@ static void lxp_blocked_retry_device(const lxp_os_ops_t *eng, int slot, lxp_proc
 	if (rc != -LXP_EAGAIN) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_DEVICE);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      lxp_slot_resume(slot), rc);
+					      lxp_slot_resume_view(slot_ref_at(slot)), rc);
 		scan->progress = 1;
 	}
 }
@@ -223,7 +223,7 @@ static void lxp_blocked_retry_socket(const lxp_os_ops_t *eng, int slot, lxp_proc
 	if (rc != -LXP_EAGAIN) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_SOCKET);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      lxp_slot_resume(slot), rc);
+					      lxp_slot_resume_view(slot_ref_at(slot)), rc);
 		scan->progress = 1;
 	}
 }
@@ -245,7 +245,7 @@ void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot, lxp_pro
 		primary_slot_mark(slot);
 	} else {
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      lxp_slot_resume(slot), rc);
+					      lxp_slot_resume_view(slot_ref_at(slot)), rc);
 	}
 	scan->progress = 1;
 }
@@ -272,7 +272,7 @@ static void lxp_blocked_retry_pty(const lxp_os_ops_t *eng, int slot, lxp_proc_t 
 	if (rc != -LXP_EAGAIN) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_PTY);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      lxp_slot_resume(slot), rc);
+					      lxp_slot_resume_view(slot_ref_at(slot)), rc);
 		scan->progress = 1;
 	}
 }
@@ -305,8 +305,8 @@ static int lxp_blocked_retry_console(const lxp_os_ops_t *eng, int slot, lxp_proc
 		rc = -LXP_EINTR;
 	}
 	(void)lxp_wait_complete(proc, LXP_WAIT_CONSOLE);
-	(void)coordinator_resume_slot(eng, slot, proc->mm->region.index, lxp_slot_resume(slot),
-				      rc);
+	(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
+				      lxp_slot_resume_view(slot_ref_at(slot)), rc);
 	scan->progress = 1;
 	return 0;
 }

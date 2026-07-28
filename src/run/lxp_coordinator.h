@@ -94,9 +94,11 @@ struct lxp_blocked_scan {
 	uint8_t any_busy;
 };
 
-/* Slot state stays private to lxp_run.c. These are the only mutable operations
- * available to compiled coordinator policy modules. */
-struct lxp_resume_ctx *lxp_slot_resume(int slot);
+/* Slot state stays private to lxp_run.c. Resume contexts are borrowed through
+ * generation-qualified const views; fork cloning is the only policy mutation. */
+const struct lxp_resume_ctx *lxp_slot_resume_view(lxp_slot_ref_t slot);
+int lxp_slot_resume_clone_for_fork(lxp_slot_ref_t child, lxp_slot_ref_t parent,
+				   uintptr_t child_sp);
 lxp_proc_t *lxp_slot_proc(int slot);
 uint8_t lxp_slot_host_state(int slot);
 void lxp_slot_set_host_state(int slot, uint8_t state);

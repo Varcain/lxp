@@ -1178,6 +1178,51 @@ static void test_slot_references_reject_recycled_incarnations_and_skip_zero(void
 	assert_int_equal(frame.r[0], g_lxp_slots[0].proc.pid);
 }
 
+static void test_resume_context_view_rejects_recycled_slot(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	memset(&g_lxp_slots[0].resume, 0x5a, sizeof(g_lxp_slots[0].resume));
+	lxp_slot_ref_t stale = slot_ref_at(0);
+
+	assert_ptr_equal(lxp_slot_resume_view(stale), &g_lxp_slots[0].resume);
+	deferred_slot_reassign(0);
+	assert_null(lxp_slot_resume_view(stale));
+	assert_ptr_equal(lxp_slot_resume_view(slot_ref_at(0)), &g_lxp_slots[0].resume);
+}
+
+static void test_fork_resume_clone_owns_context_mutation(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	memset(&g_lxp_slots[0].resume, 0x5a, sizeof(g_lxp_slots[0].resume));
+	g_lxp_slots[0].resume.sp = 0x1000u;
+	lxp_slot_ref_t parent = slot_ref_at(0);
+	deferred_slot_reassign(1);
+	lxp_slot_ref_t child = slot_ref_at(1);
+
+	struct lxp_resume_ctx expected = g_lxp_slots[0].resume;
+	expected.sp = 0x2000u;
+	assert_int_equal(lxp_slot_resume_clone_for_fork(child, parent, expected.sp), LXP_OK);
+	assert_memory_equal(&g_lxp_slots[1].resume, &expected, sizeof(expected));
+
+	deferred_slot_reassign(1);
+	memset(&g_lxp_slots[1].resume, 0xa5, sizeof(g_lxp_slots[1].resume));
+	struct lxp_resume_ctx unchanged = g_lxp_slots[1].resume;
+	assert_int_equal(lxp_slot_resume_clone_for_fork(child, parent, 0x3000u), -LXP_ESRCH);
+	assert_memory_equal(&g_lxp_slots[1].resume, &unchanged, sizeof(unchanged));
+
+	child = slot_ref_at(1);
+	deferred_slot_reassign(0);
+	assert_int_equal(lxp_slot_resume_clone_for_fork(child, parent, 0x3000u), -LXP_ESRCH);
+	assert_memory_equal(&g_lxp_slots[1].resume, &unchanged, sizeof(unchanged));
+
+	parent = slot_ref_at(0);
+	g_lxp_slots[1].proc.alive = 1;
+	assert_int_equal(lxp_slot_resume_clone_for_fork(child, parent, 0x3000u), -LXP_ESRCH);
+	assert_memory_equal(&g_lxp_slots[1].resume, &unchanged, sizeof(unchanged));
+}
+
 static void test_fault_publication_rejects_stale_slot_reference(void **state)
 {
 	(void)state;
@@ -3477,6 +3522,10 @@ int main(void)
 		cmocka_unit_test_setup(
 			test_slot_references_reject_recycled_incarnations_and_skip_zero,
 			reset_state),
+		cmocka_unit_test_setup(test_resume_context_view_rejects_recycled_slot,
+				       reset_state),
+		cmocka_unit_test_setup(test_fork_resume_clone_owns_context_mutation,
+				       reset_state),
 		cmocka_unit_test_setup(test_fault_publication_rejects_stale_slot_reference,
 				       reset_state),
 		cmocka_unit_test_setup(

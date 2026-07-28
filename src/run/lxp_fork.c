@@ -146,7 +146,7 @@ static void fork_parent_resume_error(const lxp_os_ops_t *eng, int parent_slot, l
 	lxp_proc_t *parent = lxp_slot_proc(parent_slot);
 	(void)coordinator_park_slot(eng, parent_slot);
 	(void)coordinator_resume_slot(eng, parent_slot, parent->mm->region.index,
-				      lxp_slot_resume(parent_slot), error);
+				      lxp_slot_resume_view(slot_ref_at(parent_slot)), error);
 }
 
 void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
@@ -190,8 +190,9 @@ void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
 		 * distinct waitable process. */
 		if (!(clone_flags & LXP_CLONE_THREAD))
 			rc = fork_txn_count_child(&tx);
-		*lxp_slot_resume(child_slot) = *lxp_slot_resume(parent_slot);
-		lxp_slot_resume(child_slot)->sp = child_stack;
+		if (rc == LXP_OK)
+			rc = lxp_slot_resume_clone_for_fork(tx.child_ref, tx.parent_ref,
+							    child_stack);
 		if (rc == LXP_OK)
 			rc = fork_txn_publish(&tx);
 		if (rc == LXP_OK)
@@ -204,16 +205,19 @@ void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
 		(*next_pid)++;
 		(void)coordinator_park_slot(eng, parent_slot);
 		(void)coordinator_resume_slot(eng, parent_slot, parent->mm->region.index,
-					      lxp_slot_resume(parent_slot), child->pid);
+					      lxp_slot_resume_view(tx.parent_ref), child->pid);
 		(void)coordinator_resume_slot(eng, child_slot, child->mm->region.index,
-					      lxp_slot_resume(child_slot), 0);
+					      lxp_slot_resume_view(tx.child_ref), 0);
 		return;
 	}
 
 	rc = fork_txn_count_child(&tx);
 	child->vfork_parent = slot_ref_at(parent_slot);
+	const struct lxp_resume_ctx *parent_resume = lxp_slot_resume_view(tx.parent_ref);
+	if (rc == LXP_OK && !parent_resume)
+		rc = -LXP_ESRCH;
 	if (rc == LXP_OK)
-		rc = fork_txn_snapshot(&tx, eng, lxp_slot_resume(parent_slot)->sp);
+		rc = fork_txn_snapshot(&tx, eng, parent_resume->sp);
 	if (rc != LXP_OK) {
 		/* Refuse a deep vfork if no spare region can isolate the child's
 		 * pre-exec writes from its suspended parent. */
@@ -232,5 +236,5 @@ void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
 	(*next_pid)++;
 	(void)coordinator_park_slot(eng, parent_slot);
 	(void)coordinator_resume_slot(eng, child_slot, child->mm->region.index,
-				      lxp_slot_resume(parent_slot), 0);
+				      lxp_slot_resume_view(tx.parent_ref), 0);
 }

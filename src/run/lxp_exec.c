@@ -111,9 +111,11 @@ LXP_EXEC_TXN_LINKAGE int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t
 	 * longer return to the old program; they contain this guest instead. */
 	tx->phase = EXEC_TXN_COMMITTED;
 	if (tx->parent_ref.index >= 0) {
-		if (!lxp_slot_ref_is_current(tx->parent_ref) || tx->old->snapshot.index < 0 ||
+		const struct lxp_resume_ctx *parent_resume =
+			lxp_slot_resume_view(tx->parent_ref);
+		if (!parent_resume || tx->old->snapshot.index < 0 ||
 		    vfork_restore(eng, lxp_slot_proc(tx->parent_ref.index), tx->old->snapshot,
-				  tx->old_ref, lxp_slot_resume(tx->parent_ref.index)->sp) != 0) {
+				  tx->old_ref, parent_resume->sp) != 0) {
 			vfork_contain_stale(tx->old_ref, tx->old);
 			tx->terminal = 1;
 			return -LXP_EIO;
@@ -195,7 +197,7 @@ static void exec_txn_resume_parent(struct exec_txn *tx, const lxp_os_ops_t *eng)
 	int parent_slot = tx->parent_ref.index;
 	(void)coordinator_resume_slot(eng, parent_slot,
 				      lxp_slot_proc(parent_slot)->mm->region.index,
-				      lxp_slot_resume(parent_slot), tx->pid);
+				      lxp_slot_resume_view(tx->parent_ref), tx->pid);
 	tx->parent_resumed = 1;
 }
 
@@ -234,7 +236,7 @@ LXP_EXEC_TXN_LINKAGE void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t
 		tx->region_acquired = 0;
 		tx->phase = EXEC_TXN_ABORTED;
 		(void)coordinator_resume_slot(eng, tx->slot, tx->old->mm->region.index,
-					      lxp_slot_resume(tx->slot), error);
+					      lxp_slot_resume_view(tx->old_ref), error);
 		return;
 	}
 
