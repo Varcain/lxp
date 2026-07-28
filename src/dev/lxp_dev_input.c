@@ -21,6 +21,7 @@
 #include "lxp/lxp_disp_ops.h"
 #include "lxp/lxp_proc.h"
 #include "lxp_uapi.h"
+#include "lxp_provider.h"
 
 #include <string.h>
 

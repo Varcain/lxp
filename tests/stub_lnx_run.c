@@ -126,8 +126,8 @@ uint8_t lxp_console_input_xlate(uint8_t ch)
 
 #if LXP_ENABLE_DEV_FB
 /* A mock display port so the /dev/fb0 driver (src/dev/lxp_dev_fb.c) links + runs on the
- * host. g_lxp_disp_ops is normally published by lxp_run() (excluded here); back it with a
- * small static RGB565 framebuffer so the fbdev ioctls/mmap/pan paths are exercisable. */
+ * host. The test entry point publishes it through the same private provider seam
+ * lxp_run() uses. */
 #include "lxp/lxp_disp_ops.h"
 
 static uint8_t g_mock_fb[64 * 64 * 2];
@@ -182,5 +182,8 @@ static const lxp_display_ops_t g_mock_disp = {
 	.fb_present = mock_fb_present,
 	.dma2d_submit = mock_dma2d_submit,
 };
-const lxp_display_ops_t *g_lxp_disp_ops = &g_mock_disp;
+const lxp_display_ops_t *lxp_test_display_ops(void)
+{
+	return &g_mock_disp;
+}
 #endif

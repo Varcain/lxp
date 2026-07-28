@@ -11,10 +11,21 @@
 #include <stdio.h>
 
 #include "framework/lxp_test.h"
+#include "lxp/lxp_port_posix.h"
+#include "lxp_provider.h"
+
+#if LXP_ENABLE_DEV_FB
+const lxp_display_ops_t *lxp_test_display_ops(void);
+#endif
 
 int main(void)
 {
 	int failures = 0;
+	const lxp_display_ops_t *display_ops = NULL;
+#if LXP_ENABLE_DEV_FB
+	display_ops = lxp_test_display_ops();
+#endif
+	lxp_providers_publish(lxp_posix_net_ops(), display_ops);
 #define LXP_SUITE(name, label)                                                                     \
 	printf("=== " label " ===\n");                                                             \
 	lxp_fd_runtime_reset();                                                                     \

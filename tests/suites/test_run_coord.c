@@ -22,10 +22,8 @@
 
 /* Pull in the state-owning coordinator core and its OS-service symbols. */
 #include "lxp_run.c"
+#include "lxp/lxp_port_posix.h"
 
-/* A real engine publishes this pointer before lxp_run(). The coordinator tests
- * exercise only the mmap seam and do not need a framebuffer backend. */
-const lxp_display_ops_t *g_lxp_disp_ops;
 static const lxp_net_ops_t *g_test_net_ops;
 
 /* ---- mock engine ------------------------------------------------------------ */
@@ -333,7 +331,7 @@ static int reset_state(void **state)
 	g_pending_sig = 0;
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
-	g_lxp_net_ops = g_test_net_ops;
+	lxp_providers_publish(g_test_net_ops, NULL);
 	return 0;
 }
 
@@ -3366,6 +3364,6 @@ int main(void)
 		cmocka_unit_test_setup(test_resume_failure_aborts_parked_slot, reset_state),
 		cmocka_unit_test_setup(test_abort_failure_retains_slot_until_retry, reset_state),
 	};
-	g_test_net_ops = g_lxp_net_ops;
+	g_test_net_ops = lxp_posix_net_ops();
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

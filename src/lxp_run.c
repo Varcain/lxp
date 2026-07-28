@@ -31,11 +31,11 @@
 #include "lxp/lxp_stats.h"
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h"      /* device-layer park/retry + autoreg + tick + kick */
-#include "lxp/lxp_disp_ops.h" /* g_lxp_disp_ops (published by lxp_run) + lxp_disp_set_geometry */
+#include "lxp/lxp_disp_ops.h" /* lxp_disp_set_geometry */
 #endif
 #if LXP_ENABLE_NET
 #include "lxp/lxp_net.h"     /* socket-layer park/retry + fork/exit fd lifecycle */
-#include "lxp/lxp_net_ops.h" /* g_lxp_net_ops (published by lxp_run) */
+#include "lxp/lxp_net_ops.h"
 #endif
 #if LXP_ENABLE_NETFS
 #include "lxp/lxp_netfs.h" /* remote-fs park/retry + init/pump + fork/exit lifecycle */
@@ -45,6 +45,7 @@
 #endif
 
 #include "lxp_internal.h"     /* lxp_encode_wstatus (shared with sys_wait4) */
+#include "lxp_provider.h"
 #include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
 #include "run/lxp_coordinator.h"
 
@@ -3038,16 +3039,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 		return LXP_RUN_ELAUNCH;
 
 	/* Assign even NULL providers so a later sequential run cannot inherit one. */
-#if LXP_ENABLE_NET
-	g_lxp_net_ops = net_ops;
-#else
-	(void)net_ops;
-#endif
-#if LXP_ENABLE_DEV
-	g_lxp_disp_ops = disp_ops;
-#else
-	(void)disp_ops;
-#endif
+	lxp_providers_publish(net_ops, disp_ops);
 #if LXP_ENABLE_DEV_INPUT
 	/* Publish this run's geometry including explicit zero-to-default semantics,
 	 * so sequential runs cannot inherit a predecessor's panel dimensions. */
@@ -3073,11 +3065,6 @@ out:
 	g_cfg = NULL;
 	g_lxp_rootfs_lo = NULL;
 	g_lxp_rootfs_hi = NULL;
-#if LXP_ENABLE_NET
-	g_lxp_net_ops = NULL;
-#endif
-#if LXP_ENABLE_DEV
-	g_lxp_disp_ops = NULL;
-#endif
+	lxp_providers_clear();
 	return rc;
 }

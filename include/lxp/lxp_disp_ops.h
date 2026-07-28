@@ -31,11 +31,6 @@ extern "C" {
  * controller (the input driver then relies on the synthetic testpad or an external
  * feeder). */
 
-/* The active display port. lxp_run() publishes its validated disp_ops argument
- * for the duration of a run and clears the binding before returning. Standalone
- * host tests may bind it directly when they do not use the run coordinator. */
-extern const lxp_display_ops_t *g_lxp_disp_ops;
-
 /* Set the display geometry used to clamp / report touch coordinates (replaces the
  * board_desc.h OVE_DISPLAY_* constants). Non-positive dimensions reset to the
  * 480x272 default independently. lxp_run() seeds it from lxp_run_config_t. */

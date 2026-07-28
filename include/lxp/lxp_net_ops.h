@@ -34,13 +34,7 @@ extern "C" {
 #endif
 
 /* struct lxp_net_ops (the handle-based network port), lxp_socket_t, lxp_sockaddr_t
- * and the address/socket value types all come from lxp_port.h. This header adds
- * only the module-internal binding below. */
-
-/* The active network port. lxp_run() publishes its validated net_ops argument
- * for the duration of a run and clears the binding before returning. Standalone
- * test ports may bind it directly when they do not use the run coordinator. */
-extern const struct lxp_net_ops *g_lxp_net_ops;
+ * and the address/socket value types all come from lxp_port.h. */
 
 #ifdef __cplusplus
 }

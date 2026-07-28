@@ -31,6 +31,7 @@
 #include "lxp_pool.h" /* shared refcounted open-pool primitives */
 #include "lxp/lxp_proc.h"
 #include "lxp/lxp_types.h"
+#include "lxp_provider.h"
 
 #include <string.h>
 

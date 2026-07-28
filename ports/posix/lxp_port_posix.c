@@ -5,13 +5,14 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * A reference POSIX host port: the module's network port (lxp_net_ops_t) implemented
- * over real BSD sockets, plus a synthetic netif for the SIOC* ioctls, published as
- * g_lxp_net_ops. This is what -DLXP_PORT_POSIX builds and what the host net/netfs
+ * over real BSD sockets, plus a synthetic netif for the SIOC* ioctls, exposed by
+ * lxp_posix_net_ops(). This is what -DLXP_PORT_POSIX builds and what the host net/netfs
  * unit tests link. It does NOT run an ARM guest — the process model is exercised on
  * target (ports/qemu-mps2). The clock + cache hooks live in the test stub.
  */
 #include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_port.h"
+#include "lxp/lxp_port_posix.h"
 #include "lxp/lxp_types.h"
 
 #include <arpa/inet.h>
@@ -348,4 +349,7 @@ static const lxp_net_ops_t g_posix_net_ops = {
 	.netif_set_up = nif_set_up,
 	.netif = &g_posix_netif,
 };
-const struct lxp_net_ops *g_lxp_net_ops = &g_posix_net_ops;
+const lxp_net_ops_t *lxp_posix_net_ops(void)
+{
+	return &g_posix_net_ops;
+}
