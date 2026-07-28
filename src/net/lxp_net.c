@@ -856,13 +856,4 @@ long lxp_sock_retry(lxp_proc_t *p)
 	}
 }
 
-/* ---- fork / exit fd lifecycle ---------------------------------------------- */
-
-void lxp_sock_proc_exit(lxp_proc_t *p)
-{
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (lxp_fd_kind(p, fd) == LXP_FD_SOCKET)
-			(void)lxp_fd_close(p, fd);
-}
-
 #endif /* LXP_ENABLE_NET */

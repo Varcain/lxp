@@ -197,9 +197,4 @@ int lxp_dispatch_slot(lxp_slot_ref_t ref, struct lxp_frame *frame);
 /** Publish a contained memory fault and its exit event for a current slot. */
 int lxp_slot_report_memory_fault(lxp_slot_ref_t ref, const lxp_guest_fault_t *fault);
 
-/* The shared run loop. The public lxp_run() (lxp_run.c) wraps this: it publishes
- * the net/display ports, runs ops->prepare(), drives this loop, then ops->teardown(). */
-int lxp_run_common(const lxp_os_ops_t *ops, const lxp_run_config_t *cfg,
-		       const char *path, int argc, const char *const argv[]);
-
 #endif /* LXP_SEAM_H */

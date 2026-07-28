@@ -21,11 +21,12 @@
  * driver. Engine-agnosticism is free — drivers bridge to the @c ove_* public
  * HALs (ove_fb, ove_i2c, ...), never to per-engine code.
  *
- * Blocking model: like the syscall layer, driver entry points run in the
- * SVC/exception context, so they must NOT block inline. A driver that would
- * block returns @c -LXP_EAGAIN; the core publishes an @c LXP_WAIT_DEVICE record
- * and the run-loop coordinator retries the op on its own thread
- * — the same park/retry pattern the pipe layer uses (see lxp_pipe_retry).
+ * Blocking model: driver entry points run on the privileged coordinator thread.
+ * They are serialized, but must remain bounded and non-blocking so one guest
+ * cannot monopolize the coordinator. A driver that would block returns
+ * @c -LXP_EAGAIN; the core publishes an @c LXP_WAIT_DEVICE record and retries
+ * the op after readiness notification — the same park/retry pattern the pipe
+ * layer uses (see lxp_pipe_retry).
  *
  * @note Requires @c LXP_ENABLE_DEV.
  * @{
@@ -48,9 +49,9 @@ struct lxp_dev_open;
 /**
  * @brief Per-class driver operations.
  *
- * All entry points run in the SVC/exception context (except @c tick, run on the
- * coordinator thread) and return a Linux-ABI value: @c >=0 on success or a
- * negated @c LXP_E* on failure. A blocking read/write/ioctl returns
+ * All entry points run on the privileged coordinator thread and return a
+ * Linux-ABI value: @c >=0 on success or a negated @c LXP_E* on failure.
+ * A blocking read/write/ioctl returns
  * @c -LXP_EAGAIN to have the core park + retry the caller. Any user pointer
  * a handler dereferences must first pass @c lxp_guest_access_ok (handlers run PRIVILEGED).
  */
@@ -196,8 +197,6 @@ long lxp_dev_retry(lxp_proc_t *p);
 void lxp_dev_tick(uint64_t now_us);
 /** Register the Kconfig-enabled class drivers (run once on the coordinator thread). */
 void lxp_dev_autoreg_all(void);
-/** exit: release every FD_DEV open the process still holds. */
-void lxp_dev_proc_exit(lxp_proc_t *p);
 
 #ifdef __cplusplus
 }

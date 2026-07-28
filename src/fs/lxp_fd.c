@@ -47,12 +47,6 @@ int lxp_fd_backing(const lxp_proc_t *proc, int fd)
 	return ofd ? ofd->file_idx : -1;
 }
 
-int lxp_fd_direction(const lxp_proc_t *proc, int fd)
-{
-	const lxp_ofd_t *ofd = fd_lookup((lxp_proc_t *)proc, fd);
-	return ofd ? ofd->rw : -1;
-}
-
 int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset,
 		const struct lxp_file_ops *ops)
 {

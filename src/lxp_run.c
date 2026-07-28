@@ -411,16 +411,6 @@ void lxp_sock_kick(void)
 }
 #endif
 
-#if LXP_ENABLE_NETFS
-/* Wake the coordinator so it pumps the 9P transport at once — the eth RX task calls this
- * after delivering frames, so a parked netfs op resumes the instant its reply lands. */
-void lxp_netfs_kick(void)
-{
-	if (g_eng && g_eng->event_post)
-		g_eng->event_post();
-}
-#endif
-
 /*
  * Socket waits only need the short retry timeout when the host cannot publish
  * readiness changes. Other wait classes retain their polling fallback.
@@ -578,7 +568,7 @@ static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 /* Park the program frame until the coordinator reaps the event, and wake the
  * coordinator (it blocks in event_wait rather than busy-polling). Persistent
  * ports prepare a guest-readable resume token while the original svc frame is
- * still live; legacy ports leave r0 NULL and retain abort/recreate behavior. */
+ * still live; ports with a native saved-frame restore return NULL. */
 void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	int slot = slot_of(proc);
@@ -2356,8 +2346,8 @@ void fork_child_guard_reset(int child_slot)
 	g_vfork_guard[child_slot].snapshot = lxp_region_ref_none();
 }
 
-int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const char *path, int argc,
-		   const char *const argv[])
+static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const char *path,
+			  int argc, const char *const argv[])
 {
 	if (!eng || !eng->exec_capture || !cfg || !cfg->rootfs || !cfg->rootfs_image ||
 	    cfg->rootfs_image_size == 0u || !path || argc < 1 || !argv)

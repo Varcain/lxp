@@ -1513,14 +1513,6 @@ int lxp_netfs_busy(void)
 	return 0;
 }
 
-/* ---- fork / exit fd lifecycle ---------------------------------------------- */
-void lxp_netfs_proc_exit(lxp_proc_t *p)
-{
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (lxp_fd_kind(p, fd) == LXP_FD_NET)
-			(void)lxp_fd_close(p, fd);
-}
-
 #ifdef LXP_FUZZ
 /* ---- fuzz hooks (LXP_FUZZ only; NEVER defined in the production / oveRTOS build) ----
  * The 9P client holds ~20 file-scope statics with no single wholesale-reset entry, so an

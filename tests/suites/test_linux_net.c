@@ -266,13 +266,12 @@ static void test_net_dup_close(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd2, 0, 0, 0, 0, 0), 0);
 
-	/* proc_exit releases any still-open sockets (exercise the exit path: open a
-	 * few, then simulate exit). */
+	/* Generic descriptor teardown releases any still-open sockets. */
 	for (int i = 0; i < 4; i++) {
 		long f = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
 		assert_true(f >= 3);
 	}
-	lxp_sock_proc_exit(&p);
+	lxp_fd_close_all(&p);
 	/* After release, all pool slots are free again: 16 fresh sockets must open. */
 	int opened = 0;
 	for (int i = 0; i < 16; i++) {
@@ -281,7 +280,7 @@ static void test_net_dup_close(void **state)
 			opened++;
 	}
 	assert_true(opened >= 8); /* bounded by the fd table (16), not a leak */
-	lxp_sock_proc_exit(&p);
+	lxp_fd_close_all(&p);
 }
 
 /* poll(2) on a socket must block until the fd is readable (or the timeout) — the

@@ -481,10 +481,6 @@ static int qemu_park_slot(int sidx, uint32_t generation)
 	return 0;
 }
 
-static void qemu_sleep_ms(unsigned ms)
-{
-	vTaskDelay(pdMS_TO_TICKS(ms ? ms : 1));
-}
 static void qemu_crit_enter(void)
 {
 	taskENTER_CRITICAL();
@@ -581,7 +577,6 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.abort_slot = qemu_abort_slot,
 	.park_prepare = qemu_park_prepare,
 	.park_slot = qemu_park_slot,
-	.sleep_ms = qemu_sleep_ms,
 	.crit_enter = qemu_crit_enter,
 	.crit_exit = qemu_crit_exit,
 	.event_post = engine_event_post,

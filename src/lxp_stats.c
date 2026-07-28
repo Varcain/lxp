@@ -24,9 +24,9 @@ static struct {
 } g_kreg[LXP_MAX_KTHREAD];
 static int g_nkreg;
 
-/* Per-Linux-pid accumulated CPU. The slot's "lnx" thread is aborted + recreated
- * across fork/exec/nanosleep (its RTOS runtime resets), so cumulative CPU is kept
- * as accum + a per-incarnation baseline. */
+/* Per-Linux-pid accumulated CPU. Exec replaces the slot's native task and resets
+ * its RTOS runtime counter, so cumulative CPU is kept as accumulated time plus a
+ * per-native-incarnation baseline. */
 static struct {
 	int pid;
 	uint64_t accum_us;

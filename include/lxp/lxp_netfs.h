@@ -23,13 +23,13 @@
  * refcounted per-open pool (each = a 9P fid + cursor), fork/dup share an open,
  * and the last close clunks the fid.
  *
- * Blocking model: every remote-touching op needs a Pi round-trip and the syscall
- * handlers run in the SVC/exception context, so nothing blocks inline. An op
+ * Blocking model: every remote-touching op needs a Pi round-trip, while syscall
+ * handlers run on the privileged coordinator and must remain bounded. An op
  * submits a 9P request, publishes @c LXP_WAIT_NETFS, and returns 0 (parked); the
- * run-loop coordinator pumps the transport each pass via lxp_netfs_retry and
- * resumes the guest via spawn_resume(...,result). Ops answerable from cached
- * open-state (fstat, lseek) run inline. The transport is serialized: one 9P
- * request in flight, a FIFO of the rest.
+ * coordinator pumps the transport via lxp_netfs_retry and resumes the guest via
+ * spawn_resume(...,result). Ops answerable from cached open-state (fstat,
+ * lseek) complete during the same coordinator dispatch. The transport is
+ * serialized: one 9P request in flight, a FIFO of the rest.
  *
  * @note Requires @c LXP_ENABLE_NETFS.
  * @{
@@ -124,9 +124,6 @@ long lxp_netfs_retry(lxp_proc_t *p);
  *  request index in the typed wait is invalidated. */
 void lxp_netfs_cancel(lxp_proc_t *p);
 
-/** exit: release every FD_NET open the process still holds (enqueues clunks). */
-void lxp_netfs_proc_exit(lxp_proc_t *p);
-
 /* ---- run-loop <-> netfs interface ------------------------------------------ */
 
 /** Coordinator periodic work: pump the transport (drain background clunks, service the
@@ -160,11 +157,6 @@ const uint8_t *lxp_netfs_exec_image(size_t *size);
 /** Internal adapter to the active lxp_os_ops_t::exec_stage provider. */
 uint8_t *lxp_exec_stage(size_t *cap);
 #endif
-
-/** Wake the coordinator so it retries parked netfs I/O at once (the eth RX path calls this
- *  after delivering frames — a 9P reply may have arrived). Defined by the run loop; weak
- *  no-op otherwise. */
-void lxp_netfs_kick(void);
 
 #ifdef __cplusplus
 }

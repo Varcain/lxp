@@ -438,14 +438,6 @@ void lxp_dev_tick(uint64_t now_us)
 		g_lnx_devtick[i](now_us);
 }
 
-/* ---- fork / exit fd lifecycle ---------------------------------------------- */
-void lxp_dev_proc_exit(lxp_proc_t *p)
-{
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (lxp_fd_kind(p, fd) == LXP_FD_DEV)
-			(void)lxp_fd_close(p, fd);
-}
-
 /* ---- Kconfig-auto class registration --------------------------------------- */
 /* Each class driver (fb, input, ...) provides lxp_dev_autoreg_<c>() behind its
  * LXP_ENABLE_DEV_<C>. Gate the CALLS on the same config rather than relying on

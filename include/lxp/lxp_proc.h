@@ -595,7 +595,6 @@ static inline uintptr_t lxp_sig_restorer_get(const lxp_proc_t *proc)
 lxp_ofd_t *lxp_fd_description(lxp_proc_t *proc, int fd);
 uint8_t lxp_fd_kind(const lxp_proc_t *proc, int fd);
 int lxp_fd_backing(const lxp_proc_t *proc, int fd);
-int lxp_fd_direction(const lxp_proc_t *proc, int fd);
 /** Take references for a descriptor table being copied, or fail without changes. */
 int lxp_fd_fork_inherit(lxp_proc_t *child);
 /** Acquire fork/clone resource ownership for an otherwise unowned child. */

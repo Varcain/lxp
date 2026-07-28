@@ -21,12 +21,11 @@
  * the /dev device layer (@ref lxp_linux_dev): a refcounted per-open pool, and a
  * park/retry deferral for blocking I/O.
  *
- * Blocking model: like the syscall layer, the entry points run in the
- * SVC/exception context and must NOT block inline. Every backing @c ove_socket
- * is put in non-blocking mode at open, and every op is called so it returns at
- * once; a would-block (@c LXP_ERR_TIMEOUT) publishes @c LXP_WAIT_SOCKET and
- * the run-loop coordinator retries on its own thread — the same park/retry the
- * pipe and device layers use.
+ * Blocking model: socket entry points run on the privileged coordinator thread
+ * and must remain bounded. Every backing @c ove_socket is non-blocking, so an
+ * operation returns promptly; a would-block (@c LXP_ERR_TIMEOUT) publishes
+ * @c LXP_WAIT_SOCKET and the coordinator retries after readiness notification
+ * — the same park/retry the pipe and device layers use.
  *
  * @note Requires @c LXP_ENABLE_NET.
  * @{
@@ -205,8 +204,6 @@ void lxp_sock_kick(void);
  * for LXP_SOCKW_POLL). Implemented in the syscall TU, which owns the fd table + the
  * per-kind readiness probes. Returns the ready count (>0), 0 at the deadline, or -EAGAIN. */
 long lxp_poll_retry(lxp_proc_t *p);
-/** exit: release every FD_SOCKET open the process still holds. */
-void lxp_sock_proc_exit(lxp_proc_t *p);
 
 #ifdef __cplusplus
 }

@@ -98,11 +98,11 @@
 #error "LXP_ENABLE_TOUCH requires LXP_ENABLE_DEV_INPUT"
 #endif
 
-/* Preserve a guest's complete single-precision VFP context when the host parks
- * and recreates its task. This is needed for hard-float (and any VFP-using)
- * guests because a deferred syscall does not return through the original RTOS
- * task's exception frame. Keep it opt-in: soft-float guests pay no per-slot RAM
- * cost and ports without an FPU do not acquire VFP instructions. */
+/* Preserve a guest's complete single-precision VFP context across the native
+ * park/resume handoff. This is needed for hard-float (and any VFP-using) guests
+ * because a deferred syscall does not return through the original exception
+ * frame. Keep it opt-in: soft-float guests pay no per-slot RAM cost and ports
+ * without an FPU do not acquire VFP instructions. */
 #ifndef LXP_ENABLE_FPU_CONTEXT
 #define LXP_ENABLE_FPU_CONTEXT 0
 #endif

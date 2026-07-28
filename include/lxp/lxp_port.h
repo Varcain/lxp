@@ -100,7 +100,7 @@ typedef enum lxp_cpu_memory_model {
 	LXP_CPU_MEM_COHERENT_SAME_ATTRS = 2,
 } lxp_cpu_memory_model_t;
 
-#define LXP_OS_OPS_ABI_VERSION 4u
+#define LXP_OS_OPS_ABI_VERSION 5u
 #define LXP_NET_OPS_ABI_VERSION 1u
 #define LXP_DISPLAY_OPS_ABI_VERSION 1u
 
@@ -116,7 +116,7 @@ typedef enum lxp_spawn_resume_mode {
 /* ─────────────────────────────────────────────────────────────────────────
  * (1) OS / engine port — the process-model substrate.
  *
- * The first 11 entries are the per-engine "how do I place program memory, spawn
+ * The leading entries are the per-engine "how do I place program memory, spawn
  * a task, take a critical section" primitives the run loop drives on its hot
  * path. The trailing entries are genuine OS services (monotonic time, thread
  * introspection) and optional cache / rootfs / remote-exec hooks (NULL => the
@@ -143,8 +143,6 @@ typedef struct lxp_os_ops {
 			    lxp_spawn_resume_mode_t mode, const struct lxp_resume_ctx *c,
 			    long r0val);
 	int (*abort_slot)(int sidx, uint32_t generation);
-	/* Sleep the run-loop task for `ms` milliseconds. */
-	void (*sleep_ms)(unsigned ms);
 	/* Coordinator critical section: mask the program svc exception. */
 	void (*crit_enter)(void);
 	void (*crit_exit)(void);

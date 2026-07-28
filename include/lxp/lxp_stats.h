@@ -54,7 +54,7 @@ void lxp_stats_begin(void); /* start a refresh: mark all entries not-live */
 int lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu_us,
 		      int is_kernel);
 /* Charge a slice of a Linux process's CPU: accumulate (thread_running_us - baseline)
- * across the slot-thread recreate (fork/exec/nanosleep reset it), return the total. */
+ * across native-task replacement during exec, and return the process total. */
 uint64_t lxp_stats_charge(int pid, uint64_t thread_running_us);
 /* Read a Linux pid's accumulated CPU without charging (for parked procs). */
 uint64_t lxp_proc_cpu_us(int pid);

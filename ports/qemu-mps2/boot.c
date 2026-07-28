@@ -201,7 +201,7 @@ static void coordinator_task(void *arg)
 }
 
 static StaticTask_t g_coord_tcb;
-static StackType_t g_coord_stack[4096]; /* lxp_run_common + the FDPIC loader run here */
+static StackType_t g_coord_stack[4096]; /* lxp_run + the FDPIC loader run here */
 
 int main(void)
 {
@@ -221,7 +221,7 @@ int main(void)
 		sh_exit(83);
 	}
 	/* The coordinator runs ABOVE the guest slots (SLOT_PRIO) so it preempts a parked
-	 * guest the instant event_post wakes it. It runs the FDPIC loader + lxp_run_common
+	 * guest the instant event_post wakes it. It runs the FDPIC loader + lxp_run
 	 * and touches the cpio, every program region and kernel state, so it must be
 	 * PRIVILEGED (portPRIVILEGE_BIT) under the MPU port — the guests are the only
 	 * unprivileged tasks. */
