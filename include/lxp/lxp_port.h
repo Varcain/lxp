@@ -99,9 +99,14 @@ typedef enum lxp_cpu_memory_model {
 	LXP_CPU_MEM_COHERENT_SAME_ATTRS = 2,
 } lxp_cpu_memory_model_t;
 
-#define LXP_OS_OPS_ABI_VERSION 6u
+#define LXP_OS_OPS_ABI_VERSION 7u
 #define LXP_NET_OPS_ABI_VERSION 2u
 #define LXP_DISPLAY_OPS_ABI_VERSION 1u
+
+/* Opaque host critical-section state. Ports which use irq-save primitives
+ * return the native key through this value; ports with internally nested
+ * critical sections may return zero. */
+typedef uintptr_t lxp_critical_token_t;
 
 /**
  * Complete Cortex-M state and executable-publication boundary for a fresh
@@ -159,9 +164,10 @@ typedef struct lxp_os_ops {
 			    lxp_spawn_resume_mode_t mode, const struct lxp_resume_ctx *c,
 			    long r0val);
 	int (*abort_slot)(int sidx, uint32_t generation);
-	/* Coordinator critical section: mask the program svc exception. */
-	void (*crit_enter)(void);
-	void (*crit_exit)(void);
+	/* Coordinator critical section: mask the program svc exception. The token
+	 * belongs to this enter/exit pair and must not be retained by the core. */
+	lxp_critical_token_t (*crit_enter)(void);
+	void (*crit_exit)(lxp_critical_token_t token);
 	/* Run-loop wakeup: dispatch posts when a program parks; the coordinator
 	 * blocks in event_wait (ms timeout for sleeper deadlines / snapshot). */
 	void (*event_post)(void);

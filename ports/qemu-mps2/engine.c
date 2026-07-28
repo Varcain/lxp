@@ -474,12 +474,14 @@ static int qemu_park_slot(int sidx, uint32_t generation)
 	return 0;
 }
 
-static void qemu_crit_enter(void)
+static lxp_critical_token_t qemu_crit_enter(void)
 {
 	taskENTER_CRITICAL();
+	return 0;
 }
-static void qemu_crit_exit(void)
+static void qemu_crit_exit(lxp_critical_token_t token)
 {
+	(void)token;
 	taskEXIT_CRITICAL();
 }
 

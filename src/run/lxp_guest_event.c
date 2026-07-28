@@ -122,10 +122,10 @@ struct lxp_claimed_event coordinator_claim_event(const lxp_os_ops_t *eng, unsign
 		int s = (int)((*cursor + (unsigned)i) % LXP_NSLOT);
 		if (!primary_slot_pending(s))
 			continue;
-		eng->crit_enter();
+		lxp_critical_token_t critical_token = eng->crit_enter();
 		primary_slot_clear(s);
 		int type = claim_slot_event(s);
-		eng->crit_exit();
+		eng->crit_exit(critical_token);
 		if (type == LXP_EV_NONE)
 			continue;
 		claimed.slot = s;

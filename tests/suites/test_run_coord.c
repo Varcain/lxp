@@ -94,6 +94,9 @@ static struct {
 	int park_sidx;
 	uint32_t park_generation;
 	int park_failures;
+	int critical_enter_calls;
+	int critical_exit_calls;
+	lxp_critical_token_t critical_exit_token;
 	int event_posts;
 	int event_wait_calls;
 	int observe_wait_slot;
@@ -265,8 +268,15 @@ static void mock_event_wait(unsigned ms)
 		g_mock.wait_observed_trap_active = lxp_trap_active();
 	}
 }
-static void mock_crit(void)
+static lxp_critical_token_t mock_crit_enter(void)
 {
+	g_mock.critical_enter_calls++;
+	return (lxp_critical_token_t)0xa5a5u;
+}
+static void mock_crit_exit(lxp_critical_token_t token)
+{
+	g_mock.critical_exit_calls++;
+	g_mock.critical_exit_token = token;
 }
 static int mock_time(uint64_t *out)
 {
@@ -335,8 +345,8 @@ static const lxp_os_ops_t g_mock_eng = {
 	.abort_slot = mock_abort_slot,
 	.park_prepare = mock_park_prepare,
 	.park_slot = mock_park_slot,
-	.crit_enter = mock_crit,
-	.crit_exit = mock_crit,
+	.crit_enter = mock_crit_enter,
+	.crit_exit = mock_crit_exit,
 	.event_post = mock_event_post,
 	.event_wait = mock_event_wait,
 	.map_device = mock_map_device,
@@ -1682,6 +1692,9 @@ static void test_coordinator_claim_rotates_fairly_and_discards_stale_hints(void 
 	assert_int_equal(claimed.slot, -1);
 	assert_int_equal(claimed.type, LXP_EV_NONE);
 	assert_false(primary_slot_pending(1));
+	assert_int_equal(g_mock.critical_enter_calls, 4);
+	assert_int_equal(g_mock.critical_exit_calls, 4);
+	assert_int_equal(g_mock.critical_exit_token, (lxp_critical_token_t)0xa5a5u);
 }
 
 static void test_primary_wait_handler_applies_park_outcome(void **state)
