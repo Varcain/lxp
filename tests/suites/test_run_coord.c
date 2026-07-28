@@ -2511,6 +2511,30 @@ static void test_signal_interrupts_blocked_netfs_before_retry(void **state)
 	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
 }
 
+/*
+ * A remote exec creates its EXEC intent in the coordinator only after the 9P
+ * fetch completes. It has no SVC return path to publish that primary event.
+ */
+static void test_netfs_exec_completion_publishes_primary_event(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *p = &g_lxp_slots[0].proc;
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
+	p->intent.kind = LXP_INTENT_EXEC;
+	struct lxp_blocked_scan scan = {0};
+
+	assert_false(primary_slot_pending(0));
+	lxp_blocked_complete_netfs_retry(&g_mock_eng, 0, p, 0, &scan);
+
+	assert_true(scan.progress);
+	assert_true(primary_slot_pending(0));
+	assert_int_equal(claim_slot_event(0), LXP_EV_EXEC);
+	assert_int_equal(g_mock.resume_calls, 0);
+	assert_int_equal(g_lxp_slots[0].host_state, SLOT_PARKED);
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+}
+
 /* exec's commit changes the slot incarnation. A deferred event captured before
  * that boundary must be rejected even if it becomes visible after commit. */
 static void test_exec_commit_discards_older_deferred_request(void **state)
@@ -3066,6 +3090,8 @@ int main(void)
 		cmocka_unit_test_setup(test_deferred_signal_cancels_before_execute, reset_state),
 		cmocka_unit_test_setup(test_signal_interrupts_blocked_netfs_before_retry,
 				       reset_state),
+		cmocka_unit_test_setup(
+			test_netfs_exec_completion_publishes_primary_event, reset_state),
 		cmocka_unit_test_setup(test_exec_commit_discards_older_deferred_request,
 				       reset_state),
 		cmocka_unit_test_setup(

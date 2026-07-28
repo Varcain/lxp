@@ -237,6 +237,27 @@ static void lxp_blocked_retry_socket(const lxp_os_ops_t *eng, int slot, lxp_proc
 #endif
 
 #if LXP_ENABLE_NETFS
+static void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot,
+					      lxp_proc_t *proc, long rc,
+					      struct lxp_blocked_scan *scan)
+{
+	if (proc->wait.kind == LXP_WAIT_NETFS)
+		(void)lxp_wait_complete(proc, LXP_WAIT_NETFS);
+	if (proc->intent.kind == LXP_INTENT_EXEC) {
+		/*
+		 * Unlike a normal execve, a remote exec publishes its intent from
+		 * the coordinator after the 9P fetch completes. There is no
+		 * returning SVC path to mark the slot, so expose the new primary
+		 * event here.
+		 */
+		primary_slot_mark(slot);
+	} else {
+		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
+					      &g_lxp_slots[slot].resume, rc);
+	}
+	scan->progress = 1;
+}
+
 static void lxp_blocked_retry_netfs(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
 				    struct lxp_blocked_scan *scan)
 {
@@ -245,12 +266,7 @@ static void lxp_blocked_retry_netfs(const lxp_os_ops_t *eng, int slot, lxp_proc_
 	long rc = lxp_netfs_retry(proc);
 	if (rc == -LXP_EAGAIN)
 		return;
-	if (proc->wait.kind == LXP_WAIT_NETFS)
-		(void)lxp_wait_complete(proc, LXP_WAIT_NETFS);
-	if (proc->intent.kind != LXP_INTENT_EXEC)
-		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      &g_lxp_slots[slot].resume, rc);
-	scan->progress = 1;
+	lxp_blocked_complete_netfs_retry(eng, slot, proc, rc, scan);
 }
 #endif
 
