@@ -134,7 +134,7 @@ int coordinator_park_slot(const lxp_os_ops_t *eng, int slot);
 int coordinator_resume_slot(const lxp_os_ops_t *eng, int slot, int region,
 			    const struct lxp_resume_ctx *ctx, long r0);
 int coordinator_launch_slot(const lxp_os_ops_t *eng, int slot, int region,
-			    const lxp_flat_t *prog, void *entry, void *sp, void *stack_lo);
+			    const lxp_guest_launch_t *launch);
 
 int coordinator_guest_view_begin(int slot, lxp_guest_view_t *view);
 void guest_view_failure(int slot, int rc);

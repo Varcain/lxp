@@ -27,7 +27,6 @@
 #include <string.h>
 
 #include "lxp/lxp_config.h"
-#include "lxp/lxp_loader.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_seam.h"
 
@@ -418,21 +417,15 @@ static int spawn_common(int sidx, uint32_t generation, int ridx, struct resume_d
 }
 
 static int qemu_spawn_launch(int sidx, uint32_t generation, int ridx,
-			     const lxp_flat_t *prog, void *entry, void *sp,
-			     void *stack_lo)
+			     const lxp_guest_launch_t *launch)
 {
-	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0 || g_tid[sidx])
+	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0 || !launch || g_tid[sidx])
 		return -1;
-	(void)stack_lo;
 	g_park_desc[sidx] = NULL;
 	struct lxp_resume_ctx c;
-	memset(&c, 0, sizeof(c));
-	c.r4_11[3] = prog->is_fdpic ? (uint32_t)prog->loadmap : 0u;        /* r7 */
-	c.r4_11[4] = prog->is_fdpic ? (uint32_t)prog->interp_loadmap : 0u; /* r8 */
-	c.r4_11[5] = prog->is_fdpic ? (uint32_t)prog->got : 0u;            /* r9 */
-	c.sp = (uint32_t)sp;
-	c.pc = (uint32_t)entry | 1u; /* Cortex-M is Thumb-only: prog_tramp's bx needs bit0 set */
-	return spawn_common(sidx, generation, ridx, stash_desc(sidx, &c, 0));
+	lxp_resume_ctx_from_launch(&c, launch);
+	c.pc |= 1u; /* Cortex-M is Thumb-only: prog_tramp's pop needs bit0 set */
+	return spawn_common(sidx, generation, ridx, stash_desc(sidx, &c, launch->r[0]));
 }
 
 static int qemu_spawn_resume(int sidx, uint32_t generation, int ridx,

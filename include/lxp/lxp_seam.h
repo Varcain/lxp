@@ -26,7 +26,6 @@
 #include "lxp/lxp_config.h" /* LXP_PROG_REGION_SIZE / LXP_NREG / LXP_NSLOT / sizing knobs */
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_identity.h"
-#include "lxp/lxp_loader.h"
 #include "lxp/lxp_port.h" /* lxp_os_ops_t — the engine/OS port vtable the run loop drives */
 #include "lxp/lxp_run.h"
 
@@ -86,6 +85,24 @@ struct lxp_resume_ctx {
 	struct lxp_fp_context fp;
 #endif
 };
+
+/** Translate a fresh-image register contract into the context consumed by
+ * trampoline-based ports. Native-frame ports may copy launch->r[] directly. */
+static inline void lxp_resume_ctx_from_launch(struct lxp_resume_ctx *out,
+					      const lxp_guest_launch_t *launch)
+{
+	*out = (struct lxp_resume_ctx){0};
+	for (unsigned i = 0; i < 8; i++)
+		out->r4_11[i] = launch->r[4u + i];
+	out->r12 = launch->r[12];
+	out->lr = launch->r[14];
+	out->sp = launch->r[13];
+	out->pc = launch->r[15];
+	out->r1 = launch->r[1];
+	out->r2 = launch->r[2];
+	out->r3 = launch->r[3];
+	out->xpsr = launch->xpsr;
+}
 
 /* The per-engine operations the shared run loop drives are the public port vtable
  * lxp_os_ops_t (lxp_port.h): region/spawn_launch/spawn_resume, task

@@ -143,9 +143,17 @@ int image_txn_prepare(struct image_txn *tx, const lxp_os_ops_t *eng, const lxp_r
 	tx->debug.entry = at_entry;
 	tx->debug.dynamic = tx->prog.dynamic;
 	tx->debug.interp_base = at_base;
-	tx->entry = (void *)pc;
-	tx->sp = sp;
-	tx->stack_lo = stack_lo;
+	tx->launch.r[0] = 0; /* static fini = NULL (uClinux entry convention) */
+	tx->launch.r[7] = (uint32_t)tx->prog.loadmap;
+	tx->launch.r[8] = (uint32_t)tx->prog.interp_loadmap;
+	tx->launch.r[9] = (uint32_t)tx->prog.got;
+	tx->launch.r[13] = (uint32_t)(uintptr_t)sp;
+	tx->launch.r[15] = (uint32_t)pc;
+	tx->launch.xpsr = 1u << 24; /* Cortex-M Thumb state */
+	if (tx->prog.region_exec) {
+		tx->launch.copied_text_base = tx->prog.text_base;
+		tx->launch.copied_text_size = tx->prog.text_size;
+	}
 	tx->prepared = 1;
 	return LXP_OK;
 }
@@ -168,8 +176,7 @@ int image_txn_start(struct image_txn *tx, const lxp_os_ops_t *eng)
 {
 	if (!tx->published)
 		return -LXP_EINVAL;
-	int rc = coordinator_launch_slot(eng, tx->slot, tx->region.index, &tx->prog, tx->entry,
-					 tx->sp, tx->stack_lo);
+	int rc = coordinator_launch_slot(eng, tx->slot, tx->region.index, &tx->launch);
 	if (rc != LXP_OK)
 		return rc;
 	tx->native_started = 1;

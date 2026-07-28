@@ -8,6 +8,7 @@
 #ifndef LXP_IMAGE_H
 #define LXP_IMAGE_H
 
+#include "lxp/lxp_loader.h"
 #include "lxp/lxp_run.h"
 #include "run/lxp_runtime_store.h"
 
@@ -17,9 +18,7 @@ struct image_txn {
 	struct lxp_dbg_s debug;
 	lxp_slot_ref_t owner;
 	lxp_region_ref_t region;
-	void *entry;
-	void *sp;
-	uint8_t *stack_lo;
+	lxp_guest_launch_t launch;
 	int slot;
 	uint8_t prepared;
 	uint8_t published;

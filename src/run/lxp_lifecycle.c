@@ -25,10 +25,7 @@ struct lxp_lifecycle_request {
 			long r0;
 		} resume;
 		struct {
-			const lxp_flat_t *prog;
-			void *entry;
-			void *sp;
-			void *stack_lo;
+			const lxp_guest_launch_t *launch;
 		} launch;
 	} data;
 };
@@ -153,8 +150,7 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 		 * immediately traps back into the personality. */
 		slot_runnable_store(sidx, 1);
 		rc = eng->spawn_launch(sidx, slot_generation(sidx), request->region,
-				       request->data.launch.prog, request->data.launch.entry,
-				       request->data.launch.sp, request->data.launch.stack_lo);
+				       request->data.launch.launch);
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_RUNNING);
 			return LXP_OK;
@@ -215,7 +211,7 @@ int coordinator_resume_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
 }
 
 int coordinator_launch_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
-			    const lxp_flat_t *prog, void *entry, void *sp, void *stack_lo)
+			    const lxp_guest_launch_t *launch)
 {
 	return lxp_lifecycle_apply(eng, &(struct lxp_lifecycle_request){
 						.outcome = LXP_OUTCOME_LAUNCH,
@@ -223,10 +219,7 @@ int coordinator_launch_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
 						.region = ridx,
 						.data.launch =
 							{
-								.prog = prog,
-								.entry = entry,
-								.sp = sp,
-								.stack_lo = stack_lo,
+								.launch = launch,
 							},
 					});
 }

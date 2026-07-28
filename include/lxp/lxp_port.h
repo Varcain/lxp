@@ -29,9 +29,8 @@
 extern "C" {
 #endif
 
-/* Incomplete types owned by the module's own headers (loader / run config /
- * saved register context). The port only ever passes pointers to these. */
-typedef struct lxp_flat lxp_flat_t;             /* full def in lxp_loader.h  */
+/* Incomplete types owned by the module's own headers (run config / saved
+ * register context). The port only ever passes pointers to these. */
 typedef struct lxp_run_config lxp_run_config_t; /* full def in lxp_run.h     */
 typedef struct lxp_exec_capture lxp_exec_capture_t; /* full definition in lxp_exec.h */
 struct lxp_resume_ctx;                          /* full definition in lxp_seam.h */
@@ -100,9 +99,27 @@ typedef enum lxp_cpu_memory_model {
 	LXP_CPU_MEM_COHERENT_SAME_ATTRS = 2,
 } lxp_cpu_memory_model_t;
 
-#define LXP_OS_OPS_ABI_VERSION 5u
+#define LXP_OS_OPS_ABI_VERSION 6u
 #define LXP_NET_OPS_ABI_VERSION 2u
 #define LXP_DISPLAY_OPS_ABI_VERSION 1u
+
+/**
+ * Complete Cortex-M state and executable-publication boundary for a fresh
+ * guest image. The personality core derives this once from its private loader
+ * result; ports translate it into their native initial task frame without
+ * knowing the ELF/FDPIC representation.
+ *
+ * r[0..15] names r0..r15 (sp/lr/pc are r[13]/r[14]/r[15]). A non-zero
+ * copied_text_size identifies the RAM text range which must be made visible to
+ * instruction fetch before the task becomes runnable. Both copied-text fields
+ * are zero for ordinary execute-in-place images.
+ */
+typedef struct lxp_guest_launch {
+	uint32_t r[16];
+	uint32_t xpsr;
+	uintptr_t copied_text_base;
+	size_t copied_text_size;
+} lxp_guest_launch_t;
 
 /** Native action requested through spawn_resume(). A captured Linux context
  * either starts a new host task (fork/vfork child) or resumes the persistent
@@ -137,8 +154,7 @@ typedef struct lxp_os_ops {
 	 * a port must likewise publish its native generation before an API which
 	 * can schedule the new task. */
 	int (*spawn_launch)(int sidx, uint32_t generation, int ridx,
-			    const lxp_flat_t *prog, void *entry, void *sp,
-			    void *stack_lo);
+			    const lxp_guest_launch_t *launch);
 	int (*spawn_resume)(int sidx, uint32_t generation, int ridx,
 			    lxp_spawn_resume_mode_t mode, const struct lxp_resume_ctx *c,
 			    long r0val);

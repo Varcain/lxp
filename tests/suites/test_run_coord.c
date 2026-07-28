@@ -71,6 +71,7 @@ static struct {
 	uint32_t launch_generation;
 	uint8_t launch_observed_runnable;
 	uint8_t launch_observed_host_state;
+	lxp_guest_launch_t launch;
 	int resume_calls;
 	int resume_sidx;
 	uint32_t resume_generation;
@@ -170,17 +171,14 @@ static void mock_coord_map(int region)
 	g_mock.coord_map_calls++;
 	g_mock.coord_map_region = region;
 }
-static int mock_spawn_launch(int sidx, uint32_t generation, int ridx, const lxp_flat_t *prog,
-			     void *entry, void *sp, void *stack_lo)
+static int mock_spawn_launch(int sidx, uint32_t generation, int ridx,
+			     const lxp_guest_launch_t *launch)
 {
 	(void)ridx;
-	(void)prog;
-	(void)entry;
-	(void)sp;
-	(void)stack_lo;
 	g_mock.launch_calls++;
 	g_mock.launch_sidx = sidx;
 	g_mock.launch_generation = generation;
+	g_mock.launch = *launch;
 	g_mock.launch_observed_runnable =
 		(uint8_t)lxp_slot_ref_is_runnable((lxp_slot_ref_t){
 			.index = (int16_t)sidx,
@@ -2428,9 +2426,26 @@ static void test_spawn_callbacks_receive_explicit_mode_and_published_slot(void *
 {
 	(void)state;
 	struct lxp_resume_ctx ctx;
-	lxp_flat_t prog;
+	lxp_guest_launch_t launch;
 	memset(&ctx, 0, sizeof(ctx));
-	memset(&prog, 0, sizeof(prog));
+	memset(&launch, 0, sizeof(launch));
+	for (unsigned i = 0; i < 16; i++)
+		launch.r[i] = 0x100u + i;
+	launch.xpsr = 1u << 24;
+	launch.copied_text_base = 0x20000000u;
+	launch.copied_text_size = 0x1000u;
+	struct lxp_resume_ctx translated;
+	lxp_resume_ctx_from_launch(&translated, &launch);
+	for (unsigned i = 0; i < 8; i++)
+		assert_int_equal(translated.r4_11[i], launch.r[4u + i]);
+	assert_int_equal(translated.r12, launch.r[12]);
+	assert_int_equal(translated.sp, launch.r[13]);
+	assert_int_equal(translated.lr, launch.r[14]);
+	assert_int_equal(translated.pc, launch.r[15]);
+	assert_int_equal(translated.r1, launch.r[1]);
+	assert_int_equal(translated.r2, launch.r[2]);
+	assert_int_equal(translated.r3, launch.r[3]);
+	assert_int_equal(translated.xpsr, launch.xpsr);
 
 	/* A fresh image launch observes its dispatch capability before the mock
 	 * engine can make a native task runnable. */
@@ -2438,14 +2453,14 @@ static void test_spawn_callbacks_receive_explicit_mode_and_published_slot(void *
 	deferred_slot_reassign(launch_slot);
 	g_lxp_slots[launch_slot].proc.alive = 1;
 	uint32_t launch_generation = slot_generation(launch_slot);
-	assert_int_equal(coordinator_launch_slot(&g_mock_eng, launch_slot, 0, &prog,
-						 (void *)1, (void *)2, (void *)3),
+	assert_int_equal(coordinator_launch_slot(&g_mock_eng, launch_slot, 0, &launch),
 			 LXP_OK);
 	assert_int_equal(g_mock.launch_calls, 1);
 	assert_int_equal(g_mock.launch_sidx, launch_slot);
 	assert_int_equal(g_mock.launch_generation, launch_generation);
 	assert_true(g_mock.launch_observed_runnable);
 	assert_int_equal(g_mock.launch_observed_host_state, SLOT_STARTING);
+	assert_memory_equal(&g_mock.launch, &launch, sizeof(launch));
 	assert_int_equal(g_lxp_slots[launch_slot].host_state, SLOT_RUNNING);
 
 	/* A captured fork child has no native task yet and is explicitly START,
