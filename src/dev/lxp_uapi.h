@@ -24,7 +24,7 @@
 #define LXP_FBIOPAN_DISPLAY 0x4606ul
 #define LXP_FBIOBLANK 0x4611ul
 
-/* oveRTOS extension (NOT a Linux uapi): offload a rectangular framebuffer update
+/* LXP extension (NOT a Linux uapi): offload a rectangular framebuffer update
  * to DMA2D. The guest hands one blit instead of a per-scanline pwrite storm; the
  * PRIVILEGED coordinator validates the guest source rect, then DMA2D-copies it to
  * the framebuffer (which it owns). Falls back to pwrite when there is no DMA2D. */
@@ -130,10 +130,10 @@ struct lxp_input_absinfo {
 #define LXP_EVIOCGABS_BASE 0x40 /* EVIOCGABS(abs) nr = 0x40 + abs */
 
 /* ---- DMA2D 2D-accelerator (/dev/dma2d) ------------------------------------- */
-/* NOT a Linux uapi — an oveRTOS accelerator device. The guest submits one
+/* NOT a Linux uapi — an LXP accelerator device. The guest submits one
  * fill/blit/blend descriptor; the PRIVILEGED coordinator validates every plane
  * address against the guest's own region (a DMA engine with guest-supplied
- * addresses is a confused-deputy risk) and programs the STM32 DMA2D. Field order
+ * addresses is a confused-deputy risk) and invokes the host provider. Field order
  * mirrors LVGL's lv_draw_dma2d_configuration_t so the guest shim is a field copy.
  * Matched by type+nr (ignoring _IOC_SIZE) so the two sides can't drift on sizeof. */
 #define LXP_DMA2D_IOC_TYPE(cmd) (((cmd) >> 8) & 0xffu)

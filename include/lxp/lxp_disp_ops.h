@@ -65,9 +65,9 @@ typedef struct lxp_display_ops {
 	int (*touch_read)(int *x, int *y, int *pressed);
 } lxp_display_ops_t;
 
-/* Set the display geometry used to clamp / report touch coordinates (replaces the
- * board_desc.h OVE_DISPLAY_* constants). Non-positive dimensions reset to the
- * 480x272 default independently. lxp_run() seeds it from lxp_run_config_t. */
+/* Set the display geometry used to clamp / report touch coordinates.
+ * Non-positive dimensions reset to the 480x272 default independently.
+ * lxp_run() seeds it from lxp_run_config_t. */
 void lxp_disp_set_geometry(int width, int height);
 
 #ifdef __cplusplus

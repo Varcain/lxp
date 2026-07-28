@@ -427,8 +427,8 @@ static void conn_begin_attach(uint64_t now_us)
 	g_conn_deadline_us = now_us + 3000000ull;
 }
 
-/* Build an IPv4 lxp_sockaddr_t (host-order port) — was ove_sockaddr_ipv4, now module-local
- * so the netfs client depends only on the net-ops port, not the ove_net helper set. */
+/* Build an IPv4 lxp_sockaddr_t (host-order port) locally so the netfs client
+ * depends only on the network-provider contract. */
 static void netfs_sockaddr_ipv4(lxp_sockaddr_t *a, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3,
 				uint16_t port)
 {
@@ -1513,7 +1513,7 @@ int lxp_netfs_busy(void)
 }
 
 #ifdef LXP_FUZZ
-/* ---- fuzz hooks (LXP_FUZZ only; NEVER defined in the production / oveRTOS build) ----
+/* ---- fuzz hooks (LXP_FUZZ only; never defined in production builds) --------
  * The 9P client holds ~20 file-scope statics with no single wholesale-reset entry, so an
  * in-process fuzzer would carry state across inputs. These two hooks let fuzz/harness_9p.c
  * (a) return the module to a known state between inputs and (b) drive one untrusted

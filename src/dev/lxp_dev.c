@@ -7,8 +7,8 @@
  *
  * Linux-personality character-device core: a registry of /dev nodes + a pooled
  * per-open state table, and the routing the FD_DEV branches of the syscall
- * handlers call into. Class drivers (fb, input, i2c, ...) register an
- * lxp_dev and bridge to the engine-neutral ove_* HALs.
+ * handlers call into. Class drivers register an lxp_dev and use the provider
+ * contract appropriate to their device family.
  *
  * Blocking is deferred, never inline: a driver op that would block returns
  * -EAGAIN; this core parks the caller (LXP_WAIT_DEVICE) and the run-loop
@@ -446,8 +446,8 @@ void lxp_dev_tick(uint64_t now_us)
  * through this hook — would never be pulled from the archive (so /dev/fb0 /
  * /dev/input/event0 would silently not register on an archive+GC link, e.g. NuttX).
  * Gating makes the call a direct reference to the compiled class's strong definition.
- * Run once on the coordinator thread (blocking HAL init — ove_fb_init / ove_i2c_create
- * — is legal there). */
+ * Run once on the coordinator thread, where bounded provider initialization is
+ * legal. */
 #if LXP_ENABLE_DEV_FB
 void lxp_dev_autoreg_fb(void);
 #endif

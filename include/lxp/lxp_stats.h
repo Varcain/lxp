@@ -7,7 +7,7 @@
  *
  * Unified process/CPU snapshot for the Linux personality's synthetic /proc
  * (ps/top). The run-loop thread builds it each refresh from the live Linux slots
- * plus an ove_thread_list() of the RTOS kernel threads; the
+ * plus the host's @c lxp_os_ops_t.thread_list snapshot; the
  * /proc generator (svc-handler context) only READS it via the accessors. Holding
  * the table here (rather than reaching into the run loop) keeps the engine-agnostic
  * syscall layer free of run-loop symbols, so the host syscall tests link cleanly.
@@ -30,8 +30,6 @@
 #define LXP_MAX_KTHREAD (LXP_NSLOT + LXP_HOST_THREAD_ALLOWANCE)
 #define LXP_MAX_PENT (LXP_MAX_KTHREAD + 1)
 #define LXP_KPID_BASE 1000 /* kernel pids start here; Linux pids are 1..~16 */
-
-struct lxp_thread_info; /* from <ove/thread.h> */
 
 /* One entry shown by ps/top: a Linux process or an RTOS kernel thread. */
 struct lxp_pentry {

@@ -42,8 +42,9 @@ typedef struct lxp_guest_exit_info {
  * @brief Engine-agnostic public API for running a Linux program under the
  *        lxp Linux personality.
  *
- * The engine-agnostic core (@ref lxp_syscall) translates the Linux ABI into
- * oveRTOS primitives; a per-engine SEAM binds it to a concrete RTOS engine —
+ * The engine-agnostic core (@ref lxp_syscall) translates the Linux ABI through
+ * explicit OS, network, and display provider contracts; a per-engine seam binds
+ * those contracts to a concrete RTOS engine —
  * trapping the unprivileged program's syscalls, running each loaded FDPIC program in its
  * own isolated memory domain, and implementing the NOMMU process model
  * (sequentialised vfork/exec/wait, signal delivery, the run loop). This header

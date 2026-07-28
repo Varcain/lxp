@@ -18,8 +18,8 @@
  * A small in-kernel device model bolted onto the syscall layer: class drivers
  * register an @ref lxp_dev (a path like "/dev/fb0" + an ops vtable) and the
  * personality routes open/read/write/ioctl/poll/lseek/mmap on that path to the
- * driver. Engine-agnosticism is free — drivers bridge to the @c ove_* public
- * HALs (ove_fb, ove_i2c, ...), never to per-engine code.
+ * driver. Built-in display/input drivers use @c lxp_display_ops_t; another host
+ * may register its own class drivers without exposing engine code to the core.
  *
  * Blocking model: driver entry points run on the privileged coordinator thread.
  * They are serialized, but must remain bounded and non-blocking so one guest
@@ -193,7 +193,7 @@ void lxp_dev_tick_register(void (*fn)(uint64_t now_us));
 
 /** Retry a parked device op for the coordinator; result or -EAGAIN (still blocked). */
 long lxp_dev_retry(lxp_proc_t *p);
-/** Coordinator-thread periodic work (fb flush, touch poll). @p now_us = ove_time_get_us. */
+/** Coordinator-thread periodic work (fb flush, touch poll). @p now_us is monotonic. */
 void lxp_dev_tick(uint64_t now_us);
 /** Register the Kconfig-enabled class drivers (run once on the coordinator thread). */
 void lxp_dev_autoreg_all(void);

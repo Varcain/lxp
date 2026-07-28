@@ -24,9 +24,8 @@
  * pool for a subsystem.
  *
  * The arena is deliberately decoupled from any RTOS backend: it touches no
- * @c ove_* primitive and performs no locking. Callers that share an arena
- * across threads must provide their own mutual exclusion (e.g. an
- * @c ove_mutex around the alloc/free calls).
+ * host primitive and performs no locking. Callers that share an arena across
+ * threads must serialize access with their host's synchronization mechanism.
  *
  * All blocks are aligned to @c LXP_ARENA_ALIGN. Returned pointers may be
  * released in any order; adjacent free blocks coalesce so a fully-freed

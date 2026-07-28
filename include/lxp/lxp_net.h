@@ -13,16 +13,16 @@
  * @file net.h
  * @defgroup lxp_linux_net Linux personality socket layer
  * @ingroup lxp_linux
- * @brief BSD sockets for the Linux personality, bridged to the ove_net HAL.
+ * @brief BSD sockets for the Linux personality, backed by a host network provider.
  *
  * The socket-family syscalls (socket/connect/send/recv/...) of a loaded FDPIC
- * program are routed to a small in-kernel socket model that bridges to the
- * engine-neutral @c ove_socket_* HAL (lwIP / NuttX net / Zephyr net). It mirrors
+ * program are routed to a small in-kernel socket model that uses the
+ * handle-based @c lxp_net_ops_t contract. It mirrors
  * the /dev device layer (@ref lxp_linux_dev): a refcounted per-open pool, and a
  * park/retry deferral for blocking I/O.
  *
  * Blocking model: socket entry points run on the privileged coordinator thread
- * and must remain bounded. Every backing @c ove_socket is non-blocking, so an
+ * and must remain bounded. Every backing provider socket is non-blocking, so an
  * operation returns promptly; a would-block (@c LXP_ERR_TIMEOUT) publishes
  * @c LXP_WAIT_SOCKET and the coordinator retries after readiness notification
  * — the same park/retry the pipe and device layers use.
@@ -132,10 +132,10 @@ typedef struct lxp_rtentry {
  * so no weak fallbacks are needed — the core is always linked when the feature is on
  * (firmware) or under test (host cmocka). */
 
-/** socket(2): allocate a socket open slot + open the backing ove_socket.
+/** socket(2): allocate a socket open slot + open the backing provider socket.
  *  @return the open-pool index (the fd's file_idx) or a negative Linux errno. */
 long lxp_sock_new(int domain, int type, int protocol);
-/** Drop a reference on open @p oi (close/exit); @c ove_socket_close at the last. */
+/** Drop a reference on open @p oi (close/exit); close the provider handle at the last. */
 void lxp_sock_close(int oi);
 /** fcntl F_SETFL / F_GETFL: the open's status flags (O_NONBLOCK gates parking). */
 void lxp_sock_setfl(int oi, int flags);
@@ -177,8 +177,9 @@ unsigned lxp_sock_poll(int oi);
 /** Fill @c S_IFSOCK mode (+ size 0) for fstat/statx of a socket fd. */
 void lxp_sock_fstat(int oi, uint32_t *mode, uint64_t *size);
 
-/* SIOC* interface-config ioctls (ifconfig/route) issued on a socket fd, bridged to the
- * ove_netif HAL. The op targets the interface, not one socket, so no open index. */
+/* SIOC* interface-config ioctls (ifconfig/route) issued on a socket fd and
+ * routed through lxp_net_ops_t. The op targets the interface, not one socket,
+ * so no open index. */
 long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg);
 
 /* Register the interface handle the SIOC* ioctls operate on (opaque lxp_netif_t; the

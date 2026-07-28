@@ -301,7 +301,7 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 #if LXP_ENABLE_NET
 	} else if (strcmp(abs, "/proc/net/dev") == 0) {
 		/* busybox ifconfig reads this to enumerate interfaces + show RX/TX stats.
-		 * ove_net has no per-interface counters, so report zeros. */
+		 * The network-provider contract has no traffic counters, so report zeros. */
 		o = p_str(buf, o, cap,
 			  "Inter-|   Receive                                                |  Transmit\n"
 			  " face |bytes    packets errs drop fifo frame compressed multicast|bytes    "

@@ -471,7 +471,7 @@ typedef struct lxp_wait {
  * @brief A Linux task context — the per-slot state syscalls act on.
  *
  * NOMMU model: a bounded program break + anonymous mmap carved from an
- * @c ove_arena, a small fd table over standard streams (caller callbacks) and a
+ * @c lxp_arena_t, a small fd table over standard streams (caller callbacks) and a
  * read-only in-memory rootfs, and typed coordinator state. Process-wide state
  * is held by the refcounted mm, files, fs-context, sighand and thread-group
  * objects.
@@ -658,8 +658,8 @@ void lxp_proc_set_rootfs(lxp_proc_t *proc, const lxp_file_t *files, int count);
 /* ---- OS-service hooks routed through the engine ops ------------------------
  * The personality core calls these module-internal wrappers instead of the
  * host's clock / cache primitives; the per-engine seam fills the underlying
- * ops (see lxp_os_ops_t in lxp_port.h). This lets the personality build against
- * any host without referencing ove_time_* directly. */
+ * ops (see lxp_os_ops_t in lxp_port.h). This keeps host primitives outside the
+ * process core. */
 int lxp_time_us(uint64_t *out);
 int lxp_time_ns(uint64_t *out);
 /** Fill @p len bytes from the active host entropy provider. Returns an lxp_err_t. */

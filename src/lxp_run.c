@@ -112,8 +112,8 @@ static int diag_native_census_current(void)
 	return g_diag_native_known && g_diag_native_epoch == g_diag_lifecycle_epoch;
 }
 
-/* Rebuild the ps/top snapshot from the live process SET + the RTOS kernel threads.
- * Run-loop thread only (ove_thread_list locks the scheduler — unsafe from the svc
+/* Rebuild the ps/top snapshot from the live process set + the host kernel threads.
+ * Run-loop thread only (the host snapshot may lock its scheduler — unsafe from the svc
  * handler). The seam attaches an explicit slot ID to each guest thread; names
  * remain diagnostic only. The idle thread is folded into /proc/stat idle, not
  * shown as a process (else it crushes top's %CPU math). */
@@ -221,8 +221,8 @@ static lxp_region_ref_t region_ref_at(int region);
 int lxp_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_owner);
 
 /* ---- OS-service hooks routed through the engine ops ------------------------
- * The personality core calls these instead of the host's ove_time_* / cache
- * primitives, so it carries no direct dependency on any particular OS. The seam
+ * The personality core calls these instead of host clock/cache primitives, so
+ * it carries no direct dependency on any particular OS. The seam
  * (host adapter) fills the ops; g_eng is live for the duration of a run. */
 int lxp_time_us(uint64_t *out)
 {
@@ -2409,8 +2409,8 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, 
 	for (int i = 0; i < LXP_NSLOT; i++)
 		g_sig_save[i].depth = 0;
 #if LXP_ENABLE_DEV
-	/* Register the Kconfig-enabled /dev class drivers (fb, input, ...) on this
-	 * coordinator thread, where blocking HAL init (ove_fb_init, ove_i2c_create) is legal. */
+	/* Register enabled /dev class drivers on the coordinator thread, where
+	 * bounded provider initialization is legal. */
 	lxp_dev_autoreg_all();
 #endif
 #if LXP_ENABLE_NETFS

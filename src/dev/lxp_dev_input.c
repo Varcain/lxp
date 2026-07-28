@@ -28,7 +28,7 @@
 #define LXP_DEFAULT_DISPLAY_WIDTH 480
 #define LXP_DEFAULT_DISPLAY_HEIGHT 272
 
-/* Display geometry for the touch clamps (was board_desc.h OVE_DISPLAY_*). */
+/* Display geometry used by the provider-neutral touch clamps. */
 static int g_disp_w = LXP_DEFAULT_DISPLAY_WIDTH;
 static int g_disp_h = LXP_DEFAULT_DISPLAY_HEIGHT;
 

@@ -2894,9 +2894,8 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 		 * at the next poll. Without console_poll a long timeout already reported ready
 		 * above, so we only reach here on a no-callback probe → return 0. */
 	if (proc->console_poll && tmo_ms > 0) {
-		/* TICK (cross-idle), not DWT: tickless idle freezes the DWT while the proc is
-			 * parked here, and the coordinator checks this against ove_time_get_us (see the
-			 * nanosleep handler). Both must use the same clock or top's refresh + q drift. */
+		/* Use the same cross-idle microsecond clock as the coordinator deadline
+		 * scan. Mixing clock domains here makes poll refresh and input drift. */
 		uint64_t now_us = 0;
 		lxp_time_us(&now_us);
 		lxp_wait_t wait = {
@@ -3369,12 +3368,8 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		uint64_t dur_us = sec * 1000000ull + nsec / 1000ull;
 		if (dur_us > 100000000ull)
 			dur_us = 100000000ull; /* clamp to 100 s */
-		/* Use the FreeRTOS TICK (ove_time_get_us), NOT the DWT (ove_time_get_ns): with
-		 * configUSE_TICKLESS_IDLE the idle task WFI-sleeps between events, gating the CPU clock
-		 * so the DWT cycle counter FREEZES across the sleep, while the tick is re-accounted by
-		 * vTaskStepTick() on wake. The run-loop coordinator compares this deadline against
-		 * ove_time_get_us, so both must use the same cross-idle clock or every sleep / poll
-		 * timeout drifts (on real silicon interactive top ran ~1.66x slow + un-quittable). */
+		/* The coordinator evaluates deadlines with lxp_time_us(), so construct
+		 * them in that same cross-idle clock domain. */
 		uint64_t now_us = 0;
 		lxp_time_us(&now_us);
 		lxp_wait_t wait = {

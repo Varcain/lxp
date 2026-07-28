@@ -5,14 +5,14 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Linux-personality socket core: a pooled per-open socket table bridged to the
- * engine-neutral ove_net HAL (lwIP / NuttX net / Zephyr net), and the routing the
+ * Linux-personality socket core: a pooled per-open socket table backed by the
+ * handle-based network provider, and the routing the
  * FD_SOCKET branches of the syscall handlers call into. It mirrors the /dev device
  * layer (linux/dev/lxp_dev.c): the fd's file_idx indexes a refcounted open
  * pool; a generic open-file description owns fork/dup aliases, and its last
  * close closes the socket.
  *
- * Blocking is deferred, never inline: the backing ove_socket is kept non-blocking,
+ * Blocking is deferred, never inline: the backing provider socket is non-blocking,
  * so every op returns at once; a would-block (LXP_ERR_TIMEOUT) parks the caller
  * (LXP_WAIT_SOCKET) and the run-loop coordinator retries via lxp_sock_retry —
  * the same park/retry the pipe and device layers use.
@@ -84,7 +84,7 @@ static void addr_to_guest_sin(const lxp_sockaddr_t *oa, lxp_sockaddr_in *sin)
 	memcpy(&sin->sin_addr, oa->addr, 4);
 }
 
-/* ove_net error -> negated Linux errno. LXP_ERR_TIMEOUT is the "would block"
+/* Provider error -> negated Linux errno. LXP_ERR_TIMEOUT is the "would block"
  * signal from a non-blocking op and is handled by the caller before this. */
 static long net_errno_to_lnx(int e)
 {
@@ -627,8 +627,8 @@ int lxp_sock_ifsnapshot(uint8_t ip[4], uint8_t gw[4], uint8_t nm[4], uint8_t mac
 	return 0;
 }
 
-/* Map the ove_netif flag bitmask to the guest's IFF_* value. */
-static int16_t iff_from_ove(unsigned f)
+/* Map the provider's LXP_NETIF_FLAG_* bitmask to the guest's IFF_* value. */
+static int16_t iff_from_provider(unsigned f)
 {
 	int16_t v = 0;
 	if (f & LXP_NETIF_FLAG_UP)
@@ -714,7 +714,7 @@ long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg)
 	case LXP_SIOCGIFFLAGS: {
 		unsigned f = 0;
 		g_lxp_net_ops->netif_get_flags(nif, &f);
-		request.ifr_ifru.ifru_flags = iff_from_ove(f);
+		request.ifr_ifru.ifru_flags = iff_from_provider(f);
 		copy_out = 1;
 		break;
 	}

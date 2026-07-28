@@ -5,11 +5,11 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * /dev/fb0 framebuffer class driver: exposes the ove_fb HAL as a Linux fbdev so
+ * /dev/fb0 framebuffer class driver: exposes the display provider as a Linux fbdev so
  * a stock LVGL fbdev program (lv_linux_fbdev, LV_LINUX_FBDEV_MMAP=0) can render
  * under the personality — FBIOGET_*SCREENINFO to size the panel, then pwrite()
- * scanlines. Writes copy into the ove_fb buffer with 16-bit stores (the F746
- * SDRAM is Device-typed when a program region doesn't cover it, so a 4-byte
+ * scanlines. Writes copy into the provider buffer with 16-bit stores (some
+ * host mappings are Device-typed outside a program region, so a 4-byte
  * store to a 2-byte-aligned pixel would UsageFault); the run-loop tick presents.
  */
 
