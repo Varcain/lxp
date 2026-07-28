@@ -638,8 +638,10 @@ int lxp_proc_files_unshare(lxp_proc_t *proc);
 int lxp_fd_close(lxp_proc_t *proc, int fd);
 /** Close every descriptor through the generic last-reference path. */
 void lxp_fd_close_all(lxp_proc_t *proc);
-/** Reset the per-run open-file-description pool after all tasks are stopped. */
+/** Reset descriptor-owned backing pools after all tasks are stopped. */
 void lxp_fd_runtime_reset(void);
+/** Reset process-owned resource pools after all tasks are stopped. */
+void lxp_proc_runtime_reset(void);
 
 /** @brief Install a kernel object (@p kind, @p idx) into @p p's fd table, returning the
  * lowest free fd or @c -LXP_EMFILE. Lets the socket bridge mint an accept(2) fd. */

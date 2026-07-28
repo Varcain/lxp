@@ -18,6 +18,7 @@
 #include "lxp_internal.h" /* lxp_guest_access_ok / lxp_guest_strnlen / file_mode / lxp_encode_wstatus */
 #include "lxp_vfs.h"	  /* per-fd-kind file-operation vtable (dispatch by kind) */
 
+#include "fs/lxp_fd_private.h" /* descriptor-table reference transaction */
 #include "fs/lxp_path.h"     /* path resolution (resolve_path / fs_lookup / fs_follow) */
 #include "fs/lxp_pipe.h"     /* pipe ring ops (FD_PIPE) */
 #include "fs/lxp_tmpfs.h"    /* writable VFS overlay nodes (FD_TMPFS) */
@@ -151,8 +152,7 @@ int lxp_wait_cancel(lxp_proc_t *proc)
  * before that point. */
 static long random_fill(void *buf, size_t count, int unavailable_errno);
 
-/* fd-kind → file-operation vtable resolver (defined with the fops below); used by
- * proc_init to seed the std streams before the fops block appears in the file. */
+/* fd-kind → file-operation vtable resolver (defined with the fops below). */
 static const struct lxp_file_ops *ops_for_kind(uint8_t kind);
 static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off);
 
@@ -161,76 +161,6 @@ static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off);
  * entries in lxp_proc_t recover most of this pool's target-side footprint. */
 #define LXP_MAX_OFD (LXP_NSLOT * LXP_MAX_FDS)
 static lxp_ofd_t g_ofd[LXP_MAX_OFD];
-#ifndef LXP_RESOURCE_POOL_COUNT
-#define LXP_RESOURCE_POOL_COUNT LXP_NSLOT
-#endif
-LXP_STATIC_ASSERT(LXP_RESOURCE_POOL_COUNT >= LXP_NSLOT,
-		  "shared-resource pools must cover every live task");
-static lxp_files_t g_files[LXP_RESOURCE_POOL_COUNT];
-static lxp_fs_context_t g_fs_context[LXP_RESOURCE_POOL_COUNT];
-static lxp_sighand_t g_sighand[LXP_RESOURCE_POOL_COUNT];
-static lxp_mm_t g_mm[LXP_RESOURCE_POOL_COUNT];
-static lxp_thread_group_t g_groups[LXP_RESOURCE_POOL_COUNT];
-
-static lxp_files_t *files_new(void)
-{
-	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
-		if (g_files[i].refs == 0) {
-			memset(&g_files[i], 0, sizeof(g_files[i]));
-			g_files[i].refs = 1;
-			return &g_files[i];
-		}
-	return NULL;
-}
-
-static lxp_fs_context_t *fs_context_new(void)
-{
-	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
-		if (g_fs_context[i].refs == 0) {
-			memset(&g_fs_context[i], 0, sizeof(g_fs_context[i]));
-			g_fs_context[i].refs = 1;
-			g_fs_context[i].umask = 022;
-			g_fs_context[i].cwd[0] = '/';
-			return &g_fs_context[i];
-		}
-	return NULL;
-}
-
-static lxp_sighand_t *sighand_new(void)
-{
-	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
-		if (g_sighand[i].refs == 0) {
-			memset(&g_sighand[i], 0, sizeof(g_sighand[i]));
-			g_sighand[i].refs = 1;
-			return &g_sighand[i];
-		}
-	return NULL;
-}
-
-static lxp_mm_t *mm_new(void)
-{
-	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
-		if (g_mm[i].refs == 0) {
-			memset(&g_mm[i], 0, sizeof(g_mm[i]));
-			g_mm[i].refs = 1;
-			g_mm[i].region = lxp_region_ref_none();
-			g_mm[i].device_generation = 1u;
-			g_mm[i].exec_generation = 1u;
-			return &g_mm[i];
-		}
-	return NULL;
-}
-
-static lxp_thread_group_t *group_new(void)
-{
-	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
-		if (g_groups[i].refs == 0) {
-			memset(&g_groups[i], 0, sizeof(g_groups[i]));
-			g_groups[i].refs = 1;
-			return &g_groups[i];
-		}
-	return NULL;
-}
 
 #if LXP_ENABLE_NET
 /* pselect6(2): select() over the poll machinery (busybox inetd + dropbear are
@@ -331,71 +261,6 @@ static const char *child_name(const char *dir, const char *path)
 		return NULL;
 	const char *name = path + dl + 1;
 	return (*name && !strchr(name, '/')) ? name : NULL;
-}
-
-int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
-{
-	if (!proc || !arena)
-		return LXP_ERR_INVALID_PARAM;
-
-	memset(proc, 0, sizeof(*proc));
-	proc->mm = mm_new();
-	proc->group = group_new();
-	proc->files = files_new();
-	proc->fs_context = fs_context_new();
-	proc->sighand = sighand_new();
-	if (!proc->mm || !proc->group || !proc->files || !proc->fs_context || !proc->sighand) {
-		lxp_proc_resources_put(proc);
-		lxp_proc_mm_put(proc);
-		lxp_proc_group_put(proc);
-		return LXP_ERR_NO_MEMORY;
-	}
-	proc->mm->arena = arena;
-	proc->pid = 1; /* the initial task is tid/tgid 1 (ppid 0); fork assigns the rest */
-	proc->group->tgid = 1;
-	proc->group->pgid = 1;
-	/* fd 0/1/2 are the standard streams, routed to the caller's callbacks.
-	 * For console fds, file_idx marks the direction: 0 = readable (stdin),
-	 * 1 = writable (stdout/stderr); this survives F_DUPFD so a dup of stdin
-	 * stays readable (the shell dups stdin for its interactive fd). */
-	if (fd_alloc(proc, LXP_FD_CONSOLE, 0, 0) != 0 ||
-	    fd_alloc(proc, LXP_FD_CONSOLE, 1, 0) != 1 ||
-	    fd_alloc(proc, LXP_FD_CONSOLE, 1, 0) != 2) {
-		lxp_proc_resources_put(proc);
-		lxp_proc_mm_put(proc);
-		lxp_proc_group_put(proc);
-		return LXP_ERR_NO_MEMORY;
-	}
-	if (brk_bytes) {
-		void *brk = lxp_arena_alloc(arena, brk_bytes);
-		if (!brk) {
-			lxp_proc_resources_put(proc);
-			lxp_proc_mm_put(proc);
-			lxp_proc_group_put(proc);
-			return LXP_ERR_NO_MEMORY;
-		}
-		proc->mm->brk_base = (uintptr_t)brk;
-		proc->mm->brk_cur = proc->mm->brk_base;
-		proc->mm->brk_max = proc->mm->brk_base + brk_bytes;
-	}
-	return LXP_OK;
-}
-
-void lxp_proc_bind_exec_capture(lxp_proc_t *proc, lxp_exec_capture_t *capture)
-{
-	if (!proc)
-		return;
-	proc->exec_capture = capture;
-	if (capture)
-		memset(capture, 0, sizeof(*capture));
-}
-
-void lxp_proc_set_rootfs(lxp_proc_t *proc, const lxp_file_t *files, int count)
-{
-	if (!proc)
-		return;
-	proc->fs = files;
-	proc->fs_count = (files && count > 0) ? count : 0;
 }
 
 /* Validate an fd index and return its slot, or NULL. */
@@ -1787,285 +1652,24 @@ void lxp_fd_runtime_reset(void)
 	lxp_pty_runtime_reset();
 #endif
 	memset(g_ofd, 0, sizeof(g_ofd));
-	memset(g_files, 0, sizeof(g_files));
-	memset(g_fs_context, 0, sizeof(g_fs_context));
-	memset(g_sighand, 0, sizeof(g_sighand));
-	memset(g_mm, 0, sizeof(g_mm));
-	memset(g_groups, 0, sizeof(g_groups));
 }
 
-int lxp_fd_fork_inherit(lxp_proc_t *child)
+int lxp_fd_table_retain(lxp_proc_t *proc)
 {
-	if (!child || !child->files)
+	if (!proc || !proc->files)
 		return -1;
-	lxp_files_t *source = child->files;
-	lxp_files_t *copy = files_new();
-	if (!copy)
-		return -1;
-	memcpy(copy->fd, source->fd, sizeof(copy->fd));
-	child->files = copy;
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-		lxp_ofd_t *s = fd_slot(child, fd);
-		if (s && s->refs == UINT16_MAX) {
-			memset(copy, 0, sizeof(*copy));
-			child->files = source;
+		lxp_ofd_t *ofd = fd_slot(proc, fd);
+		if (ofd && ofd->refs == UINT16_MAX)
 			return -1;
-		}
 	}
 	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-		lxp_ofd_t *s = fd_slot(child, fd);
-		if (s)
-			s->refs++;
+		lxp_ofd_t *ofd = fd_slot(proc, fd);
+		if (ofd)
+			ofd->refs++;
 	}
 	return 0;
 }
-
-static void files_put(lxp_proc_t *p)
-{
-	lxp_files_t *files = p ? p->files : NULL;
-	if (!files)
-		return;
-	if (files->refs == 0) {
-		p->files = NULL;
-		return;
-	}
-	if (--files->refs == 0) {
-		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (files->fd[fd].ofd)
-				(void)lxp_fd_close(p, fd);
-		memset(files, 0, sizeof(*files));
-	}
-	p->files = NULL;
-}
-
-void lxp_proc_resources_put(lxp_proc_t *p)
-{
-	if (!p)
-		return;
-	files_put(p);
-	if (p->fs_context) {
-		if (p->fs_context->refs > 0 && --p->fs_context->refs == 0)
-			memset(p->fs_context, 0, sizeof(*p->fs_context));
-		p->fs_context = NULL;
-	}
-	if (p->sighand) {
-		if (p->sighand->refs > 0 && --p->sighand->refs == 0)
-			memset(p->sighand, 0, sizeof(*p->sighand));
-		p->sighand = NULL;
-	}
-}
-
-int lxp_proc_files_unshare(lxp_proc_t *p)
-{
-	if (!p || !p->files)
-		return -1;
-	if (p->files->refs == 1)
-		return 0;
-	lxp_files_t *shared = p->files;
-	if (lxp_fd_fork_inherit(p) != 0)
-		return -1;
-	shared->refs--;
-	return 0;
-}
-
-int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags)
-{
-	if (!child || !parent || !parent->files || !parent->fs_context || !parent->sighand)
-		return -1;
-
-	child->files = NULL;
-	child->fs_context = NULL;
-	child->sighand = NULL;
-	if (clone_flags & LXP_CLONE_FILES) {
-		if (parent->files->refs == UINT16_MAX)
-			goto fail;
-		child->files = parent->files;
-		parent->files->refs++;
-	} else {
-		child->files = parent->files;
-		if (lxp_fd_fork_inherit(child) != 0) {
-			child->files = NULL;
-			goto fail;
-		}
-	}
-
-	if (clone_flags & LXP_CLONE_FS) {
-		if (parent->fs_context->refs == UINT16_MAX)
-			goto fail;
-		child->fs_context = parent->fs_context;
-		child->fs_context->refs++;
-	} else {
-		child->fs_context = fs_context_new();
-		if (!child->fs_context)
-			goto fail;
-		memcpy(child->fs_context->cwd, parent->fs_context->cwd,
-		       sizeof(child->fs_context->cwd));
-		child->fs_context->umask = parent->fs_context->umask;
-	}
-
-	if (clone_flags & LXP_CLONE_SIGHAND) {
-		if (parent->sighand->refs == UINT16_MAX)
-			goto fail;
-		child->sighand = parent->sighand;
-		child->sighand->refs++;
-	} else {
-		child->sighand = sighand_new();
-		if (!child->sighand)
-			goto fail;
-		memcpy(child->sighand->handler, parent->sighand->handler,
-		       sizeof(child->sighand->handler));
-		child->sighand->restorer = parent->sighand->restorer;
-	}
-	return 0;
-
-fail:
-	lxp_proc_resources_put(child);
-	return -1;
-}
-
-int lxp_proc_mm_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags)
-{
-	if (!child || !parent || !parent->mm)
-		return -1;
-	child->mm = NULL;
-	if (clone_flags & LXP_CLONE_VM) {
-		if (parent->mm->refs == UINT16_MAX)
-			return -1;
-		child->mm = parent->mm;
-		child->mm->refs++;
-		return 0;
-	}
-	lxp_mm_t *copy = mm_new();
-	if (!copy)
-		return -1;
-	uint16_t refs = copy->refs;
-	*copy = *parent->mm;
-	copy->refs = refs;
-	child->mm = copy;
-	return 0;
-}
-
-void lxp_proc_mm_put(lxp_proc_t *p)
-{
-	if (!p || !p->mm)
-		return;
-	if (p->mm->refs > 0 && --p->mm->refs == 0)
-		memset(p->mm, 0, sizeof(*p->mm));
-	p->mm = NULL;
-}
-
-int lxp_proc_group_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags,
-			int child_pid)
-{
-	if (!child || !parent || !parent->group || child_pid <= 0)
-		return -1;
-	child->group = NULL;
-	if (clone_flags & LXP_CLONE_THREAD) {
-		if (parent->group->refs == UINT16_MAX)
-			return -1;
-		child->group = parent->group;
-		child->group->refs++;
-		return 0;
-	}
-	lxp_thread_group_t *group = group_new();
-	if (!group)
-		return -1;
-	group->tgid = child_pid;
-	group->ppid = parent->group->tgid;
-	group->pgid = parent->group->pgid;
-	child->group = group;
-	return 0;
-}
-
-void lxp_proc_group_put(lxp_proc_t *p)
-{
-	if (!p || !p->group)
-		return;
-	if (p->group->refs > 0 && --p->group->refs == 0)
-		memset(p->group, 0, sizeof(*p->group));
-	p->group = NULL;
-}
-
-static void proc_child_reset(lxp_proc_t *child)
-{
-	memset(child, 0, sizeof(*child));
-	child->vfork_parent = lxp_slot_ref_none();
-	child->snapshot = lxp_region_ref_none();
-}
-
-void lxp_proc_child_discard(lxp_proc_t *child)
-{
-	if (!child)
-		return;
-	lxp_proc_resources_put(child);
-	lxp_proc_mm_put(child);
-	lxp_proc_group_put(child);
-	proc_child_reset(child);
-}
-
-/*
- * Classify every lxp_proc field instead of inheriting the coordinator's
- * transient state by assignment. Shared/copy-owned objects are acquired below.
- * These are the task-local values Linux actually inherits across fork/clone:
- * host I/O bindings, rootfs/image identity, comm, the signal mask, address-space
- * layout boundary and FDPIC mode. Everything else deliberately remains in the
- * reset state until the coordinator publishes the child.
- */
-static void proc_child_copy_values(lxp_proc_t *child, const lxp_proc_t *parent, int child_pid)
-{
-	proc_child_reset(child);
-	child->write_fn = parent->write_fn;
-	child->read_fn = parent->read_fn;
-	child->console_poll = parent->console_poll;
-	child->io_ctx = parent->io_ctx;
-	child->fs = parent->fs;
-	child->fs_count = parent->fs_count;
-	child->pid = child_pid;
-	memcpy(child->comm, parent->comm, sizeof(child->comm));
-	child->sig_blocked = parent->sig_blocked;
-	child->exec_file_idx = parent->exec_file_idx;
-	child->stack_lo = parent->stack_lo;
-	child->is_fdpic = parent->is_fdpic;
-}
-
-static int proc_init_child(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags,
-			   int child_pid, int thread)
-{
-	if (!child || !parent || child == parent || child_pid <= 0 || !parent->mm ||
-	    !parent->files || !parent->fs_context || !parent->sighand || !parent->group)
-		return LXP_ERR_INVALID_PARAM;
-	if ((clone_flags & LXP_CLONE_SIGHAND) && !(clone_flags & LXP_CLONE_VM))
-		return LXP_ERR_INVALID_PARAM;
-	if (thread) {
-		if ((clone_flags & (LXP_CLONE_THREAD | LXP_CLONE_VM | LXP_CLONE_SIGHAND)) !=
-		    (LXP_CLONE_THREAD | LXP_CLONE_VM | LXP_CLONE_SIGHAND))
-			return LXP_ERR_INVALID_PARAM;
-	} else if (clone_flags & LXP_CLONE_THREAD) {
-		return LXP_ERR_INVALID_PARAM;
-	}
-
-	proc_child_copy_values(child, parent, child_pid);
-	if (lxp_proc_mm_fork(child, parent, clone_flags) != 0 ||
-	    lxp_proc_resources_fork(child, parent, clone_flags) != 0 ||
-	    lxp_proc_group_fork(child, parent, clone_flags, child_pid) != 0) {
-		lxp_proc_child_discard(child);
-		return LXP_ERR_NO_MEMORY;
-	}
-	return LXP_OK;
-}
-
-int lxp_proc_init_process_child(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags,
-				int child_pid)
-{
-	return proc_init_child(child, parent, clone_flags, child_pid, 0);
-}
-
-int lxp_proc_init_thread_child(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags,
-			       int child_tid)
-{
-	return proc_init_child(child, parent, clone_flags, child_tid, 1);
-}
-
 /* pipe(2)/pipe2(2): allocate a pipe object + a read-end / write-end fd pair. @p flags
  * carries O_CLOEXEC for pipe2 (dropbear's exec-status pipe is a CLOEXEC pipe2). */
 static long sys_pipe(lxp_proc_t *p, int *fds, int flags)

@@ -28,6 +28,7 @@ int main(void)
 	lxp_providers_publish(lxp_posix_net_ops(), display_ops);
 #define LXP_SUITE(name, label)                                                                     \
 	printf("=== " label " ===\n");                                                             \
+	lxp_proc_runtime_reset();                                                                   \
 	lxp_fd_runtime_reset();                                                                     \
 	failures += test_##name##_run();
 #include "framework/suites.inc"

@@ -44,6 +44,7 @@ int lxp_signal_process_group(int pgid, int sig)
 
 static void pty_setup(void)
 {
+	lxp_proc_runtime_reset();
 	lxp_fd_runtime_reset();
 	assert_int_equal(lxp_arena_init(&g_arena, g_pool, sizeof(g_pool)), OVE_OK);
 	assert_int_equal(lxp_proc_init(&g_proc, &g_arena, 4096), OVE_OK);

@@ -2178,6 +2178,7 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 	}
 	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
 	g_diag_native_known = 0;
+	lxp_proc_runtime_reset();
 	lxp_fd_runtime_reset();
 #if LXP_ENABLE_NETFS
 	lxp_netfs_shutdown();

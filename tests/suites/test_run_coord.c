@@ -352,6 +352,7 @@ static const lxp_run_config_t g_mock_cfg = {
 static int reset_state(void **state)
 {
 	(void)state;
+	lxp_proc_runtime_reset();
 	lxp_fd_runtime_reset();
 	memset(g_lxp_slots, 0, sizeof(*g_lxp_slots) * LXP_NSLOT);
 	memset(g_mock_arenas, 0, sizeof(g_mock_arenas));
