@@ -135,10 +135,19 @@ typedef struct lxp_memory_policy_key {
 	uint8_t _pad[3];
 } lxp_memory_policy_key_t;
 
+/**
+ * Validate the complete, versioned memory-policy representation before a
+ * seam translates it into native MPU/domain state.
+ *
+ * Returns LXP_OK for the current canonical representation, -LXP_EINVAL for a
+ * malformed, truncated, stale-version, or otherwise non-canonical policy.
+ */
+int lxp_memory_policy_validate(const lxp_memory_policy_t *policy);
+
 static inline lxp_memory_policy_key_t
 lxp_memory_policy_make_key(const lxp_memory_policy_t *policy)
 {
-	if (!policy)
+	if (lxp_memory_policy_validate(policy) != LXP_OK)
 		return (lxp_memory_policy_key_t){0};
 	return (lxp_memory_policy_key_t){
 		.slot = policy->slot,
@@ -152,7 +161,8 @@ lxp_memory_policy_make_key(const lxp_memory_policy_t *policy)
 static inline int lxp_memory_policy_matches_key(const lxp_memory_policy_t *policy,
 						const lxp_memory_policy_key_t *key)
 {
-	return policy && key && lxp_slot_ref_equal(policy->slot, key->slot) &&
+	return key && lxp_memory_policy_validate(policy) == LXP_OK &&
+	       lxp_slot_ref_equal(policy->slot, key->slot) &&
 	       lxp_region_ref_equal(policy->address_space, key->address_space) &&
 	       policy->device_generation == key->device_generation &&
 	       policy->exec_generation == key->exec_generation &&
@@ -162,7 +172,7 @@ static inline int lxp_memory_policy_matches_key(const lxp_memory_policy_t *polic
 static inline int lxp_memory_policy_address_space_matches_key(
 	const lxp_memory_policy_t *policy, const lxp_memory_policy_key_t *key)
 {
-	return policy && key &&
+	return key && lxp_memory_policy_validate(policy) == LXP_OK &&
 	       lxp_region_ref_equal(policy->address_space, key->address_space) &&
 	       policy->device_generation == key->device_generation &&
 	       policy->exec_generation == key->exec_generation &&

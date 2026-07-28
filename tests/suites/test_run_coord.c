@@ -1202,6 +1202,7 @@ static void test_memory_policy_snapshot_and_key_track_every_generation(void **st
 	assert_int_equal(policy.devices[0].base, 0x40001000u);
 	assert_int_equal(policy.devices[0].size, 0x1000u);
 	assert_int_equal(policy.devices[0].attrs, LXP_MAP_DEV);
+	assert_int_equal(lxp_memory_policy_validate(&policy), LXP_OK);
 
 	lxp_memory_policy_key_t key = lxp_memory_policy_make_key(&policy);
 	assert_true(lxp_memory_policy_matches_key(&policy, &key));
@@ -1213,6 +1214,61 @@ static void test_memory_policy_snapshot_and_key_track_every_generation(void **st
 	lxp_slot_ref_t stale = slot;
 	deferred_slot_reassign(0);
 	assert_int_equal(lxp_slot_memory_policy(stale, &policy), -LXP_ESRCH);
+}
+
+static void test_memory_policy_validator_rejects_noncanonical_snapshots(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 2);
+	lxp_slot_ref_t slot = slot_ref_at(0);
+	lxp_mm_t *mm = g_lxp_slots[0].proc.mm;
+	mm->device_generation = 7u;
+	mm->exec_generation = 11u;
+	mm->dev_map_lo[0] = 0x40001000u;
+	mm->dev_map_hi[0] = 0x40002000u;
+	mm->dev_map_attrs[0] = LXP_MAP_DEV;
+
+	lxp_memory_policy_t canonical;
+	assert_int_equal(lxp_slot_memory_policy(slot, &canonical), LXP_OK);
+
+	lxp_memory_policy_t invalid = canonical;
+	invalid.abi_version++;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	lxp_memory_policy_key_t invalid_key = lxp_memory_policy_make_key(&invalid);
+	lxp_memory_policy_key_t empty_key = {0};
+	assert_memory_equal(&invalid_key, &empty_key, sizeof(invalid_key));
+
+	invalid = canonical;
+	invalid.struct_size--;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.slot.generation = 0;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.address_space.index = LXP_NREG;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.device_generation = 0;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.copied_text_executable = 2u;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.device_count = LXP_MEMORY_DEVICE_MAX + 1u;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.devices[0].size = 0;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.devices[0].base = UINTPTR_MAX - 1u;
+	invalid.devices[0].size = 4u;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.devices[0].attrs = LXP_MAP_DEV + 1u;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.devices[1].size = 1u;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
 }
 
 static void test_region_references_reject_reuse_and_skip_zero(void **state)
@@ -3356,6 +3412,9 @@ int main(void)
 				       reset_state),
 		cmocka_unit_test_setup(
 			test_memory_policy_snapshot_and_key_track_every_generation,
+			reset_state),
+		cmocka_unit_test_setup(
+			test_memory_policy_validator_rejects_noncanonical_snapshots,
 			reset_state),
 		cmocka_unit_test_setup(test_region_references_reject_reuse_and_skip_zero,
 				       reset_state),

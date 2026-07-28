@@ -1478,6 +1478,30 @@ int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out)
 	return LXP_OK;
 }
 
+int lxp_memory_policy_validate(const lxp_memory_policy_t *policy)
+{
+	if (!policy || policy->abi_version != LXP_MEMORY_POLICY_ABI_VERSION ||
+	    policy->struct_size != sizeof(*policy) || policy->slot.index < 0 ||
+	    policy->slot.index >= LXP_NSLOT || policy->slot.generation == 0 ||
+	    policy->address_space.index < 0 || policy->address_space.index >= LXP_NREG ||
+	    policy->address_space.generation == 0 || policy->device_generation == 0 ||
+	    policy->exec_generation == 0 || policy->copied_text_executable > 1u ||
+	    policy->device_count > LXP_MEMORY_DEVICE_MAX || policy->_pad != 0)
+		return -LXP_EINVAL;
+
+	for (unsigned i = 0; i < LXP_MEMORY_DEVICE_MAX; i++) {
+		const lxp_device_capability_t *cap = &policy->devices[i];
+		if (i < policy->device_count) {
+			if (cap->size == 0 || cap->size > UINTPTR_MAX - cap->base ||
+			    cap->attrs > LXP_MAP_DEV)
+				return -LXP_EINVAL;
+		} else if (cap->base != 0 || cap->size != 0 || cap->attrs != 0) {
+			return -LXP_EINVAL;
+		}
+	}
+	return LXP_OK;
+}
+
 int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out)
 {
 	if (!out || !lxp_slot_ref_is_current(ref))
@@ -1507,7 +1531,7 @@ int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out)
 		cap->size = mm->dev_map_hi[i] - mm->dev_map_lo[i];
 		cap->attrs = mm->dev_map_attrs[i];
 	}
-	return LXP_OK;
+	return lxp_memory_policy_validate(out);
 }
 
 int lxp_dispatch_slot(lxp_slot_ref_t ref, struct lxp_frame *frame)
