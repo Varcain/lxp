@@ -638,7 +638,7 @@ int lxp_proc_files_unshare(lxp_proc_t *proc);
 int lxp_fd_close(lxp_proc_t *proc, int fd);
 /** Close every descriptor through the generic last-reference path. */
 void lxp_fd_close_all(lxp_proc_t *proc);
-/** Reset descriptor-owned backing pools after all tasks are stopped. */
+/** Reset the descriptor owner's open-file-description pool after all tasks stop. */
 void lxp_fd_runtime_reset(void);
 /** Reset process-owned resource pools after all tasks are stopped. */
 void lxp_proc_runtime_reset(void);

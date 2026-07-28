@@ -156,12 +156,6 @@ static long random_fill(void *buf, size_t count, int unavailable_errno);
 static const struct lxp_file_ops *ops_for_kind(uint8_t kind);
 static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off);
 
-/* One distinct open-file description per possible descriptor. Fork and dup
- * increase refs without allocating another object. The compact descriptor
- * entries in lxp_proc_t recover most of this pool's target-side footprint. */
-#define LXP_MAX_OFD (LXP_NSLOT * LXP_MAX_FDS)
-static lxp_ofd_t g_ofd[LXP_MAX_OFD];
-
 #if LXP_ENABLE_NET
 /* pselect6(2): select() over the poll machinery (busybox inetd + dropbear are
  * select-based). Defined with the poll retry below; the dispatch calls it earlier. */
@@ -263,42 +257,10 @@ static const char *child_name(const char *dir, const char *path)
 	return (*name && !strchr(name, '/')) ? name : NULL;
 }
 
-/* Validate an fd index and return its slot, or NULL. */
+/* Local spelling retained while syscall handlers migrate backing classes. */
 static lxp_ofd_t *fd_slot(lxp_proc_t *p, int fd)
 {
-	if (!p || !p->files || fd < 0 || fd >= LXP_MAX_FDS || p->files->fd[fd].ofd == 0 ||
-	    p->files->fd[fd].ofd > LXP_MAX_OFD)
-		return NULL;
-	lxp_ofd_t *ofd = &g_ofd[p->files->fd[fd].ofd - 1u];
-	return ofd->refs ? ofd : NULL;
-}
-
-static const lxp_ofd_t *fd_slot_const(const lxp_proc_t *p, int fd)
-{
-	return fd_slot((lxp_proc_t *)p, fd);
-}
-
-lxp_ofd_t *lxp_fd_description(lxp_proc_t *p, int fd)
-{
-	return fd_slot(p, fd);
-}
-
-uint8_t lxp_fd_kind(const lxp_proc_t *p, int fd)
-{
-	const lxp_ofd_t *ofd = fd_slot_const(p, fd);
-	return ofd ? ofd->kind : LXP_FD_FREE;
-}
-
-int lxp_fd_backing(const lxp_proc_t *p, int fd)
-{
-	const lxp_ofd_t *ofd = fd_slot_const(p, fd);
-	return ofd ? ofd->file_idx : -1;
-}
-
-int lxp_fd_direction(const lxp_proc_t *p, int fd)
-{
-	const lxp_ofd_t *ofd = fd_slot_const(p, fd);
-	return ofd ? ofd->rw : -1;
+	return lxp_fd_description(p, fd);
 }
 
 #if LXP_ENABLE_NET
@@ -1368,35 +1330,11 @@ static long sys_munmap(lxp_proc_t *p, uintptr_t addr, size_t len)
 /* Claim the lowest free fd for (kind, idx, off); -EMFILE if the table is full. */
 static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
 {
-	if (!p || !p->files)
-		return -LXP_EMFILE;
-	int oi = -1;
-	for (int i = 0; i < LXP_MAX_OFD; i++)
-		if (g_ofd[i].refs == 0) {
-			oi = i;
-			break;
-		}
-	if (oi < 0)
-		return -LXP_EMFILE;
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-		if (p->files->fd[fd].ofd == 0) {
-			g_ofd[oi].refs = 1;
-			g_ofd[oi].kind = kind;
-			g_ofd[oi].rw = 0;
-			g_ofd[oi].nonblock = 0;
-			g_ofd[oi].file_idx = idx;
-			g_ofd[oi].offset = off;
-			g_ofd[oi].ops = ops_for_kind(kind);
-			p->files->fd[fd].ofd = (uint16_t)(oi + 1);
-			p->files->fd[fd].cloexec = 0;
-			return fd;
-		}
-	}
-	return -LXP_EMFILE;
+	return lxp_fd_open(p, kind, idx, off, ops_for_kind(kind));
 }
 
 /* Public wrapper so the socket bridge can mint an accept(2) fd (the fd table is
- * owned by this TU; the bridge owns the socket pool). */
+ * owned by lxp_fd.c; the bridge owns the socket pool). */
 int lxp_fd_install(lxp_proc_t *p, uint8_t kind, int idx)
 {
 	return fd_alloc(p, kind, idx, 0);
@@ -1535,7 +1473,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 			return idx;
 		int fd = fd_alloc(p, LXP_FD_PTY, (int)idx, 0);
 		if (fd >= 0) {
-			fd_slot(p, fd)->rw = 1; /* master end */
+			(void)lxp_fd_set_status(p, fd, 1, 0); /* master end */
 			lxp_pty_end_open((int)idx, 1);
 		} else {
 			lxp_pty_discard((int)idx);
@@ -1622,54 +1560,6 @@ static long sys_close(lxp_proc_t *p, int fd)
 	return lxp_fd_close(p, fd);
 }
 
-int lxp_fd_close(lxp_proc_t *p, int fd)
-{
-	lxp_ofd_t *s = fd_slot(p, fd);
-	if (!s)
-		return -LXP_EBADF;
-	p->files->fd[fd] = (lxp_fd_t){0};
-	if (--s->refs == 0) {
-		if (s->ops && s->ops->close)
-			s->ops->close(p, s);
-		memset(s, 0, sizeof(*s));
-	}
-	return 0;
-}
-
-void lxp_fd_close_all(lxp_proc_t *p)
-{
-	if (!p || !p->files)
-		return;
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (p->files->fd[fd].ofd)
-			(void)lxp_fd_close(p, fd);
-}
-
-void lxp_fd_runtime_reset(void)
-{
-	lxp_pipe_runtime_reset();
-#if LXP_ENABLE_PTY
-	lxp_pty_runtime_reset();
-#endif
-	memset(g_ofd, 0, sizeof(g_ofd));
-}
-
-int lxp_fd_table_retain(lxp_proc_t *proc)
-{
-	if (!proc || !proc->files)
-		return -1;
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-		lxp_ofd_t *ofd = fd_slot(proc, fd);
-		if (ofd && ofd->refs == UINT16_MAX)
-			return -1;
-	}
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-		lxp_ofd_t *ofd = fd_slot(proc, fd);
-		if (ofd)
-			ofd->refs++;
-	}
-	return 0;
-}
 /* pipe(2)/pipe2(2): allocate a pipe object + a read-end / write-end fd pair. @p flags
  * carries O_CLOEXEC for pipe2 (dropbear's exec-status pipe is a CLOEXEC pipe2). */
 static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
@@ -1684,37 +1574,26 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 	int pi = lxp_pipe_alloc();
 	if (pi < 0)
 		return -LXP_EMFILE;
-	int rfd = -1, wfd = -1;
-	for (int fd = 0; fd < LXP_MAX_FDS && wfd < 0; fd++) {
-		if (p->files->fd[fd].ofd != 0)
-			continue;
-		if (rfd < 0)
-			rfd = fd;
-		else
-			wfd = fd;
-	}
-	if (wfd < 0) {
+	if (lxp_fd_free_count(p) < 2) {
 		lxp_pipe_discard(pi);
 		return -LXP_EMFILE;
 	}
-	rfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
+	int rfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
 	if (rfd < 0) {
 		lxp_pipe_discard(pi);
 		return -LXP_EMFILE;
 	}
-	fd_slot(p, rfd)->rw = 0;
-	fd_slot(p, rfd)->nonblock = nb;
+	(void)lxp_fd_set_status(p, rfd, 0, nb);
 	lxp_pipe_end_open(pi, 0);
-	wfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
+	int wfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
 	if (wfd < 0) {
 		(void)sys_close(p, rfd);
 		return -LXP_EMFILE;
 	}
-	fd_slot(p, wfd)->rw = 1;
-	fd_slot(p, wfd)->nonblock = nb;
+	(void)lxp_fd_set_status(p, wfd, 1, nb);
 	lxp_pipe_end_open(pi, 1);
-	p->files->fd[rfd].cloexec = cx;
-	p->files->fd[wfd].cloexec = cx;
+	(void)lxp_fd_set_cloexec(p, rfd, cx);
+	(void)lxp_fd_set_cloexec(p, wfd, cx);
 	const int result[2] = {rfd, wfd};
 	if (lxp_copy_to_guest(p, (uintptr_t)fds, result, sizeof(result)) != 0) {
 		(void)sys_close(p, rfd);
@@ -1724,54 +1603,16 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 	return 0;
 }
 
-/* dup/dup2/F_DUPFD: the new fd aliases oldfd's backing object, so take a reference on the
- * refcounted-backend kinds. Consolidates the get all three call sites open-coded (F_DUPFD
- * had previously omitted netfs — now consistent). */
-static int fd_get(lxp_ofd_t *s)
-{
-	if (!s || s->refs == UINT16_MAX)
-		return -1;
-	s->refs++;
-	return 0;
-}
-
 /* dup2/dup3: make newfd alias oldfd's target (the pipe wiring the shell does). */
 static long sys_dup2(lxp_proc_t *p, int oldfd, int newfd)
 {
-	lxp_ofd_t *s = fd_slot(p, oldfd);
-	if (!s)
-		return -LXP_EBADF;
-	if (newfd < 0 || newfd >= LXP_MAX_FDS)
-		return -LXP_EBADF;
-	if (oldfd != newfd) {
-		uint16_t old_ofd = p->files->fd[oldfd].ofd;
-		if (fd_get(s) != 0)
-			return -LXP_EMFILE;
-		if (p->files->fd[newfd].ofd)
-			(void)sys_close(p, newfd);
-		p->files->fd[newfd].ofd = old_ofd;
-		p->files->fd[newfd].cloexec =
-			0; /* dup2/dup3 clear FD_CLOEXEC; dup3(O_CLOEXEC) re-sets it */
-	}
-	return newfd;
+	return lxp_fd_dup_to(p, oldfd, newfd, 0);
 }
 
 /* dup(2): alias oldfd onto the lowest free fd. */
 static long sys_dup(lxp_proc_t *p, int oldfd)
 {
-	lxp_ofd_t *s = fd_slot(p, oldfd);
-	if (!s)
-		return -LXP_EBADF;
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++) {
-		if (p->files->fd[fd].ofd == 0) {
-			if (fd_get(s) != 0)
-				return -LXP_EMFILE;
-			p->files->fd[fd].ofd = p->files->fd[oldfd].ofd;
-			p->files->fd[fd].cloexec = 0; /* dup(2) clears FD_CLOEXEC on the new fd */
-			return fd;
-		}
-	}
-	return -LXP_EMFILE;
+	return lxp_fd_dup_min(p, oldfd, 0, 0);
 }
 
 static long sys_lseek(lxp_proc_t *p, int fd, long off, int whence)
@@ -2792,9 +2633,7 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	 * the shell exec'd by its exec-status pipe (FD_CLOEXEC) closing this way. */
 	if (lxp_proc_files_unshare(p) != 0)
 		return -LXP_ENOMEM;
-	for (int cfd = 0; cfd < LXP_MAX_FDS; cfd++)
-		if (p->files->fd[cfd].ofd != 0 && p->files->fd[cfd].cloexec)
-			sys_close(p, cfd);
+	lxp_fd_close_on_exec(p);
 	cap->argc = argc;
 	p->exec_file_idx = idx;
 	if (lxp_intent_begin(p, &(lxp_intent_t){.kind = LXP_INTENT_EXEC}) != 0)
@@ -2832,17 +2671,8 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 		int from = (int)a2;
 		if (from < 0 || from >= LXP_MAX_FDS)
 			from = 0;
-		for (int nfd = from; nfd < LXP_MAX_FDS; nfd++) {
-			if (proc->files->fd[nfd].ofd == 0) {
-				if (fd_get(s) != 0)
-					return -LXP_EMFILE;
-				proc->files->fd[nfd].ofd = proc->files->fd[(int)a0].ofd;
-				proc->files->fd[nfd].cloexec = ((int)a1 == LXP_F_DUPFD_CLOEXEC) ? 1
-												: 0;
-				return nfd;
-			}
-		}
-		return -LXP_EMFILE;
+		return lxp_fd_dup_min(proc, (int)a0, from,
+				      (int)a1 == LXP_F_DUPFD_CLOEXEC);
 	}
 #if LXP_ENABLE_DEV
 	/* A device fd honours F_SETFL/F_GETFL so O_NONBLOCK takes effect (LVGL's
@@ -2893,11 +2723,13 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 	/* F_SETFD/F_GETFD track close-on-exec (dropbear sets FD_CLOEXEC on its exec-status
 		 * pipe and detects a successful shell exec by that fd closing on execve). */
 	if ((int)a1 == LXP_F_SETFD) {
-		proc->files->fd[(int)a0].cloexec = ((int)a2 & LXP_FD_CLOEXEC) ? 1 : 0;
-		return 0;
+		return lxp_fd_set_cloexec(proc, (int)a0,
+					  ((int)a2 & LXP_FD_CLOEXEC) != 0);
 	}
-	if ((int)a1 == LXP_F_GETFD)
-		return proc->files->fd[(int)a0].cloexec ? LXP_FD_CLOEXEC : 0;
+	if ((int)a1 == LXP_F_GETFD) {
+		int cloexec = lxp_fd_get_cloexec(proc, (int)a0);
+		return cloexec > 0 ? LXP_FD_CLOEXEC : cloexec;
+	}
 	/* F_GETFL must report a truthful access mode. uClibc's fdopen() validates
 		 * the FILE* mode against it, so answering O_RDONLY (0) for a writable fd
 		 * fails fdopen(fd, "w") with EINVAL — which is how dropbearkey's .pub
@@ -3145,7 +2977,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_open: { /* legacy open(path, flags, mode): dirfd = cwd */
 		long f = sys_openat(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a0, (int)a1);
 		if (f >= 0 && ((int)a1 & LXP_O_CLOEXEC))
-			proc->files->fd[f].cloexec = 1;
+			(void)lxp_fd_set_cloexec(proc, (int)f, 1);
 		return f;
 	}
 	case LXP_NR_execve: /* (path, argv, envp) */
@@ -3154,7 +2986,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_openat: {
 		long f = sys_openat(proc, (int)a0, (const char *)(uintptr_t)a1, (int)a2);
 		if (f >= 0 && ((int)a2 & LXP_O_CLOEXEC))
-			proc->files->fd[f].cloexec = 1;
+			(void)lxp_fd_set_cloexec(proc, (int)f, 1);
 		return f;
 	}
 	case LXP_NR_close:
@@ -3170,10 +3002,8 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_dup3: { /* (old, new, flags) — flags carries O_CLOEXEC on the new fd */
 		if ((int)a0 == (int)a1) /* dup3 (unlike dup2) rejects oldfd == newfd */
 			return -LXP_EINVAL;
-		long nf = sys_dup2(proc, (int)a0, (int)a1);
-		if (nf >= 0 && ((int)a2 & LXP_O_CLOEXEC))
-			proc->files->fd[nf].cloexec = 1;
-		return nf;
+		return lxp_fd_dup_to(proc, (int)a0, (int)a1,
+				     ((int)a2 & LXP_O_CLOEXEC) != 0);
 	}
 	case LXP_NR_lseek:
 		return sys_lseek(proc, (int)a0, a1, (int)a2);

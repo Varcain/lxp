@@ -7,6 +7,7 @@
 
 #include <string.h>
 
+#include "fs/lxp_fd_private.h"
 #include "run/lxp_exec_private.h"
 
 #if LXP_ENABLE_NETFS_EXEC
@@ -133,9 +134,7 @@ LXP_EXEC_TXN_LINKAGE int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t
 	 * the descriptor table and old image untouched. */
 	if (lxp_proc_files_unshare(tx->old) != 0)
 		return -LXP_ENOMEM;
-	for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-		if (tx->old->files->fd[fd].ofd && tx->old->files->fd[fd].cloexec)
-			(void)lxp_fd_close(tx->old, fd);
+	lxp_fd_close_on_exec(tx->old);
 
 	exec_txn_detach_old(tx);
 	deferred_slot_reassign(tx->slot);

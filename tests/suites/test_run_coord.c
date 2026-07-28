@@ -22,7 +22,9 @@
 #include <cmocka.h>
 
 #include "lxp/lxp_syscall.h"
+#include "lxp/lxp_pty.h"
 #include "lxp/lxp_port_posix.h"
+#include "fs/lxp_pipe.h"
 #include "lxp_internal.h"
 #include "lxp_provider.h"
 #include "run/lxp_exec_private.h"
@@ -354,6 +356,10 @@ static int reset_state(void **state)
 	(void)state;
 	lxp_proc_runtime_reset();
 	lxp_fd_runtime_reset();
+	lxp_pipe_runtime_reset();
+#if LXP_ENABLE_PTY
+	lxp_pty_runtime_reset();
+#endif
 	memset(g_lxp_slots, 0, sizeof(*g_lxp_slots) * LXP_NSLOT);
 	memset(g_mock_arenas, 0, sizeof(g_mock_arenas));
 	for (int s = 0; s < LXP_NSLOT; s++) {

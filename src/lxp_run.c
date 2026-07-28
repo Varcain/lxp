@@ -47,6 +47,7 @@
 #include "lxp_internal.h"     /* lxp_encode_wstatus (shared with sys_wait4) */
 #include "lxp_provider.h"
 #include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
+#include "fs/lxp_pipe.h"
 #include "run/lxp_coordinator.h"
 #include "run/lxp_image.h"
 #include "run/lxp_runtime_store.h"
@@ -2180,6 +2181,10 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 	g_diag_native_known = 0;
 	lxp_proc_runtime_reset();
 	lxp_fd_runtime_reset();
+	lxp_pipe_runtime_reset();
+#if LXP_ENABLE_PTY
+	lxp_pty_runtime_reset();
+#endif
 #if LXP_ENABLE_NETFS
 	lxp_netfs_shutdown();
 #endif

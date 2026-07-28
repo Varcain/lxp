@@ -11,12 +11,26 @@
 #include <stdio.h>
 
 #include "framework/lxp_test.h"
+#include "fs/lxp_pipe.h"
 #include "lxp/lxp_port_posix.h"
+#if LXP_ENABLE_PTY
+#include "lxp/lxp_pty.h"
+#endif
 #include "lxp_provider.h"
 
 #if LXP_ENABLE_DEV_FB
 const lxp_display_ops_t *lxp_test_display_ops(void);
 #endif
+
+static void runtime_reset(void)
+{
+	lxp_proc_runtime_reset();
+	lxp_fd_runtime_reset();
+	lxp_pipe_runtime_reset();
+#if LXP_ENABLE_PTY
+	lxp_pty_runtime_reset();
+#endif
+}
 
 int main(void)
 {
@@ -28,8 +42,7 @@ int main(void)
 	lxp_providers_publish(lxp_posix_net_ops(), display_ops);
 #define LXP_SUITE(name, label)                                                                     \
 	printf("=== " label " ===\n");                                                             \
-	lxp_proc_runtime_reset();                                                                   \
-	lxp_fd_runtime_reset();                                                                     \
+	runtime_reset();                                                                            \
 	failures += test_##name##_run();
 #include "framework/suites.inc"
 	printf("\n=== Summary: %d test group(s) had failures ===\n", failures);

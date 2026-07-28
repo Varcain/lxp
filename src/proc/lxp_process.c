@@ -113,8 +113,7 @@ static void files_put(lxp_proc_t *proc)
 	}
 	if (--files->refs == 0) {
 		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (files->fd[fd].ofd)
-				(void)lxp_fd_close(proc, fd);
+			(void)lxp_fd_close(proc, fd);
 		memset(files, 0, sizeof(*files));
 	}
 	proc->files = NULL;
