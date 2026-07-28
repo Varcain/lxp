@@ -49,12 +49,18 @@ static struct {
 	int abort_sidx;
 	uint32_t abort_generation;
 	int abort_failures;
+	int abort_fail_slot;
 	int park_prepare_calls;
 	int park_calls;
 	int park_sidx;
 	uint32_t park_generation;
 	int park_failures;
 	int event_posts;
+	int event_wait_calls;
+	int observe_wait_slot;
+	int wait_observed_alive;
+	unsigned wait_observed_region_refs;
+	int wait_observed_trap_active;
 	int cache_clean_calls;
 	const void *cache_clean_base[8];
 	size_t cache_clean_len[8];
@@ -176,7 +182,8 @@ static int mock_abort_slot(int sidx, uint32_t generation)
 	g_mock.abort_calls++;
 	g_mock.abort_sidx = sidx;
 	g_mock.abort_generation = generation;
-	if (g_mock.abort_failures > 0) {
+	if (g_mock.abort_failures > 0 &&
+	    (g_mock.abort_fail_slot < 0 || g_mock.abort_fail_slot == sidx)) {
 		g_mock.abort_failures--;
 		return -LXP_EIO;
 	}
@@ -208,6 +215,16 @@ static void mock_event_post(void)
 static void mock_event_wait(unsigned ms)
 {
 	(void)ms;
+	g_mock.event_wait_calls++;
+	if (g_mock.observe_wait_slot >= 0) {
+		lxp_proc_t *proc = lxp_slot_proc(g_mock.observe_wait_slot);
+		g_mock.wait_observed_alive = proc && proc->alive;
+		g_mock.wait_observed_region_refs =
+			proc && proc->mm && proc->mm->region.index >= 0
+				? g_regions[proc->mm->region.index].refs
+				: 0;
+		g_mock.wait_observed_trap_active = lxp_trap_active();
+	}
 }
 static void mock_crit(void)
 {
@@ -319,6 +336,8 @@ static int reset_state(void **state)
 	memset(g_mock_dyn_pools, 0, sizeof(g_mock_dyn_pools));
 	memset(&g_mock, 0, sizeof(g_mock));
 	g_mock.map_fail_slot = -1;
+	g_mock.abort_fail_slot = -1;
+	g_mock.observe_wait_slot = -1;
 	for (int r = 0; r < LXP_NREG; r++)
 		g_regions[r].lease_owner = lxp_slot_ref_none();
 	for (int s = 0; s < LXP_NSLOT; s++)
@@ -2245,6 +2264,34 @@ static void test_teardown_releases_every_slot_resource(void **state)
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 }
 
+static void test_teardown_quiesces_before_releasing_resources(void **state)
+{
+	(void)state;
+	const int s = 2;
+	deferred_slot_reassign(s);
+	lxp_slot_ref_t owner = slot_ref_at(s);
+	lxp_proc_t *p = &g_lxp_slots[s].proc;
+	p->alive = 1;
+	p->mm->region = region_reserve(1, owner);
+	g_lxp_slots[s].runnable = 1;
+	g_lxp_slots[s].host_state = SLOT_RUNNING;
+	g_mock.abort_failures = 1;
+	g_mock.abort_fail_slot = s;
+	g_mock.observe_wait_slot = s;
+	lxp_trap_publish(1);
+
+	coordinator_teardown_all(&g_mock_eng);
+
+	assert_int_equal(g_mock.abort_calls, LXP_NSLOT + 1);
+	assert_int_equal(g_mock.event_wait_calls, 1);
+	assert_true(g_mock.wait_observed_alive);
+	assert_int_equal(g_mock.wait_observed_region_refs, 1);
+	assert_true(g_mock.wait_observed_trap_active);
+	assert_false(lxp_trap_active());
+	assert_false(p->alive);
+	assert_int_equal(g_regions[1].refs, 0);
+}
+
 static void test_spawn_callbacks_receive_explicit_mode_and_published_slot(void **state)
 {
 	(void)state;
@@ -3357,6 +3404,8 @@ int main(void)
 		cmocka_unit_test_setup(test_device_map_index_tracks_both_ranges, reset_state),
 		cmocka_unit_test_setup(test_device_maps_follow_shared_address_space, reset_state),
 		cmocka_unit_test_setup(test_teardown_releases_every_slot_resource, reset_state),
+		cmocka_unit_test_setup(test_teardown_quiesces_before_releasing_resources,
+				       reset_state),
 		cmocka_unit_test_setup(
 			test_spawn_callbacks_receive_explicit_mode_and_published_slot,
 			reset_state),

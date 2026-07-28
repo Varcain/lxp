@@ -2376,15 +2376,27 @@ int lxp_region_lease_reassign(lxp_region_ref_t region, lxp_slot_ref_t old_owner,
 	return LXP_OK;
 }
 
+/* A failed abort leaves the native task and its Linux resources intact by
+ * contract. Keep the trap route active and retry until every generation-
+ * qualified native owner is synchronously gone. There is no safe recovery
+ * which returns to the host while a guest can still execute; a permanent port
+ * failure deliberately remains here for the host watchdog to contain. */
+static void coordinator_quiesce_all(const lxp_os_ops_t *eng)
+{
+	for (int s = 0; s < LXP_NSLOT; s++) {
+		while (coordinator_abort_slot(eng, s) != LXP_OK)
+			eng->event_wait(1u);
+	}
+}
+
 /* Stop every host task before releasing resource objects: descriptor close
  * hooks and request cancellation touch state a live guest could otherwise
  * still mutate. This is the common path for normal completion, halt, timeout
  * and launch failure, so a later lxp_run() never inherits the prior run. */
 static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 {
-	for (int s = 0; s < LXP_NSLOT; s++)
-		coordinator_abort_slot(eng, s);
-
+	coordinator_quiesce_all(eng);
+	lxp_trap_publish(0);
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		lxp_proc_t *p = &g_lxp_slots[s].proc;
 		deferred_slot_reassign(s);
@@ -2917,14 +2929,12 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const c
 		}
 		eng->event_wait(to);
 	}
-	lxp_trap_publish(0);
 	coordinator_teardown_all(eng);
 	refresh_stats();
 	lxp_diag_checkpoint();
 	return rc;
 
 launch_failed:
-	lxp_trap_publish(0);
 	coordinator_teardown_all(eng);
 	refresh_stats();
 	lxp_diag_checkpoint();
