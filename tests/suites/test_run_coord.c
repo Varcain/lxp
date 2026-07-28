@@ -118,6 +118,9 @@ static struct {
 	int prepare_calls;
 	int prepare_result;
 	int teardown_calls;
+	int net_begin_calls;
+	int net_begin_result;
+	int net_end_calls;
 } g_mock;
 
 static uint8_t g_mock_regions[LXP_NREG][256];
@@ -305,6 +308,15 @@ static int mock_prepare(void)
 static void mock_teardown(void)
 {
 	g_mock.teardown_calls++;
+}
+static int mock_net_begin(void)
+{
+	g_mock.net_begin_calls++;
+	return g_mock.net_begin_result;
+}
+static void mock_net_end(void)
+{
+	g_mock.net_end_calls++;
 }
 static const char *mock_system_version(void)
 {
@@ -1471,17 +1483,38 @@ static void test_failed_prepare_is_rolled_back(void **state)
 		.rootfs_image_size = sizeof(image),
 	};
 	const char *const argv[] = {"init", NULL};
+	lxp_net_ops_t net_ops = *g_test_net_ops;
+	net_ops.run_begin = mock_net_begin;
+	net_ops.run_end = mock_net_end;
+	lxp_net_ops_t invalid_net_ops = net_ops;
+	invalid_net_ops.run_end = NULL;
+	assert_int_equal(lxp_run(&g_mock_eng, &invalid_net_ops, NULL, &cfg, "/init", 1, argv),
+			 LXP_RUN_ELAUNCH);
+	assert_int_equal(g_mock.net_begin_calls, 0);
+	assert_int_equal(g_mock.prepare_calls, 0);
 
 	g_mock.prepare_result = -LXP_EIO;
-	assert_int_equal(lxp_run(&g_mock_eng, g_test_net_ops, NULL, &cfg, "/init", 1,
-				 argv),
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &cfg, "/init", 1, argv),
 			 LXP_RUN_ELAUNCH);
+	assert_int_equal(g_mock.net_begin_calls, 1);
+	assert_int_equal(g_mock.net_end_calls, 1);
 	assert_int_equal(g_mock.prepare_calls, 1);
 	assert_int_equal(g_mock.teardown_calls, 1);
 	assert_null(g_eng);
 	assert_null(g_cfg);
 	assert_null(g_lxp_rootfs_lo);
 	assert_null(g_lxp_rootfs_hi);
+	assert_null(g_lxp_net_ops);
+
+	/* A rejected provider acquisition never starts host preparation or releases
+	 * an already-active provider state through run_end(). */
+	g_mock.net_begin_result = LXP_ERR_WOULD_BLOCK;
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &cfg, "/init", 1, argv),
+			 LXP_RUN_ELAUNCH);
+	assert_int_equal(g_mock.net_begin_calls, 2);
+	assert_int_equal(g_mock.net_end_calls, 1);
+	assert_int_equal(g_mock.prepare_calls, 1);
+	assert_int_equal(g_mock.teardown_calls, 1);
 	assert_null(g_lxp_net_ops);
 }
 

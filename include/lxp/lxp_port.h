@@ -101,7 +101,7 @@ typedef enum lxp_cpu_memory_model {
 } lxp_cpu_memory_model_t;
 
 #define LXP_OS_OPS_ABI_VERSION 5u
-#define LXP_NET_OPS_ABI_VERSION 1u
+#define LXP_NET_OPS_ABI_VERSION 2u
 #define LXP_DISPLAY_OPS_ABI_VERSION 1u
 
 /** Native action requested through spawn_resume(). A captured Linux context
@@ -241,6 +241,12 @@ typedef struct lxp_os_ops {
 typedef struct lxp_net_ops {
 	uint32_t abi_version; /**< Must be LXP_NET_OPS_ABI_VERSION. */
 	uint32_t struct_size; /**< Must be sizeof(lxp_net_ops_t). */
+
+	/** Acquire/release the provider's run-scoped socket storage. run_begin()
+	 * must leave prior state unchanged on failure; run_end() closes any
+	 * provider handles still owned after core teardown. */
+	int (*run_begin)(void);
+	void (*run_end)(void);
 
 	int (*sock_open)(lxp_af_t af, lxp_sock_type_t type, int proto, lxp_socket_t *out);
 	int (*sock_accept)(lxp_socket_t listener, lxp_socket_t *out, uint64_t timeout_ns);

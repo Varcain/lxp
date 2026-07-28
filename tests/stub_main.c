@@ -35,16 +35,23 @@ static void runtime_reset(void)
 int main(void)
 {
 	int failures = 0;
+	const lxp_net_ops_t *net_ops = lxp_posix_net_ops();
 	const lxp_display_ops_t *display_ops = NULL;
 #if LXP_ENABLE_DEV_FB
 	display_ops = lxp_test_display_ops();
 #endif
-	lxp_providers_publish(lxp_posix_net_ops(), display_ops);
+	if (net_ops->run_begin() != LXP_OK) {
+		fprintf(stderr, "failed to acquire POSIX network provider\n");
+		return 1;
+	}
+	lxp_providers_publish(net_ops, display_ops);
 #define LXP_SUITE(name, label)                                                                     \
 	printf("=== " label " ===\n");                                                             \
 	runtime_reset();                                                                            \
 	failures += test_##name##_run();
 #include "framework/suites.inc"
+	lxp_providers_clear();
+	net_ops->run_end();
 	printf("\n=== Summary: %d test group(s) had failures ===\n", failures);
 	return failures ? 1 : 0;
 }

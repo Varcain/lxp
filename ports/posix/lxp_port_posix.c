@@ -10,6 +10,7 @@
  * unit tests link. It does NOT run an ARM guest — the process model is exercised on
  * target (ports/qemu-mps2). The clock + cache hooks live in the test stub.
  */
+#include "lxp/lxp_config.h"
 #include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_port_posix.h"
@@ -29,10 +30,30 @@ struct lxp_socket {
 	int fd;
 	uint8_t used;
 };
-static struct lxp_socket g_pool[LXP_NSOCK + 4];
+#define LXP_POSIX_NSOCK (LXP_NSOCK + LXP_ENABLE_NETFS)
+
+static struct lxp_socket g_pool[LXP_POSIX_NSOCK];
+static uint8_t g_run_active;
+
+static struct lxp_socket *pool_lookup(lxp_socket_t handle)
+{
+	uintptr_t addr = (uintptr_t)handle;
+	uintptr_t base = (uintptr_t)&g_pool[0];
+	size_t offset;
+
+	if (!handle || addr < base || addr >= base + sizeof(g_pool))
+		return NULL;
+	offset = (size_t)(addr - base);
+	if (offset % sizeof(g_pool[0]) != 0)
+		return NULL;
+	struct lxp_socket *socket = &g_pool[offset / sizeof(g_pool[0])];
+	return socket->used ? socket : NULL;
+}
 
 static struct lxp_socket *pool_alloc(int fd)
 {
+	if (!g_run_active)
+		return NULL;
 	for (unsigned i = 0; i < sizeof(g_pool) / sizeof(g_pool[0]); i++)
 		if (!g_pool[i].used) {
 			g_pool[i].fd = fd;
@@ -40,6 +61,33 @@ static struct lxp_socket *pool_alloc(int fd)
 			return &g_pool[i];
 		}
 	return NULL;
+}
+
+static void pool_reset(void)
+{
+	for (unsigned i = 0; i < sizeof(g_pool) / sizeof(g_pool[0]); i++) {
+		if (g_pool[i].used)
+			close(g_pool[i].fd);
+		g_pool[i].fd = -1;
+		g_pool[i].used = 0;
+	}
+}
+
+static int p_run_begin(void)
+{
+	if (g_run_active)
+		return LXP_ERR_WOULD_BLOCK;
+	pool_reset();
+	g_run_active = 1;
+	return LXP_OK;
+}
+
+static void p_run_end(void)
+{
+	if (!g_run_active)
+		return;
+	pool_reset();
+	g_run_active = 0;
 }
 
 /* ---- POSIX errno -> lxp_err_t (lxp_net.c maps lxp_err_t -> guest errno) ----- */
@@ -95,6 +143,8 @@ static void from_sin(const struct sockaddr_in *sin, lxp_sockaddr_t *a)
 static int p_open(lxp_af_t af, lxp_sock_type_t type, int proto, lxp_socket_t *out)
 {
 	(void)af;
+	if (!g_run_active || !out)
+		return LXP_ERR_INVALID_PARAM;
 	int st = (type == LXP_SOCK_DGRAM) ? SOCK_DGRAM : (type == LXP_SOCK_RAW) ? SOCK_RAW
 										: SOCK_STREAM;
 	int fd = socket(AF_INET, st, proto);
@@ -110,35 +160,49 @@ static int p_open(lxp_af_t af, lxp_sock_type_t type, int proto, lxp_socket_t *ou
 }
 static void p_close(lxp_socket_t s)
 {
-	if (s) {
-		close(s->fd);
-		s->used = 0;
-		s->fd = -1;
-	}
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket)
+		return;
+	close(socket->fd);
+	socket->used = 0;
+	socket->fd = -1;
 }
 static int p_connect(lxp_socket_t s, const lxp_sockaddr_t *a, uint64_t to)
 {
 	(void)to;
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket || !a)
+		return LXP_ERR_INVALID_PARAM;
 	struct sockaddr_in sin;
 	to_sin(a, &sin);
-	if (connect(s->fd, (struct sockaddr *)&sin, sizeof(sin)) == 0)
+	if (connect(socket->fd, (struct sockaddr *)&sin, sizeof(sin)) == 0)
 		return LXP_OK;
 	return to_lxp_err(errno);
 }
 static int p_bind(lxp_socket_t s, const lxp_sockaddr_t *a)
 {
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket || !a)
+		return LXP_ERR_INVALID_PARAM;
 	struct sockaddr_in sin;
 	to_sin(a, &sin);
-	return bind(s->fd, (struct sockaddr *)&sin, sizeof(sin)) == 0 ? LXP_OK : to_lxp_err(errno);
+	return bind(socket->fd, (struct sockaddr *)&sin, sizeof(sin)) == 0 ? LXP_OK
+									     : to_lxp_err(errno);
 }
 static int p_listen(lxp_socket_t s, int backlog)
 {
-	return listen(s->fd, backlog) == 0 ? LXP_OK : to_lxp_err(errno);
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket)
+		return LXP_ERR_INVALID_PARAM;
+	return listen(socket->fd, backlog) == 0 ? LXP_OK : to_lxp_err(errno);
 }
 static int p_accept(lxp_socket_t listener, lxp_socket_t *out, uint64_t to)
 {
 	(void)to;
-	int fd = accept(listener->fd, NULL, NULL);
+	struct lxp_socket *socket = pool_lookup(listener);
+	if (!socket || !out)
+		return LXP_ERR_INVALID_PARAM;
+	int fd = accept(socket->fd, NULL, NULL);
 	if (fd < 0)
 		return to_lxp_err(errno);
 	struct lxp_socket *s = pool_alloc(fd);
@@ -151,7 +215,10 @@ static int p_accept(lxp_socket_t listener, lxp_socket_t *out, uint64_t to)
 }
 static int p_send(lxp_socket_t s, const void *d, size_t n, size_t *sent)
 {
-	ssize_t r = send(s->fd, d, n, MSG_NOSIGNAL);
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket || (!d && n != 0))
+		return LXP_ERR_INVALID_PARAM;
+	ssize_t r = send(socket->fd, d, n, MSG_NOSIGNAL);
 	if (r < 0)
 		return to_lxp_err(errno);
 	if (sent)
@@ -161,7 +228,10 @@ static int p_send(lxp_socket_t s, const void *d, size_t n, size_t *sent)
 static int p_recv(lxp_socket_t s, void *b, size_t n, size_t *got, uint64_t to)
 {
 	(void)to;
-	ssize_t r = recv(s->fd, b, n, 0);
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket || (!b && n != 0))
+		return LXP_ERR_INVALID_PARAM;
+	ssize_t r = recv(socket->fd, b, n, 0);
 	if (r < 0)
 		return to_lxp_err(errno);
 	if (got)
@@ -171,9 +241,13 @@ static int p_recv(lxp_socket_t s, void *b, size_t n, size_t *got, uint64_t to)
 static int p_sendto(lxp_socket_t s, const void *d, size_t n, size_t *sent,
 		    const lxp_sockaddr_t *dst)
 {
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket || (!d && n != 0) || !dst)
+		return LXP_ERR_INVALID_PARAM;
 	struct sockaddr_in sin;
 	to_sin(dst, &sin);
-	ssize_t r = sendto(s->fd, d, n, MSG_NOSIGNAL, (struct sockaddr *)&sin, sizeof(sin));
+	ssize_t r =
+		sendto(socket->fd, d, n, MSG_NOSIGNAL, (struct sockaddr *)&sin, sizeof(sin));
 	if (r < 0)
 		return to_lxp_err(errno);
 	if (sent)
@@ -184,9 +258,12 @@ static int p_recvfrom(lxp_socket_t s, void *b, size_t n, size_t *got, lxp_sockad
 		      uint64_t to)
 {
 	(void)to;
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket || (!b && n != 0))
+		return LXP_ERR_INVALID_PARAM;
 	struct sockaddr_in sin;
 	socklen_t sl = sizeof(sin);
-	ssize_t r = recvfrom(s->fd, b, n, 0, (struct sockaddr *)&sin, &sl);
+	ssize_t r = recvfrom(socket->fd, b, n, 0, (struct sockaddr *)&sin, &sl);
 	if (r < 0)
 		return to_lxp_err(errno);
 	if (got)
@@ -197,15 +274,21 @@ static int p_recvfrom(lxp_socket_t s, void *b, size_t n, size_t *got, lxp_sockad
 }
 static int p_set_nonblock(lxp_socket_t s, int nb)
 {
-	int fl = fcntl(s->fd, F_GETFL, 0);
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket)
+		return LXP_ERR_INVALID_PARAM;
+	int fl = fcntl(socket->fd, F_GETFL, 0);
 	if (fl < 0)
 		return to_lxp_err(errno);
 	fl = nb ? (fl | O_NONBLOCK) : (fl & ~O_NONBLOCK);
-	return fcntl(s->fd, F_SETFL, fl) == 0 ? LXP_OK : to_lxp_err(errno);
+	return fcntl(socket->fd, F_SETFL, fl) == 0 ? LXP_OK : to_lxp_err(errno);
 }
 static int p_poll(lxp_socket_t s, unsigned events, unsigned *revents, uint64_t timeout_ns)
 {
-	struct pollfd pfd = {.fd = s->fd, .events = 0, .revents = 0};
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket)
+		return LXP_ERR_INVALID_PARAM;
+	struct pollfd pfd = {.fd = socket->fd, .events = 0, .revents = 0};
 	if (events & LXP_SOCK_POLLIN)
 		pfd.events |= POLLIN;
 	if (events & LXP_SOCK_POLLOUT)
@@ -224,31 +307,43 @@ static int p_poll(lxp_socket_t s, unsigned events, unsigned *revents, uint64_t t
 }
 static int p_shutdown(lxp_socket_t s, int how)
 {
-	return shutdown(s->fd, how) == 0 ? LXP_OK : to_lxp_err(errno);
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket)
+		return LXP_ERR_INVALID_PARAM;
+	return shutdown(socket->fd, how) == 0 ? LXP_OK : to_lxp_err(errno);
 }
 static int p_getsockname(lxp_socket_t s, lxp_sockaddr_t *a)
 {
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket || !a)
+		return LXP_ERR_INVALID_PARAM;
 	struct sockaddr_in sin;
 	socklen_t sl = sizeof(sin);
-	if (getsockname(s->fd, (struct sockaddr *)&sin, &sl) != 0)
+	if (getsockname(socket->fd, (struct sockaddr *)&sin, &sl) != 0)
 		return to_lxp_err(errno);
 	from_sin(&sin, a);
 	return LXP_OK;
 }
 static int p_getpeername(lxp_socket_t s, lxp_sockaddr_t *a)
 {
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket || !a)
+		return LXP_ERR_INVALID_PARAM;
 	struct sockaddr_in sin;
 	socklen_t sl = sizeof(sin);
-	if (getpeername(s->fd, (struct sockaddr *)&sin, &sl) != 0)
+	if (getpeername(socket->fd, (struct sockaddr *)&sin, &sl) != 0)
 		return to_lxp_err(errno);
 	from_sin(&sin, a);
 	return LXP_OK;
 }
 static int p_get_error(lxp_socket_t s)
 {
+	struct lxp_socket *socket = pool_lookup(s);
+	if (!socket)
+		return LXP_ERR_INVALID_PARAM;
 	int e = 0;
 	socklen_t sl = sizeof(e);
-	if (getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &e, &sl) != 0)
+	if (getsockopt(socket->fd, SOL_SOCKET, SO_ERROR, &e, &sl) != 0)
 		return to_lxp_err(errno);
 	return to_lxp_err(e);
 }
@@ -326,6 +421,8 @@ static int nif_set_up(lxp_netif_t nif, int up)
 static const lxp_net_ops_t g_posix_net_ops = {
 	.abi_version = LXP_NET_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_net_ops_t),
+	.run_begin = p_run_begin,
+	.run_end = p_run_end,
 	.sock_open = p_open,
 	.sock_accept = p_accept,
 	.sock_close = p_close,

@@ -2596,13 +2596,14 @@ static int net_ops_valid(const lxp_net_ops_t *ops)
 {
 #if LXP_ENABLE_NET
 	if (!ops || ops->abi_version != LXP_NET_OPS_ABI_VERSION ||
-	    ops->struct_size != sizeof(*ops) || !ops->sock_open || !ops->sock_accept ||
-	    !ops->sock_close || !ops->sock_connect || !ops->sock_bind || !ops->sock_listen ||
-	    !ops->sock_send || !ops->sock_recv || !ops->sock_sendto || !ops->sock_recvfrom ||
-	    !ops->sock_set_nonblock || !ops->sock_poll || !ops->sock_shutdown ||
-	    !ops->sock_getsockname || !ops->sock_getpeername || !ops->sock_get_error ||
-	    !ops->netif_get_addr || !ops->netif_get_hwaddr || !ops->netif_get_flags ||
-	    !ops->netif_set_addr || !ops->netif_set_up)
+	    ops->struct_size != sizeof(*ops) || !ops->run_begin || !ops->run_end ||
+	    !ops->sock_open || !ops->sock_accept || !ops->sock_close || !ops->sock_connect ||
+	    !ops->sock_bind || !ops->sock_listen || !ops->sock_send || !ops->sock_recv ||
+	    !ops->sock_sendto || !ops->sock_recvfrom || !ops->sock_set_nonblock ||
+	    !ops->sock_poll || !ops->sock_shutdown || !ops->sock_getsockname ||
+	    !ops->sock_getpeername || !ops->sock_get_error || !ops->netif_get_addr ||
+	    !ops->netif_get_hwaddr || !ops->netif_get_flags || !ops->netif_set_addr ||
+	    !ops->netif_set_up)
 		return 0;
 #else
 	(void)ops;
@@ -2665,6 +2666,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 {
 	int rc = LXP_RUN_ELAUNCH;
 	int prepare_entered = 0;
+	int net_entered = 0;
 	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
 	lxp_diag_reset_health();
 	g_diag_native_known = 0;
@@ -2677,6 +2679,11 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 
 	/* Assign even NULL providers so a later sequential run cannot inherit one. */
 	lxp_providers_publish(net_ops, disp_ops);
+#if LXP_ENABLE_NET
+	if (net_ops->run_begin() != LXP_OK)
+		goto out;
+	net_entered = 1;
+#endif
 #if LXP_ENABLE_DEV_INPUT
 	/* Publish this run's geometry including explicit zero-to-default semantics,
 	 * so sequential runs cannot inherit a predecessor's panel dimensions. */
@@ -2698,6 +2705,12 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 out:
 	if (prepare_entered && os_ops->teardown)
 		os_ops->teardown();
+#if LXP_ENABLE_NET
+	if (net_entered)
+		net_ops->run_end();
+#else
+	(void)net_entered;
+#endif
 	g_eng = NULL;
 	g_cfg = NULL;
 	g_lxp_rootfs_lo = NULL;
