@@ -2,54 +2,23 @@
  * Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Private coordinator exec handler. Unity-included by lxp_run.c.
+ * Private coordinator exec handler.
  */
 
-enum exec_txn_phase {
-	EXEC_TXN_EMPTY,
-	EXEC_TXN_RESERVED,
-	EXEC_TXN_VALIDATED,
-	EXEC_TXN_COMMITTED,
-	EXEC_TXN_IMAGE_READY,
-	EXEC_TXN_PUBLISHED,
-	EXEC_TXN_FINISHED,
-	EXEC_TXN_ABORTED,
-};
+#include <string.h>
 
-struct exec_txn {
-	lxp_proc_t *old;
-	struct image_txn image;
-	lxp_slot_ref_t old_ref;
-	lxp_slot_ref_t new_ref;
-	lxp_slot_ref_t parent_ref;
-	lxp_region_ref_t region;
-	lxp_files_t *saved_files;
-	lxp_fs_context_t *saved_fs;
-	lxp_sighand_t *old_sighand;
-	lxp_thread_group_t *saved_group;
-	enum exec_txn_phase phase;
-	int slot;
-	int pid;
-	int ppid;
-	int image_index;
-	uint64_t saved_mask;
-	char comm[sizeof(((lxp_proc_t *)0)->comm)];
-	uint8_t region_acquired;
-	uint8_t uses_snapshot;
-	uint8_t parent_restored;
-	uint8_t parent_resumed;
-	uint8_t old_detached;
-	uint8_t slot_reassigned;
-	uint8_t image_initialized;
-	uint8_t terminal;
-};
+#include "run/lxp_coordinator.h"
 
-static void exec_txn_init(struct exec_txn *tx, int slot)
+#if LXP_ENABLE_NETFS_EXEC
+#include "lxp/lxp_netfs.h"
+#endif
+
+void exec_txn_init(struct exec_txn *tx, int slot)
 {
 	memset(tx, 0, sizeof(*tx));
 	tx->phase = EXEC_TXN_EMPTY;
 	tx->slot = slot;
-	tx->old = &g_lxp_slots[slot].proc;
+	tx->old = lxp_proc_at(slot);
 	tx->old_ref = slot_ref_at(slot);
 	tx->parent_ref = tx->old->vfork_parent;
 	tx->pid = tx->old->pid;
@@ -60,7 +29,7 @@ static void exec_txn_init(struct exec_txn *tx, int slot)
 	tx->new_ref = lxp_slot_ref_none();
 }
 
-static int exec_txn_reserve(struct exec_txn *tx)
+int exec_txn_reserve(struct exec_txn *tx)
 {
 	if (tx->phase != EXEC_TXN_EMPTY || !lxp_slot_ref_is_current(tx->old_ref))
 		return -LXP_EINVAL;
@@ -68,10 +37,8 @@ static int exec_txn_reserve(struct exec_txn *tx)
 	if (tx->old->snapshot.index >= 0) {
 		int ridx = tx->old->snapshot.index;
 		tx->region = tx->old->snapshot;
-		if (ridx >= LXP_NREG || tx->region.generation == 0 ||
-		    g_regions[ridx].generation != tx->region.generation ||
-		    g_regions[ridx].refs != 1 ||
-		    !lxp_slot_ref_equal(g_regions[ridx].lease_owner, tx->old_ref)) {
+		if (ridx >= LXP_NREG ||
+		    !lxp_region_lease_matches(tx->region, tx->old_ref, 1)) {
 			/* The child may already have dirtied its parent's shared
 			 * image. A stale snapshot cannot be retried as a guest-visible
 			 * exec error because the parent would remain parked with no
@@ -99,8 +66,8 @@ static int exec_txn_reserve(struct exec_txn *tx)
 	return lifecycle_failpoint(LXP_FAIL_EXEC_REGION_ACQUIRED) ? -LXP_ENOMEM : LXP_OK;
 }
 
-static int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
-				   size_t image_size, int remote_exec)
+int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image, size_t image_size,
+			    int remote_exec)
 {
 	if (tx->phase != EXEC_TXN_RESERVED || !image)
 		return -LXP_ENOEXEC;
@@ -134,7 +101,7 @@ static void exec_txn_detach_old(struct exec_txn *tx)
 	tx->old_detached = 1;
 }
 
-static int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng)
+int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng)
 {
 	if (tx->phase != EXEC_TXN_VALIDATED)
 		return -LXP_EINVAL;
@@ -144,9 +111,8 @@ static int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng)
 	tx->phase = EXEC_TXN_COMMITTED;
 	if (tx->parent_ref.index >= 0) {
 		if (!lxp_slot_ref_is_current(tx->parent_ref) || tx->old->snapshot.index < 0 ||
-		    vfork_restore(eng, &g_lxp_slots[tx->parent_ref.index].proc,
-				  tx->old->snapshot, tx->old_ref,
-				  g_lxp_slots[tx->parent_ref.index].resume.sp) != 0) {
+		    vfork_restore(eng, lxp_proc_at(tx->parent_ref.index), tx->old->snapshot,
+				  tx->old_ref, lxp_slot_resume(tx->parent_ref.index)->sp) != 0) {
 			vfork_contain_stale(tx->old_ref, tx->old);
 			tx->terminal = 1;
 			return -LXP_EIO;
@@ -175,10 +141,8 @@ static int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng)
 	deferred_slot_reassign(tx->slot);
 	tx->slot_reassigned = 1;
 	tx->new_ref = slot_ref_at(tx->slot);
-	if (tx->region.index < 0 || tx->region.index >= LXP_NREG ||
-	    !lxp_slot_ref_equal(g_regions[tx->region.index].lease_owner, tx->old_ref))
+	if (lxp_region_lease_reassign(tx->region, tx->old_ref, tx->new_ref) != LXP_OK)
 		return -LXP_EIO;
-	g_regions[tx->region.index].lease_owner = tx->new_ref;
 	if (eng->map_device)
 		(void)eng->map_device(tx->slot, 0, 0, 0);
 	return lifecycle_failpoint(LXP_FAIL_EXEC_COMMITTED) ? -LXP_EIO : LXP_OK;
@@ -231,8 +195,8 @@ static void exec_txn_resume_parent(struct exec_txn *tx, const lxp_os_ops_t *eng)
 		return;
 	int parent_slot = tx->parent_ref.index;
 	(void)coordinator_resume_slot(eng, parent_slot,
-				      g_lxp_slots[parent_slot].proc.mm->region.index,
-				      &g_lxp_slots[parent_slot].resume, tx->pid);
+				      lxp_proc_at(parent_slot)->mm->region.index,
+				      lxp_slot_resume(parent_slot), tx->pid);
 	tx->parent_resumed = 1;
 }
 
@@ -258,7 +222,7 @@ static void exec_txn_report_failure(struct exec_txn *tx, const lxp_os_ops_t *eng
  * proves the native task stopped, then releases whichever side still owns the
  * staged image and process resources.
  */
-static void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long error, int reason)
+void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long error, int reason)
 {
 	if (!tx || tx->phase == EXEC_TXN_ABORTED || tx->phase == EXEC_TXN_FINISHED ||
 	    tx->terminal)
@@ -270,7 +234,7 @@ static void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long er
 		tx->region_acquired = 0;
 		tx->phase = EXEC_TXN_ABORTED;
 		(void)coordinator_resume_slot(eng, tx->slot, tx->old->mm->region.index,
-					      &g_lxp_slots[tx->slot].resume, error);
+					      lxp_slot_resume(tx->slot), error);
 		return;
 	}
 
@@ -288,23 +252,20 @@ static void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long er
 		deferred_slot_reassign(tx->slot);
 		tx->slot_reassigned = 1;
 		tx->new_ref = slot_ref_at(tx->slot);
-		if (tx->region_acquired &&
-		    lxp_slot_ref_equal(g_regions[tx->region.index].lease_owner, tx->old_ref))
-			g_regions[tx->region.index].lease_owner = tx->new_ref;
+		if (tx->region_acquired)
+			(void)lxp_region_lease_reassign(tx->region, tx->old_ref, tx->new_ref);
 	}
 
 	if (tx->image_initialized) {
 		if (image_txn_abort(&tx->image, eng) != LXP_OK)
 			return; /* published slot still owns every resource */
 	} else if (tx->region_acquired &&
-		   lxp_slot_ref_equal(g_regions[tx->region.index].lease_owner, tx->new_ref)) {
+		   lxp_region_lease_matches(tx->region, tx->new_ref, 1)) {
 		(void)region_release_if_owned(tx->region, tx->new_ref);
 	}
 	exec_txn_release_saved(tx);
 	exec_txn_report_failure(tx, eng, reason);
-	memset(&g_lxp_slots[tx->slot].proc, 0, sizeof(g_lxp_slots[tx->slot].proc));
-	g_lxp_slots[tx->slot].proc.snapshot = lxp_region_ref_none();
-	g_lxp_slots[tx->slot].proc.vfork_parent = lxp_slot_ref_none();
+	lxp_slot_proc_reset(tx->slot);
 	slot_runnable_store(tx->slot, 0);
 	primary_slot_clear(tx->slot);
 	fork_child_guard_reset(tx->slot);
@@ -312,9 +273,9 @@ static void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long er
 	tx->phase = EXEC_TXN_ABORTED;
 }
 
-static void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int slot)
+void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int slot)
 {
-	lxp_proc_t *proc = &g_lxp_slots[slot].proc;
+	lxp_proc_t *proc = lxp_proc_at(slot);
 
 	/* Freeze the old image before copying its trusted capture. */
 	if (coordinator_park_slot(eng, slot) != LXP_OK)
@@ -393,6 +354,6 @@ static void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg
 	}
 
 	exec_txn_resume_parent(&tx, eng);
-	g_lxp_slots[slot].proc.vfork_parent = lxp_slot_ref_none();
+	lxp_proc_at(slot)->vfork_parent = lxp_slot_ref_none();
 	tx.phase = EXEC_TXN_FINISHED;
 }

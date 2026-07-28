@@ -2,16 +2,17 @@
  * Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Private coordinator event-publication and fair-claim module. Unity-included
- * by lxp_run.c; see src/run/lxp_lifecycle.c.
+ * Private coordinator event-publication and fair-claim module.
  */
 
-struct lxp_claimed_event {
-	int slot;
-	int type;
-};
+#include "run/lxp_coordinator.h"
 
-static void primary_slot_mark(int slot)
+#define LXP_EVENT_WORD_BITS 32u
+#define LXP_EVENT_WORDS ((LXP_NSLOT + LXP_EVENT_WORD_BITS - 1u) / LXP_EVENT_WORD_BITS)
+
+static uint32_t g_primary_pending[LXP_EVENT_WORDS];
+
+void primary_slot_mark(int slot)
 {
 	if (slot < 0 || slot >= LXP_NSLOT)
 		return;
@@ -20,14 +21,14 @@ static void primary_slot_mark(int slot)
 	__atomic_fetch_or(&g_primary_pending[word], bit, __ATOMIC_RELEASE);
 }
 
-static int primary_slot_pending(int slot)
+int primary_slot_pending(int slot)
 {
 	unsigned word = (unsigned)slot / LXP_EVENT_WORD_BITS;
 	uint32_t bit = (uint32_t)1u << ((unsigned)slot % LXP_EVENT_WORD_BITS);
 	return (__atomic_load_n(&g_primary_pending[word], __ATOMIC_ACQUIRE) & bit) != 0;
 }
 
-static void primary_slot_clear(int slot)
+void primary_slot_clear(int slot)
 {
 	unsigned word = (unsigned)slot / LXP_EVENT_WORD_BITS;
 	uint32_t bit = (uint32_t)1u << ((unsigned)slot % LXP_EVENT_WORD_BITS);
@@ -38,21 +39,32 @@ static void primary_slot_clear(int slot)
  * contained guest faults; normal syscall/signal parking reaches it through
  * park_frame(). Safe when the slot is stale: the coordinator simply clears a
  * hint that fails revalidation. */
-static void lxp_event_post_slot(int slot)
+void lxp_primary_events_reset(void)
+{
+	for (unsigned i = 0; i < LXP_EVENT_WORDS; i++)
+		__atomic_store_n(&g_primary_pending[i], 0, __ATOMIC_RELAXED);
+}
+
+size_t lxp_primary_events_bytes(void)
+{
+	return sizeof(g_primary_pending);
+}
+
+void lxp_event_post_slot(const lxp_os_ops_t *eng, int slot)
 {
 	primary_slot_mark(slot);
-	if (g_eng && g_eng->event_post)
-		g_eng->event_post();
+	if (eng && eng->event_post)
+		eng->event_post();
 }
 
 /* Inspect one slot's highest-priority event. The caller holds the engine
  * critical section, so a program SVC cannot change a flag between test and
  * clear. */
-static int claim_slot_event(int s)
+int claim_slot_event(int s)
 {
-	lxp_proc_t *p = &g_lxp_slots[s].proc;
+	lxp_proc_t *p = lxp_proc_at(s);
 
-	if (!p->alive)
+	if (!p || !p->alive)
 		return LXP_EV_NONE;
 	if (p->intent.kind == LXP_INTENT_EXIT)
 		return LXP_EV_EXIT;
@@ -97,7 +109,7 @@ static int claim_slot_event(int s)
 /* Claim at most one event. Cursor rotation is part of the API so fairness is
  * directly testable independently of the coordinator loop. Handler work stays
  * outside the bounded critical section. */
-static struct lxp_claimed_event coordinator_claim_event(const lxp_os_ops_t *eng, unsigned *cursor)
+struct lxp_claimed_event coordinator_claim_event(const lxp_os_ops_t *eng, unsigned *cursor)
 {
 	struct lxp_claimed_event claimed = {
 		.slot = -1,

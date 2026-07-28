@@ -2,10 +2,10 @@
  * Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Private coordinator lifecycle module. This file is included by lxp_run.c so
- * the coordinator's state remains translation-unit private; it is deliberately
- * not a standalone build source.
+ * Private coordinator lifecycle module.
  */
+
+#include "run/lxp_coordinator.h"
 
 enum lxp_handler_outcome {
 	LXP_OUTCOME_NO_CHANGE,
@@ -37,8 +37,8 @@ static void slot_transition_failed(int sidx, int transition, int rc)
 {
 	if (sidx < 0 || sidx >= LXP_NSLOT)
 		return;
-	lxp_proc_t *p = &g_lxp_slots[sidx].proc;
-	if (!p->alive)
+	lxp_proc_t *p = lxp_proc_at(sidx);
+	if (!p || !p->alive)
 		return;
 	p->exit_status = 127;
 	p->exit_reason = LXP_EXIT_REASON_HOST_TRANSITION;
@@ -58,7 +58,8 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 		return -LXP_EINVAL;
 
 	int sidx = request->slot;
-	uint8_t old = g_lxp_slots[sidx].host_state;
+	lxp_proc_t *proc = lxp_proc_at(sidx);
+	uint8_t old = lxp_slot_host_state(sidx);
 	int rc;
 
 	switch (request->outcome) {
@@ -68,17 +69,17 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 	case LXP_OUTCOME_EXIT:
 		if (!eng->abort_slot)
 			return -LXP_EINVAL;
-		g_lxp_slots[sidx].host_state = SLOT_EXITING;
+		lxp_slot_set_host_state(sidx, SLOT_EXITING);
 		rc = eng->abort_slot(sidx, slot_generation(sidx));
 		if (rc == LXP_OK) {
-			g_lxp_slots[sidx].host_state = SLOT_DEAD;
+			lxp_slot_set_host_state(sidx, SLOT_DEAD);
 			slot_runnable_store(sidx, 0);
 			return LXP_OK;
 		}
 		/* The callback contract says failure leaves the prior host state intact.
 		 * Preserve its runnable view and retain all Linux resources until a later
 		 * abort succeeds; releasing an mm under a live task would be unsafe. */
-		g_lxp_slots[sidx].host_state = SLOT_FAILED;
+		lxp_slot_set_host_state(sidx, SLOT_FAILED);
 		slot_runnable_store(sidx, old == SLOT_RUNNING);
 		slot_transition_failed(sidx, SLOT_EXITING, rc);
 		return rc;
@@ -92,14 +93,14 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 			slot_transition_failed(sidx, SLOT_PARKING, -LXP_EINVAL);
 			return -LXP_EINVAL;
 		}
-		g_lxp_slots[sidx].host_state = SLOT_PARKING;
+		lxp_slot_set_host_state(sidx, SLOT_PARKING);
 		rc = eng->park_slot(sidx, slot_generation(sidx));
 		if (rc == LXP_OK) {
-			g_lxp_slots[sidx].host_state = SLOT_PARKED;
+			lxp_slot_set_host_state(sidx, SLOT_PARKED);
 			slot_runnable_store(sidx, 0);
 			return LXP_OK;
 		}
-		g_lxp_slots[sidx].host_state = SLOT_RUNNING;
+		lxp_slot_set_host_state(sidx, SLOT_RUNNING);
 		slot_runnable_store(sidx, 1);
 		/* The guest is already redirected to lxp_park_loop. A failed suspend
 		 * cannot be rolled back into useful execution; synchronously terminate
@@ -112,20 +113,20 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 		return rc;
 
 	case LXP_OUTCOME_RESUME:
-		if (!eng->spawn_resume || !g_lxp_slots[sidx].proc.alive ||
-		    g_lxp_slots[sidx].proc.intent.kind == LXP_INTENT_EXIT)
+		if (!eng->spawn_resume || !proc || !proc->alive ||
+		    proc->intent.kind == LXP_INTENT_EXIT)
 			return -LXP_EINVAL;
 		if (old != SLOT_PARKED && old != SLOT_FREE && old != SLOT_DEAD)
 			return -LXP_EAGAIN;
-		g_lxp_slots[sidx].host_state = old == SLOT_PARKED ? SLOT_RESUMING : SLOT_STARTING;
+		lxp_slot_set_host_state(sidx, old == SLOT_PARKED ? SLOT_RESUMING : SLOT_STARTING);
 		rc = eng->spawn_resume(sidx, slot_generation(sidx), request->region,
 				       request->data.resume.ctx, request->data.resume.r0);
 		if (rc == LXP_OK) {
-			g_lxp_slots[sidx].host_state = SLOT_RUNNING;
+			lxp_slot_set_host_state(sidx, SLOT_RUNNING);
 			slot_runnable_store(sidx, 1);
 			return LXP_OK;
 		}
-		g_lxp_slots[sidx].host_state = old;
+		lxp_slot_set_host_state(sidx, old);
 		slot_runnable_store(sidx, 0);
 		/* A failed persistent resume leaves the old task parked; a failed
 		 * initial resume leaves no task. Abort is idempotent in both cases. */
@@ -141,16 +142,16 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 			return -LXP_EINVAL;
 		if (old != SLOT_FREE && old != SLOT_DEAD)
 			return -LXP_EAGAIN;
-		g_lxp_slots[sidx].host_state = SLOT_STARTING;
+		lxp_slot_set_host_state(sidx, SLOT_STARTING);
 		rc = eng->spawn_launch(sidx, slot_generation(sidx), request->region,
 				       request->data.launch.prog, request->data.launch.entry,
 				       request->data.launch.sp, request->data.launch.stack_lo);
 		if (rc == LXP_OK) {
-			g_lxp_slots[sidx].host_state = SLOT_RUNNING;
+			lxp_slot_set_host_state(sidx, SLOT_RUNNING);
 			slot_runnable_store(sidx, 1);
 			return LXP_OK;
 		}
-		g_lxp_slots[sidx].host_state = SLOT_DEAD;
+		lxp_slot_set_host_state(sidx, SLOT_DEAD);
 		slot_runnable_store(sidx, 0);
 		slot_transition_failed(sidx, SLOT_STARTING, rc);
 		return rc;
@@ -158,15 +159,15 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 	return -LXP_EINVAL;
 }
 
-static void *lxp_lifecycle_prepare_park(const lxp_os_ops_t *eng, int sidx,
-					const struct lxp_resume_ctx *ctx)
+void *lxp_lifecycle_prepare_park(const lxp_os_ops_t *eng, int sidx,
+				 const struct lxp_resume_ctx *ctx)
 {
 	if (!eng || !eng->park_prepare || !eng->park_slot || sidx < 0 || sidx >= LXP_NSLOT)
 		return NULL;
 	return eng->park_prepare(sidx, slot_generation(sidx), ctx);
 }
 
-static int coordinator_abort_slot(const lxp_os_ops_t *eng, int sidx)
+int coordinator_abort_slot(const lxp_os_ops_t *eng, int sidx)
 {
 	return lxp_lifecycle_apply(eng, &(struct lxp_lifecycle_request){
 						.outcome = LXP_OUTCOME_EXIT,
@@ -174,7 +175,7 @@ static int coordinator_abort_slot(const lxp_os_ops_t *eng, int sidx)
 					});
 }
 
-static int coordinator_park_slot(const lxp_os_ops_t *eng, int sidx)
+int coordinator_park_slot(const lxp_os_ops_t *eng, int sidx)
 {
 	return lxp_lifecycle_apply(eng, &(struct lxp_lifecycle_request){
 						.outcome = LXP_OUTCOME_REMAIN_PARKED,
@@ -182,16 +183,17 @@ static int coordinator_park_slot(const lxp_os_ops_t *eng, int sidx)
 					});
 }
 
-static int coordinator_resume_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
-				   const struct lxp_resume_ctx *ctx, long r0val)
+int coordinator_resume_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
+			    const struct lxp_resume_ctx *ctx, long r0val)
 {
 	/*
 	 * The dispatch capability must be gone before the RTOS makes this guest
 	 * runnable. A higher-priority resumed task may issue its next SVC before
 	 * spawn_resume() returns to the coordinator.
 	 */
-	if (sidx >= 0 && sidx < LXP_NSLOT && g_lxp_slots[sidx].proc.guest_view)
-		lxp_guest_view_end(g_lxp_slots[sidx].proc.guest_view);
+	lxp_proc_t *proc = lxp_proc_at(sidx);
+	if (proc && proc->guest_view)
+		lxp_guest_view_end(proc->guest_view);
 	return lxp_lifecycle_apply(eng, &(struct lxp_lifecycle_request){
 						.outcome = LXP_OUTCOME_RESUME,
 						.slot = sidx,
@@ -204,8 +206,8 @@ static int coordinator_resume_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
 					});
 }
 
-static int coordinator_launch_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
-				   const lxp_flat_t *prog, void *entry, void *sp, void *stack_lo)
+int coordinator_launch_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
+			    const lxp_flat_t *prog, void *entry, void *sp, void *stack_lo)
 {
 	return lxp_lifecycle_apply(eng, &(struct lxp_lifecycle_request){
 						.outcome = LXP_OUTCOME_LAUNCH,

@@ -2,12 +2,14 @@
  * Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Private coordinator fork/clone/vfork handler. Unity-included by lxp_run.c.
+ * Private coordinator fork/clone/vfork handler.
  */
 
-static void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
+#include "run/lxp_coordinator.h"
+
+void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
 {
-	lxp_proc_t *parent = &g_lxp_slots[parent_slot].proc;
+	lxp_proc_t *parent = lxp_proc_at(parent_slot);
 	uint32_t clone_flags = parent->intent.data.fork.flags;
 	uintptr_t child_stack = parent->intent.data.fork.child_stack;
 	(void)lxp_intent_complete(parent, LXP_INTENT_FORK);
@@ -21,7 +23,7 @@ static void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_
 
 	int child_slot = -1;
 	for (int s = 0; s < LXP_NSLOT; s++)
-		if (!g_lxp_slots[s].proc.alive) {
+		if (!lxp_proc_at(s)->alive) {
 			child_slot = s;
 			break;
 		}
@@ -46,8 +48,8 @@ static void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_
 		 * distinct waitable process. */
 		if (!(clone_flags & LXP_CLONE_THREAD))
 			rc = fork_txn_count_child(&tx);
-		g_lxp_slots[child_slot].resume = g_lxp_slots[parent_slot].resume;
-		g_lxp_slots[child_slot].resume.sp = child_stack;
+		*lxp_slot_resume(child_slot) = *lxp_slot_resume(parent_slot);
+		lxp_slot_resume(child_slot)->sp = child_stack;
 		if (rc == LXP_OK)
 			rc = fork_txn_publish(&tx);
 		if (rc == LXP_OK)
@@ -60,16 +62,16 @@ static void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_
 		(*next_pid)++;
 		(void)coordinator_park_slot(eng, parent_slot);
 		(void)coordinator_resume_slot(eng, parent_slot, parent->mm->region.index,
-					      &g_lxp_slots[parent_slot].resume, child->pid);
+					      lxp_slot_resume(parent_slot), child->pid);
 		(void)coordinator_resume_slot(eng, child_slot, child->mm->region.index,
-					      &g_lxp_slots[child_slot].resume, 0);
+					      lxp_slot_resume(child_slot), 0);
 		return;
 	}
 
 	rc = fork_txn_count_child(&tx);
 	child->vfork_parent = slot_ref_at(parent_slot);
 	if (rc == LXP_OK)
-		rc = fork_txn_snapshot(&tx, eng, g_lxp_slots[parent_slot].resume.sp);
+		rc = fork_txn_snapshot(&tx, eng, lxp_slot_resume(parent_slot)->sp);
 	if (rc != LXP_OK) {
 		/* Refuse a deep vfork if no spare region can isolate the child's
 		 * pre-exec writes from its suspended parent. */
@@ -88,5 +90,5 @@ static void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_
 	(*next_pid)++;
 	(void)coordinator_park_slot(eng, parent_slot);
 	(void)coordinator_resume_slot(eng, child_slot, child->mm->region.index,
-				      &g_lxp_slots[parent_slot].resume, 0);
+				      lxp_slot_resume(parent_slot), 0);
 }

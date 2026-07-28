@@ -32,9 +32,6 @@ option(LXP_BUILD_FUZZ "Build the coverage-guided fuzz harnesses" OFF)
 
 # ---- sources: collect whatever exists (the tree is populated incrementally) --
 file(GLOB_RECURSE LXP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
-# Coordinator implementation parts are unity-included by lxp_run.c to keep its
-# private runtime private while giving each policy area a reviewable module.
-list(FILTER LXP_SOURCES EXCLUDE REGEX "/src/run/.*\\.c$")
 
 if(LXP_SOURCES)
   add_library(lxp STATIC ${LXP_SOURCES})

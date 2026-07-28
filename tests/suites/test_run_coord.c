@@ -4,17 +4,13 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Host unit tests for the run-loop coordinator (src/lxp_run.c). The coordinator is
- * excluded from the main test binary — its 32-bit-target pointer casts warn on a
- * 64-bit host, and its OS-service symbols would clash with tests/stub_lnx_run.c — so
- * it has only ever been exercised end-to-end on QEMU (M1..M4). That leaves its
- * process-bookkeeping state machine (zombie reaping, wait-status encoding, region
- * liveness) untested at the unit level.
+ * Host unit tests for the run-loop coordinator. The coordinator is excluded
+ * from the main test binary because its 32-bit-target pointer casts warn on a
+ * 64-bit host and its OS-service symbols clash with tests/stub_lnx_run.c.
  *
- * This dedicated binary #includes the coordinator TU whole to reach its static
- * helpers, and drives them against a mock engine (lxp_os_ops_t) with NO guest
- * threads: the tests prepare private slot-runtime records, call the helper, and
- * assert on the recorded engine calls and resulting process state.
+ * This dedicated binary includes only the state-owning core TU to reach its
+ * private records. Coordinator policy modules are linked as their production
+ * translation units and driven against a mock engine with no guest threads.
  */
 #include <setjmp.h> /* cmocka ordering */
 #include <stdarg.h>
@@ -24,8 +20,7 @@
 
 #include <cmocka.h>
 
-/* Pull in the coordinator: this defines its private runtime and OS-service
- * symbols, and exposes static helpers such as reap_to_parent and region_free. */
+/* Pull in the state-owning coordinator core and its OS-service symbols. */
 #include "lxp_run.c"
 
 /* A real engine publishes this pointer before lxp_run(). The coordinator tests
@@ -292,7 +287,7 @@ static int reset_state(void **state)
 		assert_int_equal(lxp_proc_init(&g_lxp_slots[s].proc, &g_mock_arenas[s], 0), LXP_OK);
 		g_lxp_slots[s].proc.alive = 0;
 	}
-	memset(g_primary_pending, 0, sizeof(g_primary_pending));
+	lxp_primary_events_reset();
 	memset(g_regions, 0, sizeof(g_regions));
 	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
 	memset(g_sig_save, 0, sizeof(g_sig_save));
@@ -1385,7 +1380,7 @@ static void test_claim_slot_event_priority_and_consumption(void **state)
 	lxp_proc_t *p = &g_lxp_slots[s].proc;
 
 	assert_false(primary_slot_pending(s));
-	lxp_event_post_slot(s);
+	lxp_event_post_slot(&g_mock_eng, s);
 	assert_true(primary_slot_pending(s));
 	assert_int_equal(g_mock.event_posts, 1);
 	primary_slot_clear(s);
@@ -1506,7 +1501,7 @@ static void test_blocked_timer_handler_resumes_expired_wait(void **state)
 					}),
 			 LXP_OK);
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, 50);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, &g_mock_cfg, 50);
 	assert_true(scan.any_alive);
 	assert_true(scan.any_busy);
 	assert_true(scan.progress);
@@ -2544,7 +2539,7 @@ static void test_signal_interrupts_blocked_netfs_before_retry(void **state)
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
 	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, &g_mock_cfg, 1);
 
 	assert_true(scan.progress);
 	assert_int_equal(p->wait.kind, LXP_WAIT_NONE);
@@ -2709,7 +2704,7 @@ static int protocol_apply(struct protocol_model *model, enum protocol_command co
 		if (model->phase != PROTOCOL_PARKED)
 			return 0;
 		proc->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
-		assert_true(lxp_scan_blocked(&g_mock_eng, 1).progress);
+		assert_true(lxp_scan_blocked(&g_mock_eng, &g_mock_cfg, 1).progress);
 		assert_int_equal(proc->wait.kind, LXP_WAIT_NONE);
 		assert_int_equal(proc->intent.kind, LXP_INTENT_EXIT);
 		model->phase = PROTOCOL_EXIT_PENDING;

@@ -2,24 +2,24 @@
  * Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Private blocked-operation retry, timeout, and signal module. Unity-included
- * by lxp_run.c.
+ * Private blocked-operation retry, timeout, and signal module.
  */
 
-struct lxp_blocked_scan {
-	uint64_t next_deadline_us;
-	uint8_t progress;
-	uint8_t any_alive;
-	uint8_t any_busy;
-	uint8_t external_activity;
-	uint8_t pipe_wait;
-	uint8_t device_wait;
-	uint8_t socket_wait;
-	uint8_t netfs_wait;
-	uint8_t pty_wait;
-	uint8_t console_wait;
-	uint8_t futex_wait;
-};
+#include "run/lxp_coordinator.h"
+#include "lxp_internal.h"
+#include "lxp_run_internal.h"
+#if LXP_ENABLE_DEV
+#include "lxp/lxp_dev.h"
+#endif
+#if LXP_ENABLE_NET
+#include "lxp/lxp_net.h"
+#endif
+#if LXP_ENABLE_NETFS
+#include "lxp/lxp_netfs.h"
+#endif
+#if LXP_ENABLE_PTY
+#include "lxp/lxp_pty.h"
+#endif
 
 static void lxp_blocked_note_wait(struct lxp_blocked_scan *scan, lxp_wait_kind_t kind)
 {
@@ -69,7 +69,7 @@ static int lxp_blocked_handle_stopped(const lxp_os_ops_t *eng, int slot, lxp_pro
 		proc->stop_kind = LXP_STOP_NONE;
 		if (boundary)
 			(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-						      &g_lxp_slots[slot].resume, proc->stop_r0);
+						      lxp_slot_resume(slot), proc->stop_r0);
 		scan->progress = 1;
 		return 1;
 	}
@@ -129,7 +129,7 @@ static void lxp_blocked_retry_timer(const lxp_os_ops_t *eng, int slot, lxp_proc_
 	if (now >= deadline) {
 		(void)lxp_wait_timeout(proc, LXP_WAIT_TIMER);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      &g_lxp_slots[slot].resume, 0);
+					      lxp_slot_resume(slot), 0);
 		scan->progress = 1;
 	} else {
 		lxp_blocked_note_deadline(scan, deadline);
@@ -147,12 +147,12 @@ static void lxp_blocked_retry_futex(const lxp_os_ops_t *eng, int slot, lxp_proc_
 	if (proc->wait.data.futex.woken) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_FUTEX);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      &g_lxp_slots[slot].resume, 0);
+					      lxp_slot_resume(slot), 0);
 		scan->progress = 1;
 	} else if (deadline && now >= deadline) {
 		(void)lxp_wait_timeout(proc, LXP_WAIT_FUTEX);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      &g_lxp_slots[slot].resume, -LXP_ETIMEDOUT);
+					      lxp_slot_resume(slot), -LXP_ETIMEDOUT);
 		scan->progress = 1;
 	} else {
 		lxp_blocked_note_deadline(scan, deadline);
@@ -176,7 +176,7 @@ static void lxp_blocked_retry_pipe(const lxp_os_ops_t *eng, int slot, lxp_proc_t
 		primary_slot_mark(slot);
 	} else {
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      &g_lxp_slots[slot].resume, rc);
+					      lxp_slot_resume(slot), rc);
 	}
 	scan->progress = 1;
 }
@@ -206,7 +206,7 @@ static void lxp_blocked_retry_device(const lxp_os_ops_t *eng, int slot, lxp_proc
 		}
 		(void)lxp_wait_complete(proc, LXP_WAIT_DEVICE);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      &g_lxp_slots[slot].resume, rc);
+					      lxp_slot_resume(slot), rc);
 		scan->progress = 1;
 		return;
 	}
@@ -214,7 +214,7 @@ static void lxp_blocked_retry_device(const lxp_os_ops_t *eng, int slot, lxp_proc
 	if (rc != -LXP_EAGAIN) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_DEVICE);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      &g_lxp_slots[slot].resume, rc);
+					      lxp_slot_resume(slot), rc);
 		scan->progress = 1;
 	}
 }
@@ -230,16 +230,15 @@ static void lxp_blocked_retry_socket(const lxp_os_ops_t *eng, int slot, lxp_proc
 	if (rc != -LXP_EAGAIN) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_SOCKET);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      &g_lxp_slots[slot].resume, rc);
+					      lxp_slot_resume(slot), rc);
 		scan->progress = 1;
 	}
 }
 #endif
 
 #if LXP_ENABLE_NETFS
-static void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot,
-					      lxp_proc_t *proc, long rc,
-					      struct lxp_blocked_scan *scan)
+void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
+				      long rc, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind == LXP_WAIT_NETFS)
 		(void)lxp_wait_complete(proc, LXP_WAIT_NETFS);
@@ -253,7 +252,7 @@ static void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot,
 		primary_slot_mark(slot);
 	} else {
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      &g_lxp_slots[slot].resume, rc);
+					      lxp_slot_resume(slot), rc);
 	}
 	scan->progress = 1;
 }
@@ -280,7 +279,7 @@ static void lxp_blocked_retry_pty(const lxp_os_ops_t *eng, int slot, lxp_proc_t 
 	if (rc != -LXP_EAGAIN) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_PTY);
 		(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					      &g_lxp_slots[slot].resume, rc);
+					      lxp_slot_resume(slot), rc);
 		scan->progress = 1;
 	}
 }
@@ -303,30 +302,31 @@ static int lxp_blocked_retry_console(const lxp_os_ops_t *eng, int slot, lxp_proc
 		ch = lxp_console_input_xlate(ch);
 		((volatile uint8_t *)(uintptr_t)buffer)[0] = ch;
 	}
-	if (rc == 1 && g_tty_isig && ch == 26) {
+	if (rc == 1 && lxp_tty_isig() && ch == 26) {
 		console_signal_fg(LXP_SIGTSTP);
 		scan->progress = 1;
 		return 1;
 	}
-	if (rc == 1 && g_tty_isig && ch == 3) {
+	if (rc == 1 && lxp_tty_isig() && ch == 3) {
 		console_signal_fg(LXP_SIGINT);
 		rc = -LXP_EINTR;
 	}
 	(void)lxp_wait_complete(proc, LXP_WAIT_CONSOLE);
-	(void)coordinator_resume_slot(eng, slot, proc->mm->region.index, &g_lxp_slots[slot].resume,
+	(void)coordinator_resume_slot(eng, slot, proc->mm->region.index, lxp_slot_resume(slot),
 				      rc);
 	scan->progress = 1;
 	return 0;
 }
 
-static struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, uint64_t now)
+struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
+					 uint64_t now)
 {
 	struct lxp_blocked_scan scan = {
 		.next_deadline_us = UINT64_MAX,
 	};
 
 	for (int slot = 0; slot < LXP_NSLOT; slot++) {
-		lxp_proc_t *proc = &g_lxp_slots[slot].proc;
+		lxp_proc_t *proc = lxp_proc_at(slot);
 		if (!proc->alive)
 			continue;
 		scan.any_alive = 1;
@@ -384,10 +384,10 @@ static struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, uint64_
 	}
 
 	/* Async ^C/^Z for a foreground program that never reads stdin. */
-	if (g_tty_isig && !scan.console_wait && g_cfg && g_cfg->console_poll &&
-	    g_cfg->console_poll(g_cfg->io_ctx)) {
+	if (lxp_tty_isig() && !scan.console_wait && cfg && cfg->console_poll &&
+	    cfg->console_poll(cfg->io_ctx)) {
 		uint8_t ch = 0;
-		long rc = g_cfg->read_fn ? g_cfg->read_fn(g_cfg->io_ctx, 0, &ch, 1) : 0;
+		long rc = cfg->read_fn ? cfg->read_fn(cfg->io_ctx, 0, &ch, 1) : 0;
 		if (rc == 1 && (ch == 3 || ch == 26)) {
 			console_signal_fg(ch == 3 ? LXP_SIGINT : LXP_SIGTSTP);
 			scan.external_activity = 1;

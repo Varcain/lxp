@@ -2,23 +2,14 @@
  * Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Private primary-event dispatcher. Unity-included by lxp_run.c.
+ * Private primary-event dispatcher.
  */
 
-enum lxp_primary_flow {
-	LXP_PRIMARY_SCAN_BLOCKED,
-	LXP_PRIMARY_HANDLED,
-	LXP_PRIMARY_STOP,
-};
+#include "run/lxp_coordinator.h"
 
-struct lxp_primary_result {
-	enum lxp_primary_flow flow;
-	int status;
-};
-
-static struct lxp_primary_result lxp_handle_primary_event(const lxp_os_ops_t *eng,
-							  const lxp_run_config_t *cfg, int slot,
-							  int event, int *next_pid)
+struct lxp_primary_result lxp_handle_primary_event(const lxp_os_ops_t *eng,
+						   const lxp_run_config_t *cfg, int slot,
+						   int event, int *next_pid)
 {
 	struct lxp_primary_result result = {
 		.flow = LXP_PRIMARY_HANDLED,

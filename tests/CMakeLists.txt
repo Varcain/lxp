@@ -98,10 +98,13 @@ add_test(NAME lxp_guest_memory_boundary
 # pointer casts warn on a 64-bit host, and the OS-service symbols it defines would clash
 # with tests/stub_lnx_run.c. So it has only ever run end-to-end on QEMU. This dedicated
 # binary tests its process-bookkeeping state machine on the host: suites/test_run_coord.c
-# #includes lxp_run.c to reach its static helpers and drives them with a mock engine (no
-# guest threads). Built WITHOUT -Werror because lxp_run.c intentionally warns on the host.
+# #includes lxp_run.c to reach its static core helpers and drives the separately
+# compiled coordinator policy modules with a mock engine (no guest threads).
+# Built WITHOUT -Werror because lxp_run.c intentionally warns on the host.
+file(GLOB LXP_COORD_POLICY_SRC CONFIGURE_DEPENDS "${LXP_ROOT}/src/run/*.c")
 add_executable(lxp_coord_test
   ${LXP_TEST_MODULE_SRC}
+  ${LXP_COORD_POLICY_SRC}
   "${LXP_ROOT}/ports/posix/lxp_port_posix.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_run_coord.c"
 )

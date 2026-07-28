@@ -23,7 +23,7 @@ OBJ="$(mktemp -d)"
 trap 'rm -rf "$OBJ"' EXIT
 
 n=0
-for f in $(find "$ROOT/src" -name '*.c' ! -path "$ROOT/src/run/*" | sort); do
+for f in $(find "$ROOT/src" -name '*.c' | sort); do
 	"$CC" $FLAGS $INC "$@" -c "$f" -o "$OBJ/$(basename "$f").o"
 	n=$((n + 1))
 done
