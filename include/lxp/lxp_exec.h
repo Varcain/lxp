@@ -37,16 +37,22 @@ extern "C" {
 #define LXP_EXEC_ENVBUF 512
 #endif
 
-_Static_assert(LXP_EXEC_ARGBUF < LXP_EXEC_OFF_NONE,
-	       "LXP_EXEC_ARGBUF exceeds uint16_t offsets");
-_Static_assert(LXP_EXEC_ENVBUF < LXP_EXEC_OFF_NONE,
-	       "LXP_EXEC_ENVBUF exceeds uint16_t offsets");
-_Static_assert(LXP_EXEC_MAXARGS <= LXP_EXEC_ARGBUF,
-	       "more argv entries than argv buffer bytes");
-_Static_assert(LXP_EXEC_MAXENVS <= LXP_EXEC_ENVBUF,
-	       "more envp entries than envp buffer bytes");
-_Static_assert(LXP_EXEC_MAXARGS >= 4,
-	       "argv vector too short for a #! rewrite plus one argument");
+#if defined(__cplusplus)
+#define LXP_EXEC_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#else
+#define LXP_EXEC_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#endif
+LXP_EXEC_STATIC_ASSERT(LXP_EXEC_ARGBUF < LXP_EXEC_OFF_NONE,
+		       "LXP_EXEC_ARGBUF exceeds uint16_t offsets");
+LXP_EXEC_STATIC_ASSERT(LXP_EXEC_ENVBUF < LXP_EXEC_OFF_NONE,
+		       "LXP_EXEC_ENVBUF exceeds uint16_t offsets");
+LXP_EXEC_STATIC_ASSERT(LXP_EXEC_MAXARGS <= LXP_EXEC_ARGBUF,
+		       "more argv entries than argv buffer bytes");
+LXP_EXEC_STATIC_ASSERT(LXP_EXEC_MAXENVS <= LXP_EXEC_ENVBUF,
+		       "more envp entries than envp buffer bytes");
+LXP_EXEC_STATIC_ASSERT(LXP_EXEC_MAXARGS >= 4,
+		       "argv vector too short for a #! rewrite plus one argument");
+#undef LXP_EXEC_STATIC_ASSERT
 
 /**
  * Transient argv/environment capture consumed by the coordinator during image

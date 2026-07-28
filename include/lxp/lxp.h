@@ -15,5 +15,6 @@
 #include "lxp/lxp_diag.h"
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_port.h"
+#include "lxp/lxp_run.h"
 
 #endif /* LXP_H */

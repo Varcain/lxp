@@ -164,15 +164,15 @@ int lxp_memory_policy_validate(const lxp_memory_policy_t *policy);
 static inline lxp_memory_policy_key_t
 lxp_memory_policy_make_key(const lxp_memory_policy_t *policy)
 {
+	lxp_memory_policy_key_t key = {0};
 	if (lxp_memory_policy_validate(policy) != LXP_OK)
-		return (lxp_memory_policy_key_t){0};
-	return (lxp_memory_policy_key_t){
-		.slot = policy->slot,
-		.address_space = policy->address_space,
-		.device_generation = policy->device_generation,
-		.exec_generation = policy->exec_generation,
-		.copied_text_executable = policy->copied_text_executable,
-	};
+		return key;
+	key.slot = policy->slot;
+	key.address_space = policy->address_space;
+	key.device_generation = policy->device_generation;
+	key.exec_generation = policy->exec_generation;
+	key.copied_text_executable = policy->copied_text_executable;
+	return key;
 }
 
 static inline int lxp_memory_policy_matches_key(const lxp_memory_policy_t *policy,

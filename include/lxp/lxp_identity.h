@@ -33,12 +33,16 @@ typedef struct lxp_region_ref {
 
 static inline lxp_slot_ref_t lxp_slot_ref_none(void)
 {
-	return (lxp_slot_ref_t){.index = -1};
+	lxp_slot_ref_t ref = {0};
+	ref.index = -1;
+	return ref;
 }
 
 static inline lxp_region_ref_t lxp_region_ref_none(void)
 {
-	return (lxp_region_ref_t){.index = -1};
+	lxp_region_ref_t ref = {0};
+	ref.index = -1;
+	return ref;
 }
 
 static inline int lxp_slot_ref_equal(lxp_slot_ref_t a, lxp_slot_ref_t b)
