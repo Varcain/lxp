@@ -14,6 +14,7 @@
 #include "../framework/lxp_test.h"
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_dev.h"
+#include "lxp/lxp_disp_ops.h"
 #include "lxp/lxp_port.h" /* lxp_dma2d_op_t */
 #include "lxp/lxp_syscall.h"
 #include "../../src/dev/lxp_uapi.h" /* struct lxp_dma2d_submit + LXP_DMA2D_* */
@@ -49,6 +50,7 @@ void lxp_input_report_touch(int x, int y, int pressed);
 
 /* EVIOCGNAME(len) on ARM: _IOC(_IOC_READ, 'E', 0x06, len) — size in bits 16..29. */
 #define EVIOCGNAME_CMD(len) (0x80000000ul | ((unsigned long)(len) << 16) | 0x4506ul)
+#define EVIOCGABS_CMD(axis) ((0x45ul << 8) | (LXP_EVIOCGABS_BASE + (axis)))
 
 /* ---- a mock character device ----------------------------------------------- */
 #define MOCK_IOC_GET 0x1001ul /* read g_mock_val into *arg */
@@ -302,6 +304,42 @@ static void test_dev_input_eviocgname_size(void **state)
 			0);
 	assert_true(r > 0);
 	assert_string_equal(nm, "overtos-touch");
+
+	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+}
+
+static void test_dev_input_geometry_resets_to_run_defaults(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+	lxp_dev_autoreg_input();
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+			      (long)(uintptr_t)"/dev/input/event0", LXP_O_RDONLY, 0, 0, 0);
+	assert_true(fd >= 3);
+
+	struct lxp_input_absinfo info;
+	lxp_disp_set_geometry(800, 480);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_X),
+				     (long)(uintptr_t)&info, 0, 0, 0),
+			 0);
+	assert_int_equal(info.maximum, 799);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_Y),
+				     (long)(uintptr_t)&info, 0, 0, 0),
+			 0);
+	assert_int_equal(info.maximum, 479);
+
+	/* A later zero-initialized run config must not inherit 800x480. */
+	lxp_disp_set_geometry(0, 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_X),
+				     (long)(uintptr_t)&info, 0, 0, 0),
+			 0);
+	assert_int_equal(info.maximum, 479);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_Y),
+				     (long)(uintptr_t)&info, 0, 0, 0),
+			 0);
+	assert_int_equal(info.maximum, 271);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
@@ -835,6 +873,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_read_write),
 		cmocka_unit_test(test_dev_ioctl),
 		cmocka_unit_test(test_dev_input_eviocgname_size),
+		cmocka_unit_test(test_dev_input_geometry_resets_to_run_defaults),
 		cmocka_unit_test(test_dev_input_syn_dropped_on_overrun),
 		cmocka_unit_test(test_dev_input_write_injects_touch),
 		cmocka_unit_test(test_dev_accmode_enforced),

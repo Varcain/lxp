@@ -279,8 +279,8 @@ typedef struct lxp_net_ops {
 } lxp_net_ops_t;
 
 /* ─────────────────────────────────────────────────────────────────────────
- * (3) Display / input port — framebuffer + touch. Geometry is injected via
- * lxp_config_t (no board_desc.h). touch_* NULL => no touch device.
+ * (3) Display / input port — framebuffer + touch. Geometry is part of the
+ * per-run configuration (no board_desc.h). touch_* NULL => no touch device.
  * ───────────────────────────────────────────────────────────────────────── */
 typedef struct lxp_fb_info {
 	uint16_t width, height, stride_bytes;
@@ -318,17 +318,6 @@ typedef struct lxp_display_ops {
 	int (*touch_init)(void);
 	int (*touch_read)(int *x, int *y, int *pressed);
 } lxp_display_ops_t;
-
-/* ─────────────────────────────────────────────────────────────────────────
- * (4) Run config — runtime display geometry.
- *
- * Process counts and pool sizes are compile-time properties because they size
- * static storage and MPU regions. Configure those through lxp_config.h (or a
- * lxp_config_user.h override), not this runtime object.
- * ───────────────────────────────────────────────────────────────────────── */
-typedef struct lxp_config {
-	uint16_t display_width, display_height; /**< 0 => defaults. */
-} lxp_config_t;
 
 /* ---- entry points ------------------------------------------------------------
  * The personality's actual run entry (lxp_run), lxp_net_set_netif, and

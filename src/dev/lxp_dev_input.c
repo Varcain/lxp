@@ -24,16 +24,17 @@
 
 #include <string.h>
 
-/* Display geometry for the touch clamps (was board_desc.h OVE_DISPLAY_*). Default
- * is the STM32F746-Disco panel; a host overrides via lxp_disp_set_geometry. */
-static int g_disp_w = 480, g_disp_h = 272;
+#define LXP_DEFAULT_DISPLAY_WIDTH 480
+#define LXP_DEFAULT_DISPLAY_HEIGHT 272
+
+/* Display geometry for the touch clamps (was board_desc.h OVE_DISPLAY_*). */
+static int g_disp_w = LXP_DEFAULT_DISPLAY_WIDTH;
+static int g_disp_h = LXP_DEFAULT_DISPLAY_HEIGHT;
 
 void lxp_disp_set_geometry(int width, int height)
 {
-	if (width > 0)
-		g_disp_w = width;
-	if (height > 0)
-		g_disp_h = height;
+	g_disp_w = width > 0 ? width : LXP_DEFAULT_DISPLAY_WIDTH;
+	g_disp_h = height > 0 ? height : LXP_DEFAULT_DISPLAY_HEIGHT;
 }
 
 /* A shared monotonic event ring; each open() tracks its own tail cursor. */

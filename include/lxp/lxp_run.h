@@ -11,7 +11,7 @@
 
 #include "lxp/lxp_diag.h"
 #include "lxp/lxp_exec.h"
-#include "lxp/lxp_port.h" /* lxp_os_ops_t / lxp_net_ops_t / lxp_display_ops_t / lxp_config_t */
+#include "lxp/lxp_port.h" /* lxp_os_ops_t / lxp_net_ops_t / lxp_display_ops_t */
 #include "lxp/lxp_program.h"
 
 #ifdef __cplusplus
@@ -90,6 +90,11 @@ typedef struct lxp_run_config {
 	 * privileged coordinator task, after all fault/exit metadata is stable and
 	 * before the slot is reused. It must return within a host-defined finite bound. */
 	void (*on_guest_exit)(const lxp_guest_exit_info_t *info);
+	/** Touch/input coordinate extent for this run. Zero selects the module default
+	 * (480x272) independently for each dimension. These fields configure no static
+	 * storage; process counts and pool sizes remain compile-time properties. */
+	uint16_t display_width;
+	uint16_t display_height;
 } lxp_run_config_t;
 
 /** @ref lxp_run outcomes (negative; a non-negative result is the init
@@ -109,9 +114,8 @@ typedef struct lxp_run_config {
  *               time, + optional cache / thread-introspection / prepare / teardown.
  * @p net_ops    the handle-based socket port, or NULL when built without NET.
  * @p disp_ops   the framebuffer / touch port, or NULL when built without DEV.
- * @p config     optional runtime display geometry; may be NULL. Static pool
- *               sizing is configured at build time through lxp_config.h.
- * @p run_config the rootfs table + console read/write callbacks (required).
+ * @p run_config the rootfs table, console callbacks, and optional display
+ *               geometry (required).
  *
  * @p argv[0] is the program name seen by the program (it may differ from @p path,
  * e.g. run @c /bin/busybox as @c "sh"). @p path must name a regular file in
@@ -122,9 +126,8 @@ typedef struct lxp_run_config {
  * @return the init exit status (>= 0), or one of the @c LXP_RUN_E* codes (< 0).
  */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
-		const lxp_display_ops_t *disp_ops, const lxp_config_t *config,
-		const lxp_run_config_t *run_config, const char *path, int argc,
-		const char *const argv[]);
+	    const lxp_display_ops_t *disp_ops, const lxp_run_config_t *run_config,
+	    const char *path, int argc, const char *const argv[]);
 
 /**
  * Whether the tty is in ISIG (canonical) mode. A @c read_fn consults this to

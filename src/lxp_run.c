@@ -3022,9 +3022,8 @@ static int run_config_valid(const lxp_run_config_t *cfg)
 /* THE port entry (see lxp_run.h). Validate and publish this run's exact
  * providers, then bracket the coordinator with optional host setup/teardown. */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
-	    const lxp_display_ops_t *disp_ops, const lxp_config_t *config,
-	    const lxp_run_config_t *run_config, const char *path, int argc,
-	    const char *const argv[])
+	    const lxp_display_ops_t *disp_ops, const lxp_run_config_t *run_config,
+	    const char *path, int argc, const char *const argv[])
 {
 	int rc = LXP_RUN_ELAUNCH;
 	int prepare_entered = 0;
@@ -3050,12 +3049,10 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	(void)disp_ops;
 #endif
 #if LXP_ENABLE_DEV_INPUT
-	/* Seed the touch/report geometry from the run config (replaces a host calling
-	 * lxp_disp_set_geometry directly). 0 fields keep the compiled-in default. */
-	if (config && config->display_width > 0 && config->display_height > 0)
-		lxp_disp_set_geometry(config->display_width, config->display_height);
+	/* Publish this run's geometry including explicit zero-to-default semantics,
+	 * so sequential runs cannot inherit a predecessor's panel dimensions. */
+	lxp_disp_set_geometry(run_config->display_width, run_config->display_height);
 #endif
-	(void)config;
 
 	if (os_ops->rootfs_window)
 		os_ops->rootfs_window(run_config->rootfs_image, run_config->rootfs_image_size);

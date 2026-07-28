@@ -1357,8 +1357,8 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	const char *const argv[] = {"init", NULL};
 
 	g_mock.prepare_result = -LXP_EIO;
-	assert_int_equal(lxp_run(&g_mock_eng, g_test_net_ops, NULL, NULL, &cfg,
-				 "/init", 1, argv),
+	assert_int_equal(lxp_run(&g_mock_eng, g_test_net_ops, NULL, &cfg, "/init", 1,
+				 argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.prepare_calls, 1);
 	assert_int_equal(g_mock.teardown_calls, 1);

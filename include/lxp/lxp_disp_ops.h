@@ -37,9 +37,8 @@ extern "C" {
 extern const lxp_display_ops_t *g_lxp_disp_ops;
 
 /* Set the display geometry used to clamp / report touch coordinates (replaces the
- * board_desc.h OVE_DISPLAY_* constants). Non-positive args are ignored; the
- * default is 480x272 (the STM32F746-Disco panel). lxp_run() seeds it from the
- * optional display_width/display_height fields in lxp_config_t. */
+ * board_desc.h OVE_DISPLAY_* constants). Non-positive dimensions reset to the
+ * 480x272 default independently. lxp_run() seeds it from lxp_run_config_t. */
 void lxp_disp_set_geometry(int width, int height);
 
 #ifdef __cplusplus
