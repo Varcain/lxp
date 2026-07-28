@@ -12,6 +12,7 @@
 
 #include "../framework/lxp_test.h"
 #include "lxp/lxp_arena.h"
+#include "lxp/lxp_bootstrap.h"
 #include "lxp/lxp_guest.h"
 #include "lxp/lxp_syscall.h"
 

@@ -11,7 +11,7 @@
  * redzones) catches a missing header-span / namesize / data-extent bound. Exercises the
  * Stage-3 pos+110<=len, namesize NUL-termination, and data_off+fsize<=len guards.
  */
-#include "lxp/lxp_syscall.h"
+#include "lxp/lxp_bootstrap.h"
 
 #include <stddef.h>
 #include <stdint.h>
