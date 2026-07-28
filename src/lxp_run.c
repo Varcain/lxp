@@ -3030,6 +3030,8 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const lxp_run_config_t *run_config, const char *path, int argc,
 	    const char *const argv[])
 {
+	int rc = LXP_RUN_ELAUNCH;
+	int prepare_entered = 0;
 	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
 	lxp_diag_reset_health();
 	g_diag_native_known = 0;
@@ -3061,30 +3063,16 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 		os_ops->rootfs_window(run_config->rootfs_image, run_config->rootfs_image_size);
 
 	if (os_ops->prepare) {
-		int prc = os_ops->prepare();
-		if (prc < 0) {
-#if LXP_ENABLE_NET
-			g_lxp_net_ops = NULL;
-#endif
-#if LXP_ENABLE_DEV
-			g_lxp_disp_ops = NULL;
-#endif
-			return LXP_RUN_ELAUNCH;
-		}
+		prepare_entered = 1;
+		if (os_ops->prepare() < 0)
+			goto out;
 	}
-	if (os_ops->validate_memory_model(os_ops->cpu_memory_model) != LXP_OK) {
-		if (os_ops->teardown)
-			os_ops->teardown();
-#if LXP_ENABLE_NET
-		g_lxp_net_ops = NULL;
-#endif
-#if LXP_ENABLE_DEV
-		g_lxp_disp_ops = NULL;
-#endif
-		return LXP_RUN_ELAUNCH;
-	}
-	int rc = lxp_run_common(os_ops, run_config, path, argc, argv);
-	if (os_ops->teardown)
+	if (os_ops->validate_memory_model(os_ops->cpu_memory_model) != LXP_OK)
+		goto out;
+	rc = lxp_run_common(os_ops, run_config, path, argc, argv);
+
+out:
+	if (prepare_entered && os_ops->teardown)
 		os_ops->teardown();
 	g_eng = NULL;
 	g_cfg = NULL;

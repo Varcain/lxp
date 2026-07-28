@@ -173,9 +173,11 @@ typedef struct lxp_os_ops {
 
 	/* Optional per-run bring-up / teardown, invoked by lxp_run() around the run
 	 * loop. A host homes its engine-specific setup here — create the coordinator
-	 * semaphore, enable Bus/UsageFault, program the MPU, attach the svc IRQ — and
-	 * its restore in teardown. NULL => skipped. prepare() returning < 0 aborts the
-	 * run (lxp_run returns LXP_RUN_ELAUNCH); teardown() runs after the loop exits. */
+	 * semaphore, enable Bus/UsageFault, program the MPU, attach the svc IRQ — and its
+	 * restore in teardown. NULL => skipped. Once prepare() is entered, teardown()
+	 * runs exactly once even when prepare() returns an error, so prepare() may
+	 * acquire resources incrementally and rely on teardown() to roll back its
+	 * completed steps. A failed prepare() makes lxp_run() return LXP_RUN_ELAUNCH. */
 	int (*prepare)(void);
 	void (*teardown)(void);
 

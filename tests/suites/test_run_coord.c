@@ -31,6 +31,7 @@
 /* A real engine publishes this pointer before lxp_run(). The coordinator tests
  * exercise only the mmap seam and do not need a framebuffer backend. */
 const lxp_display_ops_t *g_lxp_disp_ops;
+static const lxp_net_ops_t *g_test_net_ops;
 
 /* ---- mock engine ------------------------------------------------------------ */
 static struct {
@@ -69,6 +70,9 @@ static struct {
 	size_t map_size[16];
 	unsigned map_attrs[16];
 	int map_fail_slot;
+	int prepare_calls;
+	int prepare_result;
+	int teardown_calls;
 } g_mock;
 
 static uint8_t g_mock_regions[LXP_NREG][256];
@@ -224,6 +228,15 @@ static int mock_validate_memory_model(lxp_cpu_memory_model_t declared)
 {
 	return declared == LXP_CPU_MEM_UNCACHED ? LXP_OK : LXP_ERR_INVALID_PARAM;
 }
+static int mock_prepare(void)
+{
+	g_mock.prepare_calls++;
+	return g_mock.prepare_result;
+}
+static void mock_teardown(void)
+{
+	g_mock.teardown_calls++;
+}
 static const char *mock_system_version(void)
 {
 	return "MockRTOS 9.8.7 ove-fedcba9 lxp-7654321";
@@ -232,6 +245,8 @@ static const char *mock_system_version(void)
 static const lxp_os_ops_t g_mock_eng = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
+	.prepare = mock_prepare,
+	.teardown = mock_teardown,
 	.region = mock_region,
 	.dyn_pool = mock_dyn_pool,
 	.exec_capture = mock_exec_capture,
@@ -300,6 +315,7 @@ static int reset_state(void **state)
 	g_pending_sig = 0;
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
+	g_lxp_net_ops = g_test_net_ops;
 	return 0;
 }
 
@@ -1253,6 +1269,35 @@ static void test_port_abi_and_required_ops_are_validated(void **state)
 	ops = g_mock_eng;
 	ops.validate_memory_model = NULL;
 	assert_false(os_ops_valid(&ops));
+}
+
+static void test_failed_prepare_is_rolled_back(void **state)
+{
+	(void)state;
+	uint8_t image[1] = {0};
+	const lxp_file_t files[] = {
+		{.path = "/init", .data = image, .size = sizeof(image),
+		 .mode = LXP_S_IFREG | 0755},
+	};
+	const lxp_run_config_t cfg = {
+		.rootfs = files,
+		.rootfs_count = 1,
+		.rootfs_image = image,
+		.rootfs_image_size = sizeof(image),
+	};
+	const char *const argv[] = {"init", NULL};
+
+	g_mock.prepare_result = -LXP_EIO;
+	assert_int_equal(lxp_run(&g_mock_eng, g_test_net_ops, NULL, NULL, &cfg,
+				 "/init", 1, argv),
+			 LXP_RUN_ELAUNCH);
+	assert_int_equal(g_mock.prepare_calls, 1);
+	assert_int_equal(g_mock.teardown_calls, 1);
+	assert_null(g_eng);
+	assert_null(g_cfg);
+	assert_null(g_lxp_rootfs_lo);
+	assert_null(g_lxp_rootfs_hi);
+	assert_null(g_lxp_net_ops);
 }
 
 static void test_rootfs_requires_one_explicit_trusted_window(void **state)
@@ -3059,6 +3104,7 @@ int main(void)
 				       reset_state),
 		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
 		cmocka_unit_test_setup(test_port_abi_and_required_ops_are_validated, reset_state),
+		cmocka_unit_test_setup(test_failed_prepare_is_rolled_back, reset_state),
 		cmocka_unit_test_setup(test_rootfs_requires_one_explicit_trusted_window,
 				       reset_state),
 		cmocka_unit_test_setup(test_resource_stats_track_slots_and_reserved_regions,
@@ -3136,5 +3182,6 @@ int main(void)
 		cmocka_unit_test_setup(test_resume_failure_aborts_parked_slot, reset_state),
 		cmocka_unit_test_setup(test_abort_failure_retains_slot_until_retry, reset_state),
 	};
+	g_test_net_ops = g_lxp_net_ops;
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
