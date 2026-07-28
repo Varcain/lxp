@@ -9,7 +9,7 @@
 
 void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
 {
-	lxp_proc_t *parent = lxp_proc_at(parent_slot);
+	lxp_proc_t *parent = lxp_slot_proc(parent_slot);
 	uint32_t clone_flags = parent->intent.data.fork.flags;
 	uintptr_t child_stack = parent->intent.data.fork.child_stack;
 	(void)lxp_intent_complete(parent, LXP_INTENT_FORK);
@@ -23,7 +23,7 @@ void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
 
 	int child_slot = -1;
 	for (int s = 0; s < LXP_NSLOT; s++)
-		if (!lxp_proc_at(s)->alive) {
+		if (!lxp_slot_proc(s)->alive) {
 			child_slot = s;
 			break;
 		}

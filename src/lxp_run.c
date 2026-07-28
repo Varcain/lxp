@@ -304,6 +304,7 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out)
 		if (g_lxp_slots[s].proc.alive)
 			slots_used++;
 	out->slots_free = LXP_NSLOT - slots_used;
+	out->processes = slots_used;
 
 	unsigned regions_used = 0;
 	for (int r = 0; r < LXP_NREG; r++)
@@ -391,15 +392,11 @@ void lxp_rootfs_bounds(uintptr_t *lo, uintptr_t *hi)
 	*hi = (uintptr_t)g_lxp_rootfs_hi;
 }
 
-/* Bounded proc accessors let backing-object layers inspect descriptors without
- * exposing the private slot-runtime layout. */
-lxp_proc_t *lxp_proc_at(int slot)
+/* Private coordinator policies address a process through the slot owner
+ * without exposing the runtime table to syscall or backing-object layers. */
+lxp_proc_t *lxp_slot_proc(int slot)
 {
 	return slot >= 0 && slot < LXP_NSLOT ? &g_lxp_slots[slot].proc : NULL;
-}
-int lxp_proc_nslot(void)
-{
-	return LXP_NSLOT;
 }
 
 #if LXP_ENABLE_DEV
@@ -1000,23 +997,29 @@ int lxp_console_fg_pgrp(void)
 	return g_console_fg_pgrp;
 }
 
-/* A console ^C (VINTR, cooked/ISIG mode) raises @p sig on the console's foreground
- * process group. Mirrors the kill(2) pgid fan-out in lxp_dispatch: every live process
- * whose pgid matches takes the signal (delivered at its next syscall boundary if
- * running, or by the coordinator if parked). The interactive shell sits in its own
- * group and is untouched, so it survives to re-prompt; a background job (its own group)
- * is likewise spared. With no foreground group yet (pre-first-tcsetpgrp) nothing is
- * signalled — the same no-op as before this path existed. */
-void console_signal_fg(int sig)
+int lxp_signal_process_group(int pgid, int sig)
 {
-	int pg = g_console_fg_pgrp;
-	if (pg <= 0)
-		return;
+	if (pgid <= 0 || sig <= 0 || sig >= LXP_NSIG)
+		return 0;
+	int recipients = 0;
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		lxp_proc_t *p = &g_lxp_slots[s].proc;
-		if (p->alive && p->pid > 1 && p->group->pgid == pg)
+		if (p->alive && p->pid > 1 && p->group && p->group->pgid == pgid) {
 			p->pending_sigs |= lxp_sig_bit(sig);
+			recipients++;
+		}
 	}
+	if (recipients && g_eng && g_eng->event_post)
+		g_eng->event_post();
+	return recipients;
+}
+
+/* A console ^C (VINTR, cooked/ISIG mode) raises @p sig on the console's foreground
+ * process group. Every live member takes the signal at its next syscall boundary
+ * or coordinator retry. With no foreground group yet, this is a no-op. */
+void console_signal_fg(int sig)
+{
+	(void)lxp_signal_process_group(g_console_fg_pgrp, sig);
 }
 
 void lxp_run_health(lxp_run_health_t *out)

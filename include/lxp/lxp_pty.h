@@ -40,6 +40,15 @@ long lxp_pty_open_master(int flags);
  *  fd's @c file_idx) or a negative errno. @p flags carries O_NONBLOCK. */
 long lxp_pty_open_slave(int num, int flags);
 
+/** Publish/release one master or slave open-file description. Descriptor
+ * aliases share the same endpoint and do not alter these counts. */
+void lxp_pty_end_open(int idx, int is_master);
+void lxp_pty_end_close(int idx, int is_master);
+/** Drop a newly minted pair when its master fd could not be installed. */
+void lxp_pty_discard(int idx);
+/** Reset the pty backing pool after all descriptor tables are stopped. */
+void lxp_pty_runtime_reset(void);
+
 /** read(2) routing for an FD_PTY fd (@p is_master = fd.rw). Bytes read, 0 (EOF), or
  *  @c -LXP_EAGAIN when the ring is empty and the peer end is still open (park). */
 long lxp_pty_read(lxp_proc_t *p, int idx, int is_master, void *ubuf, size_t len);

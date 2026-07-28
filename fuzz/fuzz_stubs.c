@@ -7,8 +7,8 @@
  * Coordinator stubs for the fuzz build. The harnesses link the module set minus
  * the coordinator (src/lxp_run.c), exactly like the host test stub. Most of the
  * coordinator surface the module references has weak fallbacks in the module
- * itself (lxp_proc_table / lxp_proc_nslot / lxp_rootfs_bounds / lxp_dev_kick) and
- * the clock/cache hooks come from tests/stub_lnx_run.c; the only symbols left
+ * itself (process-group signaling, rootfs bounds, and device wakeups), and the
+ * clock/cache hooks come from tests/stub_lnx_run.c; the only symbols left
  * undefined are the three lxp_signal.c reaches into the coordinator for. Mirror
  * tests/suites/test_signal.c's stubs so lxp_signal.c links and any signal path a
  * harness happens to reach behaves predictably (single-slot, no real parking).

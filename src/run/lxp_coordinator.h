@@ -176,6 +176,7 @@ struct lxp_blocked_scan {
 /* Slot state stays private to lxp_run.c. These are the only mutable operations
  * available to compiled coordinator policy modules. */
 struct lxp_resume_ctx *lxp_slot_resume(int slot);
+lxp_proc_t *lxp_slot_proc(int slot);
 uint8_t lxp_slot_host_state(int slot);
 void lxp_slot_set_host_state(int slot, uint8_t state);
 int slot_runnable_load(int slot);

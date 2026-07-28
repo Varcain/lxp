@@ -37,7 +37,7 @@ static void slot_transition_failed(int sidx, int transition, int rc)
 {
 	if (sidx < 0 || sidx >= LXP_NSLOT)
 		return;
-	lxp_proc_t *p = lxp_proc_at(sidx);
+	lxp_proc_t *p = lxp_slot_proc(sidx);
 	if (!p || !p->alive)
 		return;
 	p->exit_status = 127;
@@ -58,7 +58,7 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 		return -LXP_EINVAL;
 
 	int sidx = request->slot;
-	lxp_proc_t *proc = lxp_proc_at(sidx);
+	lxp_proc_t *proc = lxp_slot_proc(sidx);
 	uint8_t old = lxp_slot_host_state(sidx);
 	int rc;
 
@@ -191,7 +191,7 @@ int coordinator_resume_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
 	 * runnable. A higher-priority resumed task may issue its next SVC before
 	 * spawn_resume() returns to the coordinator.
 	 */
-	lxp_proc_t *proc = lxp_proc_at(sidx);
+	lxp_proc_t *proc = lxp_slot_proc(sidx);
 	if (proc && proc->guest_view)
 		lxp_guest_view_end(proc->guest_view);
 	return lxp_lifecycle_apply(eng, &(struct lxp_lifecycle_request){

@@ -8,10 +8,9 @@
  * bounded ring buffer with concurrent producer/consumer. A read on an empty pipe
  * blocks while any write end is open (EOF only once all writers close); a write on a
  * full pipe blocks while a reader is open (-EPIPE once all readers close). The
- * run-loop coordinator parks/wakes the blocked proc — see lxp_pipe_retry. Open ends
- * are counted on demand across every live proc's fd table (a pipe end is open in each
- * proc that holds an fd onto it), so there is no per-fd refcount to keep in sync and a
- * slot is auto-reclaimed when both ends close or the holders exit.
+ * run-loop coordinator parks/wakes the blocked proc — see lxp_pipe_retry. Endpoint
+ * counts follow open-file-description lifetime: dup/fork aliases share one endpoint,
+ * and the final descriptor close releases it.
  */
 #include "fs/lxp_pipe.h"
 
@@ -20,69 +19,76 @@
 #include "lxp/lxp_syscall.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 typedef struct {
 	uint8_t buf[LXP_PIPE_BUF];
 	size_t rpos;  /* ring read index [0, BUF) */
 	size_t wpos;  /* ring write index [0, BUF) */
 	size_t count; /* bytes currently buffered */
-	int used;
+	uint16_t readers;
+	uint16_t writers;
+	uint8_t used;
 } lxp_pipe_t;
 static lxp_pipe_t
 	g_pipes[LXP_NPIPE] LXP_FAR_BSS; /* LXP_FAR_BSS relocates the pool (STM32: .sdram_bss) */
 
-/* Count a pipe's open read/write ends across ALL live procs' fd tables. lxp_proc_at
- * / lxp_proc_nslot are weak in lxp_syscall.c (the host test links them but never drives
- * pipes); the run loop supplies the strong versions. */
-static void pipe_ends(int pi, int *readers, int *writers)
-{
-	*readers = 0;
-	*writers = 0;
-	int n = lxp_proc_nslot();
-	for (int s = 0; s < n; s++) {
-		lxp_proc_t *proc = lxp_proc_at(s);
-		if (!proc || !proc->alive)
-			continue;
-		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (lxp_fd_kind(proc, fd) == LXP_FD_PIPE &&
-			    lxp_fd_backing(proc, fd) == pi)
-				(lxp_fd_direction(proc, fd) ? (*writers)++ : (*readers)++);
-	}
-}
-
 int lxp_pipe_alloc(void)
 {
 	for (int i = 0; i < LXP_NPIPE; i++) {
-		int rd, wr;
-		pipe_ends(i, &rd, &wr);
-		if (rd == 0 && wr == 0) {
-			g_pipes[i].used = 1;
-			g_pipes[i].rpos = 0;
-			g_pipes[i].wpos = 0;
-			g_pipes[i].count = 0;
+		if (!g_pipes[i].used) {
+			g_pipes[i] = (lxp_pipe_t){.used = 1};
 			return i;
 		}
 	}
 	return -1;
 }
 
+void lxp_pipe_end_open(int pi, int write_end)
+{
+	if (pi < 0 || pi >= LXP_NPIPE || !g_pipes[pi].used)
+		return;
+	uint16_t *ends = write_end ? &g_pipes[pi].writers : &g_pipes[pi].readers;
+	if (*ends != UINT16_MAX)
+		(*ends)++;
+}
+
+void lxp_pipe_end_close(int pi, int write_end)
+{
+	if (pi < 0 || pi >= LXP_NPIPE || !g_pipes[pi].used)
+		return;
+	uint16_t *ends = write_end ? &g_pipes[pi].writers : &g_pipes[pi].readers;
+	if (*ends > 0)
+		(*ends)--;
+	if (g_pipes[pi].readers == 0 && g_pipes[pi].writers == 0)
+		g_pipes[pi] = (lxp_pipe_t){0};
+}
+
+void lxp_pipe_discard(int pi)
+{
+	if (pi >= 0 && pi < LXP_NPIPE && g_pipes[pi].readers == 0 &&
+	    g_pipes[pi].writers == 0)
+		g_pipes[pi] = (lxp_pipe_t){0};
+}
+
+void lxp_pipe_runtime_reset(void)
+{
+	for (int i = 0; i < LXP_NPIPE; i++)
+		g_pipes[i] = (lxp_pipe_t){0};
+}
+
 long pipe_try_read(int pi, void *buf, size_t len)
 {
 	lxp_pipe_t *pp = &g_pipes[pi];
-	if (pp->count == 0) {
-		int rd, wr;
-		pipe_ends(pi, &rd, &wr);
-		return wr > 0 ? -LXP_EAGAIN : 0;
-	}
+	if (pp->count == 0)
+		return pp->writers > 0 ? -LXP_EAGAIN : 0;
 	return (long)lxp_ring_read(pp->buf, LXP_PIPE_BUF, &pp->rpos, &pp->count, buf, len);
 }
 
 long pipe_try_write(int pi, const void *buf, size_t len)
 {
 	lxp_pipe_t *pp = &g_pipes[pi];
-	int rd, wr;
-	pipe_ends(pi, &rd, &wr);
-	if (rd == 0)
+	if (pp->readers == 0)
 		return -LXP_EPIPE;
 	if (pp->count == LXP_PIPE_BUF)
 		return -LXP_EAGAIN; /* full but a reader is open */
@@ -109,9 +115,7 @@ long lxp_pipe_retry(lxp_proc_t *p)
 unsigned pipe_poll(int pi, int rw)
 {
 	lxp_pipe_t *pp = &g_pipes[pi];
-	int rd, wr;
-	pipe_ends(pi, &rd, &wr);
 	if (rw == 0)
-		return (pp->count > 0 || wr == 0) ? LXP_POLLIN : 0u;
-	return (pp->count < LXP_PIPE_BUF || rd == 0) ? LXP_POLLOUT : 0u;
+		return (pp->count > 0 || pp->writers == 0) ? LXP_POLLIN : 0u;
+	return (pp->count < LXP_PIPE_BUF || pp->readers == 0) ? LXP_POLLOUT : 0u;
 }

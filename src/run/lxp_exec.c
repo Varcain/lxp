@@ -18,7 +18,7 @@ void exec_txn_init(struct exec_txn *tx, int slot)
 	memset(tx, 0, sizeof(*tx));
 	tx->phase = EXEC_TXN_EMPTY;
 	tx->slot = slot;
-	tx->old = lxp_proc_at(slot);
+	tx->old = lxp_slot_proc(slot);
 	tx->old_ref = slot_ref_at(slot);
 	tx->parent_ref = tx->old->vfork_parent;
 	tx->pid = tx->old->pid;
@@ -111,7 +111,7 @@ int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng)
 	tx->phase = EXEC_TXN_COMMITTED;
 	if (tx->parent_ref.index >= 0) {
 		if (!lxp_slot_ref_is_current(tx->parent_ref) || tx->old->snapshot.index < 0 ||
-		    vfork_restore(eng, lxp_proc_at(tx->parent_ref.index), tx->old->snapshot,
+		    vfork_restore(eng, lxp_slot_proc(tx->parent_ref.index), tx->old->snapshot,
 				  tx->old_ref, lxp_slot_resume(tx->parent_ref.index)->sp) != 0) {
 			vfork_contain_stale(tx->old_ref, tx->old);
 			tx->terminal = 1;
@@ -195,7 +195,7 @@ static void exec_txn_resume_parent(struct exec_txn *tx, const lxp_os_ops_t *eng)
 		return;
 	int parent_slot = tx->parent_ref.index;
 	(void)coordinator_resume_slot(eng, parent_slot,
-				      lxp_proc_at(parent_slot)->mm->region.index,
+				      lxp_slot_proc(parent_slot)->mm->region.index,
 				      lxp_slot_resume(parent_slot), tx->pid);
 	tx->parent_resumed = 1;
 }
@@ -275,7 +275,7 @@ void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long error, in
 
 void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int slot)
 {
-	lxp_proc_t *proc = lxp_proc_at(slot);
+	lxp_proc_t *proc = lxp_slot_proc(slot);
 
 	/* Freeze the old image before copying its trusted capture. */
 	if (coordinator_park_slot(eng, slot) != LXP_OK)
@@ -354,6 +354,6 @@ void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int s
 	}
 
 	exec_txn_resume_parent(&tx, eng);
-	lxp_proc_at(slot)->vfork_parent = lxp_slot_ref_none();
+	lxp_slot_proc(slot)->vfork_parent = lxp_slot_ref_none();
 	tx.phase = EXEC_TXN_FINISHED;
 }

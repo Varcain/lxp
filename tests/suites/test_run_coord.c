@@ -1337,6 +1337,7 @@ static void test_resource_stats_track_slots_and_reserved_regions(void **state)
 	lxp_get_resource_stats(&resources);
 	assert_int_equal(resources.slots_total, LXP_NSLOT);
 	assert_int_equal(resources.slots_free, LXP_NSLOT - 2);
+	assert_int_equal(resources.processes, 2);
 	assert_int_equal(resources.regions_total, LXP_NREG);
 	assert_int_equal(resources.regions_free, LXP_NREG - 2);
 	assert_int_equal(resources.program_region_bytes, LXP_PROG_REGION_SIZE);
@@ -1353,6 +1354,7 @@ static void test_resource_stats_track_slots_and_reserved_regions(void **state)
 	}
 	lxp_get_resource_stats(&resources);
 	assert_int_equal(resources.slots_free, 0);
+	assert_int_equal(resources.processes, LXP_NSLOT);
 	assert_int_equal(resources.regions_free, LXP_NREG - 2);
 	assert_int_equal(resources.available_bytes, 0);
 }

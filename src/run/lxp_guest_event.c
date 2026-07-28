@@ -62,7 +62,7 @@ void lxp_event_post_slot(const lxp_os_ops_t *eng, int slot)
  * clear. */
 int claim_slot_event(int s)
 {
-	lxp_proc_t *p = lxp_proc_at(s);
+	lxp_proc_t *p = lxp_slot_proc(s);
 
 	if (!p || !p->alive)
 		return LXP_EV_NONE;

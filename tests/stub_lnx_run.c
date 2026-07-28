@@ -44,6 +44,7 @@ static const struct lxp_resource_stats g_lxp_test_resource_stats = {
 	.slots_free = 9,
 	.regions_total = 8,
 	.regions_free = 5,
+	.processes = 1,
 };
 
 int lxp_random_fill(void *buf, size_t len)

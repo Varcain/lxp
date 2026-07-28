@@ -13,9 +13,17 @@
 
 #include <stddef.h>
 
-/* Claim a free pipe slot (no live proc holds either end) and initialise it.
+/* Claim a free pipe slot and initialise it with no published ends.
  * Returns the pipe index, or -1 if the pool is exhausted. */
 int lxp_pipe_alloc(void);
+/* Publish or release one open-file-description endpoint. Descriptor aliases
+ * do not call these: dup/fork share the same open description. */
+void lxp_pipe_end_open(int pi, int write_end);
+void lxp_pipe_end_close(int pi, int write_end);
+/* Release a reservation for which no endpoint could be installed. */
+void lxp_pipe_discard(int pi);
+/* Reset the backing pool after all descriptor tables have been torn down. */
+void lxp_pipe_runtime_reset(void);
 
 /* Drain up to len bytes: >0 = bytes read; 0 = EOF (empty, no writers); -EAGAIN =
  * empty but a writer is open (caller blocks). */

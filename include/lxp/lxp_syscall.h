@@ -870,12 +870,7 @@ static inline uintptr_t lxp_sig_restorer_get(const lxp_proc_t *proc)
 	return (proc && proc->sighand) ? proc->sighand->restorer : 0;
 }
 
-/** @brief Bounded proc accessors (defined in the run loop) so backing-object
- * layers can inspect descriptors without exposing writable slot storage. */
-lxp_proc_t *lxp_proc_at(int slot);
-int lxp_proc_nslot(void);
-
-/** Descriptor introspection for backing-object layers that scan process tables. */
+/** Descriptor introspection for descriptor-aware backing-object layers. */
 lxp_ofd_t *lxp_fd_description(lxp_proc_t *proc, int fd);
 uint8_t lxp_fd_kind(const lxp_proc_t *proc, int fd);
 int lxp_fd_backing(const lxp_proc_t *proc, int fd);

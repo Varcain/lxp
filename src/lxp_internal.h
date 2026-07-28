@@ -24,6 +24,10 @@ uint32_t file_mode(const lxp_file_t *f);
  * delivery. Coordinator-owned (defined in lxp_run.c), like the tty ISIG state. */
 void lxp_console_set_fg_pgrp(int pgrp);
 int lxp_console_fg_pgrp(void);
+/* Latch @p sig on every live member of @p pgid and wake the coordinator.
+ * The process table remains owned by the run core; tty subsystems use this
+ * narrow operation instead of enumerating tasks. Returns recipients signalled. */
+int lxp_signal_process_group(int pgid, int sig);
 
 /* Apply the console tty's currently tracked input-character translations.  Both
  * immediate reads in lxp_syscall.c and coordinator-resumed reads must pass bytes
@@ -45,6 +49,7 @@ struct lxp_resource_stats {
 	uint64_t available_bytes;
 	unsigned slots_total;
 	unsigned slots_free;
+	unsigned processes;
 	unsigned regions_total;
 	unsigned regions_free;
 };

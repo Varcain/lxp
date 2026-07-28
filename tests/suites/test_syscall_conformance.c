@@ -198,14 +198,30 @@ static void test_conf_fileio_streams(void **state)
 	assert_int_equal(SC(&p, LXP_NR_writev, 1, (long)(uintptr_t)iov, 2, 0, 0, 0), 7);
 	assert_memory_equal(g_conf_cap, "foobar!", 7);
 
-	/* pipe2 allocates a read/write fd pair. The data path needs a parked reader in another
-	 * proc (pipe_ends scans the global proc table), so the byte round-trip is a cooperative,
-	 * multi-proc concern confirmed on-target by M2 — here we pin the fd allocation. */
+	/* Pipe endpoint liveness follows open-file-description lifetime. A dup alias keeps
+	 * the writer alive until its final close; only then does an empty read become EOF. */
 	int *fds = lxp_conf_alloc(fx, 2 * sizeof(int));
-	assert_int_equal(SC(&p, LXP_NR_pipe2, (long)(uintptr_t)fds, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(
+		SC(&p, LXP_NR_pipe2, (long)(uintptr_t)fds, LXP_O_NONBLOCK, 0, 0, 0, 0), 0);
 	assert_true(fds[0] >= 3 && fds[1] >= 3 && fds[0] != fds[1]);
-	assert_int_equal(SC(&p, LXP_NR_close, fds[0], 0, 0, 0, 0, 0), 0);
+	uint8_t *pipe_byte = lxp_conf_alloc(fx, 1);
+	uint8_t *pipe_out = lxp_conf_alloc(fx, 1);
+	*pipe_byte = 0x5a;
+	assert_int_equal(
+		SC(&p, LXP_NR_write, fds[1], (long)(uintptr_t)pipe_byte, 1, 0, 0, 0), 1);
+	assert_int_equal(
+		SC(&p, LXP_NR_read, fds[0], (long)(uintptr_t)pipe_out, 1, 0, 0, 0), 1);
+	assert_int_equal(*pipe_out, 0x5a);
+	long wdup = SC(&p, LXP_NR_dup, fds[1], 0, 0, 0, 0, 0);
+	assert_true(wdup >= 0);
 	assert_int_equal(SC(&p, LXP_NR_close, fds[1], 0, 0, 0, 0, 0), 0);
+	assert_int_equal(
+		SC(&p, LXP_NR_read, fds[0], (long)(uintptr_t)pipe_out, 1, 0, 0, 0),
+		-LXP_EAGAIN);
+	assert_int_equal(SC(&p, LXP_NR_close, wdup, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(
+		SC(&p, LXP_NR_read, fds[0], (long)(uintptr_t)pipe_out, 1, 0, 0, 0), 0);
+	assert_int_equal(SC(&p, LXP_NR_close, fds[0], 0, 0, 0, 0, 0), 0);
 
 	/* a blocking poll reports the console readable straight away (the caller then read()s). */
 	lxp_pollfd *pf = lxp_conf_alloc(fx, sizeof(lxp_pollfd));

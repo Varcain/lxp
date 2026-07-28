@@ -243,16 +243,12 @@ static long sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwf
 /* The pipe subsystem (ring buffer + read/write/poll ops) lives in src/fs/lxp_pipe.c;
  * this dispatcher calls it via fs/lxp_pipe.h. */
 
-/* lxp_proc_at / lxp_proc_nslot enumerate the live procs (used by the pipe layer's
- * open-ends count). Weak fallbacks so the host syscall test — which links these layers
- * but not the run loop — resolves them; the run loop supplies the strong versions. */
-__attribute__((weak)) lxp_proc_t *lxp_proc_at(int slot)
+/* Host syscall/fuzz tests do not link the coordinator process table. Production
+ * overrides this narrow process-group service in lxp_run.c. */
+__attribute__((weak)) int lxp_signal_process_group(int pgid, int sig)
 {
-	(void)slot;
-	return NULL;
-}
-__attribute__((weak)) int lxp_proc_nslot(void)
-{
+	(void)pgid;
+	(void)sig;
 	return 0;
 }
 
@@ -1148,6 +1144,12 @@ static long fop_fstat_pty(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 #endif
 
 /* ---- close fops (release the backing object; kinds with no backing omit it) ---- */
+static void fop_close_pipe(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	lxp_pipe_end_close(s->file_idx, s->rw);
+}
+
 static void fop_close_proc(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
@@ -1179,6 +1181,13 @@ static void fop_close_netfs(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	lxp_netfs_close(s->file_idx); /* refs--, enqueue a Tclunk at the last close */
+}
+#endif
+#if LXP_ENABLE_PTY
+static void fop_close_pty(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	lxp_pty_end_close(s->file_idx, s->rw);
 }
 #endif
 
@@ -1320,7 +1329,10 @@ static const lxp_file_ops_t tmpfs_fops = {.read = fop_read_tmpfs,
 					  .lseek = fop_lseek_tmpfs,
 					  .fstat = fop_fstat_tmpfs};
 static const lxp_file_ops_t pipe_fops = {
-	.read = fop_read_pipe, .write = fop_write_pipe, .poll = fop_poll_pipe};
+	.read = fop_read_pipe,
+	.write = fop_write_pipe,
+	.close = fop_close_pipe,
+	.poll = fop_poll_pipe};
 static const lxp_file_ops_t proc_fops = {.read = fop_read_proc, /* read-only → write EBADF */
 					 .fstat = fop_fstat_proc,
 					 .close = fop_close_proc};
@@ -1356,6 +1368,7 @@ static const lxp_file_ops_t netfs_fops = {.read = fop_read_netfs,
 static const lxp_file_ops_t pty_fops = {.read = fop_read_pty,
 					.write = fop_write_pty,
 					.fstat = fop_fstat_pty,
+					.close = fop_close_pty,
 					.ioctl = fop_ioctl_pty,
 					.poll = fop_poll_pty};
 #endif
@@ -1847,8 +1860,12 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 		if (idx < 0)
 			return idx;
 		int fd = fd_alloc(p, LXP_FD_PTY, (int)idx, 0);
-		if (fd >= 0)
+		if (fd >= 0) {
 			fd_slot(p, fd)->rw = 1; /* master end */
+			lxp_pty_end_open((int)idx, 1);
+		} else {
+			lxp_pty_discard((int)idx);
+		}
 		return fd;
 	}
 	if (strncmp(path, "/dev/pts/", 9) == 0) {
@@ -1863,7 +1880,10 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 		long idx = lxp_pty_open_slave(num, flags);
 		if (idx < 0)
 			return idx;
-		return fd_alloc(p, LXP_FD_PTY, (int)idx, 0); /* slave end (rw=0) */
+		int fd = fd_alloc(p, LXP_FD_PTY, (int)idx, 0); /* slave end (rw=0) */
+		if (fd >= 0)
+			lxp_pty_end_open((int)idx, 0);
+		return fd;
 	}
 #endif
 #if LXP_ENABLE_DEV
@@ -1953,6 +1973,10 @@ void lxp_fd_close_all(lxp_proc_t *p)
 
 void lxp_fd_runtime_reset(void)
 {
+	lxp_pipe_runtime_reset();
+#if LXP_ENABLE_PTY
+	lxp_pty_runtime_reset();
+#endif
 	memset(g_ofd, 0, sizeof(g_ofd));
 	memset(g_files, 0, sizeof(g_files));
 	memset(g_fs_context, 0, sizeof(g_fs_context));
@@ -2242,8 +2266,8 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 	uint8_t cx = (flags & LXP_O_CLOEXEC) ? 1 : 0;
 	uint8_t nb = (flags & LXP_O_NONBLOCK) ? 1
 					      : 0; /* pipe2(O_NONBLOCK): both ends non-blocking */
-	/* Claim a free pipe slot (one with no live holders — auto-reclaimed when both ends
-	 * close or the holders exit; there is no explicit pipe free path). */
+	/* Reserve a pipe object; endpoint ownership is published as each open-file
+	 * description is installed and released by its final close hook. */
 	int pi = lxp_pipe_alloc();
 	if (pi < 0)
 		return -LXP_EMFILE;
@@ -2256,19 +2280,26 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 		else
 			wfd = fd;
 	}
-	if (wfd < 0)
+	if (wfd < 0) {
+		lxp_pipe_discard(pi);
 		return -LXP_EMFILE;
+	}
 	rfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
-	wfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
-	if (rfd < 0 || wfd < 0) {
-		if (rfd >= 0)
-			(void)sys_close(p, rfd);
+	if (rfd < 0) {
+		lxp_pipe_discard(pi);
 		return -LXP_EMFILE;
 	}
 	fd_slot(p, rfd)->rw = 0;
 	fd_slot(p, rfd)->nonblock = nb;
+	lxp_pipe_end_open(pi, 0);
+	wfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
+	if (wfd < 0) {
+		(void)sys_close(p, rfd);
+		return -LXP_EMFILE;
+	}
 	fd_slot(p, wfd)->rw = 1;
 	fd_slot(p, wfd)->nonblock = nb;
+	lxp_pipe_end_open(pi, 1);
 	p->files->fd[rfd].cloexec = cx;
 	p->files->fd[wfd].cloexec = cx;
 	const int result[2] = {rfd, wfd};
@@ -3842,17 +3873,11 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		si->totalram = (uint32_t)(total_units > UINT32_MAX ? UINT32_MAX : total_units);
 		si->freeram = (uint32_t)(free_units > UINT32_MAX ? UINT32_MAX : free_units);
 		si->mem_unit = unit;
-		/* Report the actual live personality process count. The direct host
-		 * syscall tests do not register their caller in a run-loop table, so
-		 * retain one for the process making this syscall. */
-		unsigned live = 0;
-		int nslot = lxp_proc_nslot();
-		for (int i = 0; i < nslot; i++) {
-			lxp_proc_t *candidate = lxp_proc_at(i);
-			if (candidate && candidate->alive && live < UINT16_MAX)
-				live++;
-		}
-		si->procs = (uint16_t)(live ? live : 1u);
+		/* The coordinator contributes its aggregate without exposing the
+		 * writable process table to syscall subsystems. Direct host tests
+		 * have no coordinator, so retain one for the caller. */
+		unsigned live = resources.processes;
+		si->procs = (uint16_t)(live > UINT16_MAX ? UINT16_MAX : (live ? live : 1u));
 		return 0;
 	}
 	case LXP_NR_fcntl: /* old 32-bit fcntl: same dispatch as fcntl64 here */

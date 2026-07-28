@@ -11,9 +11,9 @@
  * (slave→master, program OUTPUT) — plus a minimal in-kernel line discipline. It is
  * the two-ended pipe with a transform at the boundary: master WRITE runs input
  * processing (ICRNL, ISIG ^C→SIGINT, canonical line editing + echo), slave WRITE runs
- * output processing (OPOST/ONLCR). Lifecycle is recompute-open-ends (like the pipe):
- * no per-fd refcount, so close/dup/fork/exit need no pty hook — a scan of every live
- * proc's fd table yields the master/slave open counts on demand (drives EOF/hangup).
+ * output processing (OPOST/ONLCR). Master/slave counts follow open-file-description
+ * lifetime, so dup/fork aliases do not create phantom endpoints and the final close
+ * drives EOF/hangup without inspecting the coordinator's process table.
  *
  * dropbear opens /dev/ptmx (master) + /dev/pts/N (slave = the login shell's ctty) and
  * shuttles bytes between the master and the SSH channel; ash reads/writes the slave.
@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read */
+#include "lxp_internal.h" /* foreground process-group signal service */
 #include "lxp/lxp_dev.h" /* lxp_guest_access_ok() (confused-deputy guard for ioctl arg pointers) */
 
 /* One pty pair = 2 concurrent SSH logins' worth on this tier (each login holds a
@@ -54,7 +55,9 @@ typedef struct {
 	size_t canon_n;
 	lxp_termios tio; /* line-discipline state (TCGETS/TCSETS) */
 	lxp_winsize ws;
-	int fg_pgrp; /* TIOCSPGRP foreground group (advisory; ^C broadcasts to slave holders) */
+	int fg_pgrp; /* TIOCSPGRP foreground process group receiving terminal signals */
+	uint16_t masters;
+	uint16_t slaves;
 	int used;
 	int locked;	    /* TIOCSPTLCK: slave locked until unlockpt (advisory here) */
 	int m2s_eof;	    /* one-shot EOF pending on the slave (^D on an empty canonical line) */
@@ -97,43 +100,10 @@ static size_t ring_read_line(pty_ring_t *r, uint8_t *out, size_t len)
 	return i;
 }
 
-/* ── open-end counting (recompute, no refcount — mirrors pipe_ends) ─── */
-
-static void pty_ends(int idx, int *masters, int *slaves)
+static void pty_signal_foreground(int idx, int sig)
 {
-	*masters = 0;
-	*slaves = 0;
-	int n = lxp_proc_nslot();
-	for (int s = 0; s < n; s++) {
-		lxp_proc_t *proc = lxp_proc_at(s);
-		if (!proc || !proc->alive)
-			continue;
-		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (lxp_fd_kind(proc, fd) == LXP_FD_PTY &&
-			    lxp_fd_backing(proc, fd) == idx)
-				(lxp_fd_direction(proc, fd) ? (*masters)++ : (*slaves)++);
-	}
-}
-
-/* ^C (and friends): deliver @p sig to every live proc holding this pty's SLAVE end —
- * the shell (which catches SIGINT and re-prompts) plus its foreground child (default
- * action = die). Process-group narrowing is a future refinement (this tier does not
- * track pgid — setpgid is inert), and broadcasting is safe because the shell survives. */
-static void pty_signal_slaves(int idx, int sig)
-{
-	int n = lxp_proc_nslot();
-	for (int s = 0; s < n; s++) {
-		lxp_proc_t *proc = lxp_proc_at(s);
-		if (!proc || !proc->alive)
-			continue;
-		for (int fd = 0; fd < LXP_MAX_FDS; fd++)
-			if (lxp_fd_kind(proc, fd) == LXP_FD_PTY &&
-			    lxp_fd_backing(proc, fd) == idx &&
-			    lxp_fd_direction(proc, fd) == 0) {
-				proc->pending_sigs |= lxp_sig_bit(sig);
-				break; /* one delivery per proc */
-			}
-	}
+	if (g_ptys[idx].fg_pgrp > 0)
+		(void)lxp_signal_process_group(g_ptys[idx].fg_pgrp, sig);
 }
 
 /* ── line discipline ──────────────────────────────────────────── */
@@ -153,7 +123,7 @@ static long pty_input(int idx, const uint8_t *in, size_t len)
 		if (icrnl && c == '\r')
 			c = '\n';
 		if (isig && c == pt->tio.c_cc[LXP_VINTR]) {
-			pty_signal_slaves(idx, LXP_SIGINT);
+			pty_signal_foreground(idx, LXP_SIGINT);
 			consumed++;
 			continue;
 		}
@@ -252,12 +222,10 @@ long lxp_pty_read(lxp_proc_t *p, int idx, int is_master, void *ubuf, size_t len)
 	if (len == 0)
 		return 0;
 	uint8_t *out = (uint8_t *)ubuf;
-	int masters, slaves;
 	if (is_master) { /* server reads program output from s2m */
 		if (pt->s2m.n > 0)
 			return (long)ring_read(&pt->s2m, out, len);
-		pty_ends(idx, &masters, &slaves);
-		if (slaves == 0)
+		if (pt->slaves == 0)
 			return 0; /* shell exited/closed the slave → EOF, server drops the channel */
 		return -LXP_EAGAIN;
 	}
@@ -265,8 +233,7 @@ long lxp_pty_read(lxp_proc_t *p, int idx, int is_master, void *ubuf, size_t len)
 	if (pt->m2s.n > 0)
 		return (long)((pt->tio.c_lflag & LXP_ICANON) ? ring_read_line(&pt->m2s, out, len)
 							     : ring_read(&pt->m2s, out, len));
-	pty_ends(idx, &masters, &slaves);
-	if (masters == 0)
+	if (pt->masters == 0)
 		return 0; /* master closed (client disconnect) → EOF/hangup → the shell exits */
 	if (pt->m2s_eof) {
 		pt->m2s_eof = 0;
@@ -336,16 +303,14 @@ unsigned lxp_pty_poll(int idx, int is_master)
 	if (idx < 0 || idx >= LXP_NPTY || !g_ptys[idx].used)
 		return 0;
 	lxp_pty_t *pt = &g_ptys[idx];
-	int masters, slaves;
-	pty_ends(idx, &masters, &slaves);
 	unsigned r = 0;
 	if (is_master) {
-		if (pt->s2m.n > 0 || slaves == 0)
+		if (pt->s2m.n > 0 || pt->slaves == 0)
 			r |= LXP_POLLIN; /* data to read, or slave gone (EOF is readable) */
 		if (ring_space(&pt->m2s) > 0)
 			r |= LXP_POLLOUT;
 	} else {
-		if (pt->m2s.n > 0 || masters == 0 || pt->m2s_eof)
+		if (pt->m2s.n > 0 || pt->masters == 0 || pt->m2s_eof)
 			r |= LXP_POLLIN;
 		if (ring_space(&pt->s2m) > 0)
 			r |= LXP_POLLOUT;
@@ -410,12 +375,8 @@ long lxp_pty_retry(lxp_proc_t *p)
 long lxp_pty_open_master(int flags)
 {
 	for (int i = 0; i < LXP_NPTY; i++) {
-		if (g_ptys[i].used) {
-			int m, s;
-			pty_ends(i, &m, &s);
-			if (m || s)
-				continue; /* still open somewhere */
-		}
+		if (g_ptys[i].used)
+			continue;
 		lxp_pty_t *pt = &g_ptys[i];
 		memset(pt, 0, sizeof(*pt));
 		pt->used = 1;
@@ -443,6 +404,38 @@ long lxp_pty_open_slave(int num, int flags)
 		return -LXP_ENOENT;
 	g_ptys[num].s_nb = (flags & LXP_O_NONBLOCK) ? 1 : 0;
 	return num; /* the pool index doubles as the pts number */
+}
+
+void lxp_pty_end_open(int idx, int is_master)
+{
+	if (idx < 0 || idx >= LXP_NPTY || !g_ptys[idx].used)
+		return;
+	uint16_t *ends = is_master ? &g_ptys[idx].masters : &g_ptys[idx].slaves;
+	if (*ends != UINT16_MAX)
+		(*ends)++;
+}
+
+void lxp_pty_end_close(int idx, int is_master)
+{
+	if (idx < 0 || idx >= LXP_NPTY || !g_ptys[idx].used)
+		return;
+	uint16_t *ends = is_master ? &g_ptys[idx].masters : &g_ptys[idx].slaves;
+	if (*ends > 0)
+		(*ends)--;
+	if (g_ptys[idx].masters == 0 && g_ptys[idx].slaves == 0)
+		memset(&g_ptys[idx], 0, sizeof(g_ptys[idx]));
+}
+
+void lxp_pty_discard(int idx)
+{
+	if (idx >= 0 && idx < LXP_NPTY && g_ptys[idx].masters == 0 &&
+	    g_ptys[idx].slaves == 0)
+		memset(&g_ptys[idx], 0, sizeof(g_ptys[idx]));
+}
+
+void lxp_pty_runtime_reset(void)
+{
+	memset(g_ptys, 0, sizeof(g_ptys));
 }
 
 #endif /* LXP_ENABLE_PTY */

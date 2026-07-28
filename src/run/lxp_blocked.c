@@ -326,7 +326,7 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 	};
 
 	for (int slot = 0; slot < LXP_NSLOT; slot++) {
-		lxp_proc_t *proc = lxp_proc_at(slot);
+		lxp_proc_t *proc = lxp_slot_proc(slot);
 		if (!proc->alive)
 			continue;
 		scan.any_alive = 1;

@@ -11,7 +11,7 @@
 struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
 {
 	struct lxp_exit_result result = {0};
-	lxp_proc_t *proc = lxp_proc_at(slot);
+	lxp_proc_t *proc = lxp_slot_proc(slot);
 	lxp_slot_ref_t exiting_ref = slot_ref_at(slot);
 	if (proc->intent.data.exit.group)
 		thread_group_request_exit(slot, proc->exit_status);
@@ -38,7 +38,7 @@ struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
 	if (lxp_slot_ref_is_current(parent_ref) && proc->snapshot.index >= 0) {
 		/* A vfork child died before exec: undo its writes to the shared
 		 * address space before resuming the parent. */
-		if (vfork_restore(eng, lxp_proc_at(parent_slot), proc->snapshot, exiting_ref,
+		if (vfork_restore(eng, lxp_slot_proc(parent_slot), proc->snapshot, exiting_ref,
 				  lxp_slot_resume(parent_slot)->sp) != 0) {
 			vfork_contain_stale(exiting_ref, proc);
 			parent_slot = -1;
@@ -63,7 +63,7 @@ struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
 
 	if (parent_slot >= 0 && lxp_slot_ref_is_current(parent_ref))
 		(void)coordinator_resume_slot(eng, parent_slot,
-					      lxp_proc_at(parent_slot)->mm->region.index,
+					      lxp_slot_proc(parent_slot)->mm->region.index,
 					      lxp_slot_resume(parent_slot), pid);
 	if (group_is_dead)
 		reap_to_parent(eng, ppid, tgid, status,
