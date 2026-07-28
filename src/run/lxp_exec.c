@@ -130,7 +130,7 @@ static void exec_txn_detach_old(struct exec_txn *tx)
 	proc_mm_put(old);
 	old->snapshot = lxp_region_ref_none();
 	old->alive = 0;
-	g_lxp_slots[tx->slot].runnable = 0;
+	slot_runnable_store(tx->slot, 0);
 	tx->old_detached = 1;
 }
 
@@ -305,7 +305,7 @@ static void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long er
 	memset(&g_lxp_slots[tx->slot].proc, 0, sizeof(g_lxp_slots[tx->slot].proc));
 	g_lxp_slots[tx->slot].proc.snapshot = lxp_region_ref_none();
 	g_lxp_slots[tx->slot].proc.vfork_parent = lxp_slot_ref_none();
-	g_lxp_slots[tx->slot].runnable = 0;
+	slot_runnable_store(tx->slot, 0);
 	primary_slot_clear(tx->slot);
 	fork_child_guard_reset(tx->slot);
 	tx->region_acquired = 0;

@@ -62,7 +62,7 @@ static int claim_slot_event(int s)
 		return LXP_EV_FORK;
 	if (p->intent.kind == LXP_INTENT_DEFERRED_SYSCALL && deferred_state_load(s) == DEFER_READY)
 		return LXP_EV_DEFER;
-	if (!g_lxp_slots[s].runnable)
+	if (!slot_runnable_load(s))
 		return LXP_EV_NONE;
 	switch (p->wait.kind) {
 	case LXP_WAIT_TIMER:

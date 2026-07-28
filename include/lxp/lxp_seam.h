@@ -92,12 +92,8 @@ struct lxp_resume_ctx {
  * hooks (time, thread_list, cache, rootfs_window, exec_stage) + prepare/teardown. */
 
 /* ---- narrow shared-core operations (defined in lxp_run.c) -------------- */
-extern struct lxp_resume_ctx g_lxp_vfork; /* vfork capture buffer */
-extern volatile int g_lxp_active;	  /* a run is in progress (seam trap gate) */
-extern volatile int g_lxp_halt;	  /* reboot(2)/poweroff: stop the run loop */
-/* The rootfs cpio's data span [lo, hi): dynamic FDPIC processes execute shared text in place from
- * this backing store, and engine MPU policies grant that span user RO+X access. NULL pre-run. */
-extern const uint8_t *g_lxp_rootfs_lo, *g_lxp_rootfs_hi;
+/** Acquire the run-active publication gate before consulting slot state. */
+int lxp_trap_active(void);
 
 /** Maximum device capabilities represented by an address-space policy. */
 #define LXP_MEMORY_DEVICE_MAX 2u

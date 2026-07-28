@@ -72,14 +72,14 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 		rc = eng->abort_slot(sidx, slot_generation(sidx));
 		if (rc == LXP_OK) {
 			g_lxp_slots[sidx].host_state = SLOT_DEAD;
-			g_lxp_slots[sidx].runnable = 0;
+			slot_runnable_store(sidx, 0);
 			return LXP_OK;
 		}
 		/* The callback contract says failure leaves the prior host state intact.
 		 * Preserve its runnable view and retain all Linux resources until a later
 		 * abort succeeds; releasing an mm under a live task would be unsafe. */
 		g_lxp_slots[sidx].host_state = SLOT_FAILED;
-		g_lxp_slots[sidx].runnable = (old == SLOT_RUNNING);
+		slot_runnable_store(sidx, old == SLOT_RUNNING);
 		slot_transition_failed(sidx, SLOT_EXITING, rc);
 		return rc;
 
@@ -96,11 +96,11 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 		rc = eng->park_slot(sidx, slot_generation(sidx));
 		if (rc == LXP_OK) {
 			g_lxp_slots[sidx].host_state = SLOT_PARKED;
-			g_lxp_slots[sidx].runnable = 0;
+			slot_runnable_store(sidx, 0);
 			return LXP_OK;
 		}
 		g_lxp_slots[sidx].host_state = SLOT_RUNNING;
-		g_lxp_slots[sidx].runnable = 1;
+		slot_runnable_store(sidx, 1);
 		/* The guest is already redirected to lxp_park_loop. A failed suspend
 		 * cannot be rolled back into useful execution; synchronously terminate
 		 * it and let the ordinary exit path release ownership. */
@@ -122,11 +122,11 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 				       request->data.resume.ctx, request->data.resume.r0);
 		if (rc == LXP_OK) {
 			g_lxp_slots[sidx].host_state = SLOT_RUNNING;
-			g_lxp_slots[sidx].runnable = 1;
+			slot_runnable_store(sidx, 1);
 			return LXP_OK;
 		}
 		g_lxp_slots[sidx].host_state = old;
-		g_lxp_slots[sidx].runnable = 0;
+		slot_runnable_store(sidx, 0);
 		/* A failed persistent resume leaves the old task parked; a failed
 		 * initial resume leaves no task. Abort is idempotent in both cases. */
 		(void)lxp_lifecycle_apply(eng, &(struct lxp_lifecycle_request){
@@ -147,11 +147,11 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 				       request->data.launch.sp, request->data.launch.stack_lo);
 		if (rc == LXP_OK) {
 			g_lxp_slots[sidx].host_state = SLOT_RUNNING;
-			g_lxp_slots[sidx].runnable = 1;
+			slot_runnable_store(sidx, 1);
 			return LXP_OK;
 		}
 		g_lxp_slots[sidx].host_state = SLOT_DEAD;
-		g_lxp_slots[sidx].runnable = 0;
+		slot_runnable_store(sidx, 0);
 		slot_transition_failed(sidx, SLOT_STARTING, rc);
 		return rc;
 	}

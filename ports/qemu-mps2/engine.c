@@ -107,7 +107,7 @@ static struct lnx_capture g_cap __attribute__((used));
 int lxp_qemu_svc_c(struct lnx_capture *g)
 {
 	int sidx = current_slot();
-	if (!g_lxp_active || sidx < 0)
+	if (!lxp_trap_active() || sidx < 0)
 		return 0; /* not a running program → FreeRTOS's own svc */
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
@@ -180,10 +180,11 @@ extern void vPortSVCHandler(void); /* FreeRTOS's own (start-scheduler) handler *
 
 __attribute__((naked)) void SVC_Handler(void)
 {
-	__asm__ volatile("ldr   r1, =g_lxp_active  \n"
+	__asm__ volatile("ldr   r1, =g_lxp_trap_gate \n"
 			 "ldr   r1, [r1]           \n"
 			 "cmp   r1, #0             \n"
 			 "beq   1f                 \n" /* no run active → FreeRTOS (start scheduler) */
+			 "dmb                       \n"
 			 "tst   lr, #8             \n" /* handler-mode svc (yield/priv) → FreeRTOS */
 			 "beq   1f                 \n"
 			 "mrs   r0, psp            \n"
@@ -229,7 +230,7 @@ extern void HardFault_Handler(void);
 void lxp_qemu_fault_c(uint32_t *frame /* the faulting program's PSP HW frame */)
 {
 	int sidx = current_slot();
-	if (g_lxp_active && sidx >= 0) {
+	if (lxp_trap_active() && sidx >= 0) {
 		lxp_guest_fault_t fault = {
 			.detail = *(volatile uint32_t *)0xE000ED28u,
 		};

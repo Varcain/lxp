@@ -53,6 +53,11 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out);
 /* Host-supplied utsname.version identity, or the honest module fallback "lxp". */
 const char *lxp_system_version(void);
 
+/* reboot(2)/poweroff requests are private core state, not part of the RTOS seam. */
+void lxp_request_halt(void);
+void lxp_reset_halt_request(void);
+int lxp_halt_requested(void);
+
 /* Encode a child's exit code (our convention: 128 + signal for a signal-killed child) as
  * a Linux wait(2) status word: WIFSIGNALED with the signal in the low 7 bits for 129..159,
  * else WIFEXITED with the code in bits 8-15. Shared by sys_wait4 + the coordinator's

@@ -311,7 +311,7 @@ static int reset_state(void **state)
 	g_eng = &g_mock_eng;
 	g_cfg = NULL;
 	g_lifecycle_failpoint = LXP_FAIL_NONE;
-	g_lxp_active = 0;
+	lxp_trap_publish(0);
 	g_pending_sig = 0;
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
@@ -1326,7 +1326,7 @@ static void test_rootfs_requires_one_explicit_trusted_window(void **state)
 static void test_resource_stats_track_slots_and_reserved_regions(void **state)
 {
 	(void)state;
-	g_lxp_active = 1;
+	lxp_trap_publish(1);
 	deferred_slot_reassign(0);
 	deferred_slot_reassign(1);
 	lxp_region_ref_t shared = region_reserve(0, slot_ref_at(0));

@@ -37,10 +37,24 @@
 
 #include <string.h>
 
-/* Set by reboot(2)/poweroff to stop the run loop; the common run loop observes
- * it (declared extern there). Defined here so the host syscall tests, which do
- * not link the run loop, still resolve the symbol. */
-volatile int g_lxp_halt;
+/* Kept in the syscall core so isolated syscall tests do not need the run loop.
+ * Accessors keep this coordinator policy out of the public RTOS seam. */
+static uint8_t g_halt_requested;
+
+void lxp_request_halt(void)
+{
+	g_halt_requested = 1;
+}
+
+void lxp_reset_halt_request(void)
+{
+	g_halt_requested = 0;
+}
+
+int lxp_halt_requested(void)
+{
+	return g_halt_requested != 0;
+}
 
 /* ABI pins for the tty/poll uapi structs (lxp_syscall.h). Fixed-width fields → these
  * hold on the 32-bit target and the 64-bit host build; a drift fails the build. */
@@ -4021,7 +4035,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		 * reboot(CAD_OFF=0) at startup to disable Ctrl-Alt-Del — a no-op here. */
 		if (cmd == 0x01234567u /* RESTART */ || cmd == 0xcdef0123u /* HALT */ ||
 		    cmd == 0x4321fedcu /* POWER_OFF */ || cmd == 0xa1b2c3d4u /* RESTART2 */) {
-			g_lxp_halt = 1;
+			lxp_request_halt();
 			(void)lxp_intent_exit(proc, 0);
 			proc->exit_status = 0;
 			proc->exit_reason = LXP_EXIT_REASON_NORMAL;

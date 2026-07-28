@@ -90,6 +90,16 @@ struct lxp_slot_runtime {
 
 static struct lxp_slot_runtime g_lxp_slots[LXP_NSLOT];
 
+static int slot_runnable_load(int slot)
+{
+	return __atomic_load_n(&g_lxp_slots[slot].runnable, __ATOMIC_ACQUIRE) != 0;
+}
+
+static void slot_runnable_store(int slot, int runnable)
+{
+	__atomic_store_n(&g_lxp_slots[slot].runnable, runnable != 0, __ATOMIC_RELEASE);
+}
+
 /*
  * Lifecycle transactions expose deterministic boundaries to the coordinator
  * tests without carrying a diagnostic control surface into production builds.
@@ -186,7 +196,7 @@ static void refresh_stats(void)
 		lxp_proc_t *p = &g_lxp_slots[s].proc;
 		if (!p->alive)
 			continue;
-		char state = (g_lxp_slots[s].runnable && p->wait.kind == LXP_WAIT_NONE) ? 'R' : 'S';
+		char state = (slot_runnable_load(s) && p->wait.kind == LXP_WAIT_NONE) ? 'R' : 'S';
 		if (lxp_stats_add(p->pid, p->group->ppid, p->comm, state, lxp_proc_cpu_us(p->pid),
 				  0) != LXP_OK)
 			overflow = 1;
@@ -207,16 +217,27 @@ static void refresh_stats(void)
 }
 
 /* ---- shared state ---------------------------------------------------------- */
-struct lxp_resume_ctx g_lxp_vfork;
-volatile int g_lxp_active;
+/*
+ * Linker-visible only because the FreeRTOS and standalone QEMU naked SVC
+ * vectors load it by symbol name. C seams must use lxp_trap_active(), which
+ * supplies the acquire side of this publication.
+ */
+uint32_t g_lxp_trap_gate;
+
+static void lxp_trap_publish(int active)
+{
+	__atomic_store_n(&g_lxp_trap_gate, active != 0, __ATOMIC_RELEASE);
+}
+
+int lxp_trap_active(void)
+{
+	return __atomic_load_n(&g_lxp_trap_gate, __ATOMIC_ACQUIRE) != 0;
+}
 /* Coordinator heartbeat: bumped once per dispatch-loop iteration, read by a host
  * watchdog through lxp_run_health(). Free-running; a stalled value while active
  * is the wedge signal. volatile + aligned u32 => the cross-task read is atomic
  * without a lock (the reader only needs to observe change, not a precise count). */
 static volatile uint32_t g_coord_iters;
-/* g_lxp_halt is defined in the syscall layer (reboot(2) sets it) so the
- * host syscall tests link without the run loop; the run loop only observes it. */
-
 static lxp_arena_t g_arenas[LXP_NREG];
 /* Exact region reservations, including address spaces and temporary
  * snapshot/exec leases. A committed region belongs to the lxp_mm_t carrying
@@ -336,7 +357,7 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out)
 
 	unsigned regions_used = 0;
 	for (int r = 0; r < LXP_NREG; r++)
-		if (g_lxp_active && g_regions[r].refs != 0)
+		if (lxp_trap_active() && g_regions[r].refs != 0)
 			regions_used++;
 	out->regions_free = LXP_NREG - regions_used;
 
@@ -408,8 +429,8 @@ int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actua
 /* The rootfs cpio region [lo, hi). Dynamic FDPIC processes execute busybox.so, ld.so and libc.so
  * text shared in place from this backing store; engine MPU policies grant it user RO+X access.
  * NULL until a run starts. */
-const uint8_t *g_lxp_rootfs_lo;
-const uint8_t *g_lxp_rootfs_hi;
+static const uint8_t *g_lxp_rootfs_lo;
+static const uint8_t *g_lxp_rootfs_hi;
 
 /* access_ok (lxp_syscall.c) asks for the shared read-only rootfs span so a read-source user
  * pointer may point into a program's .rodata (shared in-place from the cpio). Strong override of the
@@ -488,9 +509,9 @@ static void deferred_state_store(int slot, uint8_t state)
 static void deferred_slot_reassign(int slot)
 {
 	deferred_state_store(slot, DEFER_IDLE);
-	uint32_t next = __atomic_add_fetch(&g_lxp_slots[slot].generation, 1u, __ATOMIC_RELAXED);
+	uint32_t next = __atomic_add_fetch(&g_lxp_slots[slot].generation, 1u, __ATOMIC_ACQ_REL);
 	if (next == 0) /* reserve zero for the static, never-assigned state */
-		(void)__atomic_add_fetch(&g_lxp_slots[slot].generation, 1u, __ATOMIC_RELAXED);
+		(void)__atomic_add_fetch(&g_lxp_slots[slot].generation, 1u, __ATOMIC_ACQ_REL);
 }
 
 /* Per-slot FDPIC runtime load addresses, exported (non-static) for SOURCE-LEVEL GDB DEBUGGING of
@@ -573,7 +594,7 @@ static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 	g_lxp_slots[slot].deferred.a0 = f->r[0];
 	g_lxp_slots[slot].deferred.owner = (lxp_slot_ref_t){
 		.index = (int16_t)slot,
-		.generation = __atomic_load_n(&g_lxp_slots[slot].generation, __ATOMIC_RELAXED),
+		.generation = slot_generation(slot),
 	};
 #if LXP_ENABLE_LATENCY
 	{ /* the only timer call on the svc top half, and only when instrumented */
@@ -690,7 +711,7 @@ int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
 	out->host_state = g_lxp_slots[slot].host_state;
 	out->task_status = diag_task_status(p);
 	out->deferred_state = deferred_state_load(slot);
-	out->runnable = g_lxp_slots[slot].runnable != 0;
+	out->runnable = slot_runnable_load(slot);
 	out->primary_pending = primary_slot_pending(slot);
 	out->signal_depth = g_sig_save[slot].depth;
 	out->native_task_known = g_diag_native_known;
@@ -839,7 +860,7 @@ int lxp_validate_world(lxp_diag_error_t *error)
 			return diag_error(error, LXP_DIAG_GUEST_VIEW_LEAKED, slot, -1, 1, 0);
 
 		if (!p->alive) {
-			if (g_lxp_slots[slot].runnable)
+			if (slot_runnable_load(slot))
 				return diag_error(error, LXP_DIAG_FREE_TASK_RUNNABLE, slot, -1, 1,
 						  0);
 			if (g_diag_native_known && g_diag_native_present[slot] &&
@@ -885,13 +906,13 @@ int lxp_validate_world(lxp_diag_error_t *error)
 		CHECK_RESOURCE_REFS(group, 4);
 #undef CHECK_RESOURCE_REFS
 
-		if (g_lxp_slots[slot].runnable && host != SLOT_RUNNING && host != SLOT_FAILED)
+		if (slot_runnable_load(slot) && host != SLOT_RUNNING && host != SLOT_FAILED)
 			return diag_error(error, LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH, slot,
 					  region, host, SLOT_RUNNING);
-		if (host == SLOT_RUNNING && !g_lxp_slots[slot].runnable)
+		if (host == SLOT_RUNNING && !slot_runnable_load(slot))
 			return diag_error(error, LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH, slot,
 					  region, 0, 1);
-		if (host == SLOT_PARKED && g_lxp_slots[slot].runnable)
+		if (host == SLOT_PARKED && slot_runnable_load(slot))
 			return diag_error(error, LXP_DIAG_PARKED_TASK_RUNNABLE, slot, region, 1, 0);
 		if (g_diag_native_known &&
 		    (host == SLOT_RUNNING || host == SLOT_PARKED || host == SLOT_FAILED) &&
@@ -1063,7 +1084,7 @@ void lxp_run_health(lxp_run_health_t *out)
 	if (!out)
 		return;
 	out->coord_iters = g_coord_iters;
-	out->active = g_lxp_active;
+	out->active = lxp_trap_active();
 }
 
 __attribute__((weak)) void lxp_park_loop(void *token)
@@ -1275,7 +1296,7 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		 * SIGTERM respectively. init is parked and can't receive it, so honor a
 		 * shutdown signal to pid 1 directly as a system halt. */
 		if (nr == LXP_NR_kill && target == 1 && (sig == 10 || sig == 12 || sig == 15)) {
-			g_lxp_halt = 1;
+			lxp_request_halt();
 			f->r[0] = 0; /* kill() succeeds; the run loop stops next iteration */
 			return;
 		}
@@ -1398,7 +1419,7 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 /* ---- host task lifecycle --------------------------------------------------- */
 static uint32_t slot_generation(int sidx)
 {
-	return __atomic_load_n(&g_lxp_slots[sidx].generation, __ATOMIC_RELAXED);
+	return __atomic_load_n(&g_lxp_slots[sidx].generation, __ATOMIC_ACQUIRE);
 }
 
 static lxp_slot_ref_t slot_ref_at(int slot)
@@ -1430,7 +1451,11 @@ int lxp_slot_ref_is_current(lxp_slot_ref_t ref)
 
 int lxp_slot_ref_is_runnable(lxp_slot_ref_t ref)
 {
-	return lxp_slot_ref_is_current(ref) && g_lxp_slots[ref.index].runnable;
+	if (ref.index < 0 || ref.index >= LXP_NSLOT || ref.generation == 0 ||
+	    !slot_runnable_load(ref.index))
+		return 0;
+	return slot_generation(ref.index) == ref.generation &&
+	       g_lxp_slots[ref.index].proc.alive;
 }
 
 int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out)
@@ -1765,7 +1790,7 @@ static int image_txn_abort(struct image_txn *tx, const lxp_os_ops_t *eng)
 		memset(proc, 0, sizeof(*proc));
 		proc->snapshot = lxp_region_ref_none();
 		proc->vfork_parent = lxp_slot_ref_none();
-		g_lxp_slots[tx->slot].runnable = 0;
+		slot_runnable_store(tx->slot, 0);
 		primary_slot_clear(tx->slot);
 		memset(&g_sig_save[tx->slot], 0, sizeof(g_sig_save[tx->slot]));
 	}
@@ -2377,7 +2402,7 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 		proc_mm_put(p);
 		lxp_proc_group_put(p);
 		g_sig_save[s].depth = 0;
-		g_lxp_slots[s].runnable = 0;
+		slot_runnable_store(s, 0);
 		memset(p, 0, sizeof(*p));
 		p->snapshot = lxp_region_ref_none();
 		p->vfork_parent = lxp_slot_ref_none();
@@ -2697,7 +2722,7 @@ static void fork_txn_abort(struct fork_txn *tx, const lxp_os_ops_t *eng)
 	if (tx->child_constructed)
 		lxp_proc_child_discard(tx->child);
 	memset(&g_sig_save[tx->child_ref.index], 0, sizeof(g_sig_save[tx->child_ref.index]));
-	g_lxp_slots[tx->child_ref.index].runnable = 0;
+	slot_runnable_store(tx->child_ref.index, 0);
 	primary_slot_clear(tx->child_ref.index);
 	fork_child_guard_reset(tx->child_ref.index);
 	tx->region_acquired = 0;
@@ -2747,7 +2772,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const c
 	g_lxp_rootfs_lo = cfg->rootfs_image;
 	g_lxp_rootfs_hi = g_lxp_rootfs_lo + cfg->rootfs_image_size;
 	for (int i = 0; i < LXP_NSLOT; i++) {
-		g_lxp_slots[i].runnable = 0;
+		slot_runnable_store(i, 0);
 		g_lxp_slots[i].host_state = SLOT_FREE;
 		g_lxp_slots[i].proc.alive = 0;
 		deferred_slot_reassign(i);
@@ -2792,8 +2817,8 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const c
 	 * region (or exits) so the two co-run. The region table holds one reference
 	 * per live task sharing an address space, plus reserved vfork
 	 * snapshot/exec-handoff regions. */
-	g_lxp_active = 1;
-	g_lxp_halt = 0;
+	lxp_trap_publish(1);
+	lxp_reset_halt_request();
 	(void)region_reserve(0, slot_ref_at(0));
 	if (launch(eng, 0, 0, cfg->rootfs[bb].data, cfg->rootfs[bb].size, 1, 0, argc, argv,
 		   cfg->env, 0) != 0) {
@@ -2825,7 +2850,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const c
 			lat_cls = 0;
 		}
 #endif
-		if (g_lxp_halt) { /* reboot(2)/poweroff: stop the whole system */
+		if (lxp_halt_requested()) { /* reboot(2)/poweroff: stop the whole system */
 			rc = 0;
 			break;
 		}
@@ -2922,13 +2947,13 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const c
 		}
 		eng->event_wait(to);
 	}
-	g_lxp_active = 0;
+	lxp_trap_publish(0);
 	coordinator_teardown_all(eng);
 	lxp_diag_checkpoint();
 	return rc;
 
 launch_failed:
-	g_lxp_active = 0;
+	lxp_trap_publish(0);
 	coordinator_teardown_all(eng);
 	lxp_diag_checkpoint();
 	return LXP_RUN_ELAUNCH;
