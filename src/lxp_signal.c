@@ -13,8 +13,8 @@
 #include "lxp_run_internal.h"
 
 #include "lxp/lxp_guest.h"
+#include "lxp/lxp_proc.h"
 #include "lxp/lxp_seam.h"
-#include "lxp/lxp_syscall.h"
 
 /* ---- signal delivery (over the uniform frame) ------------------------------ */
 /* Resolve a handler + restorer for delivery. FDPIC: sa_handler/sa_restorer are function DESCRIPTORS

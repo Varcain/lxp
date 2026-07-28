@@ -36,7 +36,7 @@
 
 #include "lxp/lxp_guest.h"
 #include "lxp/lxp_port.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp/lxp_proc_fwd.h"
 
 #ifdef __cplusplus
 extern "C" {

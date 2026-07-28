@@ -15,6 +15,9 @@
 #include <stdint.h>
 
 #include "lxp/lxp_guest.h"
+#include "lxp/lxp_program.h"
+
+struct lxp_mem_stats;
 
 /* The stat mode (S_IF* | perms) of a rootfs file entry. */
 uint32_t file_mode(const lxp_file_t *f);

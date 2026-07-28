@@ -33,8 +33,8 @@ extern "C" {
  * saved register context). The port only ever passes pointers to these. */
 typedef struct lxp_flat lxp_flat_t;             /* full def in lxp_loader.h  */
 typedef struct lxp_run_config lxp_run_config_t; /* full def in lxp_run.h     */
-typedef struct lxp_exec_capture lxp_exec_capture_t; /* full def in lxp_syscall.h */
-struct lxp_resume_ctx;                          /* full def in lxp_run_internal.h */
+typedef struct lxp_exec_capture lxp_exec_capture_t; /* full definition in lxp_exec.h */
+struct lxp_resume_ctx;                          /* full definition in lxp_seam.h */
 
 /* Host-owned opaque handles: the module holds these, the port allocates the
  * backing storage. This is what removes the compile-time backend-storage

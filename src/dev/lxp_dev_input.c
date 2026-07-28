@@ -19,6 +19,7 @@
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_proc.h"
 #include "lxp_uapi.h"
 
 #include <string.h>

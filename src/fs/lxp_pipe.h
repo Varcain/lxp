@@ -6,7 +6,7 @@
  *
  * Private interface of the pipe subsystem (src/fs/lxp_pipe.c), used by the syscall
  * dispatcher's read/write/poll handlers. lxp_pipe_retry (the coordinator entry) is
- * public in lxp_syscall.h.
+ * public in lxp_proc.h.
  */
 #ifndef LXP_FS_PIPE_H
 #define LXP_FS_PIPE_H

@@ -12,8 +12,8 @@
 #include "proc/lxp_procfs.h"
 
 #include "lxp/lxp_config.h"
+#include "lxp/lxp_proc.h"
 #include "lxp/lxp_stats.h"
-#include "lxp/lxp_syscall.h"
 #include "lxp_internal.h"
 #if LXP_ENABLE_NET
 #include "lxp/lxp_net.h"

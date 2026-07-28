@@ -21,6 +21,7 @@
 
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_disp_ops.h" /* lxp_display_ops_t + g_lxp_disp_ops (published by lxp_run) */
+#include "lxp/lxp_proc.h"
 #include "lxp_pool.h"	      /* shared refcounted open-pool primitives */
 
 #include <string.h>

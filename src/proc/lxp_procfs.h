@@ -12,7 +12,7 @@
 
 #include <stddef.h>
 
-#include "lxp/lxp_syscall.h" /* lxp_proc_t */
+#include "lxp/lxp_proc.h"
 
 /* True iff `abs` names something under /proc (which shadows the rootfs). */
 int proc_is(const char *abs);

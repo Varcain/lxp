@@ -14,6 +14,7 @@
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_guest.h"
 #include "lxp/lxp_latency.h"
+#include "lxp/lxp_proc.h"
 #include "lxp/lxp_seam.h"
 
 enum deferred_state {

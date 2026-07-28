@@ -13,7 +13,7 @@
 
 #include <stdint.h>
 
-#include "lxp/lxp_syscall.h" /* lxp_proc_t, LXP_MAX_FDS, LXP_FD_* */
+#include "lxp/lxp_proc.h" /* lxp_proc_t, LXP_MAX_FDS, LXP_FD_* */
 
 /* close: drop a reference. Returns 1 when this was the LAST reference — the caller must
  * then release the backing object and clear the slot's `used` — else 0 (still live). */

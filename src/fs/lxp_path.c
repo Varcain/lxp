@@ -11,7 +11,7 @@
  */
 #include "fs/lxp_path.h"
 
-#include "lxp/lxp_syscall.h"
+#include "lxp/lxp_proc.h"
 #include "lxp_internal.h" /* lxp_guest_strnlen, file_mode */
 
 #include <string.h>

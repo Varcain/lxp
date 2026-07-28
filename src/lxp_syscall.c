@@ -56,7 +56,7 @@ int lxp_halt_requested(void)
 	return g_halt_requested != 0;
 }
 
-/* ABI pins for the tty/poll uapi structs (lxp_syscall.h). Fixed-width fields → these
+/* ABI pins for the tty/poll uapi structs (lxp_proc.h). Fixed-width fields → these
  * hold on the 32-bit target and the 64-bit host build; a drift fails the build. */
 LXP_STATIC_ASSERT(sizeof(struct lxp_termios) == 36, "termios ABI size drifted");
 LXP_STATIC_ASSERT(offsetof(struct lxp_termios, c_cc) == 17, "termios c_cc offset drifted");
@@ -145,7 +145,7 @@ int lxp_wait_cancel(lxp_proc_t *proc)
  * directly after a NULL check (a future MMU tier would translate them).
  */
 
-/* fd-slot kinds (lxp_fd.kind) are now in lxp_syscall.h (shared with the subsystem TUs). */
+/* fd-slot kinds (lxp_fd.kind) live in lxp_proc.h and are shared with subsystem TUs. */
 
 /* Host entropy adapter (defined with sys_getrandom); random-device reads use it
  * before that point. */
@@ -396,197 +396,6 @@ void lxp_proc_set_rootfs(lxp_proc_t *proc, const lxp_file_t *files, int count)
 		return;
 	proc->fs = files;
 	proc->fs_count = (files && count > 0) ? count : 0;
-}
-
-/* Parse 8 ASCII-hex chars (a newc CPIO header field). */
-static uint32_t cpio_hex(const char *s)
-{
-	uint32_t v = 0;
-	for (int i = 0; i < 8; i++) {
-		char c = s[i];
-		uint32_t d = (c >= '0' && c <= '9')   ? (uint32_t)(c - '0')
-			     : (c >= 'a' && c <= 'f') ? (uint32_t)(c - 'a' + 10)
-			     : (c >= 'A' && c <= 'F') ? (uint32_t)(c - 'A' + 10)
-						      : 0u;
-		v = (v << 4) | d;
-	}
-	return v;
-}
-
-int lxp_cpio_to_rootfs(const uint8_t *cpio, size_t len, lxp_file_t *out, int max, char *namebuf,
-		       size_t nblen)
-{
-	if (!cpio || !out || !namebuf)
-		return -1;
-	size_t pos = 0, nb = 0;
-	int n = 0;
-	while (pos + 110 <= len) {
-		const char *h = (const char *)(cpio + pos);
-		if (memcmp(h, "070701", 6) != 0) /* newc magic */
-			return -1;
-		uint32_t mode = cpio_hex(h + 14);  /* c_mode */
-		uint32_t fsize = cpio_hex(h + 54); /* c_filesize */
-		uint32_t nsize = cpio_hex(h + 94); /* c_namesize (incl NUL) */
-		if (pos + 110 + nsize > len)
-			return -1;
-		const char *name = h + 110;
-		if (nsize == 0 ||
-		    name[nsize - 1] != '\0') /* the name field must be NUL-terminated */
-			return -1;
-		if (strcmp(name, "TRAILER!!!") == 0)
-			break;
-		size_t data_off = (pos + 110 + nsize + 3u) & ~(size_t)3u;
-		if (fsize && data_off + fsize > len)
-			return -1;
-		if (n >= max)
-			return -1;
-		/* Write "/" + relative-name (strip a leading "./") into namebuf. */
-		const char *nm = name;
-		if (nm[0] == '.' && nm[1] == '/')
-			nm += 2;
-		else if (nm[0] == '.' && nm[1] == 0)
-			nm += 1; /* "." -> "" -> "/" */
-		size_t l = strlen(nm);
-		if (nb + 2 + l > nblen)
-			return -1;
-		char *path = namebuf + nb;
-		path[0] = '/';
-		memcpy(path + 1, nm, l + 1);
-		nb += 2 + l;
-		out[n].path = path;
-		/* Keep content for regular files AND symlinks (the link target string),
-		 * so exec can resolve /bin/<applet> -> busybox. Dirs have no content. */
-		out[n].data = fsize ? (cpio + data_off) : NULL;
-		out[n].size = fsize;
-		out[n].mode = mode;
-		n++;
-		pos = (data_off + fsize + 3u) & ~(size_t)3u;
-	}
-	return n;
-}
-
-/* Bound on argv/envp entries the startup stack will lay out. */
-#define LXP_MAX_VEC 32
-
-void *lxp_setup_stack(void *stack, size_t stack_size, int argc, const char *const argv[],
-		      const char *const envp[], int fdpic, uintptr_t phdr, int phnum,
-		      uintptr_t entry, uintptr_t at_base)
-{
-	if (!stack || !argv || argc < 0 || argc > LXP_MAX_VEC)
-		return NULL;
-
-	int envc = 0;
-	while (envp && envp[envc])
-		envc++;
-	if (envc > LXP_MAX_VEC)
-		return NULL;
-
-	uintptr_t argp[LXP_MAX_VEC];
-	uintptr_t envpp[LXP_MAX_VEC];
-	uint8_t *sp = (uint8_t *)stack + stack_size;
-	uint8_t *floor = (uint8_t *)stack;
-
-	/* Copy env then arg strings to the top of the stack, recording addresses. */
-	for (int i = envc - 1; i >= 0; i--) {
-		size_t n = strlen(envp[i]) + 1;
-		if (sp - n < floor)
-			return NULL;
-		sp -= n;
-		memcpy(sp, envp[i], n);
-		envpp[i] = (uintptr_t)sp;
-	}
-	for (int i = argc - 1; i >= 0; i--) {
-		size_t n = strlen(argv[i]) + 1;
-		if (sp - n < floor)
-			return NULL;
-		sp -= n;
-		memcpy(sp, argv[i], n);
-		argp[i] = (uintptr_t)sp;
-	}
-
-	/* 16 bytes for AT_RANDOM (stack-canary seed). Do not launch a process when
-	 * the host has no trustworthy entropy: a fixed or time-derived fallback
-	 * would silently give every guest a predictable canary. */
-	if (sp - 16 < floor)
-		return NULL;
-	sp -= 16;
-	uint8_t *rnd = sp;
-	if (lxp_random_fill(rnd, 16u) != LXP_OK)
-		return NULL;
-
-	/* FDPIC programs use the STANDARD ELF inline stack (the crt reads argc at sp,
-	 * argv[] inline at sp+4, then computes envp = &argv[argc+1]): argc, argv[0..],
-	 * NULL, envp[0..], NULL, auxv. (bFLT instead wants a 3-word
-	 * argc/argv-ptr/envp-ptr header — see below.) */
-	if (fdpic) {
-		size_t nwords = 1 + (size_t)argc + 1 + (size_t)envc + 1 + 16;
-		uintptr_t *hdr =
-			(uintptr_t *)((uintptr_t)(sp - nwords * sizeof(uintptr_t)) & ~(uintptr_t)7);
-		if ((uint8_t *)hdr < floor)
-			return NULL;
-		size_t k = 0;
-		hdr[k++] = (uintptr_t)argc;
-		for (int i = 0; i < argc; i++)
-			hdr[k++] = argp[i];
-		hdr[k++] = 0; /* argv[] terminator */
-		for (int i = 0; i < envc; i++)
-			hdr[k++] = envpp[i];
-		hdr[k++] = 0; /* envp[] terminator */
-		/* auxv — the FDPIC crt locates PT_TLS / the segments via AT_PHDR/AT_PHNUM. */
-		hdr[k++] = LXP_AT_PHDR;
-		hdr[k++] = phdr;
-		hdr[k++] = LXP_AT_PHENT;
-		hdr[k++] = 32; /* sizeof(Elf32_Phdr) */
-		hdr[k++] = LXP_AT_PHNUM;
-		hdr[k++] = (uintptr_t)phnum;
-		hdr[k++] = LXP_AT_BASE;
-		hdr[k++] = at_base; /* ld.so's load base for a dynamic exec; 0 when static */
-		hdr[k++] = LXP_AT_ENTRY;
-		hdr[k++] =
-			entry; /* the program's own entry (AT_ENTRY), even when ld.so runs first */
-		hdr[k++] = LXP_AT_PAGESZ;
-		hdr[k++] = 4096;
-		hdr[k++] = LXP_AT_RANDOM;
-		hdr[k++] = (uintptr_t)rnd;
-		hdr[k++] = LXP_AT_NULL;
-		hdr[k++] = 0;
-		return hdr; /* SP -> argc, argv[] inline */
-	}
-
-	/*
-	 * uClinux/bFLT (flat_argvp_envp_on_stack, used on ARM) layout — NOT the
-	 * ELF inline layout: the kernel passes the argv/envp array *pointers* on
-	 * the stack, so an elf2flt crt0 reads sp[0]=argc, sp[1]=argv, sp[2]=envp.
-	 * Below the strings lay the 3-word header, the argv[] and envp[] arrays it
-	 * points at, then a terminated auxv — __uClibc_main scans for one right
-	 * after the envp array, and unterminated garbage there crashes it.
-	 */
-	size_t nwords = 3 + (size_t)argc + 1 + (size_t)envc + 1 + 6;
-	uintptr_t *hdr =
-		(uintptr_t *)((uintptr_t)(sp - nwords * sizeof(uintptr_t)) & ~(uintptr_t)7);
-	if ((uint8_t *)hdr < floor)
-		return NULL;
-
-	uintptr_t *argv_arr = hdr + 3;
-	uintptr_t *envp_arr = argv_arr + (size_t)argc + 1;
-	uintptr_t *auxv = envp_arr + (size_t)envc + 1;
-	hdr[0] = (uintptr_t)argc;
-	hdr[1] = (uintptr_t)argv_arr;
-	hdr[2] = (uintptr_t)envp_arr;
-	for (int i = 0; i < argc; i++)
-		argv_arr[i] = argp[i];
-	argv_arr[argc] = 0;
-	for (int i = 0; i < envc; i++)
-		envp_arr[i] = envpp[i];
-	envp_arr[envc] = 0;
-	auxv[0] = LXP_AT_PAGESZ;
-	auxv[1] = 4096;
-	auxv[2] = LXP_AT_RANDOM;
-	auxv[3] = (uintptr_t)rnd;
-	auxv[4] = LXP_AT_NULL;
-	auxv[5] = 0;
-
-	return hdr; /* initial SP, pointing at argc */
 }
 
 /* Validate an fd index and return its slot, or NULL. */

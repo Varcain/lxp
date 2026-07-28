@@ -29,6 +29,7 @@
 #include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read */
 #include "lxp_internal.h" /* foreground process-group signal service */
 #include "lxp/lxp_dev.h" /* lxp_guest_access_ok() (confused-deputy guard for ioctl arg pointers) */
+#include "lxp/lxp_proc.h"
 
 /* One pty pair = 2 concurrent SSH logins' worth on this tier (each login holds a
  * master + a slave). Rings are small — a terminal is interactive, not bulk; the s2m

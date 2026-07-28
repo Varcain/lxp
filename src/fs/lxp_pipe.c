@@ -16,7 +16,7 @@
 
 #include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read/write */
 #include "lxp/lxp_config.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp/lxp_proc.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -95,7 +95,7 @@ long pipe_try_write(int pi, const void *buf, size_t len)
 	return (long)lxp_ring_write(pp->buf, LXP_PIPE_BUF, &pp->wpos, &pp->count, buf, len);
 }
 
-/* Retry a parked pipe read/write for the run-loop coordinator (declared in lxp_syscall.h). */
+/* Retry a parked pipe read/write for the run-loop coordinator (declared in lxp_proc.h). */
 long lxp_pipe_retry(lxp_proc_t *p)
 {
 	if (!p || p->wait.kind != LXP_WAIT_PIPE)

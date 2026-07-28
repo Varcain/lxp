@@ -5,7 +5,7 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Path resolution used by the syscall dispatcher (src/fs/lxp_path.c). The rootfs
- * resolver lxp_rootfs_resolve() is public in lxp_syscall.h (the run loop uses it to
+ * resolver lxp_rootfs_resolve() is public in lxp_proc.h (the run loop uses it to
  * locate ld.so before a proc exists).
  */
 #ifndef LXP_FS_PATH_H
@@ -13,7 +13,7 @@
 
 #include <stddef.h>
 
-#include "lxp/lxp_syscall.h" /* lxp_proc_t */
+#include "lxp/lxp_proc.h"
 
 /* Resolve user path `in` against p->fs_context->cwd into out[outlen] as a normalized absolute
  * path. Returns 0, or a negative errno (-EFAULT / -ENAMETOOLONG).

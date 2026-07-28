@@ -23,7 +23,7 @@
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_disp_ops.h"
-#include "lxp/lxp_syscall.h" /* lxp_guest_access_ok */
+#include "lxp/lxp_proc.h"
 #include "lxp/lxp_types.h"
 #include "lxp_uapi.h"
 

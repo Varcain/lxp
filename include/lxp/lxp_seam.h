@@ -24,10 +24,11 @@
 #include <stdint.h>
 
 #include "lxp/lxp_config.h" /* LXP_PROG_REGION_SIZE / LXP_NREG / LXP_NSLOT / sizing knobs */
+#include "lxp/lxp_exec.h"
+#include "lxp/lxp_identity.h"
 #include "lxp/lxp_loader.h"
 #include "lxp/lxp_port.h" /* lxp_os_ops_t — the engine/OS port vtable the run loop drives */
 #include "lxp/lxp_run.h"
-#include "lxp/lxp_syscall.h"
 
 /* Program-region / arena / dyn-pool sizes + LXP_NREG / LXP_NSLOT come from
  * lxp_config.h (host-overridable; the oveRTOS build maps them per engine). */

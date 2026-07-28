@@ -24,6 +24,7 @@
 
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_diag.h"
+#include "lxp/lxp_syscall.h"
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_seam.h"
 #include "lxp/lxp_latency.h"
