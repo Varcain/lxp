@@ -32,6 +32,7 @@ typedef enum lxp_diag_host_state {
 	LXP_DIAG_HOST_EXITING,
 	LXP_DIAG_HOST_DEAD,
 	LXP_DIAG_HOST_FAILED,
+	LXP_DIAG_HOST_COUNT,
 } lxp_diag_host_state_t;
 
 /** Linux-visible state derived from the current task flags. */
@@ -40,6 +41,7 @@ typedef enum lxp_diag_task_status {
 	LXP_DIAG_TASK_LIVE,
 	LXP_DIAG_TASK_STOPPED,
 	LXP_DIAG_TASK_ZOMBIE,
+	LXP_DIAG_TASK_COUNT,
 } lxp_diag_task_status_t;
 
 /** Pending coordinator intent. More than one bit is an invariant violation. */
@@ -142,6 +144,7 @@ typedef enum lxp_diag_issue {
 	LXP_DIAG_REGION_LEASE_STALE,
 	LXP_DIAG_LIVE_TASK_STALE_REGION_REF,
 	LXP_DIAG_GUEST_VIEW_LEAKED,
+	LXP_DIAG_ISSUE_COUNT,
 } lxp_diag_issue_t;
 
 /** First offending location and values from a validation pass. */

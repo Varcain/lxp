@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_arena.h"
+#include "lxp/lxp_diag.h"
 #include "lxp/lxp_guest.h"
 #include "lxp/lxp_latency.h"
 #include "lxp/lxp_proc.h"
@@ -25,16 +26,19 @@ enum deferred_state {
 };
 
 enum slot_lifecycle {
-	SLOT_FREE,
-	SLOT_STARTING,
-	SLOT_RUNNING,
-	SLOT_PARKING,
-	SLOT_PARKED,
-	SLOT_RESUMING,
-	SLOT_EXITING,
-	SLOT_DEAD,
-	SLOT_FAILED,
+	SLOT_FREE = LXP_DIAG_HOST_FREE,
+	SLOT_STARTING = LXP_DIAG_HOST_STARTING,
+	SLOT_RUNNING = LXP_DIAG_HOST_RUNNING,
+	SLOT_PARKING = LXP_DIAG_HOST_PARKING,
+	SLOT_PARKED = LXP_DIAG_HOST_PARKED,
+	SLOT_RESUMING = LXP_DIAG_HOST_RESUMING,
+	SLOT_EXITING = LXP_DIAG_HOST_EXITING,
+	SLOT_DEAD = LXP_DIAG_HOST_DEAD,
+	SLOT_FAILED = LXP_DIAG_HOST_FAILED,
 };
+
+_Static_assert(SLOT_FAILED + 1 == LXP_DIAG_HOST_COUNT,
+	       "private and diagnostic lifecycle states must stay aligned");
 
 enum lxp_lifecycle_failpoint {
 	LXP_FAIL_NONE,

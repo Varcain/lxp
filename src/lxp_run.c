@@ -113,6 +113,19 @@ int lifecycle_failpoint(enum lxp_lifecycle_failpoint point)
  * from an arbitrary caller context. */
 static uint8_t g_diag_native_known;
 static uint8_t g_diag_native_present[LXP_NSLOT];
+static uint32_t g_diag_lifecycle_epoch;
+static uint32_t g_diag_native_epoch;
+
+static uint32_t diag_epoch_next(uint32_t epoch)
+{
+	epoch++;
+	return epoch != 0 ? epoch : 1;
+}
+
+static int diag_native_census_current(void)
+{
+	return g_diag_native_known && g_diag_native_epoch == g_diag_lifecycle_epoch;
+}
 
 /* Rebuild the ps/top snapshot from the live process SET + the RTOS kernel threads.
  * Run-loop thread only (ove_thread_list locks the scheduler — unsafe from the svc
@@ -137,6 +150,7 @@ static void refresh_stats(void)
 	}
 	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
 	g_diag_native_known = trc == LXP_OK;
+	g_diag_native_epoch = g_diag_lifecycle_epoch;
 	for (size_t i = 0; i < n; i++)
 		if (ti[i].lxp_slot >= 0 && ti[i].lxp_slot < LXP_NSLOT)
 			g_diag_native_present[ti[i].lxp_slot] = 1;
@@ -652,8 +666,9 @@ int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
 	out->runnable = slot_runnable_load(slot);
 	out->primary_pending = primary_slot_pending(slot);
 	out->signal_depth = g_sig_save[slot].depth;
-	out->native_task_known = g_diag_native_known;
-	out->native_task_present = g_diag_native_present[slot];
+	out->native_task_known = diag_native_census_current();
+	out->native_task_present =
+		out->native_task_known ? g_diag_native_present[slot] : 0;
 	out->intent_mask = diag_intent_mask(slot);
 	out->wait_mask = diag_wait_mask(p);
 	out->mm_identity = (uintptr_t)p->mm;
@@ -801,7 +816,7 @@ int lxp_validate_world(lxp_diag_error_t *error)
 			if (slot_runnable_load(slot))
 				return diag_error(error, LXP_DIAG_FREE_TASK_RUNNABLE, slot, -1, 1,
 						  0);
-			if (g_diag_native_known && g_diag_native_present[slot] &&
+			if (diag_native_census_current() && g_diag_native_present[slot] &&
 			    (host == SLOT_FREE || host == SLOT_DEAD))
 				return diag_error(error, LXP_DIAG_NATIVE_TASK_LEAKED, slot, -1,
 						  host, SLOT_FREE);
@@ -853,7 +868,7 @@ int lxp_validate_world(lxp_diag_error_t *error)
 					  region, 0, 1);
 		if (host == SLOT_PARKED && slot_runnable_load(slot))
 			return diag_error(error, LXP_DIAG_PARKED_TASK_RUNNABLE, slot, region, 1, 0);
-		if (g_diag_native_known &&
+		if (diag_native_census_current() &&
 		    (host == SLOT_RUNNING || host == SLOT_PARKED || host == SLOT_FAILED) &&
 		    !g_diag_native_present[slot])
 			return diag_error(error, LXP_DIAG_NATIVE_TASK_MISSING, slot, region, 0, 1);
@@ -901,46 +916,62 @@ void lxp_diag_health(lxp_diag_health_t *out)
 
 const char *lxp_diag_host_state_name(unsigned state)
 {
-	static const char *const names[] = {
-		"free",	    "starting", "running", "parking", "parked",
-		"resuming", "exiting",	"dead",	   "failed",
+	static const char *const names[LXP_DIAG_HOST_COUNT] = {
+		[LXP_DIAG_HOST_FREE] = "free",
+		[LXP_DIAG_HOST_STARTING] = "starting",
+		[LXP_DIAG_HOST_RUNNING] = "running",
+		[LXP_DIAG_HOST_PARKING] = "parking",
+		[LXP_DIAG_HOST_PARKED] = "parked",
+		[LXP_DIAG_HOST_RESUMING] = "resuming",
+		[LXP_DIAG_HOST_EXITING] = "exiting",
+		[LXP_DIAG_HOST_DEAD] = "dead",
+		[LXP_DIAG_HOST_FAILED] = "failed",
 	};
-	return state < sizeof(names) / sizeof(names[0]) ? names[state] : "invalid";
+	return state < LXP_DIAG_HOST_COUNT && names[state] ? names[state] : "invalid";
 }
 
 const char *lxp_diag_task_status_name(unsigned status)
 {
-	static const char *const names[] = {"free", "live", "stopped", "zombie"};
-	return status < sizeof(names) / sizeof(names[0]) ? names[status] : "invalid";
+	static const char *const names[LXP_DIAG_TASK_COUNT] = {
+		[LXP_DIAG_TASK_FREE] = "free",
+		[LXP_DIAG_TASK_LIVE] = "live",
+		[LXP_DIAG_TASK_STOPPED] = "stopped",
+		[LXP_DIAG_TASK_ZOMBIE] = "zombie",
+	};
+	return status < LXP_DIAG_TASK_COUNT && names[status] ? names[status] : "invalid";
 }
 
 const char *lxp_diag_issue_name(unsigned issue)
 {
-	static const char *const names[] = {
-		"ok",
-		"bad-slot",
-		"bad-region",
-		"region-owner-without-refs",
-		"region-refs-without-owner",
-		"region-refs-without-generation",
-		"live-task-without-resources",
-		"live-task-bad-region",
-		"live-task-without-region-ref",
-		"resource-refcount-too-small",
-		"free-task-runnable",
-		"runnable-host-state-mismatch",
-		"parked-task-runnable",
-		"native-task-missing",
-		"native-task-leaked",
-		"host-state-without-generation",
-		"deferred-state-invalid",
-		"deferred-generation-stale",
-		"multiple-intents",
-		"multiple-waits",
-		"region-lease-stale",
-		"live-task-stale-region-ref",
+	static const char *const names[LXP_DIAG_ISSUE_COUNT] = {
+		[LXP_DIAG_OK] = "ok",
+		[LXP_DIAG_BAD_SLOT] = "bad-slot",
+		[LXP_DIAG_BAD_REGION] = "bad-region",
+		[LXP_DIAG_REGION_OWNER_WITHOUT_REFS] = "region-owner-without-refs",
+		[LXP_DIAG_REGION_REFS_WITHOUT_OWNER] = "region-refs-without-owner",
+		[LXP_DIAG_REGION_REFS_WITHOUT_GENERATION] =
+			"region-refs-without-generation",
+		[LXP_DIAG_LIVE_TASK_WITHOUT_RESOURCES] = "live-task-without-resources",
+		[LXP_DIAG_LIVE_TASK_BAD_REGION] = "live-task-bad-region",
+		[LXP_DIAG_LIVE_TASK_WITHOUT_REGION_REF] = "live-task-without-region-ref",
+		[LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL] = "resource-refcount-too-small",
+		[LXP_DIAG_FREE_TASK_RUNNABLE] = "free-task-runnable",
+		[LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH] =
+			"runnable-host-state-mismatch",
+		[LXP_DIAG_PARKED_TASK_RUNNABLE] = "parked-task-runnable",
+		[LXP_DIAG_NATIVE_TASK_MISSING] = "native-task-missing",
+		[LXP_DIAG_NATIVE_TASK_LEAKED] = "native-task-leaked",
+		[LXP_DIAG_HOST_STATE_WITHOUT_GENERATION] =
+			"host-state-without-generation",
+		[LXP_DIAG_DEFERRED_STATE_INVALID] = "deferred-state-invalid",
+		[LXP_DIAG_DEFERRED_GENERATION_STALE] = "deferred-generation-stale",
+		[LXP_DIAG_MULTIPLE_INTENTS] = "multiple-intents",
+		[LXP_DIAG_MULTIPLE_WAITS] = "multiple-waits",
+		[LXP_DIAG_REGION_LEASE_STALE] = "region-lease-stale",
+		[LXP_DIAG_LIVE_TASK_STALE_REGION_REF] = "live-task-stale-region-ref",
+		[LXP_DIAG_GUEST_VIEW_LEAKED] = "guest-view-leaked",
 	};
-	return issue < sizeof(names) / sizeof(names[0]) ? names[issue] : "invalid";
+	return issue < LXP_DIAG_ISSUE_COUNT && names[issue] ? names[issue] : "invalid";
 }
 
 static void lxp_diag_reset_health(void)
@@ -1390,8 +1421,10 @@ uint8_t lxp_slot_host_state(int slot)
 
 void lxp_slot_set_host_state(int slot, uint8_t state)
 {
-	if (slot >= 0 && slot < LXP_NSLOT)
+	if (slot >= 0 && slot < LXP_NSLOT && g_lxp_slots[slot].host_state != state) {
 		g_lxp_slots[slot].host_state = state;
+		g_diag_lifecycle_epoch = diag_epoch_next(g_diag_lifecycle_epoch);
+	}
 }
 
 void lxp_slot_proc_reset(int slot)
@@ -2390,7 +2423,7 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 		g_vfork_guard[s].snapshot = lxp_region_ref_none();
 	}
 	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
-	g_diag_native_known = eng->thread_list != NULL;
+	g_diag_native_known = 0;
 	lxp_fd_runtime_reset();
 #if LXP_ENABLE_NETFS
 	lxp_netfs_shutdown();
@@ -2714,7 +2747,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const c
 	g_lxp_rootfs_hi = g_lxp_rootfs_lo + cfg->rootfs_image_size;
 	for (int i = 0; i < LXP_NSLOT; i++) {
 		slot_runnable_store(i, 0);
-		g_lxp_slots[i].host_state = SLOT_FREE;
+		lxp_slot_set_host_state(i, SLOT_FREE);
 		g_lxp_slots[i].proc.alive = 0;
 		deferred_slot_reassign(i);
 	}
@@ -2766,6 +2799,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const c
 		goto launch_failed;
 	}
 	g_lxp_slots[0].proc.exec_file_idx = bb; /* the running image, for /proc/self/exe re-exec */
+	refresh_stats();
 	lxp_diag_checkpoint();
 
 	int rc = LXP_RUN_ETIMEOUT;
@@ -2890,12 +2924,14 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const c
 	}
 	lxp_trap_publish(0);
 	coordinator_teardown_all(eng);
+	refresh_stats();
 	lxp_diag_checkpoint();
 	return rc;
 
 launch_failed:
 	lxp_trap_publish(0);
 	coordinator_teardown_all(eng);
+	refresh_stats();
 	lxp_diag_checkpoint();
 	return LXP_RUN_ELAUNCH;
 }
@@ -3002,6 +3038,8 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	lxp_diag_reset_health();
 	g_diag_native_known = 0;
 	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
+	g_diag_lifecycle_epoch = 0;
+	g_diag_native_epoch = 0;
 	if (!os_ops_valid(os_ops) || !net_ops_valid(net_ops) || !display_ops_valid(disp_ops) ||
 	    !run_config_valid(run_config) || !path || argc < 1 || !argv)
 		return LXP_RUN_ELAUNCH;

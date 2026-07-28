@@ -314,6 +314,8 @@ static int reset_state(void **state)
 	memset(g_sig_save, 0, sizeof(g_sig_save));
 	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
 	g_diag_native_known = 0;
+	g_diag_lifecycle_epoch = 0;
+	g_diag_native_epoch = 0;
 	lxp_diag_reset_health();
 	memset(g_mock_regions, 0, sizeof(g_mock_regions));
 	memset(g_mock_dyn_pools, 0, sizeof(g_mock_dyn_pools));
@@ -916,13 +918,22 @@ static void test_world_diagnostics_snapshot_current_states(void **state)
 	assert_int_equal(slot.intent_mask, LXP_DIAG_INTENT_NONE);
 	assert_int_equal(slot.wait_mask, LXP_DIAG_WAIT_NONE);
 
-	g_lxp_slots[0].host_state = SLOT_PARKED;
+	lxp_slot_set_host_state(0, SLOT_PARKED);
 	g_lxp_slots[0].runnable = 0;
 	g_lxp_slots[0].proc.wait.kind = LXP_WAIT_PIPE;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
 	assert_int_equal(slot.host_state, LXP_DIAG_HOST_PARKED);
 	assert_int_equal(slot.wait_mask, LXP_DIAG_WAIT_PIPE);
+	assert_int_equal(slot.native_task_known, 0);
+	assert_int_equal(slot.native_task_present, 0);
+
+	/* A successful census is usable only for the lifecycle epoch it observed.
+	 * This mirrors refresh_stats() without invoking the mock thread provider. */
+	g_diag_native_epoch = g_diag_lifecycle_epoch;
+	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
+	assert_int_equal(slot.native_task_known, 1);
+	assert_int_equal(slot.native_task_present, 1);
 
 	g_lxp_slots[0].proc.stopped = 1;
 	g_lxp_slots[0].proc.stop_kind = LXP_STOP_PARKED;
@@ -945,8 +956,9 @@ static void test_world_diagnostics_snapshot_current_states(void **state)
 	assert_int_equal(slot.signal_depth, 1);
 
 	g_lxp_slots[0].proc.intent.kind = LXP_INTENT_EXIT;
-	g_lxp_slots[0].host_state = SLOT_DEAD;
+	lxp_slot_set_host_state(0, SLOT_DEAD);
 	g_diag_native_present[0] = 0;
+	g_diag_native_epoch = g_diag_lifecycle_epoch;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
 	assert_int_equal(slot.task_status, LXP_DIAG_TASK_ZOMBIE);
@@ -1252,9 +1264,50 @@ static void test_world_diagnostic_size_report_matches_compiled_objects(void **st
 	assert_int_equal(sizes.slot_table, sizeof(g_lxp_slots));
 	assert_true(sizes.per_slot_core > sizes.proc);
 	assert_true(sizes.coordinator_static > sizes.slot_table);
-	assert_string_equal(lxp_diag_host_state_name(LXP_DIAG_HOST_PARKED), "parked");
-	assert_string_equal(lxp_diag_task_status_name(LXP_DIAG_TASK_ZOMBIE), "zombie");
-	assert_string_equal(lxp_diag_issue_name(LXP_DIAG_MULTIPLE_WAITS), "multiple-waits");
+	static const char *const host_names[LXP_DIAG_HOST_COUNT] = {
+		"free",	    "starting", "running", "parking", "parked",
+		"resuming", "exiting",	"dead",	   "failed",
+	};
+	static const char *const task_names[LXP_DIAG_TASK_COUNT] = {
+		"free",
+		"live",
+		"stopped",
+		"zombie",
+	};
+	static const char *const issue_names[LXP_DIAG_ISSUE_COUNT] = {
+		"ok",
+		"bad-slot",
+		"bad-region",
+		"region-owner-without-refs",
+		"region-refs-without-owner",
+		"region-refs-without-generation",
+		"live-task-without-resources",
+		"live-task-bad-region",
+		"live-task-without-region-ref",
+		"resource-refcount-too-small",
+		"free-task-runnable",
+		"runnable-host-state-mismatch",
+		"parked-task-runnable",
+		"native-task-missing",
+		"native-task-leaked",
+		"host-state-without-generation",
+		"deferred-state-invalid",
+		"deferred-generation-stale",
+		"multiple-intents",
+		"multiple-waits",
+		"region-lease-stale",
+		"live-task-stale-region-ref",
+		"guest-view-leaked",
+	};
+	for (unsigned i = 0; i < LXP_DIAG_HOST_COUNT; i++)
+		assert_string_equal(lxp_diag_host_state_name(i), host_names[i]);
+	for (unsigned i = 0; i < LXP_DIAG_TASK_COUNT; i++)
+		assert_string_equal(lxp_diag_task_status_name(i), task_names[i]);
+	for (unsigned i = 0; i < LXP_DIAG_ISSUE_COUNT; i++)
+		assert_string_equal(lxp_diag_issue_name(i), issue_names[i]);
+	assert_string_equal(lxp_diag_host_state_name(LXP_DIAG_HOST_COUNT), "invalid");
+	assert_string_equal(lxp_diag_task_status_name(LXP_DIAG_TASK_COUNT), "invalid");
+	assert_string_equal(lxp_diag_issue_name(LXP_DIAG_ISSUE_COUNT), "invalid");
 }
 
 static void test_system_version_routes_to_engine(void **state)
