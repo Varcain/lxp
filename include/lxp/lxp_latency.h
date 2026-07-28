@@ -50,6 +50,7 @@
 	X(EXEC)                                                                \
 	X(FORK)                                                                \
 	X(DEFER)                                                               \
+	X(STOP)                                                                \
 	X(SLEEP)                                                               \
 	X(FUTEXWAIT)                                                           \
 	X(WAITPARK)                                                            \

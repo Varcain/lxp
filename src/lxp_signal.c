@@ -44,10 +44,10 @@ int resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t 
 }
 
 /* Signals whose POSIX default action never terminates the process: SIGCHLD (ignore),
- * SIGCONT (continue — a no-op here since stop/cont is not modeled, so a running proc
- * simply keeps running), SIGURG + SIGWINCH (ignore). A SIG_DFL of one of these must be
- * SWALLOWED, not turned into a 128+signo termination — else a shell's `fg`, which sends
- * kill(-pgid, SIGCONT) to resume a job, kills the very job (and every proc in range). */
+ * SIGCONT (consumed by the coordinator for a stopped process; a no-op while running),
+ * SIGURG + SIGWINCH (ignore). A SIG_DFL of one of these must be SWALLOWED, not turned
+ * into a 128+signo termination — else a shell's `fg`, which sends kill(-pgid, SIGCONT)
+ * to resume a job, kills the very job (and every proc in range). */
 int sig_default_ignore(int sig)
 {
 	return sig == LXP_SIGCHLD || sig == LXP_SIGCONT || sig == LXP_SIGURG || sig == LXP_SIGWINCH;
@@ -84,6 +84,25 @@ int sig_stops_proc(const lxp_proc_t *proc, int sig)
 	if (sig == LXP_SIGSTOP)
 		return 1;
 	return lxp_sig_handler_get(proc, sig) == LXP_SIG_DFL;
+}
+
+/* Publish one pending signal while preserving the ordering rule that a bitset
+ * cannot represent by itself. Generating SIGCONT discards pending job-control
+ * stops; generating a stop signal discards pending SIGCONT. All signal producers
+ * use this owner so the last generated action wins. */
+void lxp_signal_latch(lxp_proc_t *proc, int sig)
+{
+	if (!proc || sig <= 0 || sig >= LXP_NSIG)
+		return;
+	uint64_t pending = proc->pending_sigs;
+	const uint64_t stop_mask =
+		lxp_sig_bit(LXP_SIGSTOP) | lxp_sig_bit(LXP_SIGTSTP) |
+		lxp_sig_bit(LXP_SIGTTIN) | lxp_sig_bit(LXP_SIGTTOU);
+	if (sig == LXP_SIGCONT)
+		pending &= ~stop_mask;
+	else if (sig_is_stop(sig))
+		pending &= ~lxp_sig_bit(LXP_SIGCONT);
+	proc->pending_sigs = pending | lxp_sig_bit(sig);
 }
 
 /* Reserve the next host-owned signal frame and install the handler mask. For a
@@ -124,18 +143,20 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 	 * re-entry. The personality does not model SA_NODEFER, so a self-kill from
 	 * inside that handler must remain pending rather than recursively deliver. */
 	if (lxp_sig_blocked(proc, sig)) {
-		proc->pending_sigs |= lxp_sig_bit(sig);
+		lxp_signal_latch(proc, sig);
 		f->r[0] = (uint32_t)ret;
 		return;
 	}
-	/* Job-control stop taken by a RUNNING proc at a syscall boundary: do not terminate
-	 * and do not stop inline (the coordinator, which owns thread suspend, does that).
-	 * Keep it pending and let the syscall complete — the proc stops at its next parked
-	 * syscall via the coordinator's parked-stop scan. A proc that never parks stays
-	 * running until its next boundary, matching the non-preemptive delivery model. */
+	/* Job-control stop taken by a running proc at a syscall boundary. Save the
+	 * completed syscall result, redirect this frame to the persistent park entry,
+	 * and publish a typed stop event; the coordinator owns the native suspend and
+	 * later resumes this exact context on SIGCONT. */
 	if (sig_stops_proc(proc, sig)) {
-		proc->pending_sigs |= lxp_sig_bit(sig);
-		f->r[0] = (uint32_t)ret;
+		proc->stopped = 1;
+		proc->stop_kind = LXP_STOP_READY;
+		proc->stop_sig = (uint8_t)sig;
+		proc->stop_r0 = ret;
+		park_frame(f, proc);
 		return;
 	}
 	uintptr_t h = lxp_sig_handler_get(proc, sig);

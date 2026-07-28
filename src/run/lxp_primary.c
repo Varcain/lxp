@@ -29,6 +29,17 @@ struct lxp_primary_result lxp_handle_primary_event(const lxp_os_ops_t *eng,
 		execute_deferred(eng, slot);
 		return result;
 
+	case LXP_EV_STOP: {
+		lxp_proc_t *proc = lxp_slot_proc(slot);
+		if (!proc || !proc->stopped || proc->stop_kind != LXP_STOP_READY) {
+			result.flow = LXP_PRIMARY_SCAN_BLOCKED;
+			return result;
+		}
+		if (coordinator_park_slot(eng, slot) == LXP_OK)
+			notify_parent_stopped(eng, proc->group->ppid, proc->pid, proc->stop_sig);
+		return result;
+	}
+
 	case LXP_EV_FORK:
 		lxp_handle_fork(eng, slot, next_pid);
 		return result;

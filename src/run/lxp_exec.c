@@ -194,10 +194,7 @@ static void exec_txn_resume_parent(struct exec_txn *tx, const lxp_os_ops_t *eng)
 	if (!tx->parent_restored || tx->parent_resumed ||
 	    !lxp_slot_ref_is_current(tx->parent_ref))
 		return;
-	int parent_slot = tx->parent_ref.index;
-	(void)coordinator_resume_slot(eng, parent_slot,
-				      lxp_slot_proc(parent_slot)->mm->region.index,
-				      lxp_slot_resume_view(tx->parent_ref), tx->pid);
+	(void)coordinator_complete_slot(eng, tx->parent_ref, tx->pid);
 	tx->parent_resumed = 1;
 }
 
@@ -235,8 +232,7 @@ LXP_EXEC_TXN_LINKAGE void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t
 			(void)region_release_if_owned(tx->region, tx->old_ref);
 		tx->region_acquired = 0;
 		tx->phase = EXEC_TXN_ABORTED;
-		(void)coordinator_resume_slot(eng, tx->slot, tx->old->mm->region.index,
-					      lxp_slot_resume_view(tx->old_ref), error);
+		(void)coordinator_complete_slot(eng, tx->old_ref, error);
 		return;
 	}
 

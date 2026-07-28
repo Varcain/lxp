@@ -143,10 +143,8 @@ LXP_FORK_TXN_LINKAGE int fork_txn_commit(struct fork_txn *tx)
 
 static void fork_parent_resume_error(const lxp_os_ops_t *eng, int parent_slot, long error)
 {
-	lxp_proc_t *parent = lxp_slot_proc(parent_slot);
 	(void)coordinator_park_slot(eng, parent_slot);
-	(void)coordinator_resume_slot(eng, parent_slot, parent->mm->region.index,
-				      lxp_slot_resume_view(slot_ref_at(parent_slot)), error);
+	(void)coordinator_complete_slot(eng, slot_ref_at(parent_slot), error);
 }
 
 void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
@@ -204,8 +202,7 @@ void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
 		}
 		(*next_pid)++;
 		(void)coordinator_park_slot(eng, parent_slot);
-		(void)coordinator_resume_slot(eng, parent_slot, parent->mm->region.index,
-					      lxp_slot_resume_view(tx.parent_ref), child->pid);
+		(void)coordinator_complete_slot(eng, tx.parent_ref, child->pid);
 		(void)coordinator_resume_slot(eng, child_slot, child->mm->region.index,
 					      lxp_slot_resume_view(tx.child_ref), 0);
 		return;

@@ -62,9 +62,7 @@ struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
 	}
 
 	if (parent_slot >= 0 && lxp_slot_ref_is_current(parent_ref))
-		(void)coordinator_resume_slot(eng, parent_slot,
-					      lxp_slot_proc(parent_slot)->mm->region.index,
-					      lxp_slot_resume_view(parent_ref), pid);
+		(void)coordinator_complete_slot(eng, parent_ref, pid);
 	if (group_is_dead)
 		reap_to_parent(eng, ppid, tgid, status,
 			       /*sigchld=*/!lxp_slot_ref_is_current(parent_ref));

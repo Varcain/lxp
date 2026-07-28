@@ -198,6 +198,8 @@ int coordinator_resume_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
 	 * spawn_resume() returns to the coordinator.
 	 */
 	lxp_proc_t *proc = lxp_slot_proc(sidx);
+	if (proc && proc->stopped)
+		return -LXP_EAGAIN;
 	if (proc && proc->guest_view)
 		lxp_guest_view_end(proc->guest_view);
 	return lxp_lifecycle_apply(eng, &(struct lxp_lifecycle_request){
@@ -210,6 +212,29 @@ int coordinator_resume_slot(const lxp_os_ops_t *eng, int sidx, int ridx,
 								.r0 = r0val,
 							},
 					});
+}
+
+/* Complete work against a generation-qualified parked slot. Job-control stop
+ * owns whether the native task may run: retain the result in the process until
+ * SIGCONT if it is stopped, otherwise apply the native resume now. */
+int coordinator_complete_slot(const lxp_os_ops_t *eng, lxp_slot_ref_t ref, long r0)
+{
+	if (!lxp_slot_ref_is_current(ref))
+		return -LXP_ESRCH;
+	lxp_proc_t *proc = lxp_slot_proc(ref.index);
+	const struct lxp_resume_ctx *ctx = lxp_slot_resume_view(ref);
+	if (!proc || !proc->alive || !proc->mm || !ctx)
+		return -LXP_ESRCH;
+	if (lxp_slot_host_state(ref.index) != SLOT_PARKED)
+		return -LXP_EAGAIN;
+	if (proc->stopped) {
+		if (proc->stop_kind != LXP_STOP_PARKED)
+			return -LXP_EAGAIN;
+		proc->stop_kind = LXP_STOP_READY;
+		proc->stop_r0 = r0;
+		return LXP_OK;
+	}
+	return coordinator_resume_slot(eng, ref.index, proc->mm->region.index, ctx, r0);
 }
 
 int coordinator_launch_slot(const lxp_os_ops_t *eng, int sidx, int ridx,

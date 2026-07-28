@@ -161,9 +161,9 @@ extern "C" {
 /* How a process entered the `stopped` state, for the SIGCONT resume path. */
 #define LXP_STOP_NONE 0
 #define LXP_STOP_PARKED \
-	1 /* stopped during a typed wait; resume = clear stopped, retry resumes */
-#define LXP_STOP_BOUNDARY \
-	2 /* took the stop at a syscall boundary; resume from the slot runtime context */
+	1 /* stopped while already host-parked; the existing wait/lifecycle owner retains it */
+#define LXP_STOP_READY \
+	2 /* saved slot context has a completed result and may resume on SIGCONT */
 /* statx: AT_EMPTY_PATH means "stat the dirfd itself" (fstat); the basic-stats
  * result mask reported back in stx_mask. */
 #define LXP_AT_EMPTY_PATH 0x1000
@@ -496,14 +496,13 @@ typedef struct lxp_proc {
 	uint16_t _exit_pad;
 	uint32_t exit_detail;	/**< Port-defined fault status (0 for core-originated exits). */
 	uintptr_t exit_address; /**< Port-defined fault address, when one is valid. */
-	/* Job control: a stopped process is alive but has no RTOS thread and is not
-	 * scheduled until it takes SIGCONT. stop_kind picks the resume path (see the
-	 * LXP_STOP_* constants); stop_r0 is the syscall result to hand back on a
-	 * boundary-stop resume. */
+	/* Job control: a stopped process stays alive with its host task parked until
+	 * it takes SIGCONT. stop_kind records whether another park owner is still
+	 * active or the saved context has a result ready to resume. */
 	int stopped;	   /**< Non-zero while job-control-stopped (SIGSTOP/SIGTSTP). */
-	uint8_t stop_kind; /**< LXP_STOP_PARKED / LXP_STOP_BOUNDARY. */
+	uint8_t stop_kind; /**< LXP_STOP_PARKED / LXP_STOP_READY. */
 	uint8_t stop_sig;  /**< The stop signal, for the WIFSTOPPED status word. */
-	long stop_r0;	   /**< Boundary-stop: syscall result to resume with on SIGCONT. */
+	long stop_r0;	   /**< LXP_STOP_READY: result restored when SIGCONT resumes. */
 	/* Signal disposition: per-signal handler address (or SIG_DFL/SIG_IGN). The
 	 * sa_restorer the engine returns to after a handler is ONE value per proc, not one
 	 * per signal — uClibc-ng installs the same __restore_rt trampoline for every signal

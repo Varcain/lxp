@@ -135,6 +135,7 @@ int coordinator_abort_slot(const lxp_os_ops_t *eng, int slot);
 int coordinator_park_slot(const lxp_os_ops_t *eng, int slot);
 int coordinator_resume_slot(const lxp_os_ops_t *eng, int slot, int region,
 			    const struct lxp_resume_ctx *ctx, long r0);
+int coordinator_complete_slot(const lxp_os_ops_t *eng, lxp_slot_ref_t slot, long r0);
 int coordinator_launch_slot(const lxp_os_ops_t *eng, int slot, int region,
 			    const lxp_guest_launch_t *launch);
 

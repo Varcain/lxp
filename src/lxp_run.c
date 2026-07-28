@@ -1042,7 +1042,7 @@ int lxp_signal_process_group(int pgid, int sig)
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		lxp_proc_t *p = &g_lxp_slots[s].proc;
 		if (p->alive && p->pid > 1 && p->group && p->group->pgid == pgid) {
-			p->pending_sigs |= lxp_sig_bit(sig);
+			lxp_signal_latch(p, sig);
 			recipients++;
 		}
 	}
@@ -1296,7 +1296,7 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 				if (tp->group->pgid != want_pgid)
 					continue; /* a process group (the caller's, or |pid|) */
 			} /* target == -1: broadcast to every live proc */
-			tp->pending_sigs |= lxp_sig_bit(sig);
+			lxp_signal_latch(tp, sig);
 			f->r[0] = 0;
 		}
 		/* Wake the coordinator NOW so it delivers the signal at once (the LinuxThreads
@@ -1311,7 +1311,7 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		return;
 	}
 	/* fork/vfork/clone: capture the parent's resume context and ask the coordinator
-	 * to spawn a child. The parent is suspended (no thread) through the vfork window
+	 * to spawn a child. The parent's host task stays parked through the vfork window
 	 * (NOMMU shares the image) until the child execs into its own region or exits. */
 	if (nr == LXP_NR_vfork || nr == LXP_NR_fork || nr == LXP_NR_clone) {
 		/* CLONE_VM shares the address space for life and therefore co-runs on
@@ -1681,8 +1681,7 @@ void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int status, int
 		}
 		(void)lxp_wait_complete(par, LXP_WAIT_CHILD);
 		coordinator_park_slot(eng, pslot);
-		coordinator_resume_slot(eng, pslot, par->mm->region.index,
-					&g_lxp_slots[pslot].resume, cpid);
+		(void)coordinator_complete_slot(eng, slot_ref_at(pslot), cpid);
 	} else {
 		/* The parent is not blocking in wait4 (typically sitting in select()/poll() —
 		 * busybox inetd's accept loop, dropbear's session relay). Queue the zombie for a
@@ -1700,7 +1699,7 @@ void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int status, int
 		 * before it reaps, so the shell prints "waitpid: Interrupted" and loses the exit code.
 		 * Only signal a parent that is NOT synchronously reaping (a daemon in select/poll). */
 		if (sigchld)
-			par->pending_sigs |= lxp_sig_bit(LXP_SIGCHLD);
+			lxp_signal_latch(par, LXP_SIGCHLD);
 	}
 }
 
@@ -1720,8 +1719,7 @@ void notify_parent_stopped(const lxp_os_ops_t *eng, int ppid, int cpid, int stop
 				lxp_encode_wstopped(stopsig);
 		(void)lxp_wait_complete(par, LXP_WAIT_CHILD);
 		coordinator_park_slot(eng, pslot);
-		coordinator_resume_slot(eng, pslot, par->mm->region.index,
-					&g_lxp_slots[pslot].resume, cpid);
+		(void)coordinator_complete_slot(eng, slot_ref_at(pslot), cpid);
 	} else {
 		if (par->group->child_count < LXP_MAX_CHILD) {
 			par->group->child_pid[par->group->child_count] = cpid;
@@ -1729,7 +1727,7 @@ void notify_parent_stopped(const lxp_os_ops_t *eng, int ppid, int cpid, int stop
 			par->group->child_kind[par->group->child_count] = LXP_CHILD_STOPPED;
 			par->group->child_count++;
 		}
-		par->pending_sigs |= lxp_sig_bit(LXP_SIGCHLD);
+		lxp_signal_latch(par, LXP_SIGCHLD);
 	}
 }
 
@@ -1830,19 +1828,20 @@ void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, 
 {
 	uintptr_t h = lxp_sig_handler_get(proc, sig);
 	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
-		coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					&g_lxp_slots[slot].resume,
-					ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
+		(void)coordinator_complete_slot(
+			eng, slot_ref_at(slot),
+			ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
 		return;
 	}
-	/* A job-control stop must never terminate the proc here. The coordinator's
-	 * parked-stop scan normally consumes it first; if one slips through (a deferred
-	 * completion carrying a pending stop), re-latch it and resume the syscall so the
-	 * scan stops the proc on the next pass. */
+	/* A deferred completion is itself a signal-delivery boundary and the native
+	 * task is already parked. Retain its result and let SIGCONT resume it. */
 	if (sig_stops_proc(proc, sig)) {
-		proc->pending_sigs |= lxp_sig_bit(sig);
-		coordinator_resume_slot(eng, slot, proc->mm->region.index,
-					&g_lxp_slots[slot].resume, ret);
+		proc->stopped = 1;
+		proc->stop_kind = LXP_STOP_PARKED;
+		proc->stop_sig = (uint8_t)sig;
+		proc->stop_r0 = 0;
+		(void)coordinator_complete_slot(eng, slot_ref_at(slot), ret);
+		notify_parent_stopped(eng, proc->group->ppid, proc->pid, sig);
 		return;
 	}
 	if (h == LXP_SIG_DFL) {
@@ -2012,7 +2011,7 @@ void execute_deferred(const lxp_os_ops_t *eng, int slot)
 		return;
 	}
 	lxp_guest_view_end(&view);
-	coordinator_resume_slot(eng, slot, proc->mm->region.index, &g_lxp_slots[slot].resume, r);
+	(void)coordinator_complete_slot(eng, slot_ref_at(slot), r);
 }
 
 /* ---- vfork data isolation (NOMMU) ------------------------------------------ */

@@ -76,6 +76,8 @@ int claim_slot_event(int s)
 		return LXP_EV_DEFER;
 	if (!slot_runnable_load(s))
 		return LXP_EV_NONE;
+	if (p->stopped && p->stop_kind == LXP_STOP_READY)
+		return LXP_EV_STOP;
 	switch (p->wait.kind) {
 	case LXP_WAIT_TIMER:
 		return LXP_EV_SLEEP;
