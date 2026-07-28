@@ -7,13 +7,13 @@
 
 #include <string.h>
 
-#include "run/lxp_coordinator.h"
+#include "run/lxp_exec_private.h"
 
 #if LXP_ENABLE_NETFS_EXEC
 #include "lxp/lxp_netfs.h"
 #endif
 
-void exec_txn_init(struct exec_txn *tx, int slot)
+LXP_EXEC_TXN_LINKAGE void exec_txn_init(struct exec_txn *tx, int slot)
 {
 	memset(tx, 0, sizeof(*tx));
 	tx->phase = EXEC_TXN_EMPTY;
@@ -29,7 +29,7 @@ void exec_txn_init(struct exec_txn *tx, int slot)
 	tx->new_ref = lxp_slot_ref_none();
 }
 
-int exec_txn_reserve(struct exec_txn *tx)
+LXP_EXEC_TXN_LINKAGE int exec_txn_reserve(struct exec_txn *tx)
 {
 	if (tx->phase != EXEC_TXN_EMPTY || !lxp_slot_ref_is_current(tx->old_ref))
 		return -LXP_EINVAL;
@@ -66,8 +66,8 @@ int exec_txn_reserve(struct exec_txn *tx)
 	return lifecycle_failpoint(LXP_FAIL_EXEC_REGION_ACQUIRED) ? -LXP_ENOMEM : LXP_OK;
 }
 
-int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image, size_t image_size,
-			    int remote_exec)
+LXP_EXEC_TXN_LINKAGE int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
+						 size_t image_size, int remote_exec)
 {
 	if (tx->phase != EXEC_TXN_RESERVED || !image)
 		return -LXP_ENOEXEC;
@@ -101,7 +101,7 @@ static void exec_txn_detach_old(struct exec_txn *tx)
 	tx->old_detached = 1;
 }
 
-int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng)
+LXP_EXEC_TXN_LINKAGE int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng)
 {
 	if (tx->phase != EXEC_TXN_VALIDATED)
 		return -LXP_EINVAL;
@@ -222,7 +222,8 @@ static void exec_txn_report_failure(struct exec_txn *tx, const lxp_os_ops_t *eng
  * proves the native task stopped, then releases whichever side still owns the
  * staged image and process resources.
  */
-void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long error, int reason)
+LXP_EXEC_TXN_LINKAGE void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng,
+					 long error, int reason)
 {
 	if (!tx || tx->phase == EXEC_TXN_ABORTED || tx->phase == EXEC_TXN_FINISHED ||
 	    tx->terminal)
@@ -330,8 +331,8 @@ void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int s
 
 	image_txn_init(&tx.image, slot, tx.region, tx.new_ref);
 	tx.image_initialized = 1;
-	rc = image_txn_prepare(&tx.image, eng, image, image_size, tx.pid, tx.ppid, argc, argv,
-			       envp, remote_exec);
+	rc = image_txn_prepare(&tx.image, eng, cfg, image, image_size, tx.pid, tx.ppid, argc,
+			       argv, envp, remote_exec);
 	if (rc == LXP_OK && lifecycle_failpoint(LXP_FAIL_EXEC_IMAGE_PREPARED))
 		rc = -LXP_EIO;
 	if (rc != LXP_OK) {

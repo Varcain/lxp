@@ -18,6 +18,8 @@
 #include "lxp/lxp_proc.h"
 #include "lxp/lxp_seam.h"
 
+struct lxp_dbg_s;
+
 enum deferred_state {
 	DEFER_IDLE,
 	DEFER_FILLING,
@@ -55,91 +57,6 @@ enum lxp_lifecycle_failpoint {
 	LXP_FAIL_EXEC_PUBLISHED,
 	LXP_FAIL_EXEC_NATIVE_STARTED,
 	LXP_FAIL_EXEC_REGION_COMMITTED,
-};
-
-struct lxp_dbg_s {
-	uintptr_t text_base;
-	uintptr_t data_base;
-	uintptr_t entry;
-	uintptr_t dynamic;
-	uintptr_t interp_base;
-};
-
-struct image_txn {
-	lxp_proc_t proc;
-	lxp_flat_t prog;
-	struct lxp_dbg_s debug;
-	lxp_slot_ref_t owner;
-	lxp_region_ref_t region;
-	void *entry;
-	void *sp;
-	uint8_t *stack_lo;
-	int slot;
-	uint8_t prepared;
-	uint8_t published;
-	uint8_t native_started;
-	uint8_t region_committed;
-};
-
-enum fork_txn_phase {
-	FORK_TXN_EMPTY,
-	FORK_TXN_PREPARING,
-	FORK_TXN_PREPARED,
-	FORK_TXN_PUBLISHED,
-	FORK_TXN_COMMITTED,
-	FORK_TXN_ABORTED,
-};
-
-struct fork_txn {
-	lxp_proc_t *parent;
-	lxp_proc_t *child;
-	lxp_slot_ref_t parent_ref;
-	lxp_slot_ref_t child_ref;
-	lxp_region_ref_t parent_region;
-	enum fork_txn_phase phase;
-	uint8_t region_acquired;
-	uint8_t child_constructed;
-	uint8_t maps_touched;
-	uint8_t child_counted;
-};
-
-enum exec_txn_phase {
-	EXEC_TXN_EMPTY,
-	EXEC_TXN_RESERVED,
-	EXEC_TXN_VALIDATED,
-	EXEC_TXN_COMMITTED,
-	EXEC_TXN_IMAGE_READY,
-	EXEC_TXN_PUBLISHED,
-	EXEC_TXN_FINISHED,
-	EXEC_TXN_ABORTED,
-};
-
-struct exec_txn {
-	lxp_proc_t *old;
-	struct image_txn image;
-	lxp_slot_ref_t old_ref;
-	lxp_slot_ref_t new_ref;
-	lxp_slot_ref_t parent_ref;
-	lxp_region_ref_t region;
-	lxp_files_t *saved_files;
-	lxp_fs_context_t *saved_fs;
-	lxp_sighand_t *old_sighand;
-	lxp_thread_group_t *saved_group;
-	enum exec_txn_phase phase;
-	int slot;
-	int pid;
-	int ppid;
-	int image_index;
-	uint64_t saved_mask;
-	char comm[sizeof(((lxp_proc_t *)0)->comm)];
-	uint8_t region_acquired;
-	uint8_t uses_snapshot;
-	uint8_t parent_restored;
-	uint8_t parent_resumed;
-	uint8_t old_detached;
-	uint8_t slot_reassigned;
-	uint8_t image_initialized;
-	uint8_t terminal;
 };
 
 struct lxp_claimed_event {
@@ -187,6 +104,11 @@ int slot_runnable_load(int slot);
 void slot_runnable_store(int slot, int runnable);
 uint32_t slot_generation(int slot);
 lxp_slot_ref_t slot_ref_at(int slot);
+int lxp_slot_publish_image(int slot, lxp_proc_t *image, lxp_exec_capture_t *capture,
+			   const struct lxp_dbg_s *debug);
+void lxp_slot_signal_reset(int slot);
+void lxp_slot_signal_clone(int child_slot, int parent_slot);
+lxp_arena_t *lxp_region_arena(int region);
 uint8_t deferred_state_load(int slot);
 void deferred_slot_reassign(int slot);
 void lxp_slot_proc_reset(int slot);
@@ -240,6 +162,7 @@ int region_free(int region);
 lxp_region_ref_t region_reserve(int region, lxp_slot_ref_t owner);
 int region_get(lxp_region_ref_t region);
 int region_put(lxp_region_ref_t region);
+int lxp_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_owner);
 void proc_mm_put(lxp_proc_t *proc);
 int region_release_if_owned(lxp_region_ref_t region, lxp_slot_ref_t owner);
 lxp_region_ref_t vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *parent,
@@ -248,31 +171,6 @@ int vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *parent, lxp_region_ref_t 
 		  lxp_slot_ref_t child, uintptr_t parent_sp);
 void vfork_contain_stale(lxp_slot_ref_t child, lxp_proc_t *proc);
 void fork_child_guard_reset(int child_slot);
-
-void image_txn_init(struct image_txn *tx, int slot, lxp_region_ref_t region,
-		    lxp_slot_ref_t owner);
-int image_txn_prepare(struct image_txn *tx, const lxp_os_ops_t *eng, const uint8_t *data,
-		      size_t len, int pid, int ppid, int argc, const char *const argv[],
-		      const char *const envp[], int remote_exec);
-int image_txn_publish(struct image_txn *tx, const lxp_os_ops_t *eng);
-int image_txn_start(struct image_txn *tx, const lxp_os_ops_t *eng);
-int image_txn_abort(struct image_txn *tx, const lxp_os_ops_t *eng);
-
-int fork_txn_prepare(struct fork_txn *tx, const lxp_os_ops_t *eng, int parent_slot,
-		     int child_slot, uint32_t clone_flags, int child_pid);
-int fork_txn_count_child(struct fork_txn *tx);
-int fork_txn_snapshot(struct fork_txn *tx, const lxp_os_ops_t *eng, uintptr_t parent_sp);
-int fork_txn_publish(struct fork_txn *tx);
-void fork_txn_abort(struct fork_txn *tx, const lxp_os_ops_t *eng);
-int fork_txn_commit(struct fork_txn *tx);
-void fork_parent_resume_error(const lxp_os_ops_t *eng, int parent_slot, long error);
-
-void exec_txn_init(struct exec_txn *tx, int slot);
-int exec_txn_reserve(struct exec_txn *tx);
-int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image, size_t image_size,
-			    int remote_exec);
-int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng);
-void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long error, int reason);
 
 void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid);
 void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int slot);

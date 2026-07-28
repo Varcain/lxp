@@ -48,4 +48,12 @@ struct vfork_snapshot_guard {
 	lxp_region_ref_t snapshot;
 };
 
+struct lxp_dbg_s {
+	uintptr_t text_base;
+	uintptr_t data_base;
+	uintptr_t entry;
+	uintptr_t dynamic;
+	uintptr_t interp_base;
+};
+
 #endif /* LXP_RUNTIME_STORE_H */

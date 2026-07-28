@@ -25,6 +25,9 @@
 #include "lxp/lxp_port_posix.h"
 #include "lxp_internal.h"
 #include "lxp_provider.h"
+#include "run/lxp_exec_private.h"
+#include "run/lxp_fork_private.h"
+#include "run/lxp_image.h"
 #include "run/lxp_runtime_test.h"
 
 #define TEST_RUNTIME (lxp_runtime_test_fixture())

@@ -5,7 +5,149 @@
  * Private coordinator fork/clone/vfork handler.
  */
 
-#include "run/lxp_coordinator.h"
+#include <string.h>
+
+#include "lxp_run_internal.h"
+#include "run/lxp_fork_private.h"
+
+/*
+ * Fork construction owns one region reference plus the not-yet-published child
+ * objects, native map, child accounting, and optional vfork snapshot. No
+ * acquisition escapes until fork_txn_commit(); abort is deliberately
+ * idempotent so every failed phase converges on the same cleanup.
+ */
+LXP_FORK_TXN_LINKAGE int fork_txn_prepare(struct fork_txn *tx, const lxp_os_ops_t *eng,
+					  int parent_slot, int child_slot,
+					  uint32_t clone_flags, int child_pid)
+{
+	memset(tx, 0, sizeof(*tx));
+	tx->phase = FORK_TXN_PREPARING;
+	tx->parent = lxp_slot_proc(parent_slot);
+	tx->child = lxp_slot_proc(child_slot);
+	tx->parent_ref = slot_ref_at(parent_slot);
+
+	deferred_slot_reassign(child_slot);
+	tx->child_ref = slot_ref_at(child_slot);
+	tx->parent_region = tx->parent->mm->region;
+	fork_child_guard_reset(child_slot);
+	if (region_get(tx->parent_region) != 0)
+		return -LXP_EAGAIN;
+	tx->region_acquired = 1;
+	if (lifecycle_failpoint(LXP_FAIL_FORK_REGION_ACQUIRED))
+		return -LXP_ENOMEM;
+
+	int rc;
+	if (clone_flags & LXP_CLONE_THREAD)
+		rc = lxp_proc_init_thread_child(tx->child, tx->parent, clone_flags, child_pid);
+	else
+		rc = lxp_proc_init_process_child(tx->child, tx->parent, clone_flags, child_pid);
+	if (rc != LXP_OK)
+		return -LXP_EAGAIN;
+	tx->child_constructed = 1;
+	if (lifecycle_failpoint(LXP_FAIL_FORK_CHILD_PREPARED))
+		return -LXP_ENOMEM;
+
+	/* Every slot owns its cold exec capture and active signal return chain even
+	 * when its process-wide objects are shared. */
+	lxp_proc_bind_exec_capture(tx->child, eng->exec_capture(tx->child_ref.index));
+	lxp_slot_signal_clone(tx->child_ref.index, tx->parent_ref.index);
+
+	/* Hardware mappings are installed while the record is still unpublished.
+	 * A later failure clears them through the same transaction abort. */
+	tx->maps_touched = 1;
+	if (coordinator_restore_mm_maps(eng, tx->child_ref.index, tx->child->mm) != 0)
+		return -LXP_ENOMEM;
+	if (lifecycle_failpoint(LXP_FAIL_FORK_MAPS_PREPARED))
+		return -LXP_ENOMEM;
+	tx->phase = FORK_TXN_PREPARED;
+	return LXP_OK;
+}
+
+LXP_FORK_TXN_LINKAGE int fork_txn_count_child(struct fork_txn *tx)
+{
+	if (tx->phase != FORK_TXN_PREPARED || tx->child_counted)
+		return -LXP_EINVAL;
+	tx->parent->group->live_children++;
+	tx->child_counted = 1;
+	return lifecycle_failpoint(LXP_FAIL_FORK_CHILD_COUNTED) ? -LXP_ENOMEM : LXP_OK;
+}
+
+LXP_FORK_TXN_LINKAGE int fork_txn_snapshot(struct fork_txn *tx, const lxp_os_ops_t *eng,
+					   uintptr_t parent_sp)
+{
+	if (tx->phase != FORK_TXN_PREPARED || !tx->child_constructed)
+		return -LXP_EINVAL;
+	tx->child->snapshot = vfork_snapshot(eng, tx->parent, tx->child_ref, parent_sp);
+	if (tx->child->snapshot.index < 0)
+		return -LXP_ENOMEM;
+	return lifecycle_failpoint(LXP_FAIL_FORK_SNAPSHOT_ACQUIRED) ? -LXP_ENOMEM : LXP_OK;
+}
+
+static int fork_txn_validate(const struct fork_txn *tx)
+{
+	if (!tx || tx->phase != FORK_TXN_PREPARED || !tx->region_acquired ||
+	    !tx->child_constructed || tx->child->alive || !tx->child->mm ||
+	    !tx->child->files || !tx->child->fs_context || !tx->child->sighand ||
+	    !tx->child->group || !lxp_slot_ref_is_current(tx->parent_ref) ||
+	    !lxp_region_ref_equal(tx->child->mm->region, tx->parent_region))
+		return -LXP_EINVAL;
+	return LXP_OK;
+}
+
+LXP_FORK_TXN_LINKAGE int fork_txn_publish(struct fork_txn *tx)
+{
+	if (fork_txn_validate(tx) != LXP_OK)
+		return -LXP_EINVAL;
+	tx->child->alive = 1;
+	tx->phase = FORK_TXN_PUBLISHED;
+	return lifecycle_failpoint(LXP_FAIL_FORK_PUBLISHED) ? -LXP_ENOMEM : LXP_OK;
+}
+
+LXP_FORK_TXN_LINKAGE void fork_txn_abort(struct fork_txn *tx, const lxp_os_ops_t *eng)
+{
+	if (!tx || tx->phase == FORK_TXN_ABORTED || tx->phase == FORK_TXN_COMMITTED ||
+	    tx->phase == FORK_TXN_EMPTY)
+		return;
+	if (tx->child_counted && tx->parent->group->live_children > 0)
+		tx->parent->group->live_children--;
+	if (tx->child_constructed && tx->child->snapshot.index >= 0)
+		(void)region_release_if_owned(tx->child->snapshot, tx->child_ref);
+	if (tx->maps_touched && eng->map_device)
+		(void)eng->map_device(tx->child_ref.index, 0, 0, 0);
+	if (tx->region_acquired)
+		(void)region_put(tx->parent_region);
+	if (tx->child_constructed)
+		lxp_proc_child_discard(tx->child);
+	lxp_slot_signal_reset(tx->child_ref.index);
+	slot_runnable_store(tx->child_ref.index, 0);
+	primary_slot_clear(tx->child_ref.index);
+	fork_child_guard_reset(tx->child_ref.index);
+	tx->region_acquired = 0;
+	tx->child_constructed = 0;
+	tx->maps_touched = 0;
+	tx->child_counted = 0;
+	tx->phase = FORK_TXN_ABORTED;
+}
+
+LXP_FORK_TXN_LINKAGE int fork_txn_commit(struct fork_txn *tx)
+{
+	if (!tx || tx->phase != FORK_TXN_PUBLISHED)
+		return -LXP_EINVAL;
+	tx->region_acquired = 0;
+	tx->child_constructed = 0;
+	tx->maps_touched = 0;
+	tx->child_counted = 0;
+	tx->phase = FORK_TXN_COMMITTED;
+	return LXP_OK;
+}
+
+static void fork_parent_resume_error(const lxp_os_ops_t *eng, int parent_slot, long error)
+{
+	lxp_proc_t *parent = lxp_slot_proc(parent_slot);
+	(void)coordinator_park_slot(eng, parent_slot);
+	(void)coordinator_resume_slot(eng, parent_slot, parent->mm->region.index,
+				      lxp_slot_resume(parent_slot), error);
+}
 
 void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid)
 {
