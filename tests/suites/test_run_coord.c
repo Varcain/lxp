@@ -1438,13 +1438,16 @@ static void test_coordinator_socket_wait_uses_readiness_events(void **state)
 	(void)state;
 
 	/* Legacy/portable ports retain the bounded polling fallback. */
-	assert_int_equal(coordinator_wait_timeout(0, 1, 0), 5);
+	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_SOCKET, 0), 5);
 	/* An event-driven net port can sleep until lxp_sock_kick() (or the normal
 	 * 50 ms maintenance wakeup) without quantizing socket readiness to 5 ms. */
-	assert_int_equal(coordinator_wait_timeout(0, 1, 1), 50);
+	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_SOCKET, 1), 50);
 	/* A different polling wait class still requires the short timeout. */
-	assert_int_equal(coordinator_wait_timeout(1, 1, 1), 5);
-	assert_int_equal(coordinator_wait_timeout(0, 0, 0), 50);
+	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_POLL |
+							  LXP_BLOCKED_WAIT_SOCKET,
+						  1),
+			 5);
+	assert_int_equal(coordinator_wait_timeout(0, 0), 50);
 }
 
 /* The per-slot claim helper maps one typed intent/wait without consuming its
@@ -2926,6 +2929,55 @@ static long console_read_cr(void *ctx, int fd, void *buf, size_t len)
 	return 1;
 }
 
+static long console_read_sigint(void *ctx, int fd, void *buf, size_t len)
+{
+	(void)ctx;
+	(void)fd;
+	if (!len)
+		return 0;
+	((uint8_t *)buf)[0] = 3;
+	return 1;
+}
+
+static void test_blocked_scan_reports_wait_policy(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *proc = &g_lxp_slots[0].proc;
+	proc->console_poll = console_not_ready;
+	assert_int_equal(lxp_wait_begin(proc, &(lxp_wait_t){
+							 .kind = LXP_WAIT_CONSOLE,
+							 .data.io.buffer =
+								 (uintptr_t)g_mock_regions[0],
+							 .data.io.length = 1,
+						 }),
+			 LXP_OK);
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
+
+	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, &g_mock_cfg, 1);
+	assert_int_equal(scan.wait_policy,
+			 LXP_BLOCKED_WAIT_POLL | LXP_BLOCKED_WAIT_CONSOLE);
+	assert_false(scan.progress);
+}
+
+static void test_async_console_signal_is_scan_progress(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *proc = &g_lxp_slots[0].proc;
+	proc->pid = 2;
+	proc->group->pgid = 2;
+	lxp_console_set_fg_pgrp(2);
+	const lxp_run_config_t cfg = {
+		.read_fn = console_read_sigint,
+		.console_poll = console_ready,
+	};
+
+	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, &cfg, 1);
+	assert_true(scan.progress);
+	assert_true(proc->pending_sigs & lxp_sig_bit(LXP_SIGINT));
+}
+
 /* A byte may already be ready when read(2) enters, bypassing a console wait entirely.
  * That fast path must use the same ICRNL discipline as a coordinator-resumed read. */
 static void test_console_icrnl_immediate_read(void **state)
@@ -3273,6 +3325,8 @@ int main(void)
 		cmocka_unit_test_setup(test_generated_protocol_sequences_preserve_world,
 				       reset_state),
 		cmocka_unit_test_setup(test_console_icrnl_immediate_read, reset_state),
+		cmocka_unit_test_setup(test_blocked_scan_reports_wait_policy, reset_state),
+		cmocka_unit_test_setup(test_async_console_signal_is_scan_progress, reset_state),
 		cmocka_unit_test_setup(test_deferred_blocking_handoff_keeps_parked_task,
 				       reset_state),
 		cmocka_unit_test_setup(test_pending_deliverable, reset_state),

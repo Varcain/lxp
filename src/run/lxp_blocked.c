@@ -21,32 +21,26 @@
 #include "lxp/lxp_pty.h"
 #endif
 
-static void lxp_blocked_note_wait(struct lxp_blocked_scan *scan, lxp_wait_kind_t kind)
+static uint32_t lxp_blocked_wait_policy(lxp_wait_kind_t kind)
 {
 	switch (kind) {
 	case LXP_WAIT_PIPE:
-		scan->pipe_wait = 1;
-		break;
 	case LXP_WAIT_DEVICE:
-		scan->device_wait = 1;
-		break;
-	case LXP_WAIT_SOCKET:
-		scan->socket_wait = 1;
-		break;
 	case LXP_WAIT_NETFS:
-		scan->netfs_wait = 1;
-		break;
 	case LXP_WAIT_PTY:
-		scan->pty_wait = 1;
-		break;
-	case LXP_WAIT_CONSOLE:
-		scan->console_wait = 1;
-		break;
 	case LXP_WAIT_FUTEX:
-		scan->futex_wait = 1;
-		break;
+		return LXP_BLOCKED_WAIT_POLL;
+	case LXP_WAIT_CONSOLE:
+		return LXP_BLOCKED_WAIT_POLL | LXP_BLOCKED_WAIT_CONSOLE;
+	case LXP_WAIT_SOCKET:
+		return LXP_BLOCKED_WAIT_SOCKET;
+	case LXP_WAIT_NONE:
+	case LXP_WAIT_TIMER:
+	case LXP_WAIT_CHILD:
+	case LXP_WAIT_SIGSUSPEND:
+	case LXP_WAIT_COUNT:
 	default:
-		break;
+		return 0;
 	}
 }
 
@@ -142,7 +136,6 @@ static void lxp_blocked_retry_futex(const lxp_os_ops_t *eng, int slot, lxp_proc_
 	if (proc->wait.kind != LXP_WAIT_FUTEX || slot_runnable_load(slot))
 		return;
 	scan->any_busy = 1;
-	scan->futex_wait = 1;
 	uint64_t deadline = proc->wait.data.futex.deadline_us;
 	if (proc->wait.data.futex.woken) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_FUTEX);
@@ -348,7 +341,7 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 		}
 		if (slot_runnable_load(slot))
 			scan.any_busy = 1;
-		lxp_blocked_note_wait(&scan, proc->wait.kind);
+		scan.wait_policy |= lxp_blocked_wait_policy(proc->wait.kind);
 
 		if (proc->alarm_deadline_us && !slot_runnable_load(slot)) {
 			if (now >= proc->alarm_deadline_us) {
@@ -384,13 +377,14 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 	}
 
 	/* Async ^C/^Z for a foreground program that never reads stdin. */
-	if (lxp_tty_isig() && !scan.console_wait && cfg && cfg->console_poll &&
+	if (lxp_tty_isig() && !(scan.wait_policy & LXP_BLOCKED_WAIT_CONSOLE) && cfg &&
+	    cfg->console_poll &&
 	    cfg->console_poll(cfg->io_ctx)) {
 		uint8_t ch = 0;
 		long rc = cfg->read_fn ? cfg->read_fn(cfg->io_ctx, 0, &ch, 1) : 0;
 		if (rc == 1 && (ch == 3 || ch == 26)) {
 			console_signal_fg(ch == 3 ? LXP_SIGINT : LXP_SIGTSTP);
-			scan.external_activity = 1;
+			scan.progress = 1;
 		}
 	}
 	return scan;

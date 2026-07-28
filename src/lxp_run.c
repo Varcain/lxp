@@ -452,10 +452,10 @@ void lxp_netfs_kick(void)
  * Socket waits only need the short retry timeout when the host cannot publish
  * readiness changes. Other wait classes retain their polling fallback.
  */
-static unsigned coordinator_wait_timeout(int any_poll_wait, int any_sock_wait,
-					 int socket_ready_events)
+static unsigned coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events)
 {
-	return (any_poll_wait || (any_sock_wait && !socket_ready_events)) ? 5u : 50u;
+	int socket_poll = (wait_policy & LXP_BLOCKED_WAIT_SOCKET) && !socket_ready_events;
+	return ((wait_policy & LXP_BLOCKED_WAIT_POLL) || socket_poll) ? 5u : 50u;
 }
 
 uint8_t deferred_state_load(int slot)
@@ -2866,8 +2866,6 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const c
 		uint64_t now = 0;
 		lxp_time_us(&now);
 		struct lxp_blocked_scan blocked = lxp_scan_blocked(eng, cfg, now);
-		if (blocked.external_activity)
-			idle = 0;
 		if (!blocked.any_alive) {
 			rc = 0;
 			break;
@@ -2907,11 +2905,7 @@ int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const c
 		socket_ready_events = g_lxp_net_ops && (g_lxp_net_ops->capabilities &
 							LXP_NET_CAP_SOCKET_READY_EVENT);
 #endif
-		int any_poll_wait = blocked.pipe_wait || blocked.device_wait ||
-				    blocked.netfs_wait || blocked.pty_wait ||
-				    blocked.console_wait || blocked.futex_wait;
-		unsigned to = coordinator_wait_timeout(any_poll_wait, blocked.socket_wait,
-						       socket_ready_events);
+		unsigned to = coordinator_wait_timeout(blocked.wait_policy, socket_ready_events);
 		if (blocked.next_deadline_us != UINT64_MAX && blocked.next_deadline_us > now) {
 			uint64_t d_ms = (blocked.next_deadline_us - now + 999u) /
 					1000u; /* round up, don't wake early */

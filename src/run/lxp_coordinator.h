@@ -163,19 +163,18 @@ struct lxp_exit_result {
 	int status;
 };
 
+enum lxp_blocked_wait_policy {
+	LXP_BLOCKED_WAIT_POLL = 1u << 0,
+	LXP_BLOCKED_WAIT_SOCKET = 1u << 1,
+	LXP_BLOCKED_WAIT_CONSOLE = 1u << 2,
+};
+
 struct lxp_blocked_scan {
 	uint64_t next_deadline_us;
+	uint32_t wait_policy;
 	uint8_t progress;
 	uint8_t any_alive;
 	uint8_t any_busy;
-	uint8_t external_activity;
-	uint8_t pipe_wait;
-	uint8_t device_wait;
-	uint8_t socket_wait;
-	uint8_t netfs_wait;
-	uint8_t pty_wait;
-	uint8_t console_wait;
-	uint8_t futex_wait;
 };
 
 /* Slot state stays private to lxp_run.c. These are the only mutable operations
