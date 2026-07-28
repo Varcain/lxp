@@ -10,7 +10,8 @@
 #define LXP_PROVIDER_H
 
 #include "lxp/lxp_config.h"
-#include "lxp/lxp_port.h"
+#include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_net_ops.h"
 
 #if LXP_ENABLE_NET
 extern const lxp_net_ops_t *g_lxp_net_ops;

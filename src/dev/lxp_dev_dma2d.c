@@ -20,7 +20,6 @@
 
 #if LXP_ENABLE_DEV_DMA2D
 
-#include "lxp/lxp_port.h"
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_disp_ops.h"
 #include "lxp/lxp_proc.h"

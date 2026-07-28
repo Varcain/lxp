@@ -13,8 +13,10 @@
 
 #include "lxp/lxp_config.h"
 #include "lxp/lxp_diag.h"
-#include "lxp/lxp_types.h"
+#include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_run.h"
+#include "lxp/lxp_types.h"
 
 #endif /* LXP_H */

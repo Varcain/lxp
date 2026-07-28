@@ -5,11 +5,9 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * THE PORT INTERFACE. A host (any RTOS or bare-metal) runs the Linux personality
- * by filling three ops-structs — the OS/engine port, the net port, and the
- * display/input port — and passing them to lxp_run(). This is the lwIP sys_arch /
- * LVGL / FatFs diskio pattern: the module is host-agnostic C; everything that
- * differs per OS lives behind these function pointers.
+ * The OS / engine port for the Linux personality. A host (any RTOS or
+ * bare-metal) implements this process-model substrate; the independent network
+ * and display providers live in lxp_net_ops.h and lxp_disp_ops.h.
  *
  * The module is single-instance (one run at a time). The ops are plain vtables
  * with no per-call context pointer: a port keeps whatever state it needs in its
@@ -35,50 +33,6 @@ typedef struct lxp_run_config lxp_run_config_t; /* full def in lxp_run.h     */
 typedef struct lxp_exec_capture lxp_exec_capture_t; /* full definition in lxp_exec.h */
 struct lxp_resume_ctx;                          /* full definition in lxp_seam.h */
 
-/* Host-owned opaque handles: the module holds these, the port allocates the
- * backing storage. This is what removes the compile-time backend-storage
- * coupling — the module never embeds a backend-sized socket by value. */
-typedef struct lxp_socket *lxp_socket_t;
-typedef struct lxp_netif *lxp_netif_t;
-
-/* ---- module-owned net value types (same numeric values as the OVE originals) */
-typedef uint8_t lxp_af_t;
-#define LXP_AF_INET ((lxp_af_t)2)
-#define LXP_AF_INET6 ((lxp_af_t)10)
-
-typedef uint8_t lxp_sock_type_t;
-#define LXP_SOCK_STREAM ((lxp_sock_type_t)1)
-#define LXP_SOCK_DGRAM ((lxp_sock_type_t)2)
-#define LXP_SOCK_RAW ((lxp_sock_type_t)3)
-
-typedef struct {
-	lxp_af_t family;  /**< LXP_AF_INET / LXP_AF_INET6. */
-	uint16_t port;	  /**< Host byte order. */
-	uint8_t addr[16]; /**< 4 bytes IPv4, 16 IPv6. */
-} lxp_sockaddr_t;
-
-#define LXP_SOCK_POLLIN 0x01u
-#define LXP_SOCK_POLLOUT 0x04u
-#define LXP_SOCK_POLLERR 0x08u
-#define LXP_SOCK_POLLHUP 0x10u
-
-#define LXP_SHUT_RD 0
-#define LXP_SHUT_WR 1
-#define LXP_SHUT_RDWR 2
-
-#define LXP_NETIF_FLAG_UP 0x01u
-#define LXP_NETIF_FLAG_BROADCAST 0x02u
-#define LXP_NETIF_FLAG_LOOPBACK 0x04u
-#define LXP_NETIF_FLAG_RUNNING 0x08u
-#define LXP_NETIF_FLAG_MULTICAST 0x10u
-
-/*
- * The host calls lxp_sock_kick() whenever network activity may change socket
- * readiness. This lets the coordinator sleep on its event instead of polling
- * parked recv/connect/accept/poll operations every 5 ms.
- */
-#define LXP_NET_CAP_SOCKET_READY_EVENT 0x01u
-
 /* Device-mmap attribute selectors for lxp_os_ops.map_device. */
 #define LXP_MAP_NC 0u  /**< Non-cacheable. */
 #define LXP_MAP_WT 1u  /**< Write-through. */
@@ -100,8 +54,6 @@ typedef enum lxp_cpu_memory_model {
 } lxp_cpu_memory_model_t;
 
 #define LXP_OS_OPS_ABI_VERSION 8u
-#define LXP_NET_OPS_ABI_VERSION 2u
-#define LXP_DISPLAY_OPS_ABI_VERSION 1u
 
 /* Opaque host critical-section state. Ports which use irq-save primitives
  * return the native key through this value; ports with internally nested
@@ -136,7 +88,7 @@ typedef enum lxp_spawn_resume_mode {
 } lxp_spawn_resume_mode_t;
 
 /* ─────────────────────────────────────────────────────────────────────────
- * (1) OS / engine port — the process-model substrate.
+ * OS / engine port — the process-model substrate.
  *
  * The leading entries are the per-engine "how do I place program memory, spawn
  * a task, take a critical section" primitives the run loop drives on its hot
@@ -256,103 +208,6 @@ typedef struct lxp_os_ops {
 	lxp_cpu_memory_model_t cpu_memory_model;
 	int (*validate_memory_model)(lxp_cpu_memory_model_t declared);
 } lxp_os_ops_t;
-
-/* ─────────────────────────────────────────────────────────────────────────
- * (2) Net port — handle-based sockets. The host owns the socket storage; the
- * module holds only opaque handles. Covers the full 17 socket + 5 netif calls.
- * All calls happen on the coordinator thread (serialized), so a port needs no
- * internal locking.
- * ───────────────────────────────────────────────────────────────────────── */
-typedef struct lxp_net_ops {
-	uint32_t abi_version; /**< Must be LXP_NET_OPS_ABI_VERSION. */
-	uint32_t struct_size; /**< Must be sizeof(lxp_net_ops_t). */
-
-	/** Acquire/release the provider's run-scoped socket storage. run_begin()
-	 * must leave prior state unchanged on failure; run_end() closes any
-	 * provider handles still owned after core teardown. */
-	int (*run_begin)(void);
-	void (*run_end)(void);
-
-	int (*sock_open)(lxp_af_t af, lxp_sock_type_t type, int proto, lxp_socket_t *out);
-	int (*sock_accept)(lxp_socket_t listener, lxp_socket_t *out, uint64_t timeout_ns);
-	void (*sock_close)(lxp_socket_t s);
-	int (*sock_connect)(lxp_socket_t s, const lxp_sockaddr_t *a, uint64_t timeout_ns);
-	int (*sock_bind)(lxp_socket_t s, const lxp_sockaddr_t *a);
-	int (*sock_listen)(lxp_socket_t s, int backlog);
-	int (*sock_send)(lxp_socket_t s, const void *d, size_t n, size_t *sent);
-	int (*sock_recv)(lxp_socket_t s, void *b, size_t n, size_t *got, uint64_t timeout_ns);
-	int (*sock_sendto)(lxp_socket_t s, const void *d, size_t n, size_t *sent,
-			   const lxp_sockaddr_t *dst);
-	int (*sock_recvfrom)(lxp_socket_t s, void *b, size_t n, size_t *got, lxp_sockaddr_t *src,
-			     uint64_t timeout_ns);
-	int (*sock_set_nonblock)(lxp_socket_t s, int nb);
-	int (*sock_poll)(lxp_socket_t s, unsigned events, unsigned *revents, uint64_t timeout_ns);
-	int (*sock_shutdown)(lxp_socket_t s, int how);
-	int (*sock_getsockname)(lxp_socket_t s, lxp_sockaddr_t *a);
-	int (*sock_getpeername)(lxp_socket_t s, lxp_sockaddr_t *a);
-	int (*sock_get_error)(lxp_socket_t s);
-
-	int (*netif_get_addr)(lxp_netif_t nif, lxp_sockaddr_t *ip, lxp_sockaddr_t *gw,
-			      lxp_sockaddr_t *nm);
-	int (*netif_get_hwaddr)(lxp_netif_t nif, uint8_t mac[6]);
-	int (*netif_get_flags)(lxp_netif_t nif, unsigned *flags);
-	int (*netif_set_addr)(lxp_netif_t nif, const lxp_sockaddr_t *ip, const lxp_sockaddr_t *nm,
-			      const lxp_sockaddr_t *gw);
-	int (*netif_set_up)(lxp_netif_t nif, int up);
-
-	lxp_netif_t netif; /**< eth0 the SIOC* ioctls act on; host sets it before the run. */
-
-	/* LXP_NET_CAP_* bits. Kept last so older designated initializers default to
-	 * the polling fallback without moving existing members. */
-	unsigned capabilities;
-} lxp_net_ops_t;
-
-/* ─────────────────────────────────────────────────────────────────────────
- * (3) Display / input port — framebuffer + touch. Geometry is part of the
- * per-run configuration (no board_desc.h). touch_* NULL => no touch device.
- * ───────────────────────────────────────────────────────────────────────── */
-typedef struct lxp_fb_info {
-	uint16_t width, height, stride_bytes;
-	uint32_t fmt; /**< pixel format selector (0 => RGB565). */
-	uint32_t smem_len;
-} lxp_fb_info_t;
-
-/* A validated DMA2D fill/blit/blend, filled by the /dev/dma2d device from a guest
- * descriptor AFTER every plane address was bounds-checked against the guest region.
- * Addresses are absolute (coordinator-side); scalars are the validated ABI enums
- * (LXP_DMA2D_* in lxp_uapi.h). The board's dma2d_submit maps enums to DMA2D
- * registers + owns cache coherency. */
-typedef struct lxp_dma2d_op {
-	uint32_t mode, w, h;
-	uintptr_t out_addr;
-	uint32_t out_offset, out_cf, out_color;
-	uintptr_t fg_addr;
-	uint32_t fg_offset, fg_cf, fg_color, fg_alpha_mode, fg_alpha;
-	uintptr_t bg_addr;
-	uint32_t bg_offset, bg_cf, bg_color, bg_alpha_mode, bg_alpha;
-} lxp_dma2d_op_t;
-
-typedef struct lxp_display_ops {
-	uint32_t abi_version; /**< Must be LXP_DISPLAY_OPS_ABI_VERSION. */
-	uint32_t struct_size; /**< Must be sizeof(lxp_display_ops_t). */
-
-	int (*fb_init)(void);
-	int (*fb_get_info)(lxp_fb_info_t *info);
-	void *(*fb_get_buffer)(void);
-	void (*fb_flush)(int x, int y, int w, int h);
-	void (*fb_present)(void);
-	/* Optional 2D-accelerator submit (/dev/dma2d); NULL if the board has no DMA2D
-	 * -> the device returns -ENOSYS and the guest falls back to software render. */
-	int (*dma2d_submit)(const lxp_dma2d_op_t *op);
-	int (*touch_init)(void);
-	int (*touch_read)(int *x, int *y, int *pressed);
-} lxp_display_ops_t;
-
-/* ---- entry points ------------------------------------------------------------
- * The personality's actual run entry (lxp_run), lxp_net_set_netif, and
- * lxp_netfs_mount_config are declared in the module's own API headers
- * (lxp_run.h, lxp_net.h, lxp_netfs.h). The host passes all active providers to
- * lxp_run(); the module clears them again before returning. */
 
 #ifdef __cplusplus
 }

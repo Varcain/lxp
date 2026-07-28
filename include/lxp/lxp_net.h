@@ -35,7 +35,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_guest.h"
-#include "lxp/lxp_port.h"
+#include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_proc_fwd.h"
 
 #ifdef __cplusplus
@@ -50,8 +50,8 @@ extern "C" {
 #define LXP_SOCKW_ACCEPT 4u /**< P4: a blocked accept(2). */
 #define LXP_SOCKW_POLL 5u   /**< A blocking poll(2)/select over a set that includes a socket. */
 
-/* Guest socket ABI. LXP_AF_* and LXP_SOCK_STREAM/DGRAM/RAW are the port types
- * from lxp_port.h (identical Linux values); the flag bits below are guest-only. */
+/* Guest socket ABI. LXP_AF_* and LXP_SOCK_STREAM/DGRAM/RAW are the provider
+ * types from lxp_net_ops.h (identical Linux values); these bits are guest-only. */
 #define LXP_SOCK_NONBLOCK 0x800	 /**< ORed into the type arg. */
 #define LXP_SOCK_CLOEXEC 0x80000 /**< ORed into the type arg (ignored: no exec close). */
 #define LXP_SOCK_TYPE_MASK 0xff	 /**< Base type after masking the flag bits. */

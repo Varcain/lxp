@@ -19,17 +19,51 @@
 #define LXP_DISP_OPS_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "lxp/lxp_port.h" /* lxp_fb_info_t */
+#define LXP_DISPLAY_OPS_ABI_VERSION 1u
 
-/* The display / input port is the public lxp_display_ops_t (lxp_port.h): fb_* are
- * required when /dev/fb0 is built; touch_* may be NULL when there is no touch
- * controller (the input driver then relies on the synthetic testpad or an external
- * feeder). */
+typedef struct lxp_fb_info {
+	uint16_t width, height, stride_bytes;
+	uint32_t fmt; /**< pixel format selector (0 => RGB565). */
+	uint32_t smem_len;
+} lxp_fb_info_t;
+
+/* A validated DMA2D fill/blit/blend, filled by the /dev/dma2d device from a guest
+ * descriptor after every plane was bounds-checked against the guest region.
+ * Addresses are absolute (coordinator-side); scalars are the validated ABI enums
+ * (LXP_DMA2D_* in lxp_uapi.h). */
+typedef struct lxp_dma2d_op {
+	uint32_t mode, w, h;
+	uintptr_t out_addr;
+	uint32_t out_offset, out_cf, out_color;
+	uintptr_t fg_addr;
+	uint32_t fg_offset, fg_cf, fg_color, fg_alpha_mode, fg_alpha;
+	uintptr_t bg_addr;
+	uint32_t bg_offset, bg_cf, bg_color, bg_alpha_mode, bg_alpha;
+} lxp_dma2d_op_t;
+
+/* fb_* are required when /dev/fb0 is built; touch_* may be NULL when no touch
+ * controller is present. */
+typedef struct lxp_display_ops {
+	uint32_t abi_version; /**< Must be LXP_DISPLAY_OPS_ABI_VERSION. */
+	uint32_t struct_size; /**< Must be sizeof(lxp_display_ops_t). */
+
+	int (*fb_init)(void);
+	int (*fb_get_info)(lxp_fb_info_t *info);
+	void *(*fb_get_buffer)(void);
+	void (*fb_flush)(int x, int y, int w, int h);
+	void (*fb_present)(void);
+	/* Optional 2D-accelerator submit (/dev/dma2d); NULL if the board has no
+	 * DMA2D, in which case the guest falls back to software rendering. */
+	int (*dma2d_submit)(const lxp_dma2d_op_t *op);
+	int (*touch_init)(void);
+	int (*touch_read)(int *x, int *y, int *pressed);
+} lxp_display_ops_t;
 
 /* Set the display geometry used to clamp / report touch coordinates (replaces the
  * board_desc.h OVE_DISPLAY_* constants). Non-positive dimensions reset to the

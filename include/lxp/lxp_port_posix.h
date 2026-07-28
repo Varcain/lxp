@@ -8,7 +8,7 @@
 #ifndef LXP_PORT_POSIX_H
 #define LXP_PORT_POSIX_H
 
-#include "lxp/lxp_port.h"
+#include "lxp/lxp_net_ops.h"
 
 #ifdef __cplusplus
 extern "C" {

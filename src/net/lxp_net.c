@@ -24,7 +24,6 @@
 
 #include "lxp/lxp_net.h"
 #include "lxp/lxp_net_ops.h"
-#include "lxp/lxp_port.h"
 #include "lxp/lxp_proc.h"
 #include "lxp_pool.h" /* shared refcounted open-pool primitives */
 #include "lxp_provider.h"

@@ -15,7 +15,8 @@
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_disp_ops.h"
-#include "lxp/lxp_port.h" /* lxp_dma2d_op_t */
+#include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_port.h" /* LXP_MAP_NC */
 #include "lxp/lxp_syscall.h"
 #include "../../src/dev/lxp_uapi.h" /* struct lxp_dma2d_submit + LXP_DMA2D_* */
 
