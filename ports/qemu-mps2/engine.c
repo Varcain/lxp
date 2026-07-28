@@ -384,7 +384,7 @@ static lxp_exec_capture_t *qemu_exec_capture(int sidx)
  * unprivileged RO+X window over the PSRAM cpio so it can XIP ld.so/libc/busybox in
  * place — clean W^X. Code for M1/M2 XIPs from the flash cpio, covered by the port's
  * static unprivileged-RX flash region. A stray access outside these faults MemManage. */
-static int spawn_common(int sidx, int ridx, struct resume_desc *desc)
+static int spawn_common(int sidx, uint32_t generation, int ridx, struct resume_desc *desc)
 {
 	char nm[5] = {'l', 'n', 'x', (char)('0' + sidx), 0};
 	const uint32_t rw_xn = portMPU_REGION_READ_WRITE | portMPU_REGION_EXECUTE_NEVER |
@@ -408,7 +408,12 @@ static int spawn_common(int sidx, int ridx, struct resume_desc *desc)
 			{(uint8_t *)0x60800000u, 4u * 1024u * 1024u, ro_x},
 		},
 	};
+	/* Publish the native generation before task creation can schedule the new
+	 * guest and let its first SVC resolve task_slot_ref(). */
+	g_task_generation[sidx] = generation;
 	BaseType_t ok = xTaskCreateRestrictedStatic(&tp, &g_tid[sidx]);
+	if (ok != pdPASS)
+		g_task_generation[sidx] = 0;
 	return (ok == pdPASS) ? 0 : -1;
 }
 
@@ -427,20 +432,18 @@ static int qemu_spawn_launch(int sidx, uint32_t generation, int ridx,
 	c.r4_11[5] = prog->is_fdpic ? (uint32_t)prog->got : 0u;            /* r9 */
 	c.sp = (uint32_t)sp;
 	c.pc = (uint32_t)entry | 1u; /* Cortex-M is Thumb-only: prog_tramp's bx needs bit0 set */
-	int rc = spawn_common(sidx, ridx, stash_desc(sidx, &c, 0));
-	if (rc == 0)
-		g_task_generation[sidx] = generation;
-	return rc;
+	return spawn_common(sidx, generation, ridx, stash_desc(sidx, &c, 0));
 }
 
 static int qemu_spawn_resume(int sidx, uint32_t generation, int ridx,
+			     lxp_spawn_resume_mode_t mode,
 			     const struct lxp_resume_ctx *ctx, long r0val)
 {
 	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0)
 		return -1;
 	struct resume_desc *d = g_park_desc[sidx];
-	if (!lxp_slot_ref_is_runnable(task_slot_ref(sidx)) && g_tid[sidx] && d) {
-		if (g_task_generation[sidx] != generation)
+	if (mode == LXP_SPAWN_RESUME_PARKED) {
+		if (!g_tid[sidx] || !d || g_task_generation[sidx] != generation)
 			return -1;
 		d->r0 = (uint32_t)r0val;
 		d->ctx = *ctx;
@@ -448,13 +451,10 @@ static int qemu_spawn_resume(int sidx, uint32_t generation, int ridx,
 		vTaskResume(g_tid[sidx]);
 		return 0;
 	}
-	if (g_tid[sidx])
+	if (mode != LXP_SPAWN_RESUME_START || g_tid[sidx])
 		return -1;
 	d = stash_desc(sidx, ctx, r0val);
-	int rc = spawn_common(sidx, ridx, d);
-	if (rc == 0)
-		g_task_generation[sidx] = generation;
-	return rc;
+	return spawn_common(sidx, generation, ridx, d);
 }
 
 static int qemu_abort_slot(int sidx, uint32_t generation)

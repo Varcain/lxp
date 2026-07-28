@@ -100,9 +100,18 @@ typedef enum lxp_cpu_memory_model {
 	LXP_CPU_MEM_COHERENT_SAME_ATTRS = 2,
 } lxp_cpu_memory_model_t;
 
-#define LXP_OS_OPS_ABI_VERSION 3u
+#define LXP_OS_OPS_ABI_VERSION 4u
 #define LXP_NET_OPS_ABI_VERSION 1u
 #define LXP_DISPLAY_OPS_ABI_VERSION 1u
+
+/** Native action requested through spawn_resume(). A captured Linux context
+ * either starts a new host task (fork/vfork child) or resumes the persistent
+ * task previously blocked by park_slot(). Ports must not infer this distinction
+ * from a mutable runnable flag or native handle. */
+typedef enum lxp_spawn_resume_mode {
+	LXP_SPAWN_RESUME_START = 1,
+	LXP_SPAWN_RESUME_PARKED = 2,
+} lxp_spawn_resume_mode_t;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * (1) OS / engine port — the process-model substrate.
@@ -123,12 +132,16 @@ typedef struct lxp_os_ops {
 	 * records `generation` when it creates a task and rejects park/resume/abort
 	 * requests for another slot incarnation. Return LXP_OK only after the host
 	 * transition has committed; a negative result leaves the prior host state
-	 * intact (or, for a failed create, leaves no task). */
+	 * intact (or, for a failed create, leaves no task). The core publishes the
+	 * generation-qualified runnable capability before either spawn callback;
+	 * a port must likewise publish its native generation before an API which
+	 * can schedule the new task. */
 	int (*spawn_launch)(int sidx, uint32_t generation, int ridx,
 			    const lxp_flat_t *prog, void *entry, void *sp,
 			    void *stack_lo);
 	int (*spawn_resume)(int sidx, uint32_t generation, int ridx,
-			    const struct lxp_resume_ctx *c, long r0val);
+			    lxp_spawn_resume_mode_t mode, const struct lxp_resume_ctx *c,
+			    long r0val);
 	int (*abort_slot)(int sidx, uint32_t generation);
 	/* Sleep the run-loop task for `ms` milliseconds. */
 	void (*sleep_ms)(unsigned ms);
@@ -203,10 +216,12 @@ typedef struct lxp_os_ops {
 	 * exception and may return an opaque, guest-readable token which LXP passes
 	 * to lxp_park_loop in r0 (NULL is valid for a native saved-frame restore).
 	 * park_slot then blocks the existing RTOS task from coordinator context; a
-	 * later spawn_resume restores and resumes that same task. Both callbacks are
-	 * required: deleting and recreating a task on every blocking syscall is not
-	 * a supported lifecycle. Kept at the end for source-level compatibility
-	 * with older designated initializers. */
+	 * later spawn_resume(..., LXP_SPAWN_RESUME_PARKED, ...) restores and resumes
+	 * that same task. A captured fork child instead uses
+	 * LXP_SPAWN_RESUME_START. Both callbacks are required: deleting and
+	 * recreating a task on every blocking syscall is not a supported lifecycle.
+	 * Kept at the end for source-level compatibility with older designated
+	 * initializers. */
 	void *(*park_prepare)(int sidx, uint32_t generation,
 			      const struct lxp_resume_ctx *c);
 	int (*park_slot)(int sidx, uint32_t generation);

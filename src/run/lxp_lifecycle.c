@@ -118,12 +118,18 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 			return -LXP_EINVAL;
 		if (old != SLOT_PARKED && old != SLOT_FREE && old != SLOT_DEAD)
 			return -LXP_EAGAIN;
-		lxp_slot_set_host_state(sidx, old == SLOT_PARKED ? SLOT_RESUMING : SLOT_STARTING);
+		lxp_spawn_resume_mode_t mode =
+			old == SLOT_PARKED ? LXP_SPAWN_RESUME_PARKED : LXP_SPAWN_RESUME_START;
+		lxp_slot_set_host_state(sidx, mode == LXP_SPAWN_RESUME_PARKED ? SLOT_RESUMING
+									     : SLOT_STARTING);
+		/* Publish the generation-qualified dispatch capability before the port
+		 * can make the task runnable. A higher-priority guest may issue an SVC
+		 * before spawn_resume() returns to the coordinator. */
+		slot_runnable_store(sidx, 1);
 		rc = eng->spawn_resume(sidx, slot_generation(sidx), request->region,
-				       request->data.resume.ctx, request->data.resume.r0);
+				       mode, request->data.resume.ctx, request->data.resume.r0);
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_RUNNING);
-			slot_runnable_store(sidx, 1);
 			return LXP_OK;
 		}
 		lxp_slot_set_host_state(sidx, old);
@@ -143,12 +149,14 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 		if (old != SLOT_FREE && old != SLOT_DEAD)
 			return -LXP_EAGAIN;
 		lxp_slot_set_host_state(sidx, SLOT_STARTING);
+		/* As with resume, publish before spawn_launch can start a task which
+		 * immediately traps back into the personality. */
+		slot_runnable_store(sidx, 1);
 		rc = eng->spawn_launch(sidx, slot_generation(sidx), request->region,
 				       request->data.launch.prog, request->data.launch.entry,
 				       request->data.launch.sp, request->data.launch.stack_lo);
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_RUNNING);
-			slot_runnable_store(sidx, 1);
 			return LXP_OK;
 		}
 		lxp_slot_set_host_state(sidx, SLOT_DEAD);

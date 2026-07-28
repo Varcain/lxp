@@ -843,7 +843,8 @@ int lxp_validate_world(lxp_diag_error_t *error)
 		CHECK_RESOURCE_REFS(group, 4);
 #undef CHECK_RESOURCE_REFS
 
-		if (slot_runnable_load(slot) && host != SLOT_RUNNING && host != SLOT_FAILED)
+		if (slot_runnable_load(slot) && host != SLOT_RUNNING && host != SLOT_FAILED &&
+		    host != SLOT_STARTING && host != SLOT_RESUMING)
 			return diag_error(error, LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH, slot,
 					  region, host, SLOT_RUNNING);
 		if (host == SLOT_RUNNING && !slot_runnable_load(slot))
@@ -1327,7 +1328,8 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		g_cfg->on_enosys(nr);
 	/* A blocking syscall published a typed wait; capture the
 	 * post-svc context (resume the SAME image after the svc) and park. The
-	 * coordinator delays/wakes and resumes via spawn_resume(&g_lxp_slots[slot].resume, r0). */
+	 * coordinator delays/wakes and resumes it through the explicit parked-resume
+	 * port action. */
 	if (proc->wait.kind != LXP_WAIT_NONE) {
 		park_frame(f, proc);
 		return;

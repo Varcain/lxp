@@ -30,9 +30,17 @@ static const lxp_net_ops_t *g_test_net_ops;
 
 /* ---- mock engine ------------------------------------------------------------ */
 static struct {
+	int launch_calls;
+	int launch_sidx;
+	uint32_t launch_generation;
+	uint8_t launch_observed_runnable;
+	uint8_t launch_observed_host_state;
 	int resume_calls;
 	int resume_sidx;
 	uint32_t resume_generation;
+	lxp_spawn_resume_mode_t resume_mode;
+	uint8_t resume_observed_runnable;
+	uint8_t resume_observed_host_state;
 	long resume_r0;
 	uint32_t resume_xpsr;
 	struct lxp_fp_context resume_fp;
@@ -120,24 +128,37 @@ static void mock_coord_map(int region)
 static int mock_spawn_launch(int sidx, uint32_t generation, int ridx, const lxp_flat_t *prog,
 			     void *entry, void *sp, void *stack_lo)
 {
-	(void)sidx;
-	(void)generation;
 	(void)ridx;
 	(void)prog;
 	(void)entry;
 	(void)sp;
 	(void)stack_lo;
+	g_mock.launch_calls++;
+	g_mock.launch_sidx = sidx;
+	g_mock.launch_generation = generation;
+	g_mock.launch_observed_runnable =
+		(uint8_t)lxp_slot_ref_is_runnable((lxp_slot_ref_t){
+			.index = (int16_t)sidx,
+			.generation = generation,
+		});
+	g_mock.launch_observed_host_state = lxp_slot_host_state(sidx);
 	return LXP_OK;
 }
 static int mock_spawn_resume(int sidx, uint32_t generation, int ridx,
+			     lxp_spawn_resume_mode_t mode,
 			     const struct lxp_resume_ctx *c, long r0)
 {
-	(void)generation;
 	(void)ridx;
-	(void)c;
 	g_mock.resume_calls++;
 	g_mock.resume_sidx = sidx;
 	g_mock.resume_generation = generation;
+	g_mock.resume_mode = mode;
+	g_mock.resume_observed_runnable =
+		(uint8_t)lxp_slot_ref_is_runnable((lxp_slot_ref_t){
+			.index = (int16_t)sidx,
+			.generation = generation,
+		});
+	g_mock.resume_observed_host_state = lxp_slot_host_state(sidx);
 	g_mock.resume_r0 = r0;
 	g_mock.resume_xpsr = c->xpsr;
 	g_mock.resume_fp = c->fp;
@@ -2170,6 +2191,59 @@ static void test_teardown_releases_every_slot_resource(void **state)
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 }
 
+static void test_spawn_callbacks_receive_explicit_mode_and_published_slot(void **state)
+{
+	(void)state;
+	struct lxp_resume_ctx ctx;
+	lxp_flat_t prog;
+	memset(&ctx, 0, sizeof(ctx));
+	memset(&prog, 0, sizeof(prog));
+
+	/* A fresh image launch observes its dispatch capability before the mock
+	 * engine can make a native task runnable. */
+	const int launch_slot = 1;
+	deferred_slot_reassign(launch_slot);
+	g_lxp_slots[launch_slot].proc.alive = 1;
+	uint32_t launch_generation = slot_generation(launch_slot);
+	assert_int_equal(coordinator_launch_slot(&g_mock_eng, launch_slot, 0, &prog,
+						 (void *)1, (void *)2, (void *)3),
+			 LXP_OK);
+	assert_int_equal(g_mock.launch_calls, 1);
+	assert_int_equal(g_mock.launch_sidx, launch_slot);
+	assert_int_equal(g_mock.launch_generation, launch_generation);
+	assert_true(g_mock.launch_observed_runnable);
+	assert_int_equal(g_mock.launch_observed_host_state, SLOT_STARTING);
+	assert_int_equal(g_lxp_slots[launch_slot].host_state, SLOT_RUNNING);
+
+	/* A captured fork child has no native task yet and is explicitly START,
+	 * rather than being inferred from the absence of a handle. */
+	const int start_slot = 2;
+	deferred_slot_reassign(start_slot);
+	g_lxp_slots[start_slot].proc.alive = 1;
+	uint32_t start_generation = slot_generation(start_slot);
+	assert_int_equal(coordinator_resume_slot(&g_mock_eng, start_slot, 0, &ctx, 7),
+			 LXP_OK);
+	assert_int_equal(g_mock.resume_mode, LXP_SPAWN_RESUME_START);
+	assert_int_equal(g_mock.resume_generation, start_generation);
+	assert_true(g_mock.resume_observed_runnable);
+	assert_int_equal(g_mock.resume_observed_host_state, SLOT_STARTING);
+	assert_int_equal(g_lxp_slots[start_slot].host_state, SLOT_RUNNING);
+
+	/* A task suspended by park_slot is explicitly PARKED and sees the same
+	 * pre-published dispatch capability before the engine wakes it. */
+	const int parked_slot = 3;
+	make_valid_running_slot(parked_slot, 3);
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, parked_slot), LXP_OK);
+	uint32_t parked_generation = slot_generation(parked_slot);
+	assert_int_equal(coordinator_resume_slot(&g_mock_eng, parked_slot, 3, &ctx, 9),
+			 LXP_OK);
+	assert_int_equal(g_mock.resume_mode, LXP_SPAWN_RESUME_PARKED);
+	assert_int_equal(g_mock.resume_generation, parked_generation);
+	assert_true(g_mock.resume_observed_runnable);
+	assert_int_equal(g_mock.resume_observed_host_state, SLOT_RESUMING);
+	assert_int_equal(g_lxp_slots[parked_slot].host_state, SLOT_RUNNING);
+}
+
 static void test_park_failure_aborts_and_kills_slot(void **state)
 {
 	(void)state;
@@ -2209,6 +2283,9 @@ static void test_resume_failure_aborts_parked_slot(void **state)
 			 -LXP_EIO);
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_generation, generation);
+	assert_int_equal(g_mock.resume_mode, LXP_SPAWN_RESUME_PARKED);
+	assert_true(g_mock.resume_observed_runnable);
+	assert_int_equal(g_mock.resume_observed_host_state, SLOT_RESUMING);
 	assert_int_equal(g_mock.abort_calls, 1);
 	assert_int_equal(g_mock.abort_generation, generation);
 	assert_int_equal(g_lxp_slots[s].host_state, SLOT_DEAD);
@@ -3175,6 +3252,9 @@ int main(void)
 		cmocka_unit_test_setup(test_device_map_index_tracks_both_ranges, reset_state),
 		cmocka_unit_test_setup(test_device_maps_follow_shared_address_space, reset_state),
 		cmocka_unit_test_setup(test_teardown_releases_every_slot_resource, reset_state),
+		cmocka_unit_test_setup(
+			test_spawn_callbacks_receive_explicit_mode_and_published_slot,
+			reset_state),
 		cmocka_unit_test_setup(test_park_failure_aborts_and_kills_slot, reset_state),
 		cmocka_unit_test_setup(test_resume_failure_aborts_parked_slot, reset_state),
 		cmocka_unit_test_setup(test_abort_failure_retains_slot_until_retry, reset_state),
