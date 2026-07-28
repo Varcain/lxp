@@ -24,6 +24,7 @@
 #if LXP_ENABLE_NETFS
 
 #include "lxp/lxp_netfs.h"
+#include "lxp/lxp_guest.h"
 #include "lxp/lxp_loader.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_net_ops.h"
@@ -167,12 +168,12 @@ static void clunk_enqueue(int fid)
 
 /* ---- request pool ---------------------------------------------------------- */
 enum { REQ_FREE = 0, REQ_QUEUED, REQ_INFLIGHT, REQ_DONE };
-#define REQ_OP_CLUNK 0xffu /* internal (owner_slot<0) background-clunk request. */
+#define REQ_OP_CLUNK 0xffu /* internal (owner.index<0) background-clunk request. */
 struct netfs_req {
 	uint8_t state;
-	uint8_t op; /* NETFSW_* (owner set) or REQ_OP_CLUNK (owner NULL). */
+	uint8_t op; /* NETFSW_* (owner set) or REQ_OP_CLUNK (owner none). */
 	uint8_t step;
-	lxp_proc_t *owner; /* proc to resume/marshal for, or NULL for an internal (clunk) request. */
+	lxp_slot_ref_t owner; /* generation-qualified guest, or none for an internal request. */
 	uint32_t seq;	   /* FIFO ordering. */
 	int oi;		   /* open-pool slot (open reserves it; read/getdents use it). */
 	int fid;	   /* working fid (walk target / temp). */
@@ -372,7 +373,7 @@ static void conn_drop(void)
 	 * detached) has no proc to retrieve its result, so reclaim it rather than leak the slot. */
 	for (int i = 0; i < NETFS_NREQ; i++)
 		if (g_req[i].state == REQ_QUEUED || g_req[i].state == REQ_INFLIGHT) {
-			if (!g_req[i].owner) {
+			if (g_req[i].owner.index < 0) {
 				g_req[i].state = REQ_FREE;
 				continue;
 			}
@@ -767,7 +768,8 @@ static void parse_getattr(const uint8_t *b, size_t o, size_t blen, uint32_t *mod
 	(void)qtype;
 }
 
-static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body, size_t blen)
+static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
+			 const uint8_t *body, size_t blen)
 {
 	size_t o = 0;
 	(void)blen;
@@ -776,7 +778,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 	 * the owner). Never marshal the reply into its — now gone or reused — buffer: drop it,
 	 * release the working fid, and reclaim the slot. (An owner-less CLUNK is the internal
 	 * background clunk, handled by its own path below.) */
-	if (!r->owner && r->op != REQ_OP_CLUNK) {
+	if (r->owner.index < 0 && r->op != REQ_OP_CLUNK) {
 		if (r->fid > 0) {
 			clunk_enqueue(r->fid);
 			r->fid = -1;
@@ -853,7 +855,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 			cnt = (uint32_t)(blen - 4);
 		if (cnt > r->ulen)
 			cnt = (uint32_t)r->ulen;
-		if (cnt && lxp_copy_to_guest(r->owner, r->ubuf, body + o, cnt) != 0) {
+		if (cnt && lxp_copy_to_guest(owner, r->ubuf, body + o, cnt) != 0) {
 			req_complete(r, -LXP_EFAULT);
 			return;
 		}
@@ -884,7 +886,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 			const char *nm = (const char *)(body + o);
 			o += nlen;
 			uint8_t dtype = dt9 ? dt9 : dtype_from_qid(qt);
-			long emitted = dirent_emit_rec(r->owner, r->is64, r->ubuf, r->ulen,
+			long emitted = dirent_emit_rec(owner, r->is64, r->ubuf, r->ulen,
 						       filled, qpath, doff, dtype, nm, nlen);
 			if (emitted < 0) {
 				req_complete(r, emitted);
@@ -918,7 +920,7 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 			uint32_t mode;
 			uint64_t size, mtime, ino;
 			parse_getattr(body, o, blen, &mode, &size, &mtime, &ino);
-			r->result = lxp_netfs_fill_stat(r->owner, r->ubuf, r->statkind, mode, size,
+			r->result = lxp_netfs_fill_stat(owner, r->ubuf, r->statkind, mode, size,
 							mtime, ino);
 			r->step = 2; /* send Tclunk(fid) */
 			return;
@@ -1006,7 +1008,14 @@ static void handle_reply(struct netfs_req *r, uint8_t type, const uint8_t *body,
 }
 
 /* ---- the pump: advance the transport one step ------------------------------ */
-static void pump(uint64_t now_us)
+static int req_owned_by(const struct netfs_req *r, const lxp_proc_t *proc)
+{
+	lxp_slot_ref_t active;
+	return r->owner.index >= 0 && lxp_guest_view_slot(proc, &active) == LXP_OK &&
+	       lxp_slot_ref_equal(r->owner, active);
+}
+
+static void pump(lxp_proc_t *active_owner, uint64_t now_us)
 {
 	if (g_conn != CONN_UP) {
 		conn_advance(now_us);
@@ -1025,6 +1034,10 @@ static void pump(uint64_t now_us)
 
 	/* Drain replies for the in-flight request. */
 	if (g_inflight >= 0) {
+		struct netfs_req *inflight = &g_req[g_inflight];
+		if (inflight->op != REQ_OP_CLUNK && inflight->owner.index >= 0 &&
+		    !req_owned_by(inflight, active_owner))
+			return;
 		int rf = rx_fill();
 		if (rf < 0) {
 			conn_drop();
@@ -1040,7 +1053,7 @@ static void pump(uint64_t now_us)
 				break;
 			struct netfs_req *r = &g_req[g_inflight];
 			uint8_t type = g_rx[4];
-			handle_reply(r, type, g_rx + 7, len - 7);
+			handle_reply(r, active_owner, type, g_rx + 7, len - 7);
 			rx_consume(len);
 			/* If the reply advanced a step (still INFLIGHT), rebuild + send it. */
 			if (r->state == REQ_INFLIGHT && g_inflight >= 0) {
@@ -1071,6 +1084,8 @@ static void pump(uint64_t now_us)
 			}
 		if (best >= 0) {
 			struct netfs_req *r = &g_req[best];
+			if (!req_owned_by(r, active_owner))
+				return;
 			long e = req_build(r);
 			if (e < 0) {
 				req_complete(r, e);
@@ -1089,7 +1104,7 @@ static void pump(uint64_t now_us)
 					struct netfs_req *r = &g_req[i];
 					memset(r, 0, sizeof(*r));
 					r->op = REQ_OP_CLUNK;
-					r->owner = NULL;
+					r->owner = lxp_slot_ref_none();
 					r->fid = g_clunk_fid[g_clunk_head];
 					g_clunk_head = (g_clunk_head + 1) % NETFS_NCLUNK;
 					r->state = REQ_INFLIGHT;
@@ -1105,13 +1120,16 @@ static void pump(uint64_t now_us)
 /* ---- request allocation + submit ------------------------------------------- */
 static struct netfs_req *req_new(lxp_proc_t *p, uint8_t op)
 {
+	lxp_slot_ref_t owner;
+	if (lxp_guest_view_slot(p, &owner) != LXP_OK)
+		return NULL;
 	for (int i = 0; i < NETFS_NREQ; i++)
 		if (g_req[i].state == REQ_FREE) {
 			struct netfs_req *r = &g_req[i];
 			memset(r, 0, sizeof(*r));
 			r->state = REQ_QUEUED;
 			r->op = op;
-			r->owner = p;
+			r->owner = owner;
 			r->oi = -1;
 			r->fid = -1;
 			r->seq = g_req_seq++;
@@ -1358,15 +1376,18 @@ void lxp_netfs_close(int oi)
  * A reserved-but-unfinished OPEN slot is released so it cannot leak. */
 void lxp_netfs_cancel(lxp_proc_t *p)
 {
+	lxp_slot_ref_t owner;
+	if (lxp_guest_view_slot(p, &owner) != LXP_OK)
+		return;
 	int ri = (p && p->wait.kind == LXP_WAIT_NETFS) ? p->wait.data.io.request : -1;
 	if (p && p->wait.kind == LXP_WAIT_NETFS)
 		p->wait.data.io.request = -1;
 	if (ri < 0 || ri >= NETFS_NREQ)
 		return;
 	struct netfs_req *r = &g_req[ri];
-	if (r->owner != p)
+	if (!lxp_slot_ref_equal(r->owner, owner))
 		return;	 /* the slot was already reclaimed / reused for another proc */
-	r->owner = NULL; /* a late reply must not be marshaled into the gone/resumed guest */
+	r->owner = lxp_slot_ref_none(); /* a late reply cannot target a recycled guest */
 	r->ubuf = 0;
 	if (r->state != REQ_INFLIGHT) {
 		/* not on the wire (QUEUED or DONE): reclaim now, releasing any walked fid. */
@@ -1414,14 +1435,19 @@ long lxp_netfs_retry(lxp_proc_t *p)
 {
 	if (!p || p->wait.kind != LXP_WAIT_NETFS)
 		return -LXP_EINVAL;
-	uint64_t now = 0;
-	lxp_time_us(&now);
-	pump(now);
-
+	lxp_slot_ref_t owner;
+	if (lxp_guest_view_slot(p, &owner) != LXP_OK)
+		return -LXP_ESRCH;
 	int ri = p->wait.data.io.request;
 	if (ri < 0 || ri >= NETFS_NREQ)
 		return -LXP_EBADF;
 	struct netfs_req *r = &g_req[ri];
+	if (!lxp_slot_ref_equal(r->owner, owner))
+		return -LXP_ESTALE;
+	uint64_t now = 0;
+	lxp_time_us(&now);
+	pump(p, now);
+
 	if (r->state != REQ_DONE)
 		return -LXP_EAGAIN; /* still in flight */
 
@@ -1467,12 +1493,12 @@ void lxp_netfs_tick(uint64_t now_us)
 	 * lxp_netfs_retry(), while that owner's coordinator dispatch view is active.
 	 * The periodic path remains responsible for reconnect and owner-less clunks.
 	 */
-	if (g_inflight >= 0 && g_req[g_inflight].owner)
+	if (g_inflight >= 0 && g_req[g_inflight].owner.index >= 0)
 		return;
 	for (int i = 0; i < NETFS_NREQ; i++)
-		if (g_req[i].state == REQ_QUEUED && g_req[i].owner)
+		if (g_req[i].state == REQ_QUEUED && g_req[i].owner.index >= 0)
 			return;
-	pump(now_us);
+	pump(NULL, now_us);
 }
 
 int lxp_netfs_busy(void)
@@ -1533,7 +1559,7 @@ void lxp_netfs_fuzz_feed(lxp_proc_t *owner, uintptr_t ubuf, size_t ulen, unsigne
 	r.state = REQ_INFLIGHT;
 	r.op = (uint8_t)op;
 	r.step = (uint8_t)step;
-	r.owner = owner;
+	r.owner = (lxp_slot_ref_t){.index = 0, .generation = 1};
 	r.oi = 0;
 	r.fid = 1;
 	r.ubuf = ubuf;
@@ -1547,7 +1573,7 @@ void lxp_netfs_fuzz_feed(lxp_proc_t *owner, uintptr_t ubuf, size_t ulen, unsigne
 	g_open[0].used = 1;
 	g_open[0].fid = 1;
 	g_inflight = 0;
-	handle_reply(&r, type, body, blen);
+	handle_reply(&r, owner, type, body, blen);
 }
 #endif /* LXP_FUZZ */
 

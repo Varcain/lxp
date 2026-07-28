@@ -53,6 +53,9 @@ int lxp_guest_view_begin(lxp_proc_t *proc, lxp_slot_ref_t slot, const uint32_t *
 /** Revalidate the captured address-space generation and active binding. */
 int lxp_guest_view_is_current(const lxp_guest_view_t *view);
 
+/** Return the generation-bearing slot identity bound to @p proc's active view. */
+int lxp_guest_view_slot(const lxp_proc_t *proc, lxp_slot_ref_t *slot);
+
 /** Revoke a dispatch view. Safe to call more than once. */
 void lxp_guest_view_end(lxp_guest_view_t *view);
 

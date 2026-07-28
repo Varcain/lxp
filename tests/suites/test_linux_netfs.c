@@ -16,6 +16,7 @@
 
 #include "../framework/lxp_test.h"
 #include "lxp/lxp_arena.h"
+#include "lxp/lxp_guest.h"
 #include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_netfs.h"
 #include "lxp/lxp_syscall.h"
@@ -389,19 +390,59 @@ static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 {
 	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), OVE_OK);
 	assert_int_equal(lxp_test_proc_init(p, arena, 4096), OVE_OK);
+	p->mm->region = (lxp_region_ref_t){.index = 0, .generation = 1};
 	p->mm->region_lo = 1;
 	p->mm->region_hi = UINTPTR_MAX;
 	p->mm->pool_lo = p->mm->pool_hi = 0;
 }
 
+static long call_as_owner(lxp_proc_t *p, uint32_t generation, long nr, long a0, long a1,
+			  long a2, long a3, long a4, long a5)
+{
+	uint32_t current_generation = generation;
+	lxp_guest_view_t view;
+	lxp_slot_ref_t owner = {.index = 0, .generation = generation};
+	assert_int_equal(lxp_guest_view_begin(p, owner, &current_generation,
+					      LXP_GUEST_READ_WRITE, &view),
+			 LXP_OK);
+	long result = lxp_syscall(p, nr, a0, a1, a2, a3, a4, a5);
+	lxp_guest_view_end(&view);
+	return result;
+}
+
+static long retry_as_owner(lxp_proc_t *p, uint32_t generation)
+{
+	uint32_t current_generation = generation;
+	lxp_guest_view_t view;
+	lxp_slot_ref_t owner = {.index = 0, .generation = generation};
+	assert_int_equal(lxp_guest_view_begin(p, owner, &current_generation,
+					      LXP_GUEST_READ_WRITE, &view),
+			 LXP_OK);
+	long result = lxp_netfs_retry(p);
+	lxp_guest_view_end(&view);
+	return result;
+}
+
+static void cancel_as_owner(lxp_proc_t *p, uint32_t generation)
+{
+	uint32_t current_generation = generation;
+	lxp_guest_view_t view;
+	lxp_slot_ref_t owner = {.index = 0, .generation = generation};
+	assert_int_equal(lxp_guest_view_begin(p, owner, &current_generation,
+					      LXP_GUEST_READ_WRITE, &view),
+			 LXP_OK);
+	lxp_netfs_cancel(p);
+	lxp_guest_view_end(&view);
+}
+
 /* Drive a syscall; if it parked on netfs, pump the coordinator retry. */
 static long call_pump(lxp_proc_t *p, long nr, long a0, long a1, long a2, long a3, long a4, long a5)
 {
-	long r = lxp_syscall(p, nr, a0, a1, a2, a3, a4, a5);
+	long r = call_as_owner(p, 1, nr, a0, a1, a2, a3, a4, a5);
 	if (p->wait.kind != LXP_WAIT_NETFS)
 		return r;
 	for (int i = 0; i < 4000; i++) {
-		long rr = lxp_netfs_retry(p);
+		long rr = retry_as_owner(p, 1);
 		if (rr != -LXP_EAGAIN) {
 			if (p->wait.kind == LXP_WAIT_NETFS)
 				(void)lxp_wait_complete(p, LXP_WAIT_NETFS);
@@ -660,13 +701,18 @@ static void test_netfs_browse(void **state)
 		char cb[32];
 		memset(cb, 0xCC, sizeof(cb));
 		/* submit the read but do NOT pump: it parks with the request still queued. */
-		long r =
-			lxp_syscall(&p, LXP_NR_read, cfd, (long)(uintptr_t)cb, sizeof(cb), 0, 0, 0);
+		long r = call_as_owner(&p, 1, LXP_NR_read, cfd, (long)(uintptr_t)cb,
+				       sizeof(cb), 0, 0, 0);
 		assert_int_equal(r, 0);
 		assert_int_equal(p.wait.kind, LXP_WAIT_NETFS);
 		assert_true(p.wait.data.io.request >= 0);
 
-		lxp_netfs_cancel(&p); /* what the coordinator does on a signal */
+		/* A recycled slot incarnation cannot pump or marshal the old request. */
+		assert_int_equal(retry_as_owner(&p, 2), -LXP_ESTALE);
+		for (size_t i = 0; i < sizeof(cb); i++)
+			assert_int_equal((uint8_t)cb[i], 0xCC);
+
+		cancel_as_owner(&p, 1); /* what the coordinator does before recycling the slot */
 		assert_int_equal(p.wait.data.io.request, -1);
 		(void)lxp_wait_interrupt(&p, LXP_WAIT_NETFS);
 

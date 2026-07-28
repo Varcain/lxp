@@ -85,6 +85,14 @@ int lxp_guest_view_is_current(const lxp_guest_view_t *view)
 	       lxp_region_ref_equal(view->mm->region, view->region);
 }
 
+int lxp_guest_view_slot(const lxp_proc_t *proc, lxp_slot_ref_t *slot)
+{
+	if (!proc || !slot || !lxp_guest_view_is_current(proc->guest_view))
+		return -LXP_ESRCH;
+	*slot = proc->guest_view->slot;
+	return LXP_OK;
+}
+
 void lxp_guest_view_end(lxp_guest_view_t *view)
 {
 	if (!view || !view->active)
