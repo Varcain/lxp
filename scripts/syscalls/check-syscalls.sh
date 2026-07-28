@@ -7,7 +7,7 @@
 # is the host golden suite, tests/suites/test_syscall_conformance.c).
 #
 # With no toolchain and no running code it cross-checks the source-of-truth sites:
-#   include/lxp/lxp_syscall.h        — the LXP_NR_* number definitions
+#   include/lxp/lxp_linux_uapi.h     — the LXP_NR_* number definitions
 #   scripts/syscalls/arm-eabi.tbl    — the canonical ARM EABI numbers (the reference)
 #   scripts/syscalls/dispositions.tsv— the frozen implemented/stub/refused/... partition
 #   src/lxp_syscall.c / src/lxp_run.c— where each syscall is actually handled
@@ -23,7 +23,7 @@ cd "$(dirname "$0")/../.."
 
 REF=scripts/syscalls/arm-eabi.tbl
 TSV=scripts/syscalls/dispositions.tsv
-HDR=include/lxp/lxp_syscall.h
+HDR=include/lxp/lxp_linux_uapi.h
 DISP=src/lxp_syscall.c
 RUN=src/lxp_run.c
 MATRIX=docs/syscall-compat.md
@@ -59,7 +59,7 @@ emit_matrix() {
 
 Every syscall the lxp personality answers, cross-checked against the ARM EABI reference
 (\`scripts/syscalls/arm-eabi.tbl\`) and classified in \`scripts/syscalls/dispositions.tsv\`.
-Numbers come from \`include/lxp/lxp_syscall.h\`; dispositions are proved against the
+Numbers come from \`include/lxp/lxp_linux_uapi.h\`; dispositions are proved against the
 handlers in \`src/lxp_syscall.c\` / \`src/lxp_run.c\` by the coverage guard.
 
 Surface: $total LXP_NR_* — $counts.

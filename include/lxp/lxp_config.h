@@ -72,6 +72,32 @@
 #ifndef LXP_ENABLE_TOUCH
 #define LXP_ENABLE_TOUCH 0
 #endif
+
+/* Reject partial subsystems at their public boundary. Silently compiling an
+ * enabled child against a disabled owner produces either link failures or a
+ * firmware whose advertised feature cannot work. */
+#if LXP_ENABLE_NETFS && !LXP_ENABLE_NET
+#error "LXP_ENABLE_NETFS requires LXP_ENABLE_NET"
+#endif
+#if LXP_ENABLE_NETFS_EXEC && !LXP_ENABLE_NETFS
+#error "LXP_ENABLE_NETFS_EXEC requires LXP_ENABLE_NETFS"
+#endif
+#if LXP_ENABLE_DEV_FB && !LXP_ENABLE_DEV
+#error "LXP_ENABLE_DEV_FB requires LXP_ENABLE_DEV"
+#endif
+#if LXP_ENABLE_DEV_DMA2D && !LXP_ENABLE_DEV
+#error "LXP_ENABLE_DEV_DMA2D requires LXP_ENABLE_DEV"
+#endif
+#if LXP_ENABLE_DEV_INPUT && !LXP_ENABLE_DEV
+#error "LXP_ENABLE_DEV_INPUT requires LXP_ENABLE_DEV"
+#endif
+#if LXP_ENABLE_DEV_INPUT_TESTPAD && !LXP_ENABLE_DEV_INPUT
+#error "LXP_ENABLE_DEV_INPUT_TESTPAD requires LXP_ENABLE_DEV_INPUT"
+#endif
+#if LXP_ENABLE_TOUCH && !LXP_ENABLE_DEV_INPUT
+#error "LXP_ENABLE_TOUCH requires LXP_ENABLE_DEV_INPUT"
+#endif
+
 /* Preserve a guest's complete single-precision VFP context when the host parks
  * and recreates its task. This is needed for hard-float (and any VFP-using)
  * guests because a deferred syscall does not return through the original RTOS

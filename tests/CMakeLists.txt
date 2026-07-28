@@ -92,6 +92,9 @@ endif()
 add_test(NAME lxp_unit COMMAND lxp_test_stub)
 add_test(NAME lxp_guest_memory_boundary
   COMMAND sh "${LXP_ROOT}/scripts/check-guest-memory.sh")
+add_test(NAME lxp_unit_config_contract
+  COMMAND sh "${LXP_ROOT}/scripts/check-config-contract.sh"
+          "${CMAKE_C_COMPILER}" "${CMAKE_COMMAND}")
 
 # ---- coordinator (src/lxp_run.c) unit tests -------------------------------------
 # The coordinator is deliberately absent from lxp_test_stub above: its 32-bit-target

@@ -5,10 +5,10 @@
 
 Every syscall the lxp personality answers, cross-checked against the ARM EABI reference
 (`scripts/syscalls/arm-eabi.tbl`) and classified in `scripts/syscalls/dispositions.tsv`.
-Numbers come from `include/lxp/lxp_syscall.h`; dispositions are proved against the
+Numbers come from `include/lxp/lxp_linux_uapi.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/lxp_run.c` by the coverage guard.
 
-Surface: 138 LXP_NR_* — 95 implemented, 32 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
+Surface: 140 LXP_NR_* — 97 implemented, 32 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
 
 | Number | Name | Disposition | Notes |
 |---:|---|---|---|
@@ -18,6 +18,7 @@ Surface: 138 LXP_NR_* — 95 implemented, 32 benign-stub, 1 refused-eopnotsupp, 
 | 4 | write | implemented |  |
 | 5 | open | implemented |  |
 | 6 | close | implemented |  |
+| 9 | link | implemented |  |
 | 10 | unlink | implemented |  |
 | 11 | execve | implemented | captured; the run loop loads the image |
 | 12 | chdir | implemented |  |
@@ -52,11 +53,11 @@ Surface: 138 LXP_NR_* — 95 implemented, 32 benign-stub, 1 refused-eopnotsupp, 
 | 94 | fchmod | benign-stub | modes not tracked |
 | 104 | setitimer | implemented | ITIMER_REAL -> SIGALRM |
 | 114 | wait4 | implemented | reaps / blocks via the run loop |
-| 116 | sysinfo | implemented | uptime + live process count + effective guest capacity (limited by free slots/regions) |
+| 116 | sysinfo | implemented | uptime plus live-process and free slot/region capacity |
 | 118 | fsync | benign-stub | writable overlay is RAM |
 | 119 | sigreturn | run-loop-handled | restores the pre-signal frame |
 | 120 | clone | run-loop-handled | CLONE_VM treated as a co-running thread |
-| 122 | uname | implemented | Linux identity + host RTOS/version/build revisions |
+| 122 | uname | implemented | Linux identity plus current RTOS, RTOS version, oveRTOS revision, and lxp revision |
 | 125 | mprotect | benign-stub | no-op (NOMMU: no page protection) |
 | 140 | _llseek | implemented |  |
 | 141 | getdents | implemented | 32-bit dirent (uClibc readdir) |
@@ -128,6 +129,7 @@ Surface: 138 LXP_NR_* — 95 implemented, 32 benign-stub, 1 refused-eopnotsupp, 
 | 327 | fstatat64 | implemented |  |
 | 328 | unlinkat | implemented |  |
 | 329 | renameat | implemented |  |
+| 330 | linkat | implemented |  |
 | 331 | symlinkat | implemented |  |
 | 332 | readlinkat | implemented |  |
 | 333 | fchmodat | implemented |  |

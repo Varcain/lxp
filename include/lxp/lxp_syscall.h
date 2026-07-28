@@ -20,6 +20,7 @@
  */
 
 #include "lxp/lxp_bootstrap.h"
+#include "lxp/lxp_linux_uapi.h"
 #include "lxp/lxp_proc.h"
 
 #ifdef __cplusplus

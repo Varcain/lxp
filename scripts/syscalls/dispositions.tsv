@@ -1,6 +1,6 @@
 # Disposition manifest for the lxp syscall surface — the classification the coverage
 # guard (scripts/syscalls/check-syscalls.sh) freezes against drift. Every LXP_NR_* in
-# include/lxp/lxp_syscall.h must have exactly one row here; adding a syscall without
+# include/lxp/lxp_linux_uapi.h must have exactly one row here; adding a syscall without
 # classifying it fails CI. The guard also proves each row still matches the source:
 #
 #   implemented | benign-stub | refused-eopnotsupp  -> must be a `case LXP_NR_x` in src/lxp_syscall.c
@@ -51,6 +51,8 @@ readlink	implemented
 readlinkat	implemented
 unlink	implemented
 unlinkat	implemented
+link	implemented
+linkat	implemented
 rmdir	implemented
 rename	implemented
 renameat	implemented
@@ -76,8 +78,8 @@ clock_nanosleep_time64	implemented	parks via the run loop
 poll	implemented
 ppoll_time64	implemented
 pselect6_time64	implemented	NET-gated
-uname	implemented	Linux/overtos/6.1.0/oveRTOS/armv7l/(none)
-sysinfo	implemented	uptime + canned ram totals
+uname	implemented	Linux identity plus current RTOS, RTOS version, oveRTOS revision, and lxp revision
+sysinfo	implemented	uptime plus live-process and free slot/region capacity
 times	implemented	uptime ticks; per-proc breakdown zeroed
 setitimer	implemented	ITIMER_REAL -> SIGALRM
 getrandom	implemented	host `random_fill`; bounded; fails closed when unavailable

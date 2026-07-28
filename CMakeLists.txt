@@ -25,10 +25,26 @@ option(LXP_ENABLE_DEV "Device layer (/dev)" OFF)
 option(LXP_ENABLE_DEV_FB "Framebuffer /dev/fb0 (display-ops port required)" OFF)
 option(LXP_ENABLE_DEV_DMA2D "DMA2D 2D-accelerator /dev/dma2d (display-ops dma2d_submit)" OFF)
 option(LXP_ENABLE_DEV_INPUT "Input event device (/dev/input)" OFF)
+option(LXP_ENABLE_DEV_INPUT_TESTPAD "Synthetic input provider (needs DEV_INPUT)" OFF)
+option(LXP_ENABLE_TOUCH "Physical touch provider (needs DEV_INPUT)" OFF)
 option(LXP_ENABLE_FPU_CONTEXT "Preserve VFP state for floating-point guests" OFF)
 option(LXP_PORT_POSIX "Build the bundled POSIX reference port" OFF)
 option(LXP_BUILD_TESTS "Build the host (cmocka) unit-test suite" OFF)
 option(LXP_BUILD_FUZZ "Build the coverage-guided fuzz harnesses" OFF)
+
+function(lxp_require child parent)
+  if(${child} AND NOT ${parent})
+    message(FATAL_ERROR "${child} requires ${parent}")
+  endif()
+endfunction()
+
+lxp_require(LXP_ENABLE_NETFS LXP_ENABLE_NET)
+lxp_require(LXP_ENABLE_NETFS_EXEC LXP_ENABLE_NETFS)
+lxp_require(LXP_ENABLE_DEV_FB LXP_ENABLE_DEV)
+lxp_require(LXP_ENABLE_DEV_DMA2D LXP_ENABLE_DEV)
+lxp_require(LXP_ENABLE_DEV_INPUT LXP_ENABLE_DEV)
+lxp_require(LXP_ENABLE_DEV_INPUT_TESTPAD LXP_ENABLE_DEV_INPUT)
+lxp_require(LXP_ENABLE_TOUCH LXP_ENABLE_DEV_INPUT)
 
 # ---- sources: collect whatever exists (the tree is populated incrementally) --
 file(GLOB_RECURSE LXP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
@@ -41,7 +57,8 @@ if(LXP_SOURCES)
   # Value-based feature gates: the module tests `#if LXP_ENABLE_X`, so emit an
   # explicit 0/1 for each (matches lxp_config.h's defaults and keeps the matrix
   # build -Wundef-clean; -DLXP_ENABLE_X=0 genuinely disables).
-  foreach(feat NET NETFS NETFS_EXEC PTY DEV DEV_FB DEV_DMA2D DEV_INPUT FPU_CONTEXT)
+  foreach(feat NET NETFS NETFS_EXEC PTY DEV DEV_FB DEV_DMA2D DEV_INPUT
+               DEV_INPUT_TESTPAD TOUCH FPU_CONTEXT)
     if(LXP_ENABLE_${feat})
       target_compile_definitions(lxp PUBLIC LXP_ENABLE_${feat}=1)
     else()
