@@ -22,12 +22,11 @@ set(LXP_FUZZ_ENGINE "libfuzzer" CACHE STRING "Fuzz driver: libfuzzer | replay | 
 set_property(CACHE LXP_FUZZ_ENGINE PROPERTY STRINGS libfuzzer replay afl)
 
 set(LXP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+include("${LXP_ROOT}/cmake/lxp_sources.cmake")
 
-# Same collection rule as tests/CMakeLists.txt: every module TU by glob, minus the
-# 32-bit-only coordinator (its hooks come from tests/stub_lnx_run.c + fuzz_stubs.c).
-file(GLOB_RECURSE FUZZ_MODULE_SRC CONFIGURE_DEPENDS "${LXP_ROOT}/src/*.c")
-list(REMOVE_ITEM FUZZ_MODULE_SRC "${LXP_ROOT}/src/lxp_run.c")
-list(FILTER FUZZ_MODULE_SRC EXCLUDE REGEX "/src/run/.*\\.c$")
+# Same canonical non-coordinator group as the host tests. Coordinator hooks come
+# from tests/stub_lnx_run.c + fuzz_stubs.c.
+set(FUZZ_MODULE_SRC ${LXP_NON_COORDINATOR_SOURCES})
 
 # ---- engine -> compile / link flag sets --------------------------------------
 # Two UBSan sub-checks are dropped as target-benign C-standard pedantry (they do not

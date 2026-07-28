@@ -46,11 +46,11 @@ lxp_require(LXP_ENABLE_DEV_INPUT LXP_ENABLE_DEV)
 lxp_require(LXP_ENABLE_DEV_INPUT_TESTPAD LXP_ENABLE_DEV_INPUT)
 lxp_require(LXP_ENABLE_TOUCH LXP_ENABLE_DEV_INPUT)
 
-# ---- sources: collect whatever exists (the tree is populated incrementally) --
-file(GLOB_RECURSE LXP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
+# ---- sources: one feature-grouped inventory shared by every consumer ---------
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/lxp_sources.cmake")
 
-if(LXP_SOURCES)
-  add_library(lxp STATIC ${LXP_SOURCES})
+if(LXP_ALL_SOURCES)
+  add_library(lxp STATIC ${LXP_ALL_SOURCES})
   target_include_directories(lxp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
   target_include_directories(lxp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 

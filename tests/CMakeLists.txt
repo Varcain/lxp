@@ -19,20 +19,14 @@ set(UNIT_TESTING ON CACHE BOOL "" FORCE) # builds cmocka-static; also registers 
 FetchContent_MakeAvailable(cmocka) #   self-tests in CTest — filter ours with `ctest -R lxp_unit`.
 
 set(LXP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+include("${LXP_ROOT}/cmake/lxp_sources.cmake")
 
 # Module TUs the suites exercise. NOT src/lxp_run.c (the coordinator) — its OS-service
 # hooks come from tests/stub_lnx_run.c instead.
-# Collect every module TU by glob (CONFIGURE_DEPENDS re-globs on build) so a new src
-# file can never be silently dropped from host coverage again — that rot is what let
-# lxp_signal.c / lxp_dev_fb.c / lxp_dev_input.c escape testing. Only the coordinator is
-# deliberately excluded: src/lxp_run.c is 32-bit-target code (pointer casts that warn on
-# a 64-bit host; its OS hooks come from tests/stub_lnx_run.c). src/lxp_signal.c IS built
-# now — its three coordinator symbols (g_sig_save/slot_of/park_frame) are stubbed in
-# tests/suites/test_signal.c, which drives it.
-file(GLOB_RECURSE LXP_TEST_MODULE_SRC CONFIGURE_DEPENDS "${LXP_ROOT}/src/*.c")
-list(REMOVE_ITEM LXP_TEST_MODULE_SRC
-  "${LXP_ROOT}/src/lxp_run.c")
-list(FILTER LXP_TEST_MODULE_SRC EXCLUDE REGEX "/src/run/.*\\.c$")
+# Use the canonical non-coordinator group so host coverage cannot drift from the
+# firmware inventory. The coordinator hooks used by lxp_signal.c come from the
+# test fixtures; coordinator policy has its own target below.
+set(LXP_TEST_MODULE_SRC ${LXP_NON_COORDINATOR_SOURCES})
 
 add_executable(lxp_test_stub
   ${LXP_TEST_MODULE_SRC}
@@ -106,11 +100,9 @@ add_test(NAME lxp_unit_header_contract
 # binary tests its process-bookkeeping state machine on the host. The real
 # coordinator is linked as a production translation unit; a test-only fixture
 # bridge exposes the white-box state required by the protocol suite.
-file(GLOB LXP_COORD_POLICY_SRC CONFIGURE_DEPENDS "${LXP_ROOT}/src/run/*.c")
 add_executable(lxp_coord_test
   ${LXP_TEST_MODULE_SRC}
-  ${LXP_COORD_POLICY_SRC}
-  "${LXP_ROOT}/src/lxp_run.c"
+  ${LXP_COORDINATOR_SOURCES}
   "${LXP_ROOT}/ports/posix/lxp_port_posix.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_run_coord.c"
 )
