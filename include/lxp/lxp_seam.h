@@ -196,11 +196,6 @@ static inline int lxp_memory_policy_address_space_matches_key(
 	       policy->copied_text_executable == key->copied_text_executable;
 }
 
-/* Where a parked program waits in shared .text until the coordinator blocks it.
- * A token-based engine may override the weak fallback to complete its resume;
- * native saved-frame engines resume directly without consuming the token. */
-void lxp_park_loop(void *token);
-
 /** Fault metadata published by an engine containment path. */
 typedef struct lxp_guest_fault {
 	uint32_t detail;

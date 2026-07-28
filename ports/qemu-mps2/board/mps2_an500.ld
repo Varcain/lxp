@@ -89,8 +89,8 @@ SECTIONS
 
     /* ARM_CM4_MPU static-region bounds, referenced by prvSetupMPU(). The
      * unprivileged-flash region spans the WHOLE flash RX, so an unprivileged guest
-     * executes its FDPIC text in-place from the flash cpio (M1/M2) and prog_tramp /
-     * lxp_park_loop. The privileged sub-regions are DEGENERATE (start==end at the
+     * executes its FDPIC text in-place from the flash cpio (M1/M2), prog_tramp,
+     * and the engine's park entry. The privileged sub-regions are DEGENERATE (start==end at the
      * segment end → a harmless empty region): isolation comes from the MPU background
      * region + the per-task regions, not from privilege-gating the kernel code here. */
     __FLASH_segment_start__        = ORIGIN(FLASH);

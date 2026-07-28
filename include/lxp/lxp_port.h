@@ -99,7 +99,7 @@ typedef enum lxp_cpu_memory_model {
 	LXP_CPU_MEM_COHERENT_SAME_ATTRS = 2,
 } lxp_cpu_memory_model_t;
 
-#define LXP_OS_OPS_ABI_VERSION 7u
+#define LXP_OS_OPS_ABI_VERSION 8u
 #define LXP_NET_OPS_ABI_VERSION 2u
 #define LXP_DISPLAY_OPS_ABI_VERSION 1u
 
@@ -232,16 +232,19 @@ typedef struct lxp_os_ops {
 	 * remain valid for the run; lxp truncates it to Linux's 64-byte field. */
 	const char *(*system_version)(void);
 
-	/* Persistent parked-task handoff. park_prepare runs in the guest's svc
-	 * exception and may return an opaque, guest-readable token which LXP passes
-	 * to lxp_park_loop in r0 (NULL is valid for a native saved-frame restore).
-	 * park_slot then blocks the existing RTOS task from coordinator context; a
-	 * later spawn_resume(..., LXP_SPAWN_RESUME_PARKED, ...) restores and resumes
-	 * that same task. A captured fork child instead uses
+	/* Persistent parked-task handoff. park_entry is the engine-owned,
+	 * guest-executable target installed in the parked exception frame.
+	 * park_prepare runs in the guest's svc exception and may return an opaque,
+	 * guest-readable token which LXP passes to park_entry in r0 (NULL is valid
+	 * for a native saved-frame restore). park_slot then blocks the existing RTOS
+	 * task from coordinator context; a later
+	 * spawn_resume(..., LXP_SPAWN_RESUME_PARKED, ...) restores and resumes that
+	 * same task. A captured fork child instead uses
 	 * LXP_SPAWN_RESUME_START. Both callbacks are required: deleting and
 	 * recreating a task on every blocking syscall is not a supported lifecycle.
 	 * Kept at the end for source-level compatibility with older designated
 	 * initializers. */
+	void (*park_entry)(void *token);
 	void *(*park_prepare)(int sidx, uint32_t generation,
 			      const struct lxp_resume_ctx *c);
 	int (*park_slot)(int sidx, uint32_t generation);

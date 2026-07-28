@@ -278,6 +278,10 @@ static void mock_crit_exit(lxp_critical_token_t token)
 	g_mock.critical_exit_calls++;
 	g_mock.critical_exit_token = token;
 }
+static void mock_park_entry(void *token)
+{
+	(void)token;
+}
 static int mock_time(uint64_t *out)
 {
 	*out = 1;
@@ -343,6 +347,7 @@ static const lxp_os_ops_t g_mock_eng = {
 	.spawn_launch = mock_spawn_launch,
 	.spawn_resume = mock_spawn_resume,
 	.abort_slot = mock_abort_slot,
+	.park_entry = mock_park_entry,
 	.park_prepare = mock_park_prepare,
 	.park_slot = mock_park_slot,
 	.crit_enter = mock_crit_enter,
@@ -1467,6 +1472,9 @@ static void test_port_abi_and_required_ops_are_validated(void **state)
 	assert_false(os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.random_fill = NULL;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	ops.park_entry = NULL;
 	assert_false(os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.cpu_memory_model = (lxp_cpu_memory_model_t)99;

@@ -224,6 +224,7 @@ __attribute__((naked)) void SVC_Handler(void)
 
 /* ---- program-fault containment -------------------------------------------- */
 static void engine_event_post(void);
+static void qemu_park_entry(void *token);
 extern void HardFault_Handler(void);
 
 void lxp_qemu_fault_c(uint32_t *frame /* the faulting program's PSP HW frame */)
@@ -235,7 +236,7 @@ void lxp_qemu_fault_c(uint32_t *frame /* the faulting program's PSP HW frame */)
 		};
 		(void)lxp_slot_report_memory_fault(task_slot_ref(sidx), &fault);
 		frame[0] = 0;                                   /* fault park has no resume token */
-		frame[6] = ((uint32_t)&lxp_park_loop) & ~1u;    /* stacked PC → park loop */
+		frame[6] = ((uint32_t)&qemu_park_entry) & ~1u;  /* stacked PC → park entry */
 		frame[7] |= (1u << 24);                         /* xPSR.T */
 		*(volatile uint32_t *)0xE000ED28u = *(volatile uint32_t *)0xE000ED28u; /* clear CFSR */
 		return;
@@ -347,7 +348,7 @@ static void *qemu_park_prepare(int sidx, uint32_t generation,
 	return d;
 }
 
-void lxp_park_loop(void *token)
+static void qemu_park_entry(void *token)
 {
 	struct resume_desc *d = token;
 	if (!d)
@@ -570,6 +571,7 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.spawn_launch = qemu_spawn_launch,
 	.spawn_resume = qemu_spawn_resume,
 	.abort_slot = qemu_abort_slot,
+	.park_entry = qemu_park_entry,
 	.park_prepare = qemu_park_prepare,
 	.park_slot = qemu_park_slot,
 	.crit_enter = qemu_crit_enter,

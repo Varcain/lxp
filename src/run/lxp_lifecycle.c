@@ -99,7 +99,7 @@ static int lxp_lifecycle_apply(const lxp_os_ops_t *eng, const struct lxp_lifecyc
 		}
 		lxp_slot_set_host_state(sidx, SLOT_RUNNING);
 		slot_runnable_store(sidx, 1);
-		/* The guest is already redirected to lxp_park_loop. A failed suspend
+		/* The guest is already redirected to the engine's park entry. A failed suspend
 		 * cannot be rolled back into useful execution; synchronously terminate
 		 * it and let the ordinary exit path release ownership. */
 		(void)lxp_lifecycle_apply(eng, &(struct lxp_lifecycle_request){

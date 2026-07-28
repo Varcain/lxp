@@ -575,7 +575,7 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 	capture_ctx(slot, f);
 	void *token = lxp_lifecycle_prepare_park(g_eng, slot, &g_lxp_slots[slot].resume);
 	f->r[0] = (uint32_t)(uintptr_t)token;
-	f->r[15] = (uint32_t)((uintptr_t)&lxp_park_loop & ~(uintptr_t)1u);
+	f->r[15] = (uint32_t)((uintptr_t)g_eng->park_entry & ~(uintptr_t)1u);
 	f->xpsr |= (1u << 24);
 	lxp_event_post_slot(g_eng, slot);
 }
@@ -1065,13 +1065,6 @@ void lxp_run_health(lxp_run_health_t *out)
 		return;
 	out->coord_iters = g_coord_iters;
 	out->active = lxp_trap_active();
-}
-
-__attribute__((weak)) void lxp_park_loop(void *token)
-{
-	(void)token;
-	for (;;) {
-	}
 }
 
 /* Another live thread shares this proc's address space (a co-running CLONE_VM thread or its
@@ -2572,7 +2565,8 @@ static int os_ops_valid(const lxp_os_ops_t *ops)
 {
 	if (!ops || ops->abi_version != LXP_OS_OPS_ABI_VERSION ||
 	    ops->struct_size != sizeof(*ops) || !ops->region || !ops->spawn_launch ||
-	    !ops->spawn_resume || !ops->abort_slot || !ops->park_prepare || !ops->park_slot ||
+	    !ops->spawn_resume || !ops->abort_slot || !ops->park_entry || !ops->park_prepare ||
+	    !ops->park_slot ||
 	    !ops->crit_enter || !ops->crit_exit || !ops->event_post || !ops->event_wait ||
 	    !ops->time_us || !ops->time_ns || !ops->exec_capture || !ops->random_fill ||
 	    !ops->validate_memory_model ||
