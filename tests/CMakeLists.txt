@@ -100,14 +100,14 @@ add_test(NAME lxp_unit_config_contract
 # The coordinator is deliberately absent from lxp_test_stub above: its 32-bit-target
 # pointer casts warn on a 64-bit host, and the OS-service symbols it defines would clash
 # with tests/stub_lnx_run.c. So it has only ever run end-to-end on QEMU. This dedicated
-# binary tests its process-bookkeeping state machine on the host: suites/test_run_coord.c
-# #includes lxp_run.c to reach its static core helpers and drives the separately
-# compiled coordinator policy modules with a mock engine (no guest threads).
-# Built WITHOUT -Werror because lxp_run.c intentionally warns on the host.
+# binary tests its process-bookkeeping state machine on the host. The real
+# coordinator is linked as a production translation unit; a test-only fixture
+# bridge exposes the white-box state required by the protocol suite.
 file(GLOB LXP_COORD_POLICY_SRC CONFIGURE_DEPENDS "${LXP_ROOT}/src/run/*.c")
 add_executable(lxp_coord_test
   ${LXP_TEST_MODULE_SRC}
   ${LXP_COORD_POLICY_SRC}
+  "${LXP_ROOT}/src/lxp_run.c"
   "${LXP_ROOT}/ports/posix/lxp_port_posix.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_run_coord.c"
 )
@@ -120,7 +120,7 @@ target_include_directories(lxp_coord_test PRIVATE
 # Full coordinator-facing feature set: the protocol suite crosses deferred
 # lifecycle work with socket/netfs waits and verifies that the same state
 # machine remains valid when optional subsystems are compiled in.
-target_compile_options(lxp_coord_test PRIVATE -Wall -Wextra)
+target_compile_options(lxp_coord_test PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(lxp_coord_test PRIVATE
   LXP_RESOURCE_POOL_COUNT=64
   LXP_ENABLE_DEV=1
@@ -130,6 +130,7 @@ target_compile_definitions(lxp_coord_test PRIVATE
   LXP_ENABLE_PTY=1
   LXP_ENABLE_FPU_CONTEXT=1
   LXP_TEST_FAILPOINTS=1
+  LXP_TEST_INTERNALS=1
 )
 target_link_libraries(lxp_coord_test PRIVATE cmocka-static pthread rt m)
 if(LXP_SANITIZE)

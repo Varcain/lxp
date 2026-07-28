@@ -48,29 +48,10 @@
 #include "lxp_provider.h"
 #include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
 #include "run/lxp_coordinator.h"
-
-struct deferred_req {
-	uint32_t a0;
-	lxp_slot_ref_t owner;
-	uint8_t state;
-	uint8_t _pad[3];
-#if LXP_ENABLE_LATENCY
-	uint64_t pub_ns;
+#include "run/lxp_runtime_store.h"
+#if defined(LXP_TEST_INTERNALS)
+#include "run/lxp_runtime_test.h"
 #endif
-};
-
-/* One core-owned record is the authority for a slot incarnation. Intent and
- * wait are part of proc; lifecycle, runnable publication, resume state and the
- * deferred mailbox cannot drift in parallel arrays. */
-struct lxp_slot_runtime {
-	lxp_proc_t proc;
-	struct lxp_resume_ctx resume;
-	struct deferred_req deferred;
-	uint32_t generation;
-	uint8_t host_state;
-	uint8_t runnable;
-	uint8_t _pad[2];
-};
 
 static struct lxp_slot_runtime g_lxp_slots[LXP_NSLOT];
 
@@ -224,18 +205,7 @@ static lxp_arena_t g_arenas[LXP_NREG];
  * snapshot/exec leases. A committed region belongs to the lxp_mm_t carrying
  * its generation-bearing reference; lease_owner is populated only until a
  * prepared image/snapshot is either committed or aborted. */
-struct lxp_region_runtime {
-	lxp_slot_ref_t lease_owner;
-	uint16_t refs;
-	uint16_t _pad;
-	uint32_t generation;
-};
 static struct lxp_region_runtime g_regions[LXP_NREG];
-struct vfork_snapshot_guard {
-	lxp_slot_ref_t parent;
-	lxp_region_ref_t parent_region;
-	lxp_region_ref_t snapshot;
-};
 static struct vfork_snapshot_guard g_vfork_guard[LXP_NSLOT];
 /* vfork data isolation: a snapshot of the shared arena's allocator metadata, taken when a vfork
  * child is spawned (keyed by the child's slot) and restored when it execs/exits — the region+dyn_pool
@@ -3078,3 +3048,95 @@ out:
 	lxp_providers_clear();
 	return rc;
 }
+
+#if defined(LXP_TEST_INTERNALS)
+struct lxp_runtime_test_fixture *lxp_runtime_test_fixture(void)
+{
+	static struct lxp_runtime_test_fixture fixture = {
+		.slots = g_lxp_slots,
+		.regions = g_regions,
+		.vfork_guards = g_vfork_guard,
+		.config = &g_cfg,
+		.engine = &g_eng,
+		.rootfs_lo = &g_lxp_rootfs_lo,
+		.rootfs_hi = &g_lxp_rootfs_hi,
+		.diag_native_known = &g_diag_native_known,
+		.diag_native_present = g_diag_native_present,
+		.diag_lifecycle_epoch = &g_diag_lifecycle_epoch,
+		.diag_native_epoch = &g_diag_native_epoch,
+		.pending_signal = &g_pending_sig,
+		.tty_isig = &g_tty_isig,
+		.tty_icrnl = &g_tty_icrnl,
+#if defined(LXP_TEST_FAILPOINTS)
+		.lifecycle_failpoint = &g_lifecycle_failpoint,
+#endif
+	};
+
+	return &fixture;
+}
+
+lxp_region_ref_t lxp_test_region_ref_at(int region)
+{
+	return region_ref_at(region);
+}
+
+int lxp_test_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t owner)
+{
+	return region_commit_address_space(ref, owner);
+}
+
+unsigned lxp_test_coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events)
+{
+	return coordinator_wait_timeout(wait_policy, socket_ready_events);
+}
+
+void lxp_test_coordinator_teardown_all(const lxp_os_ops_t *eng)
+{
+	coordinator_teardown_all(eng);
+}
+
+int lxp_test_futex_has_corunner(const lxp_proc_t *proc)
+{
+	return futex_has_corunner(proc);
+}
+
+void lxp_test_diag_reset_health(void)
+{
+	lxp_diag_reset_health();
+}
+
+void lxp_test_diag_checkpoint(void)
+{
+	lxp_diag_checkpoint();
+}
+
+void lxp_test_trap_publish(int active)
+{
+	lxp_trap_publish(active);
+}
+
+void lxp_test_deferred_state_store(int slot, uint8_t state)
+{
+	deferred_state_store(slot, state);
+}
+
+int lxp_test_os_ops_valid(const lxp_os_ops_t *ops)
+{
+	return os_ops_valid(ops);
+}
+
+int lxp_test_run_config_valid(const lxp_run_config_t *cfg)
+{
+	return run_config_valid(cfg);
+}
+
+void lxp_test_futex(struct lxp_frame *frame, lxp_proc_t *proc, int is_time64)
+{
+	lxp_futex(frame, proc, is_time64);
+}
+
+void lxp_test_dispatch(struct lxp_frame *frame, lxp_proc_t *proc)
+{
+	lxp_dispatch(frame, proc);
+}
+#endif

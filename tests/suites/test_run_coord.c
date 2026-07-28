@@ -8,9 +8,10 @@
  * from the main test binary because its 32-bit-target pointer casts warn on a
  * 64-bit host and its OS-service symbols clash with tests/stub_lnx_run.c.
  *
- * This dedicated binary includes only the state-owning core TU to reach its
- * private records. Coordinator policy modules are linked as their production
- * translation units and driven against a mock engine with no guest threads.
+ * This dedicated binary links the coordinator exactly like production and
+ * reaches its records only through a test-only fixture bridge. Coordinator
+ * policy modules are also linked as their production translation units and
+ * driven against a mock engine with no guest threads.
  */
 #include <setjmp.h> /* cmocka ordering */
 #include <stdarg.h>
@@ -20,9 +21,41 @@
 
 #include <cmocka.h>
 
-/* Pull in the state-owning coordinator core and its OS-service symbols. */
-#include "lxp_run.c"
+#include "lxp/lxp_syscall.h"
 #include "lxp/lxp_port_posix.h"
+#include "lxp_internal.h"
+#include "lxp_provider.h"
+#include "run/lxp_runtime_test.h"
+
+#define TEST_RUNTIME (lxp_runtime_test_fixture())
+#define g_lxp_slots (TEST_RUNTIME->slots)
+#define g_regions (TEST_RUNTIME->regions)
+#define g_vfork_guard (TEST_RUNTIME->vfork_guards)
+#define g_cfg (*TEST_RUNTIME->config)
+#define g_eng (*TEST_RUNTIME->engine)
+#define g_lxp_rootfs_lo (*TEST_RUNTIME->rootfs_lo)
+#define g_lxp_rootfs_hi (*TEST_RUNTIME->rootfs_hi)
+#define g_diag_native_known (*TEST_RUNTIME->diag_native_known)
+#define g_diag_native_present (TEST_RUNTIME->diag_native_present)
+#define g_diag_lifecycle_epoch (*TEST_RUNTIME->diag_lifecycle_epoch)
+#define g_diag_native_epoch (*TEST_RUNTIME->diag_native_epoch)
+#define g_pending_sig (*TEST_RUNTIME->pending_signal)
+#define g_tty_isig (*TEST_RUNTIME->tty_isig)
+#define g_tty_icrnl (*TEST_RUNTIME->tty_icrnl)
+#define g_lifecycle_failpoint (*TEST_RUNTIME->lifecycle_failpoint)
+#define region_ref_at lxp_test_region_ref_at
+#define region_commit_address_space lxp_test_region_commit_address_space
+#define coordinator_wait_timeout lxp_test_coordinator_wait_timeout
+#define coordinator_teardown_all lxp_test_coordinator_teardown_all
+#define futex_has_corunner lxp_test_futex_has_corunner
+#define lxp_diag_reset_health lxp_test_diag_reset_health
+#define lxp_diag_checkpoint lxp_test_diag_checkpoint
+#define lxp_trap_publish lxp_test_trap_publish
+#define deferred_state_store lxp_test_deferred_state_store
+#define os_ops_valid lxp_test_os_ops_valid
+#define run_config_valid lxp_test_run_config_valid
+#define lxp_futex lxp_test_futex
+#define lxp_dispatch lxp_test_dispatch
 
 static const lxp_net_ops_t *g_test_net_ops;
 
@@ -317,17 +350,17 @@ static int reset_state(void **state)
 {
 	(void)state;
 	lxp_fd_runtime_reset();
-	memset(g_lxp_slots, 0, sizeof(g_lxp_slots));
+	memset(g_lxp_slots, 0, sizeof(*g_lxp_slots) * LXP_NSLOT);
 	memset(g_mock_arenas, 0, sizeof(g_mock_arenas));
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		assert_int_equal(lxp_proc_init(&g_lxp_slots[s].proc, &g_mock_arenas[s], 0), LXP_OK);
 		g_lxp_slots[s].proc.alive = 0;
 	}
 	lxp_primary_events_reset();
-	memset(g_regions, 0, sizeof(g_regions));
-	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
+	memset(g_regions, 0, sizeof(*g_regions) * LXP_NREG);
+	memset(g_vfork_guard, 0, sizeof(*g_vfork_guard) * LXP_NSLOT);
 	memset(g_sig_save, 0, sizeof(g_sig_save));
-	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
+	memset(g_diag_native_present, 0, LXP_NSLOT);
 	g_diag_native_known = 0;
 	g_diag_lifecycle_epoch = 0;
 	g_diag_native_epoch = 0;
@@ -1278,7 +1311,7 @@ static void test_world_diagnostic_size_report_matches_compiled_objects(void **st
 	assert_int_equal(sizes.signal_save_stack, sizeof(struct sig_save_stack_s));
 	assert_int_equal(sizes.vfork_guard, sizeof(struct vfork_snapshot_guard));
 	assert_int_equal(sizes.debug_record, sizeof(struct lxp_dbg_s));
-	assert_int_equal(sizes.slot_table, sizeof(g_lxp_slots));
+	assert_int_equal(sizes.slot_table, sizeof(*g_lxp_slots) * LXP_NSLOT);
 	assert_true(sizes.per_slot_core > sizes.proc);
 	assert_true(sizes.coordinator_static > sizes.slot_table);
 	static const char *const host_names[LXP_DIAG_HOST_COUNT] = {
