@@ -5,8 +5,9 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Internal interface between the engine-agnostic Linux-personality run loop +
- * svc dispatch (src/lxp_run.c) and a concrete host engine. NOT a public API.
+ * Port-only interface between the engine-agnostic Linux-personality run loop +
+ * svc dispatch (src/lxp_run.c) and a concrete host engine. This is an installed
+ * integration contract for out-of-tree ports, not an application-facing API.
  *
  * The shared core owns the NOMMU process model — the vfork/exec/wait run loop,
  * the syscall-dispatch body, and signal delivery — all written against a uniform
@@ -24,10 +25,8 @@
 #include <stdint.h>
 
 #include "lxp/lxp_config.h" /* LXP_PROG_REGION_SIZE / LXP_NREG / LXP_NSLOT / sizing knobs */
-#include "lxp/lxp_exec.h"
 #include "lxp/lxp_identity.h"
 #include "lxp/lxp_port.h" /* lxp_os_ops_t — the engine/OS port vtable the run loop drives */
-#include "lxp/lxp_run.h"
 
 /* Program-region / arena / dyn-pool sizes + LXP_NREG / LXP_NSLOT come from
  * lxp_config.h (host-overridable; the oveRTOS build maps them per engine). */

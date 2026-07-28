@@ -28,6 +28,7 @@
 
 #include "lxp/lxp_config.h"
 #include "lxp/lxp_port.h"
+#include "lxp/lxp_exec.h"
 #include "lxp/lxp_seam.h"
 
 /* Monotonic microsecond clock, maintained by the FreeRTOS tick hook (boot.c). */

@@ -28,6 +28,7 @@
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_seam.h"
 #include "lxp/lxp_latency.h"
+#include "lxp/lxp_run.h"
 #include "lxp/lxp_stats.h"
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h"      /* device-layer park/retry + autoreg + tick + kick */

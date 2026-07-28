@@ -8,6 +8,7 @@
 #include "run/lxp_coordinator.h"
 #include "lxp_internal.h"
 #include "lxp_run_internal.h"
+#include "lxp/lxp_run.h"
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h"
 #endif

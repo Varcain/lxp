@@ -19,7 +19,6 @@
  * drive @c lxp_syscall() directly.
  */
 
-#include "lxp/lxp_bootstrap.h"
 #include "lxp/lxp_linux_uapi.h"
 #include "lxp/lxp_proc.h"
 

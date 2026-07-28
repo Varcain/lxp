@@ -17,7 +17,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_run.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp/lxp_bootstrap.h"
 
 /* Which milestone this firmware runs (set by build.sh -DLXP_MILESTONE). M1/M2 embed a
  * small cpio in flash; M3 XIPs a big busybox cpio from PSRAM (QEMU `-device loader`). */
