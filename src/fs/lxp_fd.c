@@ -72,6 +72,7 @@ int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset,
 		g_ofd[oi].kind = kind;
 		g_ofd[oi].rw = 0;
 		g_ofd[oi].nonblock = 0;
+		g_ofd[oi].accmode = LXP_O_RDONLY;
 		g_ofd[oi].file_idx = backing;
 		g_ofd[oi].offset = offset;
 		g_ofd[oi].ops = ops;
@@ -88,6 +89,7 @@ int lxp_fd_set_status(lxp_proc_t *proc, int fd, int direction, int nonblock)
 	if (!ofd)
 		return -LXP_EBADF;
 	ofd->rw = direction ? 1 : 0;
+	ofd->accmode = (uint8_t)(direction & LXP_O_ACCMODE);
 	ofd->nonblock = nonblock ? 1 : 0;
 	return 0;
 }

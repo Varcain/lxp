@@ -3065,6 +3065,24 @@ static void test_dispatch_class_defaults_deferred(void **state)
 	assert_memory_equal(&g_mock.resume_fp, &fp, sizeof(fp));
 }
 
+/* Storage sync may enter an SD/FAT provider and therefore must never execute
+ * in the constant-time SVC top half, even when the current fd is an inert one. */
+static void test_storage_sync_is_deferred(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	struct lxp_frame frame;
+	memset(&frame, 0, sizeof(frame));
+	frame.r[0] = 1; /* stdout: valid, with no persistent backing in this fixture */
+	frame.r[7] = LXP_NR_fsync;
+
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal(deferred_state_load(0), DEFER_READY);
+	assert_int_equal(g_mock.event_posts, 1);
+	execute_deferred(&g_mock_eng, 0);
+	assert_int_equal(g_mock.resume_r0, 0);
+}
+
 /* Distinct slots have distinct fixed mailboxes. Both may queue while neither
  * bottom half has completed; servicing one cannot overwrite or lose the other. */
 static void test_deferred_requests_are_per_slot(void **state)
@@ -4161,6 +4179,7 @@ int main(void)
 		cmocka_unit_test_setup(test_dispatch_rejects_bad_tcsets_pointer, reset_state),
 		cmocka_unit_test_setup(test_console_icrnl_translation, reset_state),
 		cmocka_unit_test_setup(test_dispatch_class_defaults_deferred, reset_state),
+		cmocka_unit_test_setup(test_storage_sync_is_deferred, reset_state),
 		cmocka_unit_test_setup(test_deferred_requests_are_per_slot, reset_state),
 		cmocka_unit_test_setup(test_deferred_generation_rejects_stale_work, reset_state),
 		cmocka_unit_test_setup(test_deferred_same_slot_rejects_overwrite, reset_state),

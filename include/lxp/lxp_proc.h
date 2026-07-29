@@ -185,6 +185,8 @@ extern "C" {
 #define LXP_ENOMEM 12
 #define LXP_EACCES 13
 #define LXP_EFAULT 14
+#define LXP_EBUSY 16
+#define LXP_EXDEV 18
 #define LXP_ENODEV 19
 #define LXP_ENOTDIR 20
 #define LXP_EISDIR 21
@@ -279,7 +281,7 @@ typedef struct lxp_ofd {
 	uint8_t nonblock; /**< O_NONBLOCK: a pipe read/write returns -EAGAIN instead of parking
 			   *   (dropbear's SIGCHLD self-pipe is drained with a non-blocking read
 			   *   loop; without this the final empty read parks forever). */
-	uint8_t _pad;
+	uint8_t accmode; /**< O_RDONLY/O_WRONLY/O_RDWR for regular provider-backed files. */
 	int file_idx;  /**< rootfs index (file) / pipe index (pipe) / open-pool index (device). */
 	size_t offset; /**< Read cursor (kind == file). */
 	const struct lxp_file_ops *ops; /**< read/write dispatch vtable for this fd's kind,

@@ -729,7 +729,10 @@ static long fop_lseek_netfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 static long fop_lseek_hostfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 {
 	(void)p;
-	return lxp_hostfs_seek(s->file_idx, off, whence);
+	long position = lxp_hostfs_seek(s->file_idx, off, whence);
+	if (position >= 0)
+		s->offset = (size_t)position;
+	return position;
 }
 #endif
 
@@ -1115,6 +1118,10 @@ static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, buf, len, 0)) /* the kernel READS buf → reject a bad source pointer */
 		return -LXP_EFAULT;
+#if LXP_ENABLE_FS
+	if (s->kind == LXP_FD_HOSTFS && s->accmode == LXP_O_RDONLY)
+		return -LXP_EBADF;
+#endif
 	/* A guest may write this buffer through a cacheable MPU view while the privileged host reads
 	 * the same SDRAM through an uncached background view.  Publish dirty guest lines before any
 	 * console/filesystem/device backend dereferences the payload.  Socket sends use the same hook
@@ -1179,6 +1186,10 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, buf, len, 1)) /* the kernel WRITES buf → reject a bad destination pointer */
 		return -LXP_EFAULT;
+#if LXP_ENABLE_FS
+	if (s->kind == LXP_FD_HOSTFS && s->accmode == LXP_O_WRONLY)
+		return -LXP_EBADF;
+#endif
 	if (s->ops && s->ops->read)
 		return s->ops->read(p, s, buf, len);
 	return -LXP_EBADF;
@@ -1201,6 +1212,13 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off
 #if LXP_ENABLE_DEV
 	if (s->kind == LXP_FD_DEV)
 		return lxp_dev_pread(p, s->file_idx, buf, len, off);
+#endif
+#if LXP_ENABLE_FS
+	if (s->kind == LXP_FD_HOSTFS) {
+		if (s->accmode == LXP_O_WRONLY)
+			return -LXP_EBADF;
+		return lxp_hostfs_pread(s->file_idx, buf, len, off);
+	}
 #endif
 	const uint8_t *data;
 	size_t size;
@@ -1250,6 +1268,15 @@ static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint3
 #if LXP_ENABLE_DEV
 	if (s->kind == LXP_FD_DEV)
 		return lxp_dev_pwrite(p, s->file_idx, buf, len, off);
+#endif
+#if LXP_ENABLE_FS
+	if (s->kind == LXP_FD_HOSTFS) {
+		if (s->accmode == LXP_O_RDONLY)
+			return -LXP_EBADF;
+		if (len)
+			lxp_cache_clean(buf, len);
+		return lxp_hostfs_pwrite(s->file_idx, buf, len, off);
+	}
 #endif
 	if (s->kind == LXP_FD_TMPFS) {
 		lxp_wnode_t *t = wnode_at(s->file_idx);
@@ -1521,7 +1548,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 		if (fd < 0)
 			lxp_hostfs_close((int)hi);
 		else {
-			(void)lxp_fd_set_status(p, fd, (flags & LXP_O_ACCMODE) != LXP_O_RDONLY,
+			(void)lxp_fd_set_status(p, fd, flags & LXP_O_ACCMODE,
 					       (flags & LXP_O_NONBLOCK) != 0);
 			(void)lxp_fd_set_cloexec(p, fd, (flags & LXP_O_CLOEXEC) != 0);
 		}
@@ -1729,6 +1756,13 @@ static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
 		return -LXP_EBADF;
+#if LXP_ENABLE_FS
+	if (s->kind == LXP_FD_HOSTFS) {
+		if (s->accmode == LXP_O_RDONLY)
+			return -LXP_EINVAL;
+		return lxp_hostfs_truncate(s->file_idx, length);
+	}
+#endif
 	if (s->kind != LXP_FD_TMPFS)
 		return -LXP_EINVAL; /* the rootfs is read-only; console/pipe N/A */
 	lxp_wnode_t *t = wnode_at(s->file_idx);
@@ -1741,6 +1775,20 @@ static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 		memset(t->data + t->size, 0, newlen - t->size);
 	}
 	t->size = newlen;
+	return 0;
+}
+
+static long sys_sync_fd(lxp_proc_t *p, int fd)
+{
+	lxp_ofd_t *s = fd_slot(p, fd);
+	if (!s)
+		return -LXP_EBADF;
+#if LXP_ENABLE_FS
+	if (s->kind == LXP_FD_HOSTFS)
+		return lxp_hostfs_sync(s->file_idx);
+#endif
+	/* tmpfs/rootfs have no backing write queue. Other open descriptors retain
+	 * the historical benign behavior expected by small libc utilities. */
 	return 0;
 }
 
@@ -1867,6 +1915,10 @@ static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufs
 			return -LXP_EFAULT;
 		return (long)n;
 	}
+#if LXP_ENABLE_FS
+	if (lxp_hostfs_match(abspath))
+		return -LXP_EINVAL; /* The FAT-backed provider cannot contain symlinks. */
+#endif
 	int wi = wfs_find(abspath); /* a writable symlink (ln -s) shadows the rootfs */
 	if (wi >= 0) {
 		lxp_wnode_t *w = wnode_at(wi);
@@ -1921,6 +1973,10 @@ static long sys_mkdir(lxp_proc_t *p, const char *path, uint32_t mode)
 	long rr = resolve_path(p, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
+#if LXP_ENABLE_FS
+	if (lxp_hostfs_match(abspath))
+		return lxp_hostfs_mkdir(abspath);
+#endif
 	if (wfs_find(abspath) >= 0 || fs_lookup(p, abspath) >= 0)
 		return -LXP_EEXIST;
 	if (wfs_create(abspath, LXP_S_IFDIR | (mode & 0777u)) < 0)
@@ -1937,6 +1993,10 @@ static long sys_unlink(lxp_proc_t *p, const char *path, int is_rmdir)
 	long rr = resolve_path(p, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
+#if LXP_ENABLE_FS
+	if (lxp_hostfs_match(abspath))
+		return is_rmdir ? lxp_hostfs_rmdir(abspath) : lxp_hostfs_unlink(abspath);
+#endif
 	int wi = wfs_find(abspath);
 	if (wi < 0)
 		return (fs_lookup(p, abspath) >= 0) ? -LXP_EROFS : -LXP_ENOENT;
@@ -1954,7 +2014,7 @@ static long sys_unlink(lxp_proc_t *p, const char *path, int is_rmdir)
 	return 0;
 }
 
-static long sys_rename(lxp_proc_t *p, const char *oldp, const char *newp)
+static long sys_rename(lxp_proc_t *p, const char *oldp, const char *newp, unsigned flags)
 {
 	if (!oldp || !newp)
 		return -LXP_EFAULT;
@@ -1965,6 +2025,16 @@ static long sys_rename(lxp_proc_t *p, const char *oldp, const char *newp)
 	long r2 = resolve_path(p, newp, newabs, sizeof(newabs));
 	if (r2 < 0)
 		return r2;
+	if (flags != 0)
+		return -LXP_EINVAL;
+#if LXP_ENABLE_FS
+	int old_host = lxp_hostfs_match(oldabs);
+	int new_host = lxp_hostfs_match(newabs);
+	if (old_host != new_host)
+		return -LXP_EXDEV;
+	if (old_host)
+		return lxp_hostfs_rename(oldabs, newabs);
+#endif
 	int wi = wfs_find(oldabs);
 	if (wi < 0)
 		return (fs_lookup(p, oldabs) >= 0) ? -LXP_EROFS : -LXP_ENOENT;
@@ -1987,6 +2057,10 @@ static long sys_symlink(lxp_proc_t *p, const char *target, const char *linkp)
 	long rr = resolve_path(p, linkp, linkabs, sizeof(linkabs));
 	if (rr < 0)
 		return rr;
+#if LXP_ENABLE_FS
+	if (lxp_hostfs_match(linkabs))
+		return -LXP_EOPNOTSUPP; /* FAT provider contract has no symlink primitive. */
+#endif
 	if (wfs_find(linkabs) >= 0 || fs_lookup(p, linkabs) >= 0)
 		return -LXP_EEXIST;
 	int wi = wfs_create(linkabs, LXP_S_IFLNK | 0777u);
@@ -2025,6 +2099,14 @@ static long sys_link(lxp_proc_t *p, const char *oldp, const char *newp)
 	long r2 = resolve_path(p, newp, newabs, sizeof(newabs));
 	if (r2 < 0)
 		return r2;
+#if LXP_ENABLE_FS
+	int old_host = lxp_hostfs_match(oldabs);
+	int new_host = lxp_hostfs_match(newabs);
+	if (old_host != new_host)
+		return -LXP_EXDEV;
+	if (old_host)
+		return -LXP_EOPNOTSUPP; /* Host provider intentionally exposes no hard links. */
+#endif
 	if (strlen(newabs) >= LXP_PATH_MAX)
 		return -LXP_ENAMETOOLONG;
 	if (wfs_find(newabs) >= 0 || fs_lookup(p, newabs) >= 0)
@@ -2073,6 +2155,12 @@ static long sys_chmod(lxp_proc_t *p, const char *path, uint32_t mode)
 	long rr = resolve_path(p, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
+#if LXP_ENABLE_FS
+	if (lxp_hostfs_match(abspath)) {
+		lxp_fs_stat_t stat;
+		return lxp_hostfs_path_stat(abspath, &stat); /* FAT mode bits are inert. */
+	}
+#endif
 	int wi = wfs_find(abspath);
 	if (wi >= 0) {
 		wnode_at(wi)->mode = (wnode_at(wi)->mode & LXP_S_IFMT) | (mode & 0777u);
@@ -2091,6 +2179,12 @@ static long sys_utimensat(lxp_proc_t *p, const char *path)
 	long rr = resolve_path(p, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
+#if LXP_ENABLE_FS
+	if (lxp_hostfs_match(abspath)) {
+		lxp_fs_stat_t stat;
+		return lxp_hostfs_path_stat(abspath, &stat); /* Provider does not expose timestamps. */
+	}
+#endif
 	if ((abspath[0] == '/' && abspath[1] == '\0') || wfs_find(abspath) >= 0 ||
 	    fs_lookup(p, abspath) >= 0)
 		return 0;
@@ -2872,6 +2966,16 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 			return (s->rw ? LXP_O_WRONLY : LXP_O_RDONLY) |
 			       (s->nonblock ? LXP_O_NONBLOCK : 0);
 	}
+#if LXP_ENABLE_FS
+	if (s->kind == LXP_FD_HOSTFS) {
+		if ((int)a1 == LXP_F_SETFL) {
+			s->nonblock = ((int)a2 & LXP_O_NONBLOCK) ? 1 : 0;
+			return 0;
+		}
+		if ((int)a1 == LXP_F_GETFL)
+			return s->accmode | (s->nonblock ? LXP_O_NONBLOCK : 0);
+	}
+#endif
 	/* F_SETFD/F_GETFD track close-on-exec (dropbear sets FD_CLOEXEC on its exec-status
 		 * pipe and detects a successful shell exec by that fd closing on execve). */
 	if ((int)a1 == LXP_F_SETFD) {
@@ -3165,6 +3269,14 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		/* 64-bit length is register-pair aligned on ARM: fd=a0, len=(a2,a3). */
 		return sys_ftruncate(proc, (int)a0,
 				     (uint64_t)(uint32_t)a2 | ((uint64_t)(uint32_t)a3 << 32));
+	case LXP_NR_fsync:
+	case LXP_NR_fdatasync:
+		return sys_sync_fd(proc, (int)a0);
+	case LXP_NR_sync:
+#if LXP_ENABLE_FS
+		(void)lxp_hostfs_sync_all();
+#endif
+		return 0;
 	case LXP_NR_fstat64:
 		return sys_fstat64(proc, (int)a0, (void *)(uintptr_t)a1);
 	case LXP_NR_stat64: /* (path, statbuf) — follows symlinks */
@@ -3194,13 +3306,19 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_unlink: /* (path) */
 		return sys_unlink(proc, (const char *)(uintptr_t)a0, 0);
 	case LXP_NR_unlinkat: /* (dirfd, path, flags) */
+		if (((int)a2 & ~LXP_AT_REMOVEDIR) != 0)
+			return -LXP_EINVAL;
 		return sys_unlink(proc, (const char *)(uintptr_t)a1,
 				  ((int)a2 & LXP_AT_REMOVEDIR) ? 1 : 0);
 	case LXP_NR_rename: /* (oldpath, newpath) */
-		return sys_rename(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a1);
-	case LXP_NR_renameat:  /* (olddirfd, old, newdirfd, new) */
+		return sys_rename(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a1,
+				  0);
+	case LXP_NR_renameat: /* (olddirfd, old, newdirfd, new) */
+		return sys_rename(proc, (const char *)(uintptr_t)a1, (const char *)(uintptr_t)a3,
+				  0);
 	case LXP_NR_renameat2: /* (olddirfd, old, newdirfd, new, flags) */
-		return sys_rename(proc, (const char *)(uintptr_t)a1, (const char *)(uintptr_t)a3);
+		return sys_rename(proc, (const char *)(uintptr_t)a1, (const char *)(uintptr_t)a3,
+				  (unsigned)a4);
 	case LXP_NR_symlink: /* (target, linkpath) */
 		return sys_symlink(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a1);
 	case LXP_NR_symlinkat: /* (target, newdirfd, linkpath) */
@@ -3360,9 +3478,6 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	}
 	case LXP_NR_prctl:
 	case LXP_NR_sched_yield: /* accepted hint; host preemption/admission owns fairness */
-	case LXP_NR_sync:	 /* no backing store to flush */
-	case LXP_NR_fsync:	 /* dropbearkey fsyncs the host key; the writable overlay is RAM */
-	case LXP_NR_fdatasync:
 	case LXP_NR_fchmod: /* modes/ownership not tracked (login chmods the tty) */
 	case LXP_NR_fchown32:
 	case LXP_NR_chown32: /* dropbear chowns the pty over SSH; ownership not enforced (inert) */

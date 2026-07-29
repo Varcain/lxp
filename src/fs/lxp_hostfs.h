@@ -30,7 +30,12 @@ int lxp_hostfs_is_dir(int index);
 long lxp_hostfs_read(int index, void *buf, size_t len);
 long lxp_hostfs_write(int index, const void *buf, size_t len);
 long lxp_hostfs_seek(int index, int64_t offset, int whence);
+long lxp_hostfs_pread(int index, void *buf, size_t len, uint64_t offset);
+long lxp_hostfs_pwrite(int index, const void *buf, size_t len, uint64_t offset);
 long lxp_hostfs_stat(int index, lxp_fs_stat_t *out);
+long lxp_hostfs_truncate(int index, uint64_t length);
+long lxp_hostfs_sync(int index);
+long lxp_hostfs_sync_all(void);
 void lxp_hostfs_close(int index);
 
 /**
@@ -42,6 +47,10 @@ void lxp_hostfs_dir_consume(int index);
 
 /** Stat a guest-visible /data path. */
 long lxp_hostfs_path_stat(const char *abspath, lxp_fs_stat_t *out);
+long lxp_hostfs_mkdir(const char *abspath);
+long lxp_hostfs_rmdir(const char *abspath);
+long lxp_hostfs_unlink(const char *abspath);
+long lxp_hostfs_rename(const char *old_abspath, const char *new_abspath);
 /** Convert an LXP_ERR_* provider result to a negated Linux errno. */
 long lxp_hostfs_error(int result);
 /** Release any handles left by an interrupted/test run. */

@@ -1222,9 +1222,6 @@ static int syscall_is_fast(long nr)
 	case LXP_NR_setpgid:
 	case LXP_NR_getpgrp:
 	case LXP_NR_setsid:
-	case LXP_NR_sync:
-	case LXP_NR_fsync:
-	case LXP_NR_fdatasync:
 	case LXP_NR_fchmod:
 	case LXP_NR_fchown32:
 	case LXP_NR_setgroups32:
