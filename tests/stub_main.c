@@ -44,7 +44,7 @@ int main(void)
 		fprintf(stderr, "failed to acquire POSIX network provider\n");
 		return 1;
 	}
-	lxp_providers_publish(net_ops, display_ops);
+	lxp_providers_publish(net_ops, display_ops, NULL);
 #define LXP_SUITE(name, label)                                                                     \
 	printf("=== " label " ===\n");                                                             \
 	runtime_reset();                                                                            \

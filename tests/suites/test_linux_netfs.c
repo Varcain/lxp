@@ -509,7 +509,7 @@ static void test_netfs_init_never_waits_for_server(void **state)
 	const lxp_net_ops_t *real_ops = g_lxp_net_ops;
 	lxp_net_ops_t probe_ops = *real_ops;
 	probe_ops.sock_connect = init_nonblocking_connect;
-	lxp_providers_publish(&probe_ops, g_lxp_disp_ops);
+	lxp_providers_publish(&probe_ops, g_lxp_disp_ops, NULL);
 	g_init_connect_timeout_ns = UINT64_MAX;
 
 	uint8_t ip[4] = {192, 0, 2, 1};
@@ -518,7 +518,7 @@ static void test_netfs_init_never_waits_for_server(void **state)
 
 	uint64_t observed_timeout_ns = g_init_connect_timeout_ns;
 	lxp_netfs_shutdown();
-	lxp_providers_publish(real_ops, g_lxp_disp_ops);
+	lxp_providers_publish(real_ops, g_lxp_disp_ops, NULL);
 	assert_int_equal(observed_timeout_ns, 0);
 }
 

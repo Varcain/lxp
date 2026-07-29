@@ -85,11 +85,12 @@ Guest-facing structs use fixed-width types, so the 32-bit-target ABI is byte-ide
 ## Using it
 
 A host implements the port interface in `include/lxp/lxp_port.h` — OS ops (program-memory
-placement, task spawn, run-loop event wait/post, monotonic time, trustworthy entropy) plus optional net and
-display ops — and calls:
+placement, task spawn, run-loop event wait/post, monotonic time, trustworthy entropy) plus
+optional network, display, and writable-filesystem providers — and calls:
 
 ```c
-int rc = lxp_run(&os_ops, &net_ops, &display_ops, &cfg, &run_cfg, "/sbin/init", argc, argv);
+int rc = lxp_run(&os_ops, &net_ops, &display_ops, &fs_ops, &run_cfg,
+		 "/sbin/init", argc, argv);
 ```
 
 Feature gates and sizing knobs live in `include/lxp/lxp_config.h`, set on the command line or

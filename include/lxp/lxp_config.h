@@ -54,6 +54,9 @@
 #ifndef LXP_ENABLE_PTY
 #define LXP_ENABLE_PTY 0
 #endif
+#ifndef LXP_ENABLE_FS
+#define LXP_ENABLE_FS 0
+#endif
 #ifndef LXP_ENABLE_DEV
 #define LXP_ENABLE_DEV 0
 #endif

@@ -2674,6 +2674,22 @@ static int display_ops_valid(const lxp_display_ops_t *ops)
 	return 1;
 }
 
+static int fs_ops_valid(const lxp_fs_ops_t *ops)
+{
+#if LXP_ENABLE_FS
+	if (!ops || ops->abi_version != LXP_FS_OPS_ABI_VERSION ||
+	    ops->struct_size != sizeof(*ops) || !ops->run_begin || !ops->run_end ||
+	    !ops->file_open || !ops->file_close || !ops->file_read || !ops->file_write ||
+	    !ops->file_seek || !ops->file_stat || !ops->file_truncate || !ops->file_sync ||
+	    !ops->dir_open || !ops->dir_read || !ops->dir_close || !ops->path_stat ||
+	    !ops->path_mkdir || !ops->path_rmdir || !ops->path_unlink || !ops->path_rename)
+		return 0;
+#else
+	(void)ops;
+#endif
+	return 1;
+}
+
 static int run_config_valid(const lxp_run_config_t *cfg)
 {
 	if (!cfg || !cfg->rootfs || cfg->rootfs_count <= 0 || !cfg->rootfs_image ||
@@ -2700,12 +2716,14 @@ static int run_config_valid(const lxp_run_config_t *cfg)
 /* THE port entry (see lxp_run.h). Validate and publish this run's exact
  * providers, then bracket the coordinator with optional host setup/teardown. */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
-	    const lxp_display_ops_t *disp_ops, const lxp_run_config_t *run_config, const char *path,
-	    int argc, const char *const argv[])
+	    const lxp_display_ops_t *disp_ops, const lxp_fs_ops_t *fs_ops,
+	    const lxp_run_config_t *run_config, const char *path, int argc,
+	    const char *const argv[])
 {
 	int rc = LXP_RUN_ELAUNCH;
 	int prepare_entered = 0;
 	int net_entered = 0;
+	int fs_entered = 0;
 	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
 	lxp_diag_reset_health();
 	g_diag_native_known = 0;
@@ -2713,15 +2731,20 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	g_diag_lifecycle_epoch = 0;
 	g_diag_native_epoch = 0;
 	if (!os_ops_valid(os_ops) || !net_ops_valid(net_ops) || !display_ops_valid(disp_ops) ||
-	    !run_config_valid(run_config) || !path || argc < 1 || !argv)
+	    !fs_ops_valid(fs_ops) || !run_config_valid(run_config) || !path || argc < 1 || !argv)
 		return LXP_RUN_ELAUNCH;
 
 	/* Assign even NULL providers so a later sequential run cannot inherit one. */
-	lxp_providers_publish(net_ops, disp_ops);
+	lxp_providers_publish(net_ops, disp_ops, fs_ops);
 #if LXP_ENABLE_NET
 	if (net_ops->run_begin() != LXP_OK)
 		goto out;
 	net_entered = 1;
+#endif
+#if LXP_ENABLE_FS
+	if (fs_ops->run_begin() != LXP_OK)
+		goto out;
+	fs_entered = 1;
 #endif
 #if LXP_ENABLE_DEV_INPUT
 	/* Publish this run's geometry including explicit zero-to-default semantics,
@@ -2744,6 +2767,12 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 out:
 	if (prepare_entered && os_ops->teardown)
 		os_ops->teardown();
+#if LXP_ENABLE_FS
+	if (fs_entered)
+		fs_ops->run_end();
+#else
+	(void)fs_entered;
+#endif
 #if LXP_ENABLE_NET
 	if (net_entered)
 		net_ops->run_end();

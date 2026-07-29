@@ -12,6 +12,7 @@
 #include "lxp/lxp_diag.h"
 #include "lxp/lxp_disp_ops.h"
 #include "lxp/lxp_exec.h"
+#include "lxp/lxp_fs_ops.h"
 #include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_program.h"
@@ -43,7 +44,7 @@ typedef struct lxp_guest_exit_info {
  *        lxp Linux personality.
  *
  * The engine-agnostic core (@ref lxp_syscall) translates the Linux ABI through
- * explicit OS, network, and display provider contracts; a per-engine seam binds
+ * explicit OS, network, filesystem, and display provider contracts; a per-engine seam binds
  * those contracts to a concrete RTOS engine —
  * trapping the unprivileged program's syscalls, running each loaded FDPIC program in its
  * own isolated memory domain, and implementing the NOMMU process model
@@ -109,7 +110,7 @@ typedef struct lxp_run_config {
 /**
  * Load @p path from the rootfs and run it as pid 1, driving the NOMMU process
  * model (vfork/exec/wait, signals, pipes) until it exits. This is THE port entry
- * (the lwIP sys_arch / FatFs diskio pattern): the host fills three ops vtables and
+ * (the lwIP sys_arch / FatFs diskio pattern): the host fills provider vtables and
  * passes them here rather than wiring module globals directly.
  *
  * @p os_ops     the engine / OS port (required): program-memory placement, task
@@ -117,6 +118,7 @@ typedef struct lxp_run_config {
  *               time, + optional cache / thread-introspection / prepare / teardown.
  * @p net_ops    the handle-based socket port, or NULL when built without NET.
  * @p disp_ops   the framebuffer / touch port, or NULL when built without DEV.
+ * @p fs_ops     the writable-filesystem port, or NULL when built without FS.
  * @p run_config the rootfs table, console callbacks, and optional display
  *               geometry (required).
  *
@@ -129,8 +131,9 @@ typedef struct lxp_run_config {
  * @return the init exit status (>= 0), or one of the @c LXP_RUN_E* codes (< 0).
  */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
-	    const lxp_display_ops_t *disp_ops, const lxp_run_config_t *run_config,
-	    const char *path, int argc, const char *const argv[]);
+	    const lxp_display_ops_t *disp_ops, const lxp_fs_ops_t *fs_ops,
+	    const lxp_run_config_t *run_config, const char *path, int argc,
+	    const char *const argv[]);
 
 /**
  * Whether the tty is in ISIG (canonical) mode. A @c read_fn consults this to

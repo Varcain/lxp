@@ -442,7 +442,7 @@ static int reset_state(void **state)
 	g_pending_sig = 0;
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
-	lxp_providers_publish(g_test_net_ops, NULL);
+	lxp_providers_publish(g_test_net_ops, NULL, NULL);
 	return 0;
 }
 
@@ -1736,13 +1736,13 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	net_ops.run_end = mock_net_end;
 	lxp_net_ops_t invalid_net_ops = net_ops;
 	invalid_net_ops.run_end = NULL;
-	assert_int_equal(lxp_run(&g_mock_eng, &invalid_net_ops, NULL, &cfg, "/init", 1, argv),
+	assert_int_equal(lxp_run(&g_mock_eng, &invalid_net_ops, NULL, NULL, &cfg, "/init", 1, argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.net_begin_calls, 0);
 	assert_int_equal(g_mock.prepare_calls, 0);
 
 	g_mock.prepare_result = -LXP_EIO;
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &cfg, "/init", 1, argv),
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, NULL, &cfg, "/init", 1, argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.net_begin_calls, 1);
 	assert_int_equal(g_mock.net_end_calls, 1);
@@ -1757,7 +1757,7 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	/* A rejected provider acquisition never starts host preparation or releases
 	 * an already-active provider state through run_end(). */
 	g_mock.net_begin_result = LXP_ERR_WOULD_BLOCK;
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &cfg, "/init", 1, argv),
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, NULL, &cfg, "/init", 1, argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.net_begin_calls, 2);
 	assert_int_equal(g_mock.net_end_calls, 1);
