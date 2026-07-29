@@ -72,6 +72,7 @@ static struct {
 	uint8_t launch_observed_runnable;
 	uint8_t launch_observed_host_state;
 	lxp_guest_launch_t launch;
+	int launch_failures;
 	int resume_calls;
 	int resume_sidx;
 	uint32_t resume_generation;
@@ -188,6 +189,10 @@ static int mock_spawn_launch(int sidx, uint32_t generation, int ridx,
 			.generation = generation,
 		});
 	g_mock.launch_observed_host_state = lxp_slot_host_state(sidx);
+	if (g_mock.launch_failures > 0) {
+		g_mock.launch_failures--;
+		return -LXP_EIO;
+	}
 	return LXP_OK;
 }
 static int mock_spawn_resume(int sidx, uint32_t generation, int ridx,
@@ -973,6 +978,51 @@ static void test_image_publish_failpoints_release_every_owner(void **state)
 		assert_int_equal(g_regions[1].refs, 0);
 		assert_int_equal(lxp_validate_world(&error), LXP_OK);
 	}
+}
+
+static void test_image_start_preserves_executable_extent_and_rolls_back_spawn_failure(
+	void **state)
+{
+	(void)state;
+	struct image_txn tx;
+	prepare_mock_image_txn(&tx, 1, 1);
+	tx.proc.mm->copied_text_executable = 1u;
+	tx.launch.copied_text_base = (uintptr_t)&g_mock_regions[1][32];
+	tx.launch.copied_text_size = 96u;
+
+	assert_int_equal(image_txn_publish(&tx, &g_mock_eng), LXP_OK);
+	assert_int_equal(image_txn_start(&tx, &g_mock_eng), LXP_OK);
+	assert_int_equal(g_mock.launch_calls, 1);
+	assert_int_equal(g_mock.launch.copied_text_base, tx.launch.copied_text_base);
+	assert_int_equal(g_mock.launch.copied_text_size, tx.launch.copied_text_size);
+	assert_true(g_mock.launch_observed_runnable);
+	assert_int_equal(g_mock.launch_observed_host_state, SLOT_STARTING);
+	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+
+	prepare_mock_image_txn(&tx, 1, 1);
+	g_mock.launch_failures = 1;
+	assert_int_equal(image_txn_publish(&tx, &g_mock_eng), LXP_OK);
+	assert_true(image_txn_start(&tx, &g_mock_eng) < 0);
+	assert_false(tx.native_started);
+	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+	assert_false(g_lxp_slots[1].proc.alive);
+	assert_int_equal(g_regions[1].refs, 0);
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+}
+
+static void test_image_start_marks_xip_launch_with_empty_executable_extent(void **state)
+{
+	(void)state;
+	struct image_txn tx;
+	prepare_mock_image_txn(&tx, 1, 1);
+
+	assert_int_equal(image_txn_publish(&tx, &g_mock_eng), LXP_OK);
+	assert_int_equal(image_txn_start(&tx, &g_mock_eng), LXP_OK);
+	assert_int_equal(g_mock.launch_calls, 1);
+	assert_int_equal(g_mock.launch.copied_text_base, 0);
+	assert_int_equal(g_mock.launch.copied_text_size, 0);
+	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
 }
 
 static void test_world_diagnostics_snapshot_current_states(void **state)
@@ -3897,6 +3947,12 @@ int main(void)
 			reset_state),
 		cmocka_unit_test_setup(test_image_publish_failpoints_release_every_owner,
 				       reset_state),
+		cmocka_unit_test_setup(
+			test_image_start_preserves_executable_extent_and_rolls_back_spawn_failure,
+			reset_state),
+		cmocka_unit_test_setup(
+			test_image_start_marks_xip_launch_with_empty_executable_extent,
+			reset_state),
 		cmocka_unit_test_setup(test_world_diagnostics_snapshot_current_states, reset_state),
 		cmocka_unit_test_setup(test_world_validator_reports_conflicting_waits, reset_state),
 		cmocka_unit_test_setup(test_typed_intent_transitions_are_exclusive, reset_state),
