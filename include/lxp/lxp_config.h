@@ -192,6 +192,14 @@
 #ifndef LXP_NSLOT
 #define LXP_NSLOT (LXP_NREG + 4)
 #endif
+/* Host-filesystem open-handle ceiling. This is independent of Linux fd aliases:
+ * dup/fork share one open-file description and therefore one provider handle. */
+#ifndef LXP_NHOSTFS_OPEN
+#define LXP_NHOSTFS_OPEN 16
+#endif
+#if LXP_NHOSTFS_OPEN < 1
+#error "LXP_NHOSTFS_OPEN must be positive"
+#endif
 /* Pipe pool: count + per-pipe ring size. The STM32F746 consumer bumps NPIPE to
  * 12 (SSH pipelines) and relocates the pool via LXP_FAR_BSS; Zephyr shrinks the
  * ring to 2048. Defaults are the safe minimum. */

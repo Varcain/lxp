@@ -19,6 +19,9 @@
 #include "lxp_vfs.h"	  /* per-fd-kind file-operation vtable (dispatch by kind) */
 
 #include "fs/lxp_fd_private.h" /* descriptor-table reference transaction */
+#if LXP_ENABLE_FS
+#include "fs/lxp_hostfs.h" /* writable host mount (FD_HOSTFS, /data) */
+#endif
 #include "fs/lxp_path.h"     /* path resolution (resolve_path / fs_lookup / fs_follow) */
 #include "fs/lxp_pipe.h"     /* pipe ring ops (FD_PIPE) */
 #include "fs/lxp_tmpfs.h"    /* writable VFS overlay nodes (FD_TMPFS) */
@@ -527,6 +530,13 @@ static long fop_read_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 	return lxp_netfs_read(p, s->file_idx, buf, len);
 }
 #endif
+#if LXP_ENABLE_FS
+static long fop_read_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+{
+	(void)p;
+	return lxp_hostfs_read(s->file_idx, buf, len);
+}
+#endif
 #if LXP_ENABLE_PTY
 /* A pty end drains its ring (master reads program output, slave reads program input);
  * blocks while empty + the peer end is open, EOF (0) once the peer closes. */
@@ -635,6 +645,13 @@ static long fop_write_netfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t
 	return -LXP_EROFS; /* read-only remote mount */
 }
 #endif
+#if LXP_ENABLE_FS
+static long fop_write_hostfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
+{
+	(void)p;
+	return lxp_hostfs_write(s->file_idx, buf, len);
+}
+#endif
 #if LXP_ENABLE_PTY
 /* A pty write feeds the peer's ring through the line discipline (master write runs
  * input processing toward the slave; slave write runs output/ONLCR toward the master).
@@ -708,6 +725,13 @@ static long fop_lseek_netfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 	return lxp_netfs_lseek(s->file_idx, off, whence);
 }
 #endif
+#if LXP_ENABLE_FS
+static long fop_lseek_hostfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
+{
+	(void)p;
+	return lxp_hostfs_seek(s->file_idx, off, whence);
+}
+#endif
 
 /* ---- fstat fops (each kind reports its own mode/size + a unique inode base) ---- */
 static long fop_fstat_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
@@ -767,6 +791,25 @@ static long fop_fstat_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 	return lxp_netfs_fill_stat(p, (uintptr_t)statbuf, 0, mode, size, mtime, ino);
 }
 #endif
+#if LXP_ENABLE_FS
+static uint32_t hostfs_mode(const lxp_fs_stat_t *stat)
+{
+	return stat->type == LXP_FS_TYPE_DIR ? (LXP_S_IFDIR | 0777u) : (LXP_S_IFREG | 0666u);
+}
+
+static long fop_fstat_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+{
+	(void)p;
+	lxp_fs_stat_t stat;
+	long rc = lxp_hostfs_stat(s->file_idx, &stat);
+	if (rc < 0)
+		return rc;
+	fill_kstat64(statbuf, 0x700000u + (uint32_t)s->file_idx, hostfs_mode(&stat),
+		     stat.size);
+	((struct lxp_kstat64 *)statbuf)->st_mtime = (uint32_t)stat.mtime_sec;
+	return 0;
+}
+#endif
 #if LXP_ENABLE_PTY
 static long fop_fstat_pty(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
@@ -817,6 +860,13 @@ static void fop_close_netfs(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
 	lxp_netfs_close(s->file_idx); /* refs--, enqueue a Tclunk at the last close */
+}
+#endif
+#if LXP_ENABLE_FS
+static void fop_close_hostfs(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	lxp_hostfs_close(s->file_idx);
 }
 #endif
 #if LXP_ENABLE_PTY
@@ -1000,6 +1050,13 @@ static const lxp_file_ops_t netfs_fops = {.read = fop_read_netfs,
 					  .fstat = fop_fstat_netfs,
 					  .close = fop_close_netfs};
 #endif
+#if LXP_ENABLE_FS
+static const lxp_file_ops_t hostfs_fops = {.read = fop_read_hostfs,
+					   .write = fop_write_hostfs,
+					   .lseek = fop_lseek_hostfs,
+					   .fstat = fop_fstat_hostfs,
+					   .close = fop_close_hostfs};
+#endif
 #if LXP_ENABLE_PTY
 static const lxp_file_ops_t pty_fops = {.read = fop_read_pty,
 					.write = fop_write_pty,
@@ -1037,6 +1094,10 @@ static const struct lxp_file_ops *ops_for_kind(uint8_t kind)
 #if LXP_ENABLE_NETFS
 	case LXP_FD_NET:
 		return &netfs_fops;
+#endif
+#if LXP_ENABLE_FS
+	case LXP_FD_HOSTFS:
+		return &hostfs_fops;
 #endif
 #if LXP_ENABLE_PTY
 	case LXP_FD_PTY:
@@ -1449,6 +1510,24 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 	path = abspath;
 	if (proc_is(path)) /* synthetic /proc shadows everything */
 		return proc_open(p, path);
+#if LXP_ENABLE_FS
+	/* The mount boundary is exact: /data and descendants route to the host
+	 * provider, while /database remains part of the ordinary rootfs/tmpfs. */
+	if (lxp_hostfs_match(path)) {
+		long hi = lxp_hostfs_open(path, flags);
+		if (hi < 0)
+			return hi;
+		int fd = fd_alloc(p, LXP_FD_HOSTFS, (int)hi, 0);
+		if (fd < 0)
+			lxp_hostfs_close((int)hi);
+		else {
+			(void)lxp_fd_set_status(p, fd, (flags & LXP_O_ACCMODE) != LXP_O_RDONLY,
+					       (flags & LXP_O_NONBLOCK) != 0);
+			(void)lxp_fd_set_cloexec(p, fd, (flags & LXP_O_CLOEXEC) != 0);
+		}
+		return fd;
+	}
+#endif
 	/* The synthetic console/null/random nodes all open as an FD_CONSOLE; file_idx selects
 	 * the behaviour (2 = r/w console, 3 = /dev/null → EOF/discard, 4 = host entropy,
 	 * 5 = /dev/zero → zero-fill/discard). A small name→idx table instead of a strcmp chain
@@ -1727,6 +1806,17 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 	if (lxp_netfs_lookup(abspath) >= 0)
 		return lxp_netfs_stat(p, abspath, (uintptr_t)statbuf, 0); /* parks */
 #endif
+#if LXP_ENABLE_FS
+	if (lxp_hostfs_match(abspath)) {
+		lxp_fs_stat_t stat;
+		long rc = lxp_hostfs_path_stat(abspath, &stat);
+		if (rc < 0)
+			return rc;
+		fill_kstat64(statbuf, 0x700000u, hostfs_mode(&stat), stat.size);
+		((struct lxp_kstat64 *)statbuf)->st_mtime = (uint32_t)stat.mtime_sec;
+		return 0;
+	}
+#endif
 	int wi = wfs_find(abspath); /* writable overlay shadows the rootfs */
 	if (wi >= 0) {
 		fill_kstat64(statbuf, 0x100000u + (uint32_t)wi, wnode_at(wi)->mode,
@@ -1812,6 +1902,12 @@ static long sys_access(lxp_proc_t *p, const char *path)
 		return 0; /* root */
 	if (proc_is(abspath))
 		return proc_mode(abspath, p) ? 0 : -LXP_ENOENT;
+#if LXP_ENABLE_FS
+	if (lxp_hostfs_match(abspath)) {
+		lxp_fs_stat_t stat;
+		return lxp_hostfs_path_stat(abspath, &stat);
+	}
+#endif
 	if (wfs_find(abspath) >= 0 || fs_lookup(p, abspath) >= 0)
 		return 0;
 	return -LXP_ENOENT;
@@ -2153,6 +2249,27 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 		/* Remote dir: a Treaddir round-trip → the netfs layer emits the records. Parks. */
 		return lxp_netfs_getdents(p, s->file_idx, (uintptr_t)buf, count, is64);
 #endif
+#if LXP_ENABLE_FS
+	} else if (s->kind == LXP_FD_HOSTFS) {
+		if (!lxp_hostfs_is_dir(s->file_idx))
+			return -LXP_ENOTDIR;
+		uint8_t *out = (uint8_t *)buf;
+		size_t filled = 0;
+		long pos = (long)s->offset;
+		for (;;) {
+			const lxp_fs_dirent_t *entry = NULL;
+			long rc = lxp_hostfs_dir_peek(s->file_idx, &entry);
+			if (rc < 0)
+				return filled ? (long)filled : rc;
+			if (rc == 0)
+				return (long)filled;
+			uint32_t mode = entry->type == LXP_FS_TYPE_DIR ? LXP_S_IFDIR : LXP_S_IFREG;
+			if (!dirent_emit(out, count, &filled, &pos, s,
+					 0x700001u + (uint64_t)s->offset, entry->name, mode))
+				return filled ? (long)filled : -LXP_EINVAL;
+			lxp_hostfs_dir_consume(s->file_idx);
+		}
+#endif
 	} else {
 		return -LXP_ENOTDIR;
 	}
@@ -2164,7 +2281,11 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 	/* rootfs children (a writable node of the same path shadows the rootfs one) */
 	for (int i = 0; i < p->fs_count && !full; i++) {
 		const char *name = child_name(dirpath, p->fs[i].path);
-		if (!name || wfs_find(p->fs[i].path) >= 0)
+		if (!name || wfs_find(p->fs[i].path) >= 0
+#if LXP_ENABLE_FS
+		    || strcmp(p->fs[i].path, LXP_HOSTFS_MOUNT) == 0
+#endif
+		)
 			continue;
 		if (!dirent_emit(out, count, &filled, &pos, s, (uint64_t)(i + 1), name,
 				 file_mode(&p->fs[i])))
@@ -2174,6 +2295,10 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 	for (int i = 0; i < LXP_NWNODE && !full; i++) {
 		if (!wnode_at(i)->used)
 			continue;
+#if LXP_ENABLE_FS
+		if (strcmp(wnode_at(i)->path, LXP_HOSTFS_MOUNT) == 0)
+			continue;
+#endif
 		const char *name = child_name(dirpath, wnode_at(i)->path);
 		if (!name)
 			continue;
@@ -2181,6 +2306,13 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 				 wnode_at(i)->mode))
 			full = 1;
 	}
+#if LXP_ENABLE_FS
+	/* The mounted namespace exists independently of any same-named rootfs
+	 * placeholder. Media availability is reported when /data is accessed. */
+	if (!full && strcmp(dirpath, "/") == 0 &&
+	    !dirent_emit(out, count, &filled, &pos, s, 0x700000u, "data", LXP_S_IFDIR))
+		full = 1;
+#endif
 #if LXP_ENABLE_DEV
 	/* registered character devices whose node sits directly under this dir (/dev/fb0). */
 	for (int i = 0; i < lxp_dev_count() && !full; i++) {
@@ -2318,6 +2450,16 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 		} else if (lxp_netfs_lookup(abspath) >= 0) {
 			return lxp_netfs_stat(p, abspath, (uintptr_t)buf, 1); /* parks */
 #endif
+#if LXP_ENABLE_FS
+		} else if (lxp_hostfs_match(abspath)) {
+			lxp_fs_stat_t stat;
+			long rc = lxp_hostfs_path_stat(abspath, &stat);
+			if (rc < 0)
+				return rc;
+			mode = hostfs_mode(&stat);
+			size = stat.size;
+			ino = 0x700000u;
+#endif
 		} else if ((wi = wfs_find(abspath)) >= 0) { /* writable overlay shadows rootfs */
 			mode = wnode_at(wi)->mode;
 			size = wnode_at(wi)->size;
@@ -2365,6 +2507,16 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 				return -LXP_EBADF;
 			return lxp_netfs_fill_stat(p, (uintptr_t)buf, 1, nmode, nsize, nmtime,
 						   nino);
+#endif
+#if LXP_ENABLE_FS
+		} else if (s->kind == LXP_FD_HOSTFS) {
+			lxp_fs_stat_t stat;
+			long rc = lxp_hostfs_stat(s->file_idx, &stat);
+			if (rc < 0)
+				return rc;
+			mode = hostfs_mode(&stat);
+			size = stat.size;
+			ino = 0x700000u + (uint32_t)s->file_idx;
 #endif
 		} else {
 			mode = LXP_S_IFCHR | 0620u;
@@ -3165,6 +3317,18 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		/* "/" is always valid; else require an existing directory in either the
 		 * writable overlay or the read-only rootfs. */
 		if (!(abspath[0] == '/' && abspath[1] == '\0')) {
+#if LXP_ENABLE_FS
+			if (lxp_hostfs_match(abspath)) {
+				lxp_fs_stat_t stat;
+				long sr = lxp_hostfs_path_stat(abspath, &stat);
+				if (sr < 0)
+					return sr;
+				if (stat.type != LXP_FS_TYPE_DIR)
+					return -LXP_ENOTDIR;
+				strcpy(proc->fs_context->cwd, abspath);
+				return 0;
+			}
+#endif
 			int wi = wfs_find(abspath);
 			if (wi >= 0) {
 				if ((wnode_at(wi)->mode & LXP_S_IFMT) != LXP_S_IFDIR)

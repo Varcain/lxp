@@ -73,6 +73,7 @@ int test_syscall_conformance_run(void);
 int test_linux_dev_run(void);
 int test_linux_net_run(void);
 int test_linux_netfs_run(void);
+int test_linux_hostfs_run(void);
 int test_linux_pty_run(void);
 
 #endif /* LXP_TEST_H */

@@ -23,6 +23,7 @@ LXP_SUITE(syscall_conformance, "Linux personality: syscall golden conformance")
 LXP_SUITE(linux_dev,     "Linux personality: /dev device layer")
 LXP_SUITE(linux_net,     "Linux personality: socket layer")
 LXP_SUITE(linux_netfs,   "Linux personality: remote filesystem (9P)")
+LXP_SUITE(linux_hostfs,  "Linux personality: host writable filesystem")
 LXP_SUITE(linux_pty,     "Linux personality: pseudo-terminal layer")
 
 #undef LXP_SUITE

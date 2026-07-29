@@ -56,9 +56,11 @@ extern "C" {
 #define LXP_O_WRONLY 0x1
 #define LXP_O_RDWR 0x2
 #define LXP_O_CREAT 0x40
+#define LXP_O_EXCL 0x80
 #define LXP_O_TRUNC 0x200
 #define LXP_O_APPEND 0x400
 #define LXP_O_NONBLOCK 0x800  /* a device open that returns -EAGAIN instead of blocking */
+#define LXP_O_DIRECTORY 0x4000
 #define LXP_O_CLOEXEC 0x80000 /* close-on-exec (also pipe2/dup3/accept4 flag) */
 #define LXP_FD_CLOEXEC 1      /* fcntl(F_SETFD/F_GETFD) close-on-exec bit */
 /* openat dirfd sentinel for the current working directory. */
@@ -199,6 +201,7 @@ extern "C" {
 #define LXP_ENAMETOOLONG 36
 #define LXP_ENOTEMPTY 39
 #define LXP_ENOSYS 38
+#define LXP_EOVERFLOW 75
 #define LXP_ETIMEDOUT 110 /* a futex wait whose timeout expired */
 /* socket errnos (asm-generic values; ARM shares them). */
 #define LXP_ENOTSOCK 88
@@ -309,6 +312,8 @@ typedef struct lxp_fd {
 #define LXP_FD_PTY 9
 /** remote-fs fd kind (9P mount, e.g. /mnt/pi). @c file_idx = netfs open-pool index. */
 #define LXP_FD_NET 10
+/** host-backed writable filesystem fd. @c file_idx = hostfs open-pool index. */
+#define LXP_FD_HOSTFS 11
 /* eventfd2(2) flags. */
 #define LXP_EFD_SEMAPHORE 0x00000001
 #define LXP_EFD_NONBLOCK 0x00000800

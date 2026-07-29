@@ -13,6 +13,9 @@
 #include "fs/lxp_fd_private.h"
 
 #include "lxp_vfs.h"
+#if LXP_ENABLE_FS
+#include "fs/lxp_hostfs.h"
+#endif
 
 #include <string.h>
 
@@ -148,6 +151,9 @@ void lxp_fd_close_on_exec(lxp_proc_t *proc)
 
 void lxp_fd_runtime_reset(void)
 {
+#if LXP_ENABLE_FS
+	lxp_hostfs_runtime_reset();
+#endif
 	memset(g_ofd, 0, sizeof(g_ofd));
 }
 
