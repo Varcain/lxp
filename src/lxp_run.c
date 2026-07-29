@@ -2573,6 +2573,35 @@ launch_failed:
 	return LXP_RUN_ELAUNCH;
 }
 
+static int cache_geometry_valid(uint32_t flags, uint32_t enabled_flag, uint32_t line_size,
+				uint32_t cache_size)
+{
+	if ((flags & enabled_flag) == 0u)
+		return line_size == 0u && cache_size == 0u;
+	return line_size >= 16u && (line_size & (line_size - 1u)) == 0u &&
+	       cache_size >= line_size && cache_size % line_size == 0u;
+}
+
+static int cpu_memory_contract_valid(const lxp_cpu_memory_contract_t *contract)
+{
+	if (!contract || contract->abi_version != LXP_CPU_MEMORY_CONTRACT_ABI_VERSION ||
+	    contract->struct_size != sizeof(*contract) ||
+	    (contract->flags & ~LXP_CPU_MEMORY_KNOWN_FLAGS) != 0u ||
+	    !cache_geometry_valid(contract->flags, LXP_CPU_MEMORY_DCACHE_ENABLED,
+				  contract->dcache_line_size, contract->dcache_size) ||
+	    !cache_geometry_valid(contract->flags, LXP_CPU_MEMORY_ICACHE_ENABLED,
+				  contract->icache_line_size, contract->icache_size))
+		return 0;
+
+	if (contract->model == LXP_CPU_MEM_UNCACHED)
+		return contract->normal_attrs == LXP_CPU_MEM_ATTR_NORMAL_NC_NSH &&
+		       (contract->flags & LXP_CPU_MEMORY_DCACHE_ENABLED) == 0u;
+	if (contract->model == LXP_CPU_MEM_COHERENT_SAME_ATTRS)
+		return contract->normal_attrs == LXP_CPU_MEM_ATTR_NORMAL_WBWA_NSH &&
+		       (contract->flags & LXP_CPU_MEMORY_DCACHE_ENABLED) != 0u;
+	return 0;
+}
+
 static int os_ops_valid(const lxp_os_ops_t *ops)
 {
 	if (!ops || ops->abi_version != LXP_OS_OPS_ABI_VERSION ||
@@ -2581,9 +2610,8 @@ static int os_ops_valid(const lxp_os_ops_t *ops)
 	    !ops->park_slot ||
 	    !ops->crit_enter || !ops->crit_exit || !ops->event_post || !ops->event_wait ||
 	    !ops->time_us || !ops->time_ns || !ops->exec_capture || !ops->random_fill ||
-	    !ops->publish_executable || !ops->validate_memory_model ||
-	    (ops->cpu_memory_model != LXP_CPU_MEM_UNCACHED &&
-	     ops->cpu_memory_model != LXP_CPU_MEM_COHERENT_SAME_ATTRS))
+	    !ops->publish_executable || !ops->validate_memory_contract ||
+	    !cpu_memory_contract_valid(ops->cpu_memory_contract))
 		return 0;
 #if LXP_ENABLE_NETFS_EXEC
 	if (!ops->exec_stage)
@@ -2704,7 +2732,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 		if (os_ops->prepare() < 0)
 			goto out;
 	}
-	if (os_ops->validate_memory_model(os_ops->cpu_memory_model) != LXP_OK)
+	if (os_ops->validate_memory_contract(os_ops->cpu_memory_contract) != LXP_OK)
 		goto out;
 	rc = lxp_run_common(os_ops, run_config, path, argc, argv);
 

@@ -54,7 +54,41 @@ typedef enum lxp_cpu_memory_model {
 	LXP_CPU_MEM_COHERENT_SAME_ATTRS = 2,
 } lxp_cpu_memory_model_t;
 
-#define LXP_OS_OPS_ABI_VERSION 9u
+/** Portable Normal-memory attribute classes used by the CPU-memory contract.
+ * Device, framebuffer, and DMA mappings are deliberately not represented:
+ * their ownership transfers remain explicit port operations. */
+typedef enum lxp_cpu_memory_attrs {
+	LXP_CPU_MEM_ATTR_NORMAL_NC_NSH = 1,
+	LXP_CPU_MEM_ATTR_NORMAL_WBWA_NSH = 2,
+} lxp_cpu_memory_attrs_t;
+
+#define LXP_CPU_MEMORY_CONTRACT_ABI_VERSION 1u
+#define LXP_CPU_MEMORY_DCACHE_ENABLED (1u << 0)
+#define LXP_CPU_MEMORY_ICACHE_ENABLED (1u << 1)
+#define LXP_CPU_MEMORY_KNOWN_FLAGS \
+	(LXP_CPU_MEMORY_DCACHE_ENABLED | LXP_CPU_MEMORY_ICACHE_ENABLED)
+
+/**
+ * Versioned declaration of the CPU-side memory assumptions shared by the
+ * personality core and its engine port.
+ *
+ * Geometry is zero for a disabled cache. An enabled cache supplies power-of-2
+ * line sizes and complete L1 capacities in bytes. The port validates this
+ * immutable declaration against live hardware and MPU state after prepare().
+ */
+typedef struct lxp_cpu_memory_contract {
+	uint32_t abi_version;
+	uint32_t struct_size;
+	lxp_cpu_memory_model_t model;
+	lxp_cpu_memory_attrs_t normal_attrs;
+	uint32_t flags;
+	uint32_t dcache_line_size;
+	uint32_t icache_line_size;
+	uint32_t dcache_size;
+	uint32_t icache_size;
+} lxp_cpu_memory_contract_t;
+
+#define LXP_OS_OPS_ABI_VERSION 10u
 
 /* Opaque host critical-section state. Ports which use irq-save primitives
  * return the native key through this value; ports with internally nested
@@ -215,12 +249,13 @@ typedef struct lxp_os_ops {
 			      const struct lxp_resume_ctx *c);
 	int (*park_slot)(int sidx, uint32_t generation);
 
-	/* Declared CPU-memory contract plus a live-hardware validator. lxp_run()
-	 * invokes validate_memory_model after prepare() has installed the port's
-	 * MPU/cache state and before any guest image is loaded. A mismatch fails
-	 * the run closed. */
-	lxp_cpu_memory_model_t cpu_memory_model;
-	int (*validate_memory_model)(lxp_cpu_memory_model_t declared);
+	/* Immutable, separately versioned CPU-memory declaration plus its
+	 * live-hardware validator. lxp_run() first checks the portable contract,
+	 * then invokes validate_memory_contract after prepare() has installed the
+	 * port's MPU/cache state and before any guest image is loaded. A mismatch
+	 * fails the run closed. The declaration must remain valid for the run. */
+	const lxp_cpu_memory_contract_t *cpu_memory_contract;
+	int (*validate_memory_contract)(const lxp_cpu_memory_contract_t *declared);
 } lxp_os_ops_t;
 
 #ifdef __cplusplus

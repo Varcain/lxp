@@ -319,9 +319,17 @@ static int mock_map_device(int sidx, uintptr_t addr, size_t size, unsigned attrs
 	return 0;
 }
 
-static int mock_validate_memory_model(lxp_cpu_memory_model_t declared)
+static const lxp_cpu_memory_contract_t g_mock_memory_contract = {
+	.abi_version = LXP_CPU_MEMORY_CONTRACT_ABI_VERSION,
+	.struct_size = sizeof(lxp_cpu_memory_contract_t),
+	.model = LXP_CPU_MEM_UNCACHED,
+	.normal_attrs = LXP_CPU_MEM_ATTR_NORMAL_NC_NSH,
+};
+
+static int
+mock_validate_memory_contract(const lxp_cpu_memory_contract_t *declared)
 {
-	return declared == LXP_CPU_MEM_UNCACHED ? LXP_OK : LXP_ERR_INVALID_PARAM;
+	return declared == &g_mock_memory_contract ? LXP_OK : LXP_ERR_INVALID_PARAM;
 }
 static int mock_publish_executable(lxp_region_ref_t address_space, uintptr_t base,
 				   size_t size)
@@ -383,8 +391,8 @@ static const lxp_os_ops_t g_mock_eng = {
 	.cache_invalidate = mock_cache_invalidate,
 	.coord_map = mock_coord_map,
 	.publish_executable = mock_publish_executable,
-	.cpu_memory_model = LXP_CPU_MEM_UNCACHED,
-	.validate_memory_model = mock_validate_memory_model,
+	.cpu_memory_contract = &g_mock_memory_contract,
+	.validate_memory_contract = mock_validate_memory_contract,
 	.system_version = mock_system_version,
 };
 
@@ -1650,10 +1658,42 @@ static void test_port_abi_and_required_ops_are_validated(void **state)
 	ops.publish_executable = NULL;
 	assert_false(os_ops_valid(&ops));
 	ops = g_mock_eng;
-	ops.cpu_memory_model = (lxp_cpu_memory_model_t)99;
+	ops.cpu_memory_contract = NULL;
 	assert_false(os_ops_valid(&ops));
 	ops = g_mock_eng;
-	ops.validate_memory_model = NULL;
+	lxp_cpu_memory_contract_t invalid_contract = g_mock_memory_contract;
+	invalid_contract.abi_version++;
+	ops.cpu_memory_contract = &invalid_contract;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	invalid_contract = g_mock_memory_contract;
+	invalid_contract.struct_size--;
+	ops.cpu_memory_contract = &invalid_contract;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	invalid_contract = g_mock_memory_contract;
+	invalid_contract.model = (lxp_cpu_memory_model_t)99;
+	ops.cpu_memory_contract = &invalid_contract;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	invalid_contract = g_mock_memory_contract;
+	invalid_contract.normal_attrs = LXP_CPU_MEM_ATTR_NORMAL_WBWA_NSH;
+	ops.cpu_memory_contract = &invalid_contract;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	invalid_contract = g_mock_memory_contract;
+	invalid_contract.flags = 1u << 31;
+	ops.cpu_memory_contract = &invalid_contract;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	invalid_contract = g_mock_memory_contract;
+	invalid_contract.flags = LXP_CPU_MEMORY_ICACHE_ENABLED;
+	invalid_contract.icache_line_size = 24u;
+	invalid_contract.icache_size = 16u * 1024u;
+	ops.cpu_memory_contract = &invalid_contract;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	ops.validate_memory_contract = NULL;
 	assert_false(os_ops_valid(&ops));
 }
 
