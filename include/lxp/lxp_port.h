@@ -21,6 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lxp/lxp_identity.h"
 #include "lxp/lxp_types.h"
 
 #ifdef __cplusplus
@@ -53,7 +54,7 @@ typedef enum lxp_cpu_memory_model {
 	LXP_CPU_MEM_COHERENT_SAME_ATTRS = 2,
 } lxp_cpu_memory_model_t;
 
-#define LXP_OS_OPS_ABI_VERSION 8u
+#define LXP_OS_OPS_ABI_VERSION 9u
 
 /* Opaque host critical-section state. Ports which use irq-save primitives
  * return the native key through this value; ports with internally nested
@@ -183,6 +184,19 @@ typedef struct lxp_os_ops {
 	 * e.g. "Zephyr 4.4.0 ove-1a2b3c4 lxp-5d6e7f8". The returned string must
 	 * remain valid for the run; lxp truncates it to Linux's 64-byte field. */
 	const char *(*system_version)(void);
+
+	/* Publish loader-written RAM text to instruction fetch while the
+	 * generation-qualified address-space lease is still exclusively owned by
+	 * the image transaction. The core validates [base, base+len) against that
+	 * address space and calls this exactly once for a non-empty copied-text
+	 * extent, before publishing the process or creating a native task.
+	 *
+	 * Every port must provide this operation. A machine which is genuinely
+	 * instruction/data coherent may implement an explicit validated no-op;
+	 * absence is never interpreted as coherence. Ordinary CPU data and
+	 * DMA/device ownership are outside this operation's contract. */
+	int (*publish_executable)(lxp_region_ref_t address_space, uintptr_t base,
+				  size_t len);
 
 	/* Persistent parked-task handoff. park_entry is the engine-owned,
 	 * guest-executable target installed in the parked exception frame.

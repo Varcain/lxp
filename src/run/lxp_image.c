@@ -162,6 +162,26 @@ int image_txn_publish(struct image_txn *tx, const lxp_os_ops_t *eng)
 {
 	if (!tx->prepared || tx->published)
 		return -LXP_EINVAL;
+	const uintptr_t text_base = tx->launch.copied_text_base;
+	const size_t text_size = tx->launch.copied_text_size;
+	const int copied_text = text_size != 0;
+	if (!tx->proc.mm ||
+	    tx->proc.mm->copied_text_executable != (uint8_t)copied_text ||
+	    (!copied_text && text_base != 0) ||
+	    !lxp_region_lease_matches(tx->region, tx->owner, 1))
+		return -LXP_EINVAL;
+	if (copied_text && !tx->executable_published) {
+		uint8_t *region = eng->region(tx->region.index);
+		uintptr_t region_lo = (uintptr_t)region;
+		uintptr_t region_hi = region_lo + LXP_PROG_REGION_SIZE;
+		if (!region || region_hi < region_lo || text_base < region_lo ||
+		    text_base >= region_hi || text_size > region_hi - text_base)
+			return -LXP_EINVAL;
+		int rc = eng->publish_executable(tx->region, text_base, text_size);
+		if (rc != LXP_OK)
+			return rc;
+	}
+	tx->executable_published = 1;
 	int rc = lxp_slot_publish_image(tx->slot, &tx->proc, eng->exec_capture(tx->slot),
 					&tx->debug);
 	if (rc != LXP_OK)
@@ -215,6 +235,7 @@ int image_txn_abort(struct image_txn *tx, const lxp_os_ops_t *eng)
 	if (lxp_region_lease_matches(tx->region, tx->owner, 1))
 		(void)region_release_if_owned(tx->region, tx->owner);
 	tx->prepared = 0;
+	tx->executable_published = 0;
 	tx->published = 0;
 	tx->native_started = 0;
 	tx->region_committed = 0;

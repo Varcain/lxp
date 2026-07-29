@@ -73,6 +73,12 @@ static struct {
 	uint8_t launch_observed_host_state;
 	lxp_guest_launch_t launch;
 	int launch_failures;
+	int publish_executable_calls;
+	lxp_region_ref_t publish_address_space;
+	uintptr_t publish_base;
+	size_t publish_size;
+	int publish_observed_alive;
+	int publish_result;
 	int resume_calls;
 	int resume_sidx;
 	uint32_t resume_generation;
@@ -317,6 +323,16 @@ static int mock_validate_memory_model(lxp_cpu_memory_model_t declared)
 {
 	return declared == LXP_CPU_MEM_UNCACHED ? LXP_OK : LXP_ERR_INVALID_PARAM;
 }
+static int mock_publish_executable(lxp_region_ref_t address_space, uintptr_t base,
+				   size_t size)
+{
+	g_mock.publish_executable_calls++;
+	g_mock.publish_address_space = address_space;
+	g_mock.publish_base = base;
+	g_mock.publish_size = size;
+	g_mock.publish_observed_alive = g_lxp_slots[1].proc.alive;
+	return g_mock.publish_result;
+}
 static int mock_prepare(void)
 {
 	g_mock.prepare_calls++;
@@ -366,6 +382,7 @@ static const lxp_os_ops_t g_mock_eng = {
 	.cache_clean = mock_cache_clean,
 	.cache_invalidate = mock_cache_invalidate,
 	.coord_map = mock_coord_map,
+	.publish_executable = mock_publish_executable,
 	.cpu_memory_model = LXP_CPU_MEM_UNCACHED,
 	.validate_memory_model = mock_validate_memory_model,
 	.system_version = mock_system_version,
@@ -991,6 +1008,13 @@ static void test_image_start_preserves_executable_extent_and_rolls_back_spawn_fa
 	tx.launch.copied_text_size = 96u;
 
 	assert_int_equal(image_txn_publish(&tx, &g_mock_eng), LXP_OK);
+	assert_int_equal(g_mock.publish_executable_calls, 1);
+	assert_true(lxp_region_ref_equal(g_mock.publish_address_space, tx.region));
+	assert_int_equal(g_mock.publish_base, tx.launch.copied_text_base);
+	assert_int_equal(g_mock.publish_size, tx.launch.copied_text_size);
+	assert_false(g_mock.publish_observed_alive);
+	assert_true(image_txn_publish(&tx, &g_mock_eng) < 0);
+	assert_int_equal(g_mock.publish_executable_calls, 1);
 	assert_int_equal(image_txn_start(&tx, &g_mock_eng), LXP_OK);
 	assert_int_equal(g_mock.launch_calls, 1);
 	assert_int_equal(g_mock.launch.copied_text_base, tx.launch.copied_text_base);
@@ -1017,11 +1041,62 @@ static void test_image_start_marks_xip_launch_with_empty_executable_extent(void 
 	prepare_mock_image_txn(&tx, 1, 1);
 
 	assert_int_equal(image_txn_publish(&tx, &g_mock_eng), LXP_OK);
+	assert_int_equal(g_mock.publish_executable_calls, 0);
 	assert_int_equal(image_txn_start(&tx, &g_mock_eng), LXP_OK);
 	assert_int_equal(g_mock.launch_calls, 1);
 	assert_int_equal(g_mock.launch.copied_text_base, 0);
 	assert_int_equal(g_mock.launch.copied_text_size, 0);
 	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+}
+
+static void test_image_publication_rejects_invalid_extent_generation_and_port_failure(
+	void **state)
+{
+	(void)state;
+	struct image_txn tx;
+	const uintptr_t region_lo = (uintptr_t)&g_mock_regions[1][0];
+
+	prepare_mock_image_txn(&tx, 1, 1);
+	tx.proc.mm->copied_text_executable = 1u;
+	tx.launch.copied_text_base = region_lo + LXP_PROG_REGION_SIZE;
+	tx.launch.copied_text_size = 1u;
+	assert_true(image_txn_publish(&tx, &g_mock_eng) < 0);
+	assert_int_equal(g_mock.publish_executable_calls, 0);
+	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+
+	prepare_mock_image_txn(&tx, 1, 1);
+	tx.launch.copied_text_base = region_lo;
+	tx.launch.copied_text_size = 32u;
+	assert_true(image_txn_publish(&tx, &g_mock_eng) < 0);
+	assert_int_equal(g_mock.publish_executable_calls, 0);
+	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+
+	prepare_mock_image_txn(&tx, 1, 1);
+	tx.proc.mm->copied_text_executable = 1u;
+	tx.launch.copied_text_base = region_lo;
+	tx.launch.copied_text_size = 32u;
+	lxp_region_ref_t current_region = tx.region;
+	tx.region.generation++;
+	assert_true(image_txn_publish(&tx, &g_mock_eng) < 0);
+	assert_int_equal(g_mock.publish_executable_calls, 0);
+	tx.region = current_region;
+	tx.proc.mm->region = current_region;
+	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+
+	prepare_mock_image_txn(&tx, 1, 1);
+	tx.proc.mm->copied_text_executable = 1u;
+	tx.launch.copied_text_base = region_lo;
+	tx.launch.copied_text_size = 32u;
+	g_mock.publish_result = -LXP_EIO;
+	assert_int_equal(image_txn_publish(&tx, &g_mock_eng), -LXP_EIO);
+	assert_int_equal(g_mock.publish_executable_calls, 1);
+	assert_false(tx.executable_published);
+	assert_false(tx.published);
+	assert_int_equal(g_mock.launch_calls, 0);
+	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+	assert_false(g_lxp_slots[1].proc.alive);
+	assert_int_equal(g_regions[1].refs, 0);
 	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
 }
 
@@ -1570,6 +1645,9 @@ static void test_port_abi_and_required_ops_are_validated(void **state)
 	assert_false(os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.park_entry = NULL;
+	assert_false(os_ops_valid(&ops));
+	ops = g_mock_eng;
+	ops.publish_executable = NULL;
 	assert_false(os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.cpu_memory_model = (lxp_cpu_memory_model_t)99;
@@ -3952,6 +4030,9 @@ int main(void)
 			reset_state),
 		cmocka_unit_test_setup(
 			test_image_start_marks_xip_launch_with_empty_executable_extent,
+			reset_state),
+		cmocka_unit_test_setup(
+			test_image_publication_rejects_invalid_extent_generation_and_port_failure,
 			reset_state),
 		cmocka_unit_test_setup(test_world_diagnostics_snapshot_current_states, reset_state),
 		cmocka_unit_test_setup(test_world_validator_reports_conflicting_waits, reset_state),

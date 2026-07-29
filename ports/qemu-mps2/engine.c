@@ -565,6 +565,19 @@ static int qemu_validate_memory_model(lxp_cpu_memory_model_t declared)
 	return declared == LXP_CPU_MEM_UNCACHED ? LXP_OK : LXP_ERR_INVALID_PARAM;
 }
 
+static int qemu_publish_executable(lxp_region_ref_t address_space, uintptr_t base,
+				   size_t len)
+{
+	if (address_space.index < 0 || address_space.index >= LXP_NREG ||
+	    address_space.generation == 0 || len == 0)
+		return LXP_ERR_INVALID_PARAM;
+	uintptr_t region_lo = (uintptr_t)g_prog_regions[address_space.index];
+	uintptr_t region_hi = region_lo + LXP_PROG_REGION_SIZE;
+	return base >= region_lo && base < region_hi && len <= region_hi - base
+		       ? LXP_OK
+		       : LXP_ERR_INVALID_PARAM;
+}
+
 const lxp_os_ops_t g_lxp_qemu_engine = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
@@ -585,6 +598,7 @@ const lxp_os_ops_t g_lxp_qemu_engine = {
 	.random_fill = qemu_random_fill,
 	.mem_stats = qemu_mem_stats,
 	.system_version = qemu_system_version,
+	.publish_executable = qemu_publish_executable,
 	.cpu_memory_model = LXP_CPU_MEM_UNCACHED,
 	.validate_memory_model = qemu_validate_memory_model,
 	.dyn_pool = qemu_dyn_pool, /* M3: hosts a dynamic proc's libc.so mmap + arena */

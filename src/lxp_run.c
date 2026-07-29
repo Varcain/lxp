@@ -2581,7 +2581,7 @@ static int os_ops_valid(const lxp_os_ops_t *ops)
 	    !ops->park_slot ||
 	    !ops->crit_enter || !ops->crit_exit || !ops->event_post || !ops->event_wait ||
 	    !ops->time_us || !ops->time_ns || !ops->exec_capture || !ops->random_fill ||
-	    !ops->validate_memory_model ||
+	    !ops->publish_executable || !ops->validate_memory_model ||
 	    (ops->cpu_memory_model != LXP_CPU_MEM_UNCACHED &&
 	     ops->cpu_memory_model != LXP_CPU_MEM_COHERENT_SAME_ATTRS))
 		return 0;

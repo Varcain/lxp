@@ -21,6 +21,7 @@ struct image_txn {
 	lxp_guest_launch_t launch;
 	int slot;
 	uint8_t prepared;
+	uint8_t executable_published;
 	uint8_t published;
 	uint8_t native_started;
 	uint8_t region_committed;
