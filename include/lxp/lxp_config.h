@@ -200,6 +200,16 @@
 #if LXP_NHOSTFS_OPEN < 1
 #error "LXP_NHOSTFS_OPEN must be positive"
 #endif
+/* Volatile writable filesystem capacity. The pool is bounded and never uses
+ * the host heap. A consumer may optionally define LXP_WFS_POOL_BASE to a
+ * suitably reserved, writable address; otherwise the module owns an array
+ * placed through LXP_FAR_BSS. */
+#ifndef LXP_WFS_POOL
+#define LXP_WFS_POOL (64u * 1024u)
+#endif
+#if LXP_WFS_POOL < 512u || (LXP_WFS_POOL & 15u) != 0u
+#error "LXP_WFS_POOL must be at least 512 bytes and 16-byte aligned"
+#endif
 /* Pipe pool: count + per-pipe ring size. The STM32F746 consumer bumps NPIPE to
  * 12 (SSH pipelines) and relocates the pool via LXP_FAR_BSS; Zephyr shrinks the
  * ring to 2048. Defaults are the safe minimum. */

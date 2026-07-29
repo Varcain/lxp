@@ -19,11 +19,6 @@
 
 #include "lxp/lxp_arena.h"
 
-/* Size of the tmpfs (/tmp) byte pool. A consumer may override it via a compile
- * definition (e.g. a RAM-tight target that keeps little in /tmp); default 64 KiB. */
-#ifndef LXP_WFS_POOL
-#define LXP_WFS_POOL (64u * 1024u)
-#endif
 /* Board-relocatable BSS section (default: normal .bss). A consumer whose on-chip SRAM is tight can
  * point this at a far region (STM32 Zephyr: SDRAM1) so the tmpfs pool — and thus a large /tmp file
  * a program mmap()s (e.g. iperf3's per-stream buffer, created mkstemp+ftruncate+mmap) — need not
@@ -33,7 +28,13 @@
 #endif
 
 static lxp_wnode_t g_wnodes[LXP_NWNODE];
+#if defined(LXP_WFS_POOL_BASE)
+_Static_assert(((uintptr_t)LXP_WFS_POOL_BASE & (LXP_ARENA_ALIGN - 1u)) == 0u,
+	       "LXP_WFS_POOL_BASE must satisfy arena alignment");
+static uint8_t *const g_wfs_pool = (uint8_t *)(uintptr_t)LXP_WFS_POOL_BASE;
+#else
 static uint8_t g_wfs_pool[LXP_WFS_POOL] LXP_FAR_BSS __attribute__((aligned(LXP_ARENA_ALIGN)));
+#endif
 static lxp_arena_t g_wfs_arena;
 static int g_wfs_ready; /* the arena is initialised lazily on first allocation. */
 
@@ -45,7 +46,7 @@ lxp_wnode_t *wnode_at(int i)
 static uint8_t *wfs_alloc(size_t n)
 {
 	if (!g_wfs_ready) {
-		lxp_arena_init(&g_wfs_arena, g_wfs_pool, sizeof(g_wfs_pool));
+		lxp_arena_init(&g_wfs_arena, g_wfs_pool, LXP_WFS_POOL);
 		g_wfs_ready = 1;
 	}
 	return (uint8_t *)lxp_arena_alloc(&g_wfs_arena, n); /* the arena aligns internally */

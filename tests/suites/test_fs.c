@@ -131,6 +131,7 @@ static void test_tmpfs_nodes(void **s)
 	assert_int_equal(wfs_reserve(a, 100), 0);
 	assert_true(wnode_at(a)->cap >= 100);
 	assert_non_null(wnode_at(a)->data);
+	assert_int_equal(wfs_reserve(a, (size_t)LXP_WFS_POOL + 1u), -1);
 }
 
 /* The pool reclaims freed blocks (arena-backed, not a leaky bump pool). Both cases
