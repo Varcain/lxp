@@ -133,6 +133,10 @@
 #ifndef LXP_PROG_REGION_SIZE
 #define LXP_PROG_REGION_SIZE 0x40000u /* 256K */
 #endif
+#if LXP_PROG_REGION_SIZE < 64u || \
+	(LXP_PROG_REGION_SIZE & (LXP_PROG_REGION_SIZE - 1u)) != 0u
+#error "LXP_PROG_REGION_SIZE must be a power of two of at least 64 bytes"
+#endif
 #ifndef LXP_PROG_ARENA_SIZE
 #define LXP_PROG_ARENA_SIZE 0x18000u /* 96K program heap */
 #endif

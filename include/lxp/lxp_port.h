@@ -102,9 +102,10 @@ typedef uintptr_t lxp_critical_token_t;
  * knowing the ELF/FDPIC representation.
  *
  * r[0..15] names r0..r15 (sp/lr/pc are r[13]/r[14]/r[15]). A non-zero
- * copied_text_size identifies the RAM text range which must be made visible to
- * instruction fetch before the task becomes runnable. Both copied-text fields
- * are zero for ordinary execute-in-place images.
+ * copied_text_size identifies the lower, read/execute half of the program
+ * region which must be made visible to instruction fetch before the task
+ * becomes runnable. The upper half remains writable and execute-never. Both
+ * copied-text fields are zero for ordinary execute-in-place images.
  */
 typedef struct lxp_guest_launch {
 	uint32_t r[16];

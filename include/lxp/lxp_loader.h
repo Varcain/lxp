@@ -141,8 +141,8 @@ typedef struct lxp_flat {
 			      *   the ARM Thumb bit where applicable). */
 	uintptr_t text_base;  /**< Runtime base of the text segment (== @c region). */
 	size_t text_size;     /**< Text segment size. */
-	size_t text_map_size; /**< Copied-text MPU extent, rounded up to a representable
-			       *   power-of-two range and zero-filled past @c text_size.
+	size_t text_map_size; /**< Copied-text MPU extent: the lower half of the
+			       *   power-of-two program region, zero-filled past @c text_size.
 			       *   Zero when text executes in place from the image. */
 	uintptr_t data_base;  /**< Runtime base of the data segment. */
 	size_t data_size;     /**< Initialised-data size. */
@@ -165,9 +165,9 @@ typedef struct lxp_flat {
 				   *   entry; 0 for static. Filled by the launcher, not the
 				   *   loader (which loads one object at a time). */
 	int region_exec;	  /**< A @c copy_text load put the program's own text into the
-			      *   power-of-two prefix described by @c text_base / @c text_map_size.
-			      *   The engine maps that prefix RO+X over the full RW+XN program
-			      *   region. 0 for the normal XIP-text load. */
+			      *   lower RX half described by @c text_base / @c text_map_size.
+			      *   The engine maps the upper half separately as RW+XN.
+			      *   0 for the normal XIP-text load. */
 } lxp_flat_t;
 
 /**

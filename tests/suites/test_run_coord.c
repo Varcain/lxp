@@ -1006,7 +1006,7 @@ static void test_image_start_preserves_executable_extent_and_rolls_back_spawn_fa
 	prepare_mock_image_txn(&tx, 1, 1);
 	tx.proc.mm->copied_text_executable = 1u;
 	tx.launch.copied_text_base = (uintptr_t)&g_mock_regions[1][0];
-	tx.launch.copied_text_size = 32u;
+	tx.launch.copied_text_size = LXP_PROG_REGION_SIZE / 2u;
 	tx.proc.mm->copied_text_base = tx.launch.copied_text_base;
 	tx.proc.mm->copied_text_size = tx.launch.copied_text_size;
 
@@ -1071,7 +1071,7 @@ static void test_image_publication_rejects_invalid_extent_generation_and_port_fa
 
 	prepare_mock_image_txn(&tx, 1, 1);
 	tx.launch.copied_text_base = region_lo;
-	tx.launch.copied_text_size = 32u;
+	tx.launch.copied_text_size = LXP_PROG_REGION_SIZE / 2u;
 	assert_true(image_txn_publish(&tx, &g_mock_eng) < 0);
 	assert_int_equal(g_mock.publish_executable_calls, 0);
 	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
@@ -1079,7 +1079,7 @@ static void test_image_publication_rejects_invalid_extent_generation_and_port_fa
 	prepare_mock_image_txn(&tx, 1, 1);
 	tx.proc.mm->copied_text_executable = 1u;
 	tx.launch.copied_text_base = region_lo;
-	tx.launch.copied_text_size = 32u;
+	tx.launch.copied_text_size = LXP_PROG_REGION_SIZE / 2u;
 	tx.proc.mm->copied_text_base = tx.launch.copied_text_base;
 	tx.proc.mm->copied_text_size = tx.launch.copied_text_size;
 	lxp_region_ref_t current_region = tx.region;
@@ -1093,7 +1093,7 @@ static void test_image_publication_rejects_invalid_extent_generation_and_port_fa
 	prepare_mock_image_txn(&tx, 1, 1);
 	tx.proc.mm->copied_text_executable = 1u;
 	tx.launch.copied_text_base = region_lo;
-	tx.launch.copied_text_size = 32u;
+	tx.launch.copied_text_size = LXP_PROG_REGION_SIZE / 2u;
 	tx.proc.mm->copied_text_base = tx.launch.copied_text_base;
 	tx.proc.mm->copied_text_size = tx.launch.copied_text_size;
 	g_mock.publish_result = -LXP_EIO;
@@ -1391,7 +1391,7 @@ static void test_memory_policy_snapshot_and_key_track_every_generation(void **st
 	mm->region_lo = 0x20000000u;
 	mm->region_hi = 0x20040000u;
 	mm->copied_text_base = 0x20000000u;
-	mm->copied_text_size = 0x10000u;
+	mm->copied_text_size = LXP_PROG_REGION_SIZE / 2u;
 	mm->dev_map_lo[0] = 0x40001000u;
 	mm->dev_map_hi[0] = 0x40002000u;
 	mm->dev_map_attrs[0] = LXP_MAP_DEV;
@@ -1406,7 +1406,7 @@ static void test_memory_policy_snapshot_and_key_track_every_generation(void **st
 	assert_int_equal(policy.exec_generation, 11u);
 	assert_int_equal(policy.copied_text_executable, 1u);
 	assert_int_equal(policy.copied_text_base, 0x20000000u);
-	assert_int_equal(policy.copied_text_size, 0x10000u);
+	assert_int_equal(policy.copied_text_size, LXP_PROG_REGION_SIZE / 2u);
 	assert_int_equal(policy.device_count, 1u);
 	assert_int_equal(policy.devices[0].base, 0x40001000u);
 	assert_int_equal(policy.devices[0].size, 0x1000u);
@@ -1461,6 +1461,11 @@ static void test_memory_policy_validator_rejects_noncanonical_snapshots(void **s
 	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
 	invalid = canonical;
 	invalid.copied_text_executable = 2u;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.copied_text_executable = 1u;
+	invalid.copied_text_base = 0x20000000u;
+	invalid.copied_text_size = LXP_PROG_REGION_SIZE / 4u;
 	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
 	invalid = canonical;
 	invalid.copied_text_size = 0x18000u;

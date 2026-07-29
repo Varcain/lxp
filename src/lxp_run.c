@@ -1485,9 +1485,8 @@ int lxp_memory_policy_validate(const lxp_memory_policy_t *policy)
 	    policy->device_count > LXP_MEMORY_DEVICE_MAX || policy->_pad != 0)
 		return -LXP_EINVAL;
 	if (policy->copied_text_executable) {
-		if (policy->copied_text_base == 0 || policy->copied_text_size < 32u ||
-		    policy->copied_text_size >= LXP_PROG_REGION_SIZE ||
-		    (policy->copied_text_size & (policy->copied_text_size - 1u)) != 0u ||
+		if (policy->copied_text_base == 0 ||
+		    policy->copied_text_size != LXP_PROG_REGION_SIZE / 2u ||
 		    (policy->copied_text_base & (policy->copied_text_size - 1u)) != 0u ||
 		    policy->copied_text_size > UINTPTR_MAX - policy->copied_text_base)
 			return -LXP_EINVAL;

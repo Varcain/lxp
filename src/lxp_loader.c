@@ -769,12 +769,17 @@ static const uint8_t *fdpic_file_range(const uint8_t *img, size_t image_size, ui
 	return NULL;
 }
 
-static uint64_t copied_text_map_size(uint32_t text_size)
+/*
+ * Keep copied text and mutable process state as two disjoint, equally sized
+ * MPU partitions.  A power-of-two program region split at its midpoint is the
+ * only prefix/tail split that PMSAv7 can represent with one region apiece.
+ */
+static uint64_t copied_text_map_size(uint32_t text_size, size_t region_size)
 {
-	uint64_t size = 32u; /* PMSAv7 minimum MPU region size. */
-	while (size < text_size)
-		size <<= 1u;
-	return size;
+	if (region_size < 64u || (region_size & (region_size - 1u)) != 0u)
+		return 0u;
+	uint64_t size = region_size / 2u;
+	return text_size <= size ? size : 0u;
 }
 
 int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t region_size,
@@ -842,7 +847,9 @@ int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t regio
 		return LXP_ERR_NO_MEMORY;
 	uint32_t rw_a = (rw_span + 3u) & ~3u;
 	uint32_t loadmap_sz = 4u + nload * 12u;
-	uint64_t text_a = copy_text ? copied_text_map_size(text_sz) : 0u;
+	uint64_t text_a = copy_text ? copied_text_map_size(text_sz, region_size) : 0u;
+	if (copy_text && text_a == 0u)
+		return LXP_ERR_NO_MEMORY;
 	if (text_a + rw_a + loadmap_sz > region_size)
 		return LXP_ERR_NO_MEMORY;
 
@@ -958,11 +965,12 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 		dyn_off = 0;
 	uint32_t rw_a = (rw_span + 3u) & ~3u; /* the loadmap follows the RW block, 4-aligned */
 	uint32_t loadmap_sz = 4u + (uint32_t)nload * 12u;
-	/* A copy_text load reserves a power-of-two prefix for the program's own text. All seams can
-	 * express that prefix as a higher-priority RO+X MPU overlay above the full RW+XN program
-	 * region. The RW block, loadmap and pool follow it. A normal load leaves text shared in-place
-	 * from the image (text_a = 0). Compute in 64-bit so hostile sizes cannot wrap the bound. */
-	uint64_t text_a64 = copy_text ? copied_text_map_size(text_sz) : 0;
+	/* A copy_text load reserves the lower half for RO+X text and leaves the upper half for
+	 * disjoint RW+XN process state. A normal load leaves text shared in-place from the image
+	 * (text_a = 0). Compute in 64-bit so hostile sizes cannot wrap the bound. */
+	uint64_t text_a64 = copy_text ? copied_text_map_size(text_sz, region_size) : 0;
+	if (copy_text && text_a64 == 0u)
+		return LXP_ERR_NO_MEMORY;
 	if (text_a64 + rw_a + loadmap_sz > region_size)
 		return LXP_ERR_NO_MEMORY;
 	uint32_t text_a = (uint32_t)text_a64;

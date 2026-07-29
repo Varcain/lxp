@@ -82,16 +82,22 @@ int image_txn_prepare(struct image_txn *tx, const lxp_os_ops_t *eng, const lxp_r
 		tx->prog.region_used = (size_t)(ld_base - (uintptr_t)region) + ld.region_used;
 	}
 
-	uint8_t *rw = region + ((tx->prog.region_used + 15u) & ~15u);
+	size_t rw_off = (tx->prog.region_used + 15u) & ~15u;
+	if (rw_off > LXP_PROG_REGION_SIZE)
+		return -LXP_ENOMEM;
+	uint8_t *rw = region + rw_off;
 	uint8_t *rw_end = region + LXP_PROG_REGION_SIZE;
 	uint8_t *arena_mem = rw;
 	size_t arena_size = LXP_PROG_ARENA_SIZE;
-	uint8_t *stack_lo = rw + LXP_PROG_ARENA_SIZE;
+	uint8_t *stack_lo = rw;
 	if (dynamic) {
 		if (!eng->dyn_pool)
 			return -LXP_ENOMEM;
 		arena_mem = eng->dyn_pool(region_index, &arena_size);
-		stack_lo = rw;
+	} else {
+		if (LXP_PROG_ARENA_SIZE > (size_t)(rw_end - rw))
+			return -LXP_ENOMEM;
+		stack_lo += LXP_PROG_ARENA_SIZE;
 	}
 	lxp_arena_t *arena = lxp_region_arena(region_index);
 	if (!arena || lxp_arena_init(arena, arena_mem, arena_size) != LXP_OK ||
@@ -172,8 +178,7 @@ int image_txn_publish(struct image_txn *tx, const lxp_os_ops_t *eng)
 	    tx->proc.mm->copied_text_size != text_size || (!copied_text && text_base != 0) ||
 	    !lxp_region_lease_matches(tx->region, tx->owner, 1))
 		return -LXP_EINVAL;
-	if (copied_text && (text_size < 32u || (text_size & (text_size - 1u)) != 0u ||
-			    (text_base & (text_size - 1u)) != 0u))
+	if (copied_text && text_size != LXP_PROG_REGION_SIZE / 2u)
 		return -LXP_EINVAL;
 	if (copied_text && !tx->executable_published) {
 		uint8_t *region = eng->region(tx->region.index);

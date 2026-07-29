@@ -100,7 +100,7 @@ static void test_fdpic_preflight_is_non_mutating(void **st)
 		assert_int_equal(g_region[i], 0xa5);
 }
 
-static void test_fdpic_copytext_uses_zeroed_power_of_two_prefix(void **st)
+static void test_fdpic_copytext_uses_zeroed_rx_half(void **st)
 {
 	(void)st;
 	uint8_t img[IMG_SZ];
@@ -112,8 +112,8 @@ static void test_fdpic_copytext_uses_zeroed_power_of_two_prefix(void **st)
 			 LXP_OK);
 	assert_int_equal(prog.text_base, (uintptr_t)g_region);
 	assert_int_equal(prog.text_size, 16u);
-	assert_int_equal(prog.text_map_size, 32u);
-	assert_int_equal(prog.region, g_region + 32u);
+	assert_int_equal(prog.text_map_size, sizeof(g_region) / 2u);
+	assert_int_equal(prog.region, g_region + sizeof(g_region) / 2u);
 	for (size_t i = prog.text_size; i < prog.text_map_size; i++)
 		assert_int_equal(g_region[i], 0);
 }
@@ -362,7 +362,7 @@ int test_loader_fdpic_run(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_fdpic_valid_loads),
 		cmocka_unit_test(test_fdpic_preflight_is_non_mutating),
-		cmocka_unit_test(test_fdpic_copytext_uses_zeroed_power_of_two_prefix),
+		cmocka_unit_test(test_fdpic_copytext_uses_zeroed_rx_half),
 		cmocka_unit_test(test_fdpic_reject_truncated),
 		cmocka_unit_test(test_fdpic_reject_bad_magic),
 		cmocka_unit_test(test_fdpic_reject_small_phentsize),
