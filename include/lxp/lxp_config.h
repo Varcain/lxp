@@ -144,11 +144,14 @@
 #ifndef LXP_DYN_POOL_SIZE
 #define LXP_DYN_POOL_SIZE 0x80000u /* 512K */
 #endif
-/* Maximum simultaneously-live arena-backed mmap extents per arena.  The table
- * lives in the privileged arena control block (not in guest-writable arena
- * memory), so munmap can require an exact live address/length pair. */
+/* Maximum simultaneously-live arena-backed mmap extents per arena.  uClibc's
+ * NOMMU allocator obtains page-sized chunks with mmap, so the default covers
+ * every 4 KiB page in the 512 KiB dynamic pool.  This makes arena bytes, rather
+ * than an unexpectedly smaller metadata ceiling, the normal allocation limit.
+ * The table lives in the privileged arena control block (not in guest-writable
+ * arena memory), so munmap can require an exact live address/length pair. */
 #ifndef LXP_ARENA_MAX_MAPPINGS
-#define LXP_ARENA_MAX_MAPPINGS 32
+#define LXP_ARENA_MAX_MAPPINGS 128
 #endif
 /* Maximum guest-controlled payload handled by one syscall dispatch quantum.
  * Byte-stream interfaces may legally return a short read/write; libc retries

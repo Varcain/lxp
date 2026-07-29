@@ -211,9 +211,9 @@ static lxp_arena_t g_arenas[LXP_NREG];
 static struct lxp_region_runtime g_regions[LXP_NREG];
 static struct vfork_snapshot_guard g_vfork_guard[LXP_NSLOT];
 /* vfork data isolation: a snapshot of the shared arena's allocator metadata, taken when a vfork
- * child is spawned (keyed by the child's slot) and restored when it execs/exits — the region+dyn_pool
- * BYTES are snapshotted into a spare region, but g_arenas[] lives in coordinator memory. */
-static lxp_arena_t g_snap_arena[LXP_NSLOT];
+ * child is spawned and restored when it execs/exits. The region+dyn_pool bytes and the
+ * coordinator-owned allocator metadata all use the same reserved snapshot region: its
+ * g_arenas[] entry is otherwise idle until the child either execs into or releases it. */
 static const lxp_run_config_t *g_cfg;
 static const lxp_os_ops_t *g_eng; /* for the dispatch to post coordinator events */
 
@@ -903,13 +903,13 @@ void lxp_diag_size_report(lxp_diag_size_report_t *out)
 	out->vfork_guard = sizeof(struct vfork_snapshot_guard);
 	out->debug_record = sizeof(struct lxp_dbg_s);
 	out->per_slot_core = sizeof(g_lxp_slots[0]) + out->signal_save_stack + out->vfork_guard +
-			     out->arena + out->debug_record;
+			     out->debug_record;
 	out->per_region_core = out->arena + sizeof(g_regions[0]);
 	out->slot_table = sizeof(g_lxp_slots);
 	out->coordinator_static =
 		sizeof(g_lxp_slots) + sizeof(g_arenas) + sizeof(g_regions) + sizeof(g_vfork_guard) +
-		sizeof(g_snap_arena) + lxp_primary_events_bytes() + sizeof(g_lxp_dbg) +
-		sizeof(g_sig_save) + sizeof(g_diag_native_present) + sizeof(g_diag_health);
+		lxp_primary_events_bytes() + sizeof(g_lxp_dbg) + sizeof(g_sig_save) +
+		sizeof(g_diag_native_present) + sizeof(g_diag_health);
 }
 
 void lxp_diag_health(lxp_diag_health_t *out)
@@ -2282,7 +2282,7 @@ lxp_region_ref_t vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, lxp_sl
 		uint8_t *sdp = eng->dyn_pool(rsnap, NULL);
 		snapshot_copy_span(sdp, pdp, ds);
 	}
-	g_snap_arena[child.index] =
+	g_arenas[rsnap] =
 		g_arenas[par->mm->region.index]; /* allocator metadata (coordinator memory) */
 	struct vfork_snapshot_guard *guard = &g_vfork_guard[child.index];
 	guard->parent = slot_ref_at(parent_slot);
@@ -2322,7 +2322,7 @@ int vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *par, lxp_region_ref_t sna
 		uint8_t *pdp = eng->dyn_pool(par->mm->region.index, &ds);
 		restore_copy_span(pdp, eng->dyn_pool(rsnap, NULL), ds);
 	}
-	g_arenas[par->mm->region.index] = g_snap_arena[child.index];
+	g_arenas[par->mm->region.index] = g_arenas[rsnap];
 	memset(guard, 0, sizeof(*guard));
 	guard->parent = lxp_slot_ref_none();
 	guard->parent_region = lxp_region_ref_none();
