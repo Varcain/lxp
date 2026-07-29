@@ -162,8 +162,7 @@ extern "C" {
 #define LXP_STOP_NONE 0
 #define LXP_STOP_PARKED \
 	1 /* stopped while already host-parked; the existing wait/lifecycle owner retains it */
-#define LXP_STOP_READY \
-	2 /* saved slot context has a completed result and may resume on SIGCONT */
+#define LXP_STOP_READY 2 /* saved slot context has a completed result and may resume on SIGCONT */
 /* statx: AT_EMPTY_PATH means "stat the dirfd itself" (fstat); the basic-stats
  * result mask reported back in stx_mask. */
 #define LXP_AT_EMPTY_PATH 0x1000
@@ -363,6 +362,8 @@ typedef struct lxp_mm {
 	int is_dynamic;
 	uint8_t copied_text_executable;
 	uint8_t _policy_pad[3];
+	uintptr_t copied_text_base;
+	size_t copied_text_size;
 	uintptr_t dev_map_lo[2], dev_map_hi[2];
 	unsigned dev_map_attrs[2];
 } lxp_mm_t;
@@ -478,9 +479,9 @@ typedef struct lxp_wait {
  */
 typedef struct lxp_proc {
 	struct lxp_guest_view *guest_view; /**< Active privileged dispatch view; never inherited. */
-	lxp_mm_t *mm;			/**< Refcounted address space, arena and mappings. */
-	lxp_write_fn write_fn;		/**< fd 1/2 sink; NULL → @c -LXP_EBADF. */
-	lxp_read_fn read_fn;		/**< fd 0 source; NULL → EOF. */
+	lxp_mm_t *mm;			   /**< Refcounted address space, arena and mappings. */
+	lxp_write_fn write_fn;		   /**< fd 1/2 sink; NULL → @c -LXP_EBADF. */
+	lxp_read_fn read_fn;		   /**< fd 0 source; NULL → EOF. */
 	int (*console_poll)(void *ctx); /**< Optional non-blocking "key available?" for poll(2). */
 	void *io_ctx;			/**< Opaque, passed to @c write_fn / @c read_fn. */
 	const lxp_file_t *fs;		/**< Read-only rootfs table (NULL → no files). */
@@ -533,7 +534,7 @@ typedef struct lxp_proc {
 	/* Concurrent process model: the run loop coordinates a live process set;
 	 * incarnation, resume, and host lifecycle live in its private slot-runtime
 	 * record. */
-	int alive;	       /**< This slot holds a live process. */
+	int alive;		     /**< This slot holds a live process. */
 	lxp_slot_ref_t vfork_parent; /**< Parent suspended awaiting this child's exec/exit. */
 	/* vfork data isolation (NOMMU has no copy-on-write): a vfork child SHARES the parent's region,
 	 * so its pre-exec writes (e.g. a libc signal-disposition reset) would corrupt the suspended

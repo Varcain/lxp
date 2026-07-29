@@ -134,7 +134,7 @@ static struct {
 	int net_end_calls;
 } g_mock;
 
-static uint8_t g_mock_regions[LXP_NREG][256];
+static uint8_t g_mock_regions[LXP_NREG][256] __attribute__((aligned(256)));
 static uint8_t g_mock_dyn_pools[LXP_NREG][64];
 static lxp_exec_capture_t g_mock_exec_captures[LXP_NSLOT];
 static lxp_arena_t g_mock_arenas[LXP_NSLOT];
@@ -189,11 +189,10 @@ static int mock_spawn_launch(int sidx, uint32_t generation, int ridx,
 	g_mock.launch_sidx = sidx;
 	g_mock.launch_generation = generation;
 	g_mock.launch = *launch;
-	g_mock.launch_observed_runnable =
-		(uint8_t)lxp_slot_ref_is_runnable((lxp_slot_ref_t){
-			.index = (int16_t)sidx,
-			.generation = generation,
-		});
+	g_mock.launch_observed_runnable = (uint8_t)lxp_slot_ref_is_runnable((lxp_slot_ref_t){
+		.index = (int16_t)sidx,
+		.generation = generation,
+	});
 	g_mock.launch_observed_host_state = lxp_slot_host_state(sidx);
 	if (g_mock.launch_failures > 0) {
 		g_mock.launch_failures--;
@@ -201,8 +200,7 @@ static int mock_spawn_launch(int sidx, uint32_t generation, int ridx,
 	}
 	return LXP_OK;
 }
-static int mock_spawn_resume(int sidx, uint32_t generation, int ridx,
-			     lxp_spawn_resume_mode_t mode,
+static int mock_spawn_resume(int sidx, uint32_t generation, int ridx, lxp_spawn_resume_mode_t mode,
 			     const struct lxp_resume_ctx *c, long r0)
 {
 	(void)ridx;
@@ -210,11 +208,10 @@ static int mock_spawn_resume(int sidx, uint32_t generation, int ridx,
 	g_mock.resume_sidx = sidx;
 	g_mock.resume_generation = generation;
 	g_mock.resume_mode = mode;
-	g_mock.resume_observed_runnable =
-		(uint8_t)lxp_slot_ref_is_runnable((lxp_slot_ref_t){
-			.index = (int16_t)sidx,
-			.generation = generation,
-		});
+	g_mock.resume_observed_runnable = (uint8_t)lxp_slot_ref_is_runnable((lxp_slot_ref_t){
+		.index = (int16_t)sidx,
+		.generation = generation,
+	});
 	g_mock.resume_observed_host_state = lxp_slot_host_state(sidx);
 	g_mock.resume_r0 = r0;
 	g_mock.resume_xpsr = c->xpsr;
@@ -272,10 +269,9 @@ static void mock_event_wait(unsigned ms)
 	if (g_mock.observe_wait_slot >= 0) {
 		lxp_proc_t *proc = lxp_slot_proc(g_mock.observe_wait_slot);
 		g_mock.wait_observed_alive = proc && proc->alive;
-		g_mock.wait_observed_region_refs =
-			proc && proc->mm && proc->mm->region.index >= 0
-				? g_regions[proc->mm->region.index].refs
-				: 0;
+		g_mock.wait_observed_region_refs = proc && proc->mm && proc->mm->region.index >= 0
+							   ? g_regions[proc->mm->region.index].refs
+							   : 0;
 		g_mock.wait_observed_trap_active = lxp_trap_active();
 	}
 }
@@ -326,13 +322,11 @@ static const lxp_cpu_memory_contract_t g_mock_memory_contract = {
 	.normal_attrs = LXP_CPU_MEM_ATTR_NORMAL_NC_NSH,
 };
 
-static int
-mock_validate_memory_contract(const lxp_cpu_memory_contract_t *declared)
+static int mock_validate_memory_contract(const lxp_cpu_memory_contract_t *declared)
 {
 	return declared == &g_mock_memory_contract ? LXP_OK : LXP_ERR_INVALID_PARAM;
 }
-static int mock_publish_executable(lxp_region_ref_t address_space, uintptr_t base,
-				   size_t size)
+static int mock_publish_executable(lxp_region_ref_t address_space, uintptr_t base, size_t size)
 {
 	g_mock.publish_executable_calls++;
 	g_mock.publish_address_space = address_space;
@@ -1005,15 +999,16 @@ static void test_image_publish_failpoints_release_every_owner(void **state)
 	}
 }
 
-static void test_image_start_preserves_executable_extent_and_rolls_back_spawn_failure(
-	void **state)
+static void test_image_start_preserves_executable_extent_and_rolls_back_spawn_failure(void **state)
 {
 	(void)state;
 	struct image_txn tx;
 	prepare_mock_image_txn(&tx, 1, 1);
 	tx.proc.mm->copied_text_executable = 1u;
-	tx.launch.copied_text_base = (uintptr_t)&g_mock_regions[1][32];
-	tx.launch.copied_text_size = 96u;
+	tx.launch.copied_text_base = (uintptr_t)&g_mock_regions[1][0];
+	tx.launch.copied_text_size = 32u;
+	tx.proc.mm->copied_text_base = tx.launch.copied_text_base;
+	tx.proc.mm->copied_text_size = tx.launch.copied_text_size;
 
 	assert_int_equal(image_txn_publish(&tx, &g_mock_eng), LXP_OK);
 	assert_int_equal(g_mock.publish_executable_calls, 1);
@@ -1058,8 +1053,7 @@ static void test_image_start_marks_xip_launch_with_empty_executable_extent(void 
 	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
 }
 
-static void test_image_publication_rejects_invalid_extent_generation_and_port_failure(
-	void **state)
+static void test_image_publication_rejects_invalid_extent_generation_and_port_failure(void **state)
 {
 	(void)state;
 	struct image_txn tx;
@@ -1069,6 +1063,8 @@ static void test_image_publication_rejects_invalid_extent_generation_and_port_fa
 	tx.proc.mm->copied_text_executable = 1u;
 	tx.launch.copied_text_base = region_lo + LXP_PROG_REGION_SIZE;
 	tx.launch.copied_text_size = 1u;
+	tx.proc.mm->copied_text_base = tx.launch.copied_text_base;
+	tx.proc.mm->copied_text_size = tx.launch.copied_text_size;
 	assert_true(image_txn_publish(&tx, &g_mock_eng) < 0);
 	assert_int_equal(g_mock.publish_executable_calls, 0);
 	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
@@ -1084,6 +1080,8 @@ static void test_image_publication_rejects_invalid_extent_generation_and_port_fa
 	tx.proc.mm->copied_text_executable = 1u;
 	tx.launch.copied_text_base = region_lo;
 	tx.launch.copied_text_size = 32u;
+	tx.proc.mm->copied_text_base = tx.launch.copied_text_base;
+	tx.proc.mm->copied_text_size = tx.launch.copied_text_size;
 	lxp_region_ref_t current_region = tx.region;
 	tx.region.generation++;
 	assert_true(image_txn_publish(&tx, &g_mock_eng) < 0);
@@ -1096,6 +1094,8 @@ static void test_image_publication_rejects_invalid_extent_generation_and_port_fa
 	tx.proc.mm->copied_text_executable = 1u;
 	tx.launch.copied_text_base = region_lo;
 	tx.launch.copied_text_size = 32u;
+	tx.proc.mm->copied_text_base = tx.launch.copied_text_base;
+	tx.proc.mm->copied_text_size = tx.launch.copied_text_size;
 	g_mock.publish_result = -LXP_EIO;
 	assert_int_equal(image_txn_publish(&tx, &g_mock_eng), -LXP_EIO);
 	assert_int_equal(g_mock.publish_executable_calls, 1);
@@ -1388,6 +1388,10 @@ static void test_memory_policy_snapshot_and_key_track_every_generation(void **st
 	mm->device_generation = 7u;
 	mm->exec_generation = 11u;
 	mm->copied_text_executable = 1u;
+	mm->region_lo = 0x20000000u;
+	mm->region_hi = 0x20040000u;
+	mm->copied_text_base = 0x20000000u;
+	mm->copied_text_size = 0x10000u;
 	mm->dev_map_lo[0] = 0x40001000u;
 	mm->dev_map_hi[0] = 0x40002000u;
 	mm->dev_map_attrs[0] = LXP_MAP_DEV;
@@ -1401,6 +1405,8 @@ static void test_memory_policy_snapshot_and_key_track_every_generation(void **st
 	assert_int_equal(policy.device_generation, 7u);
 	assert_int_equal(policy.exec_generation, 11u);
 	assert_int_equal(policy.copied_text_executable, 1u);
+	assert_int_equal(policy.copied_text_base, 0x20000000u);
+	assert_int_equal(policy.copied_text_size, 0x10000u);
 	assert_int_equal(policy.device_count, 1u);
 	assert_int_equal(policy.devices[0].base, 0x40001000u);
 	assert_int_equal(policy.devices[0].size, 0x1000u);
@@ -1455,6 +1461,15 @@ static void test_memory_policy_validator_rejects_noncanonical_snapshots(void **s
 	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
 	invalid = canonical;
 	invalid.copied_text_executable = 2u;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.copied_text_size = 0x18000u;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.copied_text_base++;
+	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	invalid = canonical;
+	invalid.copied_text_base = 0x20000000u;
 	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
 	invalid = canonical;
 	invalid.device_count = LXP_MEMORY_DEVICE_MAX + 1u;
@@ -1702,8 +1717,7 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	(void)state;
 	uint8_t image[1] = {0};
 	const lxp_file_t files[] = {
-		{.path = "/init", .data = image, .size = sizeof(image),
-		 .mode = LXP_S_IFREG | 0755},
+		{.path = "/init", .data = image, .size = sizeof(image), .mode = LXP_S_IFREG | 0755},
 	};
 	const lxp_run_config_t cfg = {
 		.rootfs = files,
@@ -1821,10 +1835,8 @@ static void test_coordinator_socket_wait_uses_readiness_events(void **state)
 	 * 50 ms maintenance wakeup) without quantizing socket readiness to 5 ms. */
 	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_SOCKET, 1), 50);
 	/* A different polling wait class still requires the short timeout. */
-	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_POLL |
-							  LXP_BLOCKED_WAIT_SOCKET,
-						  1),
-			 5);
+	assert_int_equal(
+		coordinator_wait_timeout(LXP_BLOCKED_WAIT_POLL | LXP_BLOCKED_WAIT_SOCKET, 1), 5);
 	assert_int_equal(coordinator_wait_timeout(0, 0), 50);
 }
 
@@ -2732,8 +2744,7 @@ static void test_spawn_callbacks_receive_explicit_mode_and_published_slot(void *
 	deferred_slot_reassign(launch_slot);
 	g_lxp_slots[launch_slot].proc.alive = 1;
 	uint32_t launch_generation = slot_generation(launch_slot);
-	assert_int_equal(coordinator_launch_slot(&g_mock_eng, launch_slot, 0, &launch),
-			 LXP_OK);
+	assert_int_equal(coordinator_launch_slot(&g_mock_eng, launch_slot, 0, &launch), LXP_OK);
 	assert_int_equal(g_mock.launch_calls, 1);
 	assert_int_equal(g_mock.launch_sidx, launch_slot);
 	assert_int_equal(g_mock.launch_generation, launch_generation);
@@ -2748,8 +2759,7 @@ static void test_spawn_callbacks_receive_explicit_mode_and_published_slot(void *
 	deferred_slot_reassign(start_slot);
 	g_lxp_slots[start_slot].proc.alive = 1;
 	uint32_t start_generation = slot_generation(start_slot);
-	assert_int_equal(coordinator_resume_slot(&g_mock_eng, start_slot, 0, &ctx, 7),
-			 LXP_OK);
+	assert_int_equal(coordinator_resume_slot(&g_mock_eng, start_slot, 0, &ctx, 7), LXP_OK);
 	assert_int_equal(g_mock.resume_mode, LXP_SPAWN_RESUME_START);
 	assert_int_equal(g_mock.resume_generation, start_generation);
 	assert_true(g_mock.resume_observed_runnable);
@@ -2762,8 +2772,7 @@ static void test_spawn_callbacks_receive_explicit_mode_and_published_slot(void *
 	make_valid_running_slot(parked_slot, 3);
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, parked_slot), LXP_OK);
 	uint32_t parked_generation = slot_generation(parked_slot);
-	assert_int_equal(coordinator_resume_slot(&g_mock_eng, parked_slot, 3, &ctx, 9),
-			 LXP_OK);
+	assert_int_equal(coordinator_resume_slot(&g_mock_eng, parked_slot, 3, &ctx, 9), LXP_OK);
 	assert_int_equal(g_mock.resume_mode, LXP_SPAWN_RESUME_PARKED);
 	assert_int_equal(g_mock.resume_generation, parked_generation);
 	assert_true(g_mock.resume_observed_runnable);
@@ -3185,10 +3194,11 @@ static void test_signal_interrupts_blocked_netfs_before_retry(void **state)
 	(void)state;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *p = &g_lxp_slots[0].proc;
-	assert_int_equal(lxp_wait_begin(p, &(lxp_wait_t){
-						 .kind = LXP_WAIT_NETFS,
-						 .data.io.request = -1,
-					 }),
+	assert_int_equal(lxp_wait_begin(p,
+					&(lxp_wait_t){
+						.kind = LXP_WAIT_NETFS,
+						.data.io.request = -1,
+					}),
 			 LXP_OK);
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
 	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
@@ -3247,8 +3257,7 @@ static void test_exec_commit_discards_older_deferred_request(void **state)
 	struct exec_txn tx;
 	exec_txn_init(&tx, 0);
 	assert_int_equal(exec_txn_reserve(&tx), LXP_OK);
-	assert_int_equal(exec_txn_validate_image(&tx, image, build_coord_fdpic(image), 0),
-			 LXP_OK);
+	assert_int_equal(exec_txn_validate_image(&tx, image, build_coord_fdpic(image), 0), LXP_OK);
 	assert_int_equal(exec_txn_commit(&tx, &g_mock_eng), LXP_OK);
 	assert_false(lxp_slot_ref_equal(stale_owner, slot_ref_at(0)));
 	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
@@ -3337,10 +3346,11 @@ static int protocol_apply(struct protocol_model *model, enum protocol_command co
 	case PROTOCOL_PARK_TIMER:
 		if (model->phase != PROTOCOL_RUNNING)
 			return 0;
-		assert_int_equal(lxp_wait_begin(proc, &(lxp_wait_t){
-							 .kind = LXP_WAIT_TIMER,
-							 .data.timer.deadline_us = 10,
-						 }),
+		assert_int_equal(lxp_wait_begin(proc,
+						&(lxp_wait_t){
+							.kind = LXP_WAIT_TIMER,
+							.data.timer.deadline_us = 10,
+						}),
 				 LXP_OK);
 		assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
 		model->phase = PROTOCOL_PARKED;
@@ -3349,8 +3359,8 @@ static int protocol_apply(struct protocol_model *model, enum protocol_command co
 		if (model->phase != PROTOCOL_PARKED)
 			return 0;
 		assert_int_equal(lxp_wait_timeout(proc, LXP_WAIT_TIMER), LXP_OK);
-		assert_int_equal(coordinator_resume_slot(&g_mock_eng, 0, 0,
-							&g_lxp_slots[0].resume, 0),
+		assert_int_equal(coordinator_resume_slot(&g_mock_eng, 0, 0, &g_lxp_slots[0].resume,
+							 0),
 				 LXP_OK);
 		model->phase = PROTOCOL_RUNNING;
 		break;
@@ -3464,18 +3474,17 @@ static void test_blocked_scan_reports_wait_policy(void **state)
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_slots[0].proc;
 	proc->console_poll = console_not_ready;
-	assert_int_equal(lxp_wait_begin(proc, &(lxp_wait_t){
-							 .kind = LXP_WAIT_CONSOLE,
-							 .data.io.buffer =
-								 (uintptr_t)g_mock_regions[0],
-							 .data.io.length = 1,
-						 }),
+	assert_int_equal(lxp_wait_begin(proc,
+					&(lxp_wait_t){
+						.kind = LXP_WAIT_CONSOLE,
+						.data.io.buffer = (uintptr_t)g_mock_regions[0],
+						.data.io.length = 1,
+					}),
 			 LXP_OK);
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
 
 	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, &g_mock_cfg, 1);
-	assert_int_equal(scan.wait_policy,
-			 LXP_BLOCKED_WAIT_POLL | LXP_BLOCKED_WAIT_CONSOLE);
+	assert_int_equal(scan.wait_policy, LXP_BLOCKED_WAIT_POLL | LXP_BLOCKED_WAIT_CONSOLE);
 	assert_false(scan.progress);
 }
 
@@ -3750,8 +3759,7 @@ static void test_stop_continue_publication_preserves_generation_order(void **sta
 	proc->pending_sigs = lxp_sig_bit(LXP_SIGKILL);
 	lxp_signal_latch(proc, LXP_SIGSTOP);
 	lxp_signal_latch(proc, LXP_SIGCONT);
-	assert_int_equal(proc->pending_sigs,
-			 lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGCONT));
+	assert_int_equal(proc->pending_sigs, lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGCONT));
 }
 
 static void test_caught_sigcont_runs_after_boundary_resume(void **state)
@@ -3800,10 +3808,11 @@ static void test_caught_sigcont_interrupts_parked_wait(void **state)
 	proc->sighand->handler[LXP_SIGCONT] = 0x1234u;
 	proc->sighand->restorer = 0x5678u;
 	g_lxp_slots[0].resume.pc = 0x2221u;
-	assert_int_equal(lxp_wait_begin(proc, &(lxp_wait_t){
-						 .kind = LXP_WAIT_TIMER,
-						 .data.timer.deadline_us = 1000,
-					 }),
+	assert_int_equal(lxp_wait_begin(proc,
+					&(lxp_wait_t){
+						.kind = LXP_WAIT_TIMER,
+						.data.timer.deadline_us = 1000,
+					}),
 			 LXP_OK);
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
 	lxp_signal_latch(proc, LXP_SIGSTOP);
@@ -3867,10 +3876,11 @@ static void test_blocked_caught_sigcont_keeps_parked_wait(void **state)
 	lxp_proc_t *proc = &g_lxp_slots[0].proc;
 	proc->sighand->handler[LXP_SIGCONT] = 0x1234u;
 	proc->sig_blocked = lxp_sig_bit(LXP_SIGCONT);
-	assert_int_equal(lxp_wait_begin(proc, &(lxp_wait_t){
-						 .kind = LXP_WAIT_TIMER,
-						 .data.timer.deadline_us = 1000,
-					 }),
+	assert_int_equal(lxp_wait_begin(proc,
+					&(lxp_wait_t){
+						.kind = LXP_WAIT_TIMER,
+						.data.timer.deadline_us = 1000,
+					}),
 			 LXP_OK);
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
 	lxp_signal_latch(proc, LXP_SIGSTOP);
@@ -4054,15 +4064,12 @@ int main(void)
 		cmocka_unit_test_setup(test_child_constructor_rolls_back_each_acquisition,
 				       reset_state),
 		cmocka_unit_test_setup(test_fork_build_abort_restores_world, reset_state),
-		cmocka_unit_test_setup(test_fork_transaction_failpoints_restore_world,
-				       reset_state),
+		cmocka_unit_test_setup(test_fork_transaction_failpoints_restore_world, reset_state),
 		cmocka_unit_test_setup(test_exec_precommit_failpoints_preserve_old_image,
 				       reset_state),
-		cmocka_unit_test_setup(test_exec_stale_snapshot_contains_vfork_pair,
+		cmocka_unit_test_setup(test_exec_stale_snapshot_contains_vfork_pair, reset_state),
+		cmocka_unit_test_setup(test_exec_commit_failure_contains_only_transitioning_guest,
 				       reset_state),
-		cmocka_unit_test_setup(
-			test_exec_commit_failure_contains_only_transitioning_guest,
-			reset_state),
 		cmocka_unit_test_setup(test_image_publish_failpoints_release_every_owner,
 				       reset_state),
 		cmocka_unit_test_setup(
@@ -4085,18 +4092,14 @@ int main(void)
 		cmocka_unit_test_setup(
 			test_slot_references_reject_recycled_incarnations_and_skip_zero,
 			reset_state),
-		cmocka_unit_test_setup(test_resume_context_view_rejects_recycled_slot,
-				       reset_state),
-		cmocka_unit_test_setup(test_fork_resume_clone_owns_context_mutation,
-				       reset_state),
+		cmocka_unit_test_setup(test_resume_context_view_rejects_recycled_slot, reset_state),
+		cmocka_unit_test_setup(test_fork_resume_clone_owns_context_mutation, reset_state),
 		cmocka_unit_test_setup(test_fault_publication_rejects_stale_slot_reference,
 				       reset_state),
-		cmocka_unit_test_setup(
-			test_memory_policy_snapshot_and_key_track_every_generation,
-			reset_state),
-		cmocka_unit_test_setup(
-			test_memory_policy_validator_rejects_noncanonical_snapshots,
-			reset_state),
+		cmocka_unit_test_setup(test_memory_policy_snapshot_and_key_track_every_generation,
+				       reset_state),
+		cmocka_unit_test_setup(test_memory_policy_validator_rejects_noncanonical_snapshots,
+				       reset_state),
 		cmocka_unit_test_setup(test_region_references_reject_reuse_and_skip_zero,
 				       reset_state),
 		cmocka_unit_test_setup(test_world_validator_rejects_stale_region_capabilities,
@@ -4134,15 +4137,12 @@ int main(void)
 				       reset_state),
 		cmocka_unit_test_setup(test_stop_continue_publication_preserves_generation_order,
 				       reset_state),
-		cmocka_unit_test_setup(test_caught_sigcont_runs_after_boundary_resume,
-				       reset_state),
-		cmocka_unit_test_setup(test_caught_sigcont_interrupts_parked_wait,
-				       reset_state),
+		cmocka_unit_test_setup(test_caught_sigcont_runs_after_boundary_resume, reset_state),
+		cmocka_unit_test_setup(test_caught_sigcont_interrupts_parked_wait, reset_state),
 		cmocka_unit_test_setup(
 			test_blocked_caught_sigcont_resumes_boundary_but_stays_pending,
 			reset_state),
-		cmocka_unit_test_setup(test_blocked_caught_sigcont_keeps_parked_wait,
-				       reset_state),
+		cmocka_unit_test_setup(test_blocked_caught_sigcont_keeps_parked_wait, reset_state),
 		cmocka_unit_test_setup(test_caught_sigcont_does_not_resume_vfork_owned_park,
 				       reset_state),
 		cmocka_unit_test_setup(test_stopped_vfork_parent_release_waits_for_sigcont,
@@ -4159,19 +4159,17 @@ int main(void)
 		cmocka_unit_test_setup(test_deferred_requests_are_per_slot, reset_state),
 		cmocka_unit_test_setup(test_deferred_generation_rejects_stale_work, reset_state),
 		cmocka_unit_test_setup(test_deferred_same_slot_rejects_overwrite, reset_state),
-		cmocka_unit_test_setup(
-			test_deferred_completion_takes_pending_stop_without_resume,
-			reset_state),
+		cmocka_unit_test_setup(test_deferred_completion_takes_pending_stop_without_resume,
+				       reset_state),
 		cmocka_unit_test_setup(test_deferred_signal_cancels_before_execute, reset_state),
 		cmocka_unit_test_setup(test_signal_interrupts_blocked_netfs_before_retry,
 				       reset_state),
-		cmocka_unit_test_setup(
-			test_netfs_exec_completion_publishes_primary_event, reset_state),
+		cmocka_unit_test_setup(test_netfs_exec_completion_publishes_primary_event,
+				       reset_state),
 		cmocka_unit_test_setup(test_exec_commit_discards_older_deferred_request,
 				       reset_state),
 		cmocka_unit_test_setup(
-			test_reused_slot_ignores_late_completion_from_dead_generation,
-			reset_state),
+			test_reused_slot_ignores_late_completion_from_dead_generation, reset_state),
 		cmocka_unit_test_setup(test_generated_protocol_sequences_preserve_world,
 				       reset_state),
 		cmocka_unit_test_setup(test_console_icrnl_immediate_read, reset_state),
@@ -4214,10 +4212,8 @@ int main(void)
 		cmocka_unit_test_setup(test_teardown_quiesces_before_releasing_resources,
 				       reset_state),
 		cmocka_unit_test_setup(
-			test_spawn_callbacks_receive_explicit_mode_and_published_slot,
-			reset_state),
-		cmocka_unit_test_setup(test_completion_owner_requires_parked_slot,
-				       reset_state),
+			test_spawn_callbacks_receive_explicit_mode_and_published_slot, reset_state),
+		cmocka_unit_test_setup(test_completion_owner_requires_parked_slot, reset_state),
 		cmocka_unit_test_setup(test_park_failure_aborts_and_kills_slot, reset_state),
 		cmocka_unit_test_setup(test_resume_failure_aborts_parked_slot, reset_state),
 		cmocka_unit_test_setup(test_abort_failure_retains_slot_until_retry, reset_state),

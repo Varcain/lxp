@@ -31,7 +31,6 @@
 /* Program-region / arena / dyn-pool sizes + LXP_NREG / LXP_NSLOT come from
  * lxp_config.h (host-overridable; the oveRTOS build maps them per engine). */
 
-
 /* Complete Cortex-M single-precision floating-point state. `active` records
  * whether the interrupted task owned an extended FP exception frame. The seam
  * is responsible for forcing any lazy stack operation before populating this
@@ -114,7 +113,7 @@ int lxp_trap_active(void);
 
 /** Maximum device capabilities represented by an address-space policy. */
 #define LXP_MEMORY_DEVICE_MAX 2u
-#define LXP_MEMORY_POLICY_ABI_VERSION 1u
+#define LXP_MEMORY_POLICY_ABI_VERSION 2u
 
 typedef struct lxp_device_capability {
 	uintptr_t base;
@@ -135,6 +134,8 @@ typedef struct lxp_memory_policy {
 	lxp_region_ref_t address_space;
 	uint32_t device_generation;
 	uint32_t exec_generation;
+	uintptr_t copied_text_base;
+	size_t copied_text_size;
 	uint8_t copied_text_executable;
 	uint8_t device_count;
 	uint16_t _pad;
@@ -147,6 +148,8 @@ typedef struct lxp_memory_policy_key {
 	lxp_region_ref_t address_space;
 	uint32_t device_generation;
 	uint32_t exec_generation;
+	uintptr_t copied_text_base;
+	size_t copied_text_size;
 	uint8_t copied_text_executable;
 	uint8_t _pad[3];
 } lxp_memory_policy_key_t;
@@ -160,8 +163,7 @@ typedef struct lxp_memory_policy_key {
  */
 int lxp_memory_policy_validate(const lxp_memory_policy_t *policy);
 
-static inline lxp_memory_policy_key_t
-lxp_memory_policy_make_key(const lxp_memory_policy_t *policy)
+static inline lxp_memory_policy_key_t lxp_memory_policy_make_key(const lxp_memory_policy_t *policy)
 {
 	lxp_memory_policy_key_t key = {0};
 	if (lxp_memory_policy_validate(policy) != LXP_OK)
@@ -170,6 +172,8 @@ lxp_memory_policy_make_key(const lxp_memory_policy_t *policy)
 	key.address_space = policy->address_space;
 	key.device_generation = policy->device_generation;
 	key.exec_generation = policy->exec_generation;
+	key.copied_text_base = policy->copied_text_base;
+	key.copied_text_size = policy->copied_text_size;
 	key.copied_text_executable = policy->copied_text_executable;
 	return key;
 }
@@ -182,16 +186,20 @@ static inline int lxp_memory_policy_matches_key(const lxp_memory_policy_t *polic
 	       lxp_region_ref_equal(policy->address_space, key->address_space) &&
 	       policy->device_generation == key->device_generation &&
 	       policy->exec_generation == key->exec_generation &&
+	       policy->copied_text_base == key->copied_text_base &&
+	       policy->copied_text_size == key->copied_text_size &&
 	       policy->copied_text_executable == key->copied_text_executable;
 }
 
-static inline int lxp_memory_policy_address_space_matches_key(
-	const lxp_memory_policy_t *policy, const lxp_memory_policy_key_t *key)
+static inline int lxp_memory_policy_address_space_matches_key(const lxp_memory_policy_t *policy,
+							      const lxp_memory_policy_key_t *key)
 {
 	return key && lxp_memory_policy_validate(policy) == LXP_OK &&
 	       lxp_region_ref_equal(policy->address_space, key->address_space) &&
 	       policy->device_generation == key->device_generation &&
 	       policy->exec_generation == key->exec_generation &&
+	       policy->copied_text_base == key->copied_text_base &&
+	       policy->copied_text_size == key->copied_text_size &&
 	       policy->copied_text_executable == key->copied_text_executable;
 }
 

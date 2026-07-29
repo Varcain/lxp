@@ -57,6 +57,8 @@ static uint8_t g_dyn_pools[LXP_NREG][LXP_DYN_POOL_SIZE]
 #define SLOT_PRIO 1 /* guests run below the coordinator; NO portPRIVILEGE_BIT (unprivileged) */
 #define TRAMP_STACK_WORDS 192
 #define TRAMP_STORAGE_WORDS 256
+_Static_assert(portNUM_CONFIGURABLE_REGIONS >= 5,
+	       "QEMU copied-text W^X requires five configurable MPU regions");
 /* The tramp stack is the restricted task's auto MPU stack region, so it must be
  * backed by a power-of-2-aligned allocation. The task receives 768 bytes; its
  * MPU region rounds to this 1K allocation, whose tail holds the persistent
@@ -91,7 +93,7 @@ static int current_slot(void)
 
 /* ---- the SVC trap ---------------------------------------------------------- */
 struct lnx_capture {
-	uint32_t *hw;      /* hw[0..7] = r0,r1,r2,r3,r12,lr,pc,xpsr (HW-stacked) */
+	uint32_t *hw; /* hw[0..7] = r0,r1,r2,r3,r12,lr,pc,xpsr (HW-stacked) */
 	uint32_t psp;
 	uint32_t r4_11[8];
 	uint32_t exc_return;
@@ -180,47 +182,48 @@ extern void vPortSVCHandler(void); /* FreeRTOS's own (start-scheduler) handler *
 
 __attribute__((naked)) void SVC_Handler(void)
 {
-	__asm__ volatile("ldr   r1, =g_lxp_trap_gate \n"
-			 "ldr   r1, [r1]           \n"
-			 "cmp   r1, #0             \n"
-			 "beq   1f                 \n" /* no run active → FreeRTOS (start scheduler) */
-			 "dmb                       \n"
-			 "tst   lr, #8             \n" /* handler-mode svc (yield/priv) → FreeRTOS */
-			 "beq   1f                 \n"
-			 "mrs   r0, psp            \n"
-			 "ldr   r1, =g_cap         \n"
-			 "str   r0, [r1, #0]       \n"
-			 "str   r0, [r1, #4]       \n"
-			 "add   r2, r1, #8         \n"
-			 "stmia r2, {r4-r11}       \n"
-			 "str   lr, [r1, #40]      \n" /* EXC_RETURN: bit 4 selects basic/extended frame */
-			 "mov   r0, r1             \n"
-			 /* The dispatch runs in HANDLER mode but inherits the program's CONTROL.nPRIV=1.
+	__asm__ volatile(
+		"ldr   r1, =g_lxp_trap_gate \n"
+		"ldr   r1, [r1]           \n"
+		"cmp   r1, #0             \n"
+		"beq   1f                 \n" /* no run active → FreeRTOS (start scheduler) */
+		"dmb                       \n"
+		"tst   lr, #8             \n" /* handler-mode svc (yield/priv) → FreeRTOS */
+		"beq   1f                 \n"
+		"mrs   r0, psp            \n"
+		"ldr   r1, =g_cap         \n"
+		"str   r0, [r1, #0]       \n"
+		"str   r0, [r1, #4]       \n"
+		"add   r2, r1, #8         \n"
+		"stmia r2, {r4-r11}       \n"
+		"str   lr, [r1, #40]      \n" /* EXC_RETURN: bit 4 selects basic/extended frame */
+		"mov   r0, r1             \n"
+		/* The dispatch runs in HANDLER mode but inherits the program's CONTROL.nPRIV=1.
 			  * FreeRTOS MPU_* wrappers (event_post's semaphore-give) would read nPRIV, believe
 			  * they're unprivileged, and svc-raise-privilege — nested inside this active SVCall
 			  * that escalates to a HardFault. Clear nPRIV across the dispatch (handler mode is
 			  * privileged regardless), then restore so the program resumes UNPRIVILEGED. */
-			 "mrs   r2, control        \n"
-			 "push  {r2, lr}           \n"
-			 "bic   r3, r2, #1         \n"
-			 "msr   control, r3        \n"
-			 "isb                      \n"
-			 "bl    lxp_qemu_svc_c     \n"
-			 "pop   {r2, lr}           \n"
-			 "msr   control, r2        \n"
-			 "isb                      \n"
-			 "cmp   r0, #0             \n"
-			 "beq   1f                 \n" /* 0 = not a program svc → forward */
-			 /* Reload r4-r11 from g_cap (lxp_qemu_svc_c wrote them back post-dispatch): the
+		"mrs   r2, control        \n"
+		"push  {r2, lr}           \n"
+		"bic   r3, r2, #1         \n"
+		"msr   control, r3        \n"
+		"isb                      \n"
+		"bl    lxp_qemu_svc_c     \n"
+		"pop   {r2, lr}           \n"
+		"msr   control, r2        \n"
+		"isb                      \n"
+		"cmp   r0, #0             \n"
+		"beq   1f                 \n" /* 0 = not a program svc → forward */
+		/* Reload r4-r11 from g_cap (lxp_qemu_svc_c wrote them back post-dispatch): the
 			  * exception return only replays the HW frame (r0-r3,r12,lr,pc,xpsr), so a callee-saved
 			  * register the dispatch rewrote (rt_sigreturn's r9/FDPIC-GOT restore) would otherwise be
 			  * dropped and the interrupted code resumes with the signal handler's GOT. */
-			 "ldr   r1, =g_cap         \n"
-			 "add   r1, r1, #8         \n"
-			 "ldmia r1, {r4-r11}       \n"
-			 "bx    lr                 \n" /* 1 = handled: replay the frame */
-			 "1:                       \n"
-			 "b     vPortSVCHandler    \n");
+		"ldr   r1, =g_cap         \n"
+		"add   r1, r1, #8         \n"
+		"ldmia r1, {r4-r11}       \n"
+		"bx    lr                 \n" /* 1 = handled: replay the frame */
+		"1:                       \n"
+		"b     vPortSVCHandler    \n");
 }
 
 /* ---- program-fault containment -------------------------------------------- */
@@ -236,10 +239,11 @@ void lxp_qemu_fault_c(uint32_t *frame /* the faulting program's PSP HW frame */)
 			.detail = *(volatile uint32_t *)0xE000ED28u,
 		};
 		(void)lxp_slot_report_memory_fault(task_slot_ref(sidx), &fault);
-		frame[0] = 0;                                   /* fault park has no resume token */
-		frame[6] = ((uint32_t)&qemu_park_entry) & ~1u;  /* stacked PC → park entry */
-		frame[7] |= (1u << 24);                         /* xPSR.T */
-		*(volatile uint32_t *)0xE000ED28u = *(volatile uint32_t *)0xE000ED28u; /* clear CFSR */
+		frame[0] = 0;				       /* fault park has no resume token */
+		frame[6] = ((uint32_t)&qemu_park_entry) & ~1u; /* stacked PC → park entry */
+		frame[7] |= (1u << 24);			       /* xPSR.T */
+		*(volatile uint32_t *)0xE000ED28u =
+			*(volatile uint32_t *)0xE000ED28u; /* clear CFSR */
 		return;
 	}
 	HardFault_Handler(); /* not a program fault → fatal */
@@ -287,13 +291,13 @@ static struct resume_desc *g_park_desc[LXP_NSLOT];
 _Static_assert(offsetof(struct resume_desc, ctx.fp.s) == 68u, "resume FP register offset");
 _Static_assert(offsetof(struct resume_desc, ctx.fp.fpscr) == 196u, "resume FPSCR offset");
 _Static_assert(offsetof(struct resume_desc, ctx.fp.active) == 200u, "resume FP-active offset");
-#define LXP_TRAMP_RESTORE_FP                                                        \
-	"ldr   r1, [r0, #200]  \n" /* ctx.fp.active */                              \
-	"cbz   r1, 0f          \n"                                                    \
-	"add   r2, r0, #68     \n" /* ctx.fp.s */                                   \
-	"vldmia r2!, {s0-s31}  \n"                                                    \
-	"ldr   r1, [r0, #196]  \n" /* ctx.fp.fpscr */                               \
-	"vmsr  fpscr, r1       \n"                                                    \
+#define LXP_TRAMP_RESTORE_FP                           \
+	"ldr   r1, [r0, #200]  \n" /* ctx.fp.active */ \
+	"cbz   r1, 0f          \n"                     \
+	"add   r2, r0, #68     \n" /* ctx.fp.s */      \
+	"vldmia r2!, {s0-s31}  \n"                     \
+	"ldr   r1, [r0, #196]  \n" /* ctx.fp.fpscr */  \
+	"vmsr  fpscr, r1       \n"                     \
 	"0:                    \n"
 #else
 #define LXP_TRAMP_RESTORE_FP ""
@@ -307,26 +311,25 @@ __attribute__((naked)) static void prog_tramp(void *desc __attribute__((unused))
 	 * value, so ctx.pc is staged on the guest stack rather than kept in a scratch register. */
 	__asm__ volatile(LXP_TRAMP_RESTORE_FP
 			 "add   r3, r0, #4     \n" /* r3 -> ctx */
-			 "ldmia r3!, {r4-r11} \n" /* r4..r11;  r3 -> ctx.r12 */
-			 "ldr   r12, [r3], #4 \n" /* r12;      r3 -> ctx.lr */
-			 "ldr   lr,  [r3], #4 \n" /* lr;       r3 -> ctx.sp */
-			 "ldr   r1,  [r3], #4 \n" /* r1 = ctx.sp (temp);  r3 -> ctx.pc */
-			 "ldr   r2,  [r3], #4 \n" /* r2 = ctx.pc (temp);  r3 -> ctx.r1 */
-			 "mov   sp,  r1       \n" /* sp = ctx.sp */
-			 "ldr   r1,  [r3, #12]\n" /* ctx.xpsr (temp; NZCVQ only below) */
+			 "ldmia r3!, {r4-r11} \n"  /* r4..r11;  r3 -> ctx.r12 */
+			 "ldr   r12, [r3], #4 \n"  /* r12;      r3 -> ctx.lr */
+			 "ldr   lr,  [r3], #4 \n"  /* lr;       r3 -> ctx.sp */
+			 "ldr   r1,  [r3], #4 \n"  /* r1 = ctx.sp (temp);  r3 -> ctx.pc */
+			 "ldr   r2,  [r3], #4 \n"  /* r2 = ctx.pc (temp);  r3 -> ctx.r1 */
+			 "mov   sp,  r1       \n"  /* sp = ctx.sp */
+			 "ldr   r1,  [r3, #12]\n"  /* ctx.xpsr (temp; NZCVQ only below) */
 			 "msr   APSR_nzcvq, r1\n"
-			 "push  {r2}          \n" /* stage ctx.pc on the guest stack */
-			 "ldr   r1,  [r3]     \n" /* r1 = ctx.r1 (final) */
-			 "ldr   r2,  [r3, #4] \n" /* r2 = ctx.r2 (final) */
-			 "ldr   r0,  [r0]     \n" /* r0 = desc->r0 (the resume value) */
-			 "ldr   r3,  [r3, #8] \n" /* r3 = ctx.r3 (final; last use as ptr) */
+			 "push  {r2}          \n"   /* stage ctx.pc on the guest stack */
+			 "ldr   r1,  [r3]     \n"   /* r1 = ctx.r1 (final) */
+			 "ldr   r2,  [r3, #4] \n"   /* r2 = ctx.r2 (final) */
+			 "ldr   r0,  [r0]     \n"   /* r0 = desc->r0 (the resume value) */
+			 "ldr   r3,  [r3, #8] \n"   /* r3 = ctx.r3 (final; last use as ptr) */
 			 "pop   {pc}          \n"); /* branch ctx.pc; sp restored to ctx.sp */
 }
 
 static struct resume_desc *stash_desc(int sidx, const struct lxp_resume_ctx *ctx, long r0)
 {
-	struct resume_desc *d =
-		(struct resume_desc *)&g_tramp_stacks[sidx][TRAMP_STACK_WORDS];
+	struct resume_desc *d = (struct resume_desc *)&g_tramp_stacks[sidx][TRAMP_STACK_WORDS];
 	d->r0 = (uint32_t)r0;
 	d->ctx = *ctx;
 	d->ready = 1u;
@@ -337,11 +340,9 @@ _Static_assert(sizeof(struct resume_desc) <=
 		       (TRAMP_STORAGE_WORDS - TRAMP_STACK_WORDS) * sizeof(StackType_t),
 	       "resume descriptor exceeds reserved trampoline-stack tail");
 
-static void *qemu_park_prepare(int sidx, uint32_t generation,
-			       const struct lxp_resume_ctx *ctx)
+static void *qemu_park_prepare(int sidx, uint32_t generation, const struct lxp_resume_ctx *ctx)
 {
-	if (sidx < 0 || sidx >= LXP_NSLOT || !g_tid[sidx] ||
-	    g_task_generation[sidx] != generation)
+	if (sidx < 0 || sidx >= LXP_NSLOT || !g_tid[sidx] || g_task_generation[sidx] != generation)
 		return NULL;
 	struct resume_desc *d = stash_desc(sidx, ctx, 0);
 	__atomic_store_n(&d->ready, 0u, __ATOMIC_RELEASE);
@@ -387,6 +388,15 @@ static lxp_exec_capture_t *qemu_exec_capture(int sidx)
  * static unprivileged-RX flash region. A stray access outside these faults MemManage. */
 static int spawn_common(int sidx, uint32_t generation, int ridx, struct resume_desc *desc)
 {
+	lxp_memory_policy_t policy;
+	lxp_slot_ref_t slot = {
+		.index = (int16_t)sidx,
+		.generation = generation,
+	};
+	if (lxp_slot_memory_policy(slot, &policy) != LXP_OK ||
+	    lxp_memory_policy_validate(&policy) != LXP_OK || policy.address_space.index != ridx ||
+	    policy.device_count != 0)
+		return -1;
 	char nm[5] = {'l', 'n', 'x', (char)('0' + sidx), 0};
 	const uint32_t rw_xn = portMPU_REGION_READ_WRITE | portMPU_REGION_EXECUTE_NEVER |
 			       portMPU_REGION_CACHEABLE_BUFFERABLE;
@@ -399,16 +409,30 @@ static int spawn_common(int sidx, uint32_t generation, int ridx, struct resume_d
 		.uxPriority = SLOT_PRIO, /* NO portPRIVILEGE_BIT → UNPRIVILEGED */
 		.puxStackBuffer = g_tramp_stacks[sidx],
 		.pxTaskBuffer = &g_tcb[sidx],
-		.xRegions = {
-			{g_prog_regions[ridx], LXP_PROG_REGION_SIZE, rw_xn}, /* [0] image + stack */
-			{g_dyn_pools[ridx], LXP_DYN_POOL_SIZE, rw_xn},       /* [1] dynamic arena */
-			/* [2],[3] the M3 PSRAM cpio window (bottom 12 MiB), unprivileged RO+X. Two
+		.xRegions =
+			{
+				{g_prog_regions[ridx], LXP_PROG_REGION_SIZE,
+				 rw_xn}, /* [0] image + stack */
+				{g_dyn_pools[ridx], LXP_DYN_POOL_SIZE,
+				 rw_xn}, /* [1] dynamic arena */
+				/* [2],[3] the M3 PSRAM cpio window (bottom 12 MiB), unprivileged RO+X. Two
 			 * power-of-2 regions (8M+4M) so they don't overlap the dyn_pools at 0x60C00000.
 			 * Inert for M1/M2 (their cpio is in flash; the guest never touches PSRAM). */
-			{(uint8_t *)0x60000000u, 8u * 1024u * 1024u, ro_x},
-			{(uint8_t *)0x60800000u, 4u * 1024u * 1024u, ro_x},
-		},
+				{(uint8_t *)0x60000000u, 8u * 1024u * 1024u, ro_x},
+				{(uint8_t *)0x60800000u, 4u * 1024u * 1024u, ro_x},
+			},
 	};
+	if (policy.copied_text_executable) {
+		if (policy.copied_text_base != (uintptr_t)g_prog_regions[ridx] ||
+		    policy.copied_text_size == 0u ||
+		    policy.copied_text_size >= LXP_PROG_REGION_SIZE)
+			return -1;
+		tp.xRegions[4] = (MemoryRegion_t){
+			(void *)policy.copied_text_base,
+			policy.copied_text_size,
+			ro_x,
+		};
+	}
 	/* Publish the native generation before task creation can schedule the new
 	 * guest and let its first SVC resolve task_slot_ref(). */
 	g_task_generation[sidx] = generation;
@@ -430,8 +454,7 @@ static int qemu_spawn_launch(int sidx, uint32_t generation, int ridx,
 	return spawn_common(sidx, generation, ridx, stash_desc(sidx, &c, launch->r[0]));
 }
 
-static int qemu_spawn_resume(int sidx, uint32_t generation, int ridx,
-			     lxp_spawn_resume_mode_t mode,
+static int qemu_spawn_resume(int sidx, uint32_t generation, int ridx, lxp_spawn_resume_mode_t mode,
 			     const struct lxp_resume_ctx *ctx, long r0val)
 {
 	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0)
@@ -468,8 +491,7 @@ static int qemu_abort_slot(int sidx, uint32_t generation)
 
 static int qemu_park_slot(int sidx, uint32_t generation)
 {
-	if (sidx < 0 || sidx >= LXP_NSLOT ||
-	    !lxp_slot_ref_is_runnable(task_slot_ref(sidx)) ||
+	if (sidx < 0 || sidx >= LXP_NSLOT || !lxp_slot_ref_is_runnable(task_slot_ref(sidx)) ||
 	    !g_tid[sidx] || g_task_generation[sidx] != generation)
 		return -1;
 	vTaskSuspend(g_tid[sidx]);
@@ -565,23 +587,21 @@ static const lxp_cpu_memory_contract_t g_qemu_memory_contract = {
 	.normal_attrs = LXP_CPU_MEM_ATTR_NORMAL_NC_NSH,
 };
 
-static int
-qemu_validate_memory_contract(const lxp_cpu_memory_contract_t *declared)
+static int qemu_validate_memory_contract(const lxp_cpu_memory_contract_t *declared)
 {
 	/* The reference machine runs without a data cache. Keep that fact in the
 	 * same explicit port contract used by the hardware seams. */
 	return declared == &g_qemu_memory_contract ? LXP_OK : LXP_ERR_INVALID_PARAM;
 }
 
-static int qemu_publish_executable(lxp_region_ref_t address_space, uintptr_t base,
-				   size_t len)
+static int qemu_publish_executable(lxp_region_ref_t address_space, uintptr_t base, size_t len)
 {
 	if (address_space.index < 0 || address_space.index >= LXP_NREG ||
 	    address_space.generation == 0 || len == 0)
 		return LXP_ERR_INVALID_PARAM;
 	uintptr_t region_lo = (uintptr_t)g_prog_regions[address_space.index];
-	uintptr_t region_hi = region_lo + LXP_PROG_REGION_SIZE;
-	return base >= region_lo && base < region_hi && len <= region_hi - base
+	return base == region_lo && len >= 32u && len < LXP_PROG_REGION_SIZE &&
+			       (len & (len - 1u)) == 0u
 		       ? LXP_OK
 		       : LXP_ERR_INVALID_PARAM;
 }

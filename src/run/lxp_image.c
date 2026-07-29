@@ -114,6 +114,8 @@ int image_txn_prepare(struct image_txn *tx, const lxp_os_ops_t *eng, const lxp_r
 	tx->proc.is_fdpic = tx->prog.is_fdpic;
 	tx->proc.mm->is_dynamic = dynamic;
 	tx->proc.mm->copied_text_executable = (uint8_t)(tx->prog.region_exec != 0);
+	tx->proc.mm->copied_text_base = tx->prog.region_exec ? tx->prog.text_base : 0u;
+	tx->proc.mm->copied_text_size = tx->prog.region_exec ? tx->prog.text_map_size : 0u;
 	tx->proc.stack_lo = (uintptr_t)stack_lo;
 	tx->proc.snapshot = lxp_region_ref_none();
 	tx->proc.vfork_parent = lxp_slot_ref_none();
@@ -152,7 +154,7 @@ int image_txn_prepare(struct image_txn *tx, const lxp_os_ops_t *eng, const lxp_r
 	tx->launch.xpsr = 1u << 24; /* Cortex-M Thumb state */
 	if (tx->prog.region_exec) {
 		tx->launch.copied_text_base = tx->prog.text_base;
-		tx->launch.copied_text_size = tx->prog.text_size;
+		tx->launch.copied_text_size = tx->prog.text_map_size;
 	}
 	tx->prepared = 1;
 	return LXP_OK;
@@ -165,17 +167,20 @@ int image_txn_publish(struct image_txn *tx, const lxp_os_ops_t *eng)
 	const uintptr_t text_base = tx->launch.copied_text_base;
 	const size_t text_size = tx->launch.copied_text_size;
 	const int copied_text = text_size != 0;
-	if (!tx->proc.mm ||
-	    tx->proc.mm->copied_text_executable != (uint8_t)copied_text ||
-	    (!copied_text && text_base != 0) ||
+	if (!tx->proc.mm || tx->proc.mm->copied_text_executable != (uint8_t)copied_text ||
+	    tx->proc.mm->copied_text_base != text_base ||
+	    tx->proc.mm->copied_text_size != text_size || (!copied_text && text_base != 0) ||
 	    !lxp_region_lease_matches(tx->region, tx->owner, 1))
+		return -LXP_EINVAL;
+	if (copied_text && (text_size < 32u || (text_size & (text_size - 1u)) != 0u ||
+			    (text_base & (text_size - 1u)) != 0u))
 		return -LXP_EINVAL;
 	if (copied_text && !tx->executable_published) {
 		uint8_t *region = eng->region(tx->region.index);
 		uintptr_t region_lo = (uintptr_t)region;
 		uintptr_t region_hi = region_lo + LXP_PROG_REGION_SIZE;
-		if (!region || region_hi < region_lo || text_base < region_lo ||
-		    text_base >= region_hi || text_size > region_hi - text_base)
+		if (!region || region_hi < region_lo || text_base != region_lo ||
+		    text_size >= LXP_PROG_REGION_SIZE)
 			return -LXP_EINVAL;
 		int rc = eng->publish_executable(tx->region, text_base, text_size);
 		if (rc != LXP_OK)

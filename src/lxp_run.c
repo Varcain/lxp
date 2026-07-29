@@ -35,7 +35,7 @@
 #include "lxp/lxp_disp_ops.h" /* lxp_disp_set_geometry */
 #endif
 #if LXP_ENABLE_NET
-#include "lxp/lxp_net.h"     /* socket-layer park/retry + fork/exit fd lifecycle */
+#include "lxp/lxp_net.h" /* socket-layer park/retry + fork/exit fd lifecycle */
 #include "lxp/lxp_net_ops.h"
 #endif
 #if LXP_ENABLE_NETFS
@@ -45,7 +45,7 @@
 #include "lxp/lxp_pty.h" /* pty-layer park/retry (lxp_pty_retry) */
 #endif
 
-#include "lxp_internal.h"     /* lxp_encode_wstatus (shared with sys_wait4) */
+#include "lxp_internal.h" /* lxp_encode_wstatus (shared with sys_wait4) */
 #include "lxp_provider.h"
 #include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
 #include "fs/lxp_pipe.h"
@@ -354,8 +354,8 @@ int coordinator_guest_view_begin(int slot, lxp_guest_view_t *view)
 	if (!lxp_slot_ref_is_current(ref) || !g_lxp_slots[slot].proc.mm)
 		return -LXP_ESRCH;
 	lxp_coord_map(g_lxp_slots[slot].proc.mm->region.index);
-	return lxp_guest_view_begin(&g_lxp_slots[slot].proc, ref,
-				    &g_lxp_slots[slot].generation, LXP_GUEST_READ_WRITE, view);
+	return lxp_guest_view_begin(&g_lxp_slots[slot].proc, ref, &g_lxp_slots[slot].generation,
+				    LXP_GUEST_READ_WRITE, view);
 }
 int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actual_count)
 {
@@ -672,8 +672,7 @@ int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
 	out->primary_pending = primary_slot_pending(slot);
 	out->signal_depth = g_sig_save[slot].depth;
 	out->native_task_known = diag_native_census_current();
-	out->native_task_present =
-		out->native_task_known ? g_diag_native_present[slot] : 0;
+	out->native_task_present = out->native_task_known ? g_diag_native_present[slot] : 0;
 	out->intent_mask = diag_intent_mask(slot);
 	out->wait_mask = diag_wait_mask(p);
 	out->mm_identity = (uintptr_t)p->mm;
@@ -922,14 +921,10 @@ void lxp_diag_health(lxp_diag_health_t *out)
 const char *lxp_diag_host_state_name(unsigned state)
 {
 	static const char *const names[LXP_DIAG_HOST_COUNT] = {
-		[LXP_DIAG_HOST_FREE] = "free",
-		[LXP_DIAG_HOST_STARTING] = "starting",
-		[LXP_DIAG_HOST_RUNNING] = "running",
-		[LXP_DIAG_HOST_PARKING] = "parking",
-		[LXP_DIAG_HOST_PARKED] = "parked",
-		[LXP_DIAG_HOST_RESUMING] = "resuming",
-		[LXP_DIAG_HOST_EXITING] = "exiting",
-		[LXP_DIAG_HOST_DEAD] = "dead",
+		[LXP_DIAG_HOST_FREE] = "free",	     [LXP_DIAG_HOST_STARTING] = "starting",
+		[LXP_DIAG_HOST_RUNNING] = "running", [LXP_DIAG_HOST_PARKING] = "parking",
+		[LXP_DIAG_HOST_PARKED] = "parked",   [LXP_DIAG_HOST_RESUMING] = "resuming",
+		[LXP_DIAG_HOST_EXITING] = "exiting", [LXP_DIAG_HOST_DEAD] = "dead",
 		[LXP_DIAG_HOST_FAILED] = "failed",
 	};
 	return state < LXP_DIAG_HOST_COUNT && names[state] ? names[state] : "invalid";
@@ -954,20 +949,17 @@ const char *lxp_diag_issue_name(unsigned issue)
 		[LXP_DIAG_BAD_REGION] = "bad-region",
 		[LXP_DIAG_REGION_OWNER_WITHOUT_REFS] = "region-owner-without-refs",
 		[LXP_DIAG_REGION_REFS_WITHOUT_OWNER] = "region-refs-without-owner",
-		[LXP_DIAG_REGION_REFS_WITHOUT_GENERATION] =
-			"region-refs-without-generation",
+		[LXP_DIAG_REGION_REFS_WITHOUT_GENERATION] = "region-refs-without-generation",
 		[LXP_DIAG_LIVE_TASK_WITHOUT_RESOURCES] = "live-task-without-resources",
 		[LXP_DIAG_LIVE_TASK_BAD_REGION] = "live-task-bad-region",
 		[LXP_DIAG_LIVE_TASK_WITHOUT_REGION_REF] = "live-task-without-region-ref",
 		[LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL] = "resource-refcount-too-small",
 		[LXP_DIAG_FREE_TASK_RUNNABLE] = "free-task-runnable",
-		[LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH] =
-			"runnable-host-state-mismatch",
+		[LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH] = "runnable-host-state-mismatch",
 		[LXP_DIAG_PARKED_TASK_RUNNABLE] = "parked-task-runnable",
 		[LXP_DIAG_NATIVE_TASK_MISSING] = "native-task-missing",
 		[LXP_DIAG_NATIVE_TASK_LEAKED] = "native-task-leaked",
-		[LXP_DIAG_HOST_STATE_WITHOUT_GENERATION] =
-			"host-state-without-generation",
+		[LXP_DIAG_HOST_STATE_WITHOUT_GENERATION] = "host-state-without-generation",
 		[LXP_DIAG_DEFERRED_STATE_INVALID] = "deferred-state-invalid",
 		[LXP_DIAG_DEFERRED_GENERATION_STALE] = "deferred-generation-stale",
 		[LXP_DIAG_MULTIPLE_INTENTS] = "multiple-intents",
@@ -1451,8 +1443,7 @@ const struct lxp_resume_ctx *lxp_slot_resume_view(lxp_slot_ref_t ref)
 	return lxp_slot_ref_is_current(ref) ? &g_lxp_slots[ref.index].resume : NULL;
 }
 
-int lxp_slot_resume_clone_for_fork(lxp_slot_ref_t child, lxp_slot_ref_t parent,
-				   uintptr_t child_sp)
+int lxp_slot_resume_clone_for_fork(lxp_slot_ref_t child, lxp_slot_ref_t parent, uintptr_t child_sp)
 {
 	if (child.index < 0 || child.index >= LXP_NSLOT || child.generation == 0 ||
 	    child.index == parent.index || slot_generation(child.index) != child.generation ||
@@ -1468,8 +1459,7 @@ int lxp_slot_ref_is_runnable(lxp_slot_ref_t ref)
 	if (ref.index < 0 || ref.index >= LXP_NSLOT || ref.generation == 0 ||
 	    !slot_runnable_load(ref.index))
 		return 0;
-	return slot_generation(ref.index) == ref.generation &&
-	       g_lxp_slots[ref.index].proc.alive;
+	return slot_generation(ref.index) == ref.generation && g_lxp_slots[ref.index].proc.alive;
 }
 
 int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out)
@@ -1494,6 +1484,16 @@ int lxp_memory_policy_validate(const lxp_memory_policy_t *policy)
 	    policy->exec_generation == 0 || policy->copied_text_executable > 1u ||
 	    policy->device_count > LXP_MEMORY_DEVICE_MAX || policy->_pad != 0)
 		return -LXP_EINVAL;
+	if (policy->copied_text_executable) {
+		if (policy->copied_text_base == 0 || policy->copied_text_size < 32u ||
+		    policy->copied_text_size >= LXP_PROG_REGION_SIZE ||
+		    (policy->copied_text_size & (policy->copied_text_size - 1u)) != 0u ||
+		    (policy->copied_text_base & (policy->copied_text_size - 1u)) != 0u ||
+		    policy->copied_text_size > UINTPTR_MAX - policy->copied_text_base)
+			return -LXP_EINVAL;
+	} else if (policy->copied_text_base != 0 || policy->copied_text_size != 0) {
+		return -LXP_EINVAL;
+	}
 
 	for (unsigned i = 0; i < LXP_MEMORY_DEVICE_MAX; i++) {
 		const lxp_device_capability_t *cap = &policy->devices[i];
@@ -1527,8 +1527,16 @@ int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out)
 		.address_space = region,
 		.device_generation = mm->device_generation,
 		.exec_generation = mm->exec_generation,
+		.copied_text_base = mm->copied_text_base,
+		.copied_text_size = mm->copied_text_size,
 		.copied_text_executable = mm->copied_text_executable,
 	};
+	if ((mm->copied_text_executable &&
+	     (mm->copied_text_base != mm->region_lo || mm->copied_text_base >= mm->region_hi ||
+	      mm->copied_text_size > mm->region_hi - mm->copied_text_base)) ||
+	    (!mm->copied_text_executable &&
+	     (mm->copied_text_base != 0 || mm->copied_text_size != 0)))
+		return -LXP_EINVAL;
 	for (unsigned i = 0; i < LXP_MEMORY_DEVICE_MAX; i++) {
 		if (mm->dev_map_hi[i] <= mm->dev_map_lo[i])
 			continue;
@@ -1546,8 +1554,8 @@ int lxp_dispatch_slot(lxp_slot_ref_t ref, struct lxp_frame *frame)
 		return -LXP_ESRCH;
 	lxp_guest_view_t view;
 	int rc = lxp_guest_view_begin(&g_lxp_slots[ref.index].proc, ref,
-				      &g_lxp_slots[ref.index].generation,
-				      LXP_GUEST_READ_WRITE, &view);
+				      &g_lxp_slots[ref.index].generation, LXP_GUEST_READ_WRITE,
+				      &view);
 	if (rc != LXP_OK)
 		return rc;
 	lxp_dispatch(frame, &g_lxp_slots[ref.index].proc);
@@ -1620,8 +1628,8 @@ int coordinator_restore_mm_maps(const lxp_os_ops_t *eng, int sidx, const lxp_mm_
  * all peers from the still-unmodified mm so a partial hardware update cannot
  * escape into userspace. */
 #if LXP_ENABLE_DEV
-int coordinator_map_mm_range(const lxp_os_ops_t *eng, lxp_mm_t *mm, uintptr_t addr,
-			     size_t len, unsigned attrs)
+int coordinator_map_mm_range(const lxp_os_ops_t *eng, lxp_mm_t *mm, uintptr_t addr, size_t len,
+			     unsigned attrs)
 {
 	if (!eng->map_device)
 		return -LXP_ENODEV;
@@ -1824,8 +1832,7 @@ int thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slot, int f
  * frame (to resume with `ret` = -EINTR), then resume the proc INTO its handler; the handler's
  * sa_restorer -> rt_sigreturn restores the saved frame and the syscall returns -EINTR. SIG_IGN
  * just resumes with `ret`; SIG_DFL terminates (the LXP_EV_EXIT pass reaps it). */
-void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, int sig,
-			   long ret)
+void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, int sig, long ret)
 {
 	uintptr_t h = lxp_sig_handler_get(proc, sig);
 	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
@@ -2243,8 +2250,8 @@ static void restore_copy_span(void *dst, const void *src, size_t len)
  * reserved stack, while preserving NOMMU shell re-exec paths that modify vfork caller frames.
  * Returns the reserved scratch-region capability, or an invalid reference if
  * the parent cannot be isolated. */
-lxp_region_ref_t vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par,
-				lxp_slot_ref_t child, uintptr_t sp)
+lxp_region_ref_t vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, lxp_slot_ref_t child,
+				uintptr_t sp)
 {
 	int parent_slot = slot_of(par);
 	if (parent_slot < 0 || child.index < 0 || child.index >= LXP_NSLOT ||
@@ -2607,10 +2614,9 @@ static int os_ops_valid(const lxp_os_ops_t *ops)
 	if (!ops || ops->abi_version != LXP_OS_OPS_ABI_VERSION ||
 	    ops->struct_size != sizeof(*ops) || !ops->region || !ops->spawn_launch ||
 	    !ops->spawn_resume || !ops->abort_slot || !ops->park_entry || !ops->park_prepare ||
-	    !ops->park_slot ||
-	    !ops->crit_enter || !ops->crit_exit || !ops->event_post || !ops->event_wait ||
-	    !ops->time_us || !ops->time_ns || !ops->exec_capture || !ops->random_fill ||
-	    !ops->publish_executable || !ops->validate_memory_contract ||
+	    !ops->park_slot || !ops->crit_enter || !ops->crit_exit || !ops->event_post ||
+	    !ops->event_wait || !ops->time_us || !ops->time_ns || !ops->exec_capture ||
+	    !ops->random_fill || !ops->publish_executable || !ops->validate_memory_contract ||
 	    !cpu_memory_contract_valid(ops->cpu_memory_contract))
 		return 0;
 #if LXP_ENABLE_NETFS_EXEC
@@ -2695,8 +2701,8 @@ static int run_config_valid(const lxp_run_config_t *cfg)
 /* THE port entry (see lxp_run.h). Validate and publish this run's exact
  * providers, then bracket the coordinator with optional host setup/teardown. */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
-	    const lxp_display_ops_t *disp_ops, const lxp_run_config_t *run_config,
-	    const char *path, int argc, const char *const argv[])
+	    const lxp_display_ops_t *disp_ops, const lxp_run_config_t *run_config, const char *path,
+	    int argc, const char *const argv[])
 {
 	int rc = LXP_RUN_ELAUNCH;
 	int prepare_entered = 0;

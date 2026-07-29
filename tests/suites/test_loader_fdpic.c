@@ -43,26 +43,26 @@ static size_t build_fdpic(uint8_t *buf)
 	buf[1] = 'E';
 	buf[2] = 'L';
 	buf[3] = 'F';
-	buf[4] = 1;  /* ELFCLASS32 */
-	buf[7] = 65; /* ELFOSABI_ARM_FDPIC */
-	w16(buf + 16, 3);  /* e_type = ET_DYN */
-	w16(buf + 18, 40); /* e_machine = EM_ARM */
-	w32(buf + 24, 0);  /* e_entry */
-	w32(buf + 28, 52); /* e_phoff (phdrs right after the 52-byte Ehdr) */
-	w16(buf + 42, 32); /* e_phentsize */
-	w16(buf + 44, 2);  /* e_phnum */
+	buf[4] = 1;		/* ELFCLASS32 */
+	buf[7] = 65;		/* ELFOSABI_ARM_FDPIC */
+	w16(buf + 16, 3);	/* e_type = ET_DYN */
+	w16(buf + 18, 40);	/* e_machine = EM_ARM */
+	w32(buf + 24, 0);	/* e_entry */
+	w32(buf + 28, 52);	/* e_phoff (phdrs right after the 52-byte Ehdr) */
+	w16(buf + 42, 32);	/* e_phentsize */
+	w16(buf + 44, 2);	/* e_phnum */
 	uint8_t *p0 = buf + 52; /* text segment, shared in-place, PF_X */
 	w32(p0 + 0, 1);		/* PT_LOAD */
 	w32(p0 + 16, 16);	/* p_filesz */
 	w32(p0 + 20, 16);	/* p_memsz */
 	w32(p0 + 24, 1);	/* PF_X */
 	uint8_t *p1 = buf + 84; /* data segment, copied into the region, PF_R|PF_W */
-	w32(p1 + 0, 1);		 /* PT_LOAD */
-	w32(p1 + 4, 116);	 /* p_offset (data bytes live at 116) */
-	w32(p1 + 8, 0x1000);	 /* p_vaddr */
-	w32(p1 + 16, 8);	 /* p_filesz */
-	w32(p1 + 20, 16);	 /* p_memsz (>= filesz) */
-	w32(p1 + 24, 6);	 /* PF_R | PF_W */
+	w32(p1 + 0, 1);		/* PT_LOAD */
+	w32(p1 + 4, 116);	/* p_offset (data bytes live at 116) */
+	w32(p1 + 8, 0x1000);	/* p_vaddr */
+	w32(p1 + 16, 8);	/* p_filesz */
+	w32(p1 + 20, 16);	/* p_memsz (>= filesz) */
+	w32(p1 + 24, 6);	/* PF_R | PF_W */
 	return IMG_SZ;
 }
 
@@ -89,8 +89,7 @@ static void test_fdpic_preflight_is_non_mutating(void **st)
 	uint8_t img[IMG_SZ];
 	size_t sz = build_fdpic(img);
 	memset(g_region, 0xa5, sizeof(g_region));
-	assert_int_equal(lxp_loader_validate_fdpic(img, sz, sizeof(g_region), 1),
-			 LXP_OK);
+	assert_int_equal(lxp_loader_validate_fdpic(img, sz, sizeof(g_region), 1), LXP_OK);
 	for (size_t i = 0; i < sizeof(g_region); i++)
 		assert_int_equal(g_region[i], 0xa5);
 
@@ -99,6 +98,24 @@ static void test_fdpic_preflight_is_non_mutating(void **st)
 			 LXP_ERR_INVALID_PARAM);
 	for (size_t i = 0; i < sizeof(g_region); i++)
 		assert_int_equal(g_region[i], 0xa5);
+}
+
+static void test_fdpic_copytext_uses_zeroed_power_of_two_prefix(void **st)
+{
+	(void)st;
+	uint8_t img[IMG_SZ];
+	size_t sz = build_fdpic(img);
+	memset(g_region, 0xa5, sizeof(g_region));
+	lxp_flat_t prog = {0};
+
+	assert_int_equal(lxp_loader_load_fdpic(&prog, img, sz, g_region, sizeof(g_region), 0, 1),
+			 LXP_OK);
+	assert_int_equal(prog.text_base, (uintptr_t)g_region);
+	assert_int_equal(prog.text_size, 16u);
+	assert_int_equal(prog.text_map_size, 32u);
+	assert_int_equal(prog.region, g_region + 32u);
+	for (size_t i = prog.text_size; i < prog.text_map_size; i++)
+		assert_int_equal(g_region[i], 0);
 }
 
 static void test_fdpic_reject_truncated(void **st)
@@ -157,8 +174,8 @@ static size_t build_fdpic_pool(uint8_t *buf)
 	buf[1] = 'E';
 	buf[2] = 'L';
 	buf[3] = 'F';
-	buf[4] = 1;  /* ELFCLASS32 */
-	buf[7] = 65; /* ELFOSABI_ARM_FDPIC */
+	buf[4] = 1;	   /* ELFCLASS32 */
+	buf[7] = 65;	   /* ELFOSABI_ARM_FDPIC */
 	w16(buf + 16, 3);  /* e_type = ET_DYN */
 	w16(buf + 18, 40); /* e_machine = EM_ARM */
 	w32(buf + 24, 0);  /* e_entry */
@@ -234,8 +251,8 @@ static size_t build_fdpic_relent(uint8_t *buf, uint32_t relent)
 	buf[1] = 'E';
 	buf[2] = 'L';
 	buf[3] = 'F';
-	buf[4] = 1;  /* ELFCLASS32 */
-	buf[7] = 65; /* ELFOSABI_ARM_FDPIC */
+	buf[4] = 1;	   /* ELFCLASS32 */
+	buf[7] = 65;	   /* ELFOSABI_ARM_FDPIC */
 	w16(buf + 16, 3);  /* ET_DYN */
 	w16(buf + 18, 40); /* EM_ARM */
 	w32(buf + 28, 52); /* e_phoff */
@@ -258,7 +275,7 @@ static size_t build_fdpic_relent(uint8_t *buf, uint32_t relent)
 	w32(pr + 24, 6);     /* PF_R | PF_W */
 
 	uint8_t *pd = buf + 116;
-	w32(pd + 0, 2);      /* PT_DYNAMIC */
+	w32(pd + 0, 2);	     /* PT_DYNAMIC */
 	w32(pd + 8, 0x1000); /* dyn_off */
 	w32(pd + 20, 32);    /* dyn_sz */
 
@@ -329,9 +346,11 @@ static void test_abi_incompatible_predicate(void **st)
 	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ), 0);
 	w32(img + 36, 0x00000400);
 #if LXP_ENABLE_FPU_CONTEXT
-	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ), 0); /* hard-float ok for a hard-float guest */
+	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ),
+			 0); /* hard-float ok for a hard-float guest */
 #else
-	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ), 1); /* hard-float refused by a soft-float guest */
+	assert_int_equal(lxp_loader_abi_incompatible(img, IMG_SZ),
+			 1); /* hard-float refused by a soft-float guest */
 #endif
 	assert_int_equal(lxp_loader_abi_incompatible(img, 39), 0); /* too small for e_flags */
 	uint8_t notelf[40] = {0};
@@ -343,6 +362,7 @@ int test_loader_fdpic_run(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_fdpic_valid_loads),
 		cmocka_unit_test(test_fdpic_preflight_is_non_mutating),
+		cmocka_unit_test(test_fdpic_copytext_uses_zeroed_power_of_two_prefix),
 		cmocka_unit_test(test_fdpic_reject_truncated),
 		cmocka_unit_test(test_fdpic_reject_bad_magic),
 		cmocka_unit_test(test_fdpic_reject_small_phentsize),

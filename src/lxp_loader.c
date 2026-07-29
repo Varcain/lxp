@@ -748,9 +748,8 @@ static uint32_t fdpic_rt_n(const uint8_t *lm, int nseg, uint64_t vaddr, uint64_t
 
 /* Translate a link-time range to its file-backed bytes. Validation uses this
  * instead of constructing a loadmap or touching the destination region. */
-static const uint8_t *fdpic_file_range(const uint8_t *img, size_t image_size,
-				       uint32_t phoff, uint16_t phentsize,
-				       uint16_t phnum, uint32_t vaddr,
+static const uint8_t *fdpic_file_range(const uint8_t *img, size_t image_size, uint32_t phoff,
+				       uint16_t phentsize, uint16_t phnum, uint32_t vaddr,
 				       uint32_t need)
 {
 	for (uint16_t i = 0; i < phnum; i++) {
@@ -763,12 +762,19 @@ static const uint8_t *fdpic_file_range(const uint8_t *img, size_t image_size,
 		if (vaddr < pv)
 			continue;
 		uint64_t delta = (uint64_t)vaddr - pv;
-		if (delta + need > filesz ||
-		    (uint64_t)off + delta + need > image_size)
+		if (delta + need > filesz || (uint64_t)off + delta + need > image_size)
 			continue;
 		return img + off + (size_t)delta;
 	}
 	return NULL;
+}
+
+static uint64_t copied_text_map_size(uint32_t text_size)
+{
+	uint64_t size = 32u; /* PMSAv7 minimum MPU region size. */
+	while (size < text_size)
+		size <<= 1u;
+	return size;
 }
 
 int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t region_size,
@@ -777,13 +783,12 @@ int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t regio
 	if (!image || image_size < 52u)
 		return LXP_ERR_INVALID_PARAM;
 	const uint8_t *img = (const uint8_t *)image;
-	if (img[0] != 0x7f || img[1] != 'E' || img[2] != 'L' ||
-	    img[3] != 'F' || img[4] != ELFCLASS32)
+	if (img[0] != 0x7f || img[1] != 'E' || img[2] != 'L' || img[3] != 'F' ||
+	    img[4] != ELFCLASS32)
 		return LXP_ERR_INVALID_PARAM;
 	if (le16(img + 16) != ELF_ET_DYN || le16(img + 18) != ELF_EM_ARM)
 		return LXP_ERR_INVALID_PARAM;
-	if (img[7] != ELF_OSABI_ARM_FDPIC &&
-	    !(le32(img + 36) & ELF_EF_ARM_FDPIC))
+	if (img[7] != ELF_OSABI_ARM_FDPIC && !(le32(img + 36) & ELF_EF_ARM_FDPIC))
 		return LXP_ERR_NOT_SUPPORTED;
 	if (lxp_loader_abi_incompatible(image, image_size))
 		return LXP_ERR_NOT_SUPPORTED;
@@ -791,8 +796,7 @@ int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t regio
 	uint32_t phoff = le32(img + 28);
 	uint16_t phentsize = le16(img + 42);
 	uint16_t phnum = le16(img + 44);
-	if (phentsize < 32u ||
-	    (uint64_t)phoff + (uint64_t)phnum * phentsize > image_size)
+	if (phentsize < 32u || (uint64_t)phoff + (uint64_t)phnum * phentsize > image_size)
 		return LXP_ERR_INVALID_PARAM;
 
 	uint32_t text_sz = 0;
@@ -814,8 +818,7 @@ int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t regio
 		uint32_t vaddr = le32(ph + 8);
 		uint32_t filesz = le32(ph + 16);
 		uint32_t memsz = le32(ph + 20);
-		if (filesz > memsz ||
-		    (uint64_t)off + filesz > image_size ||
+		if (filesz > memsz || (uint64_t)off + filesz > image_size ||
 		    (uint64_t)vaddr + memsz > UINT32_MAX)
 			return LXP_ERR_INVALID_PARAM;
 		if (le32(ph + 24) & ELF_PF_X) {
@@ -839,7 +842,7 @@ int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t regio
 		return LXP_ERR_NO_MEMORY;
 	uint32_t rw_a = (rw_span + 3u) & ~3u;
 	uint32_t loadmap_sz = 4u + nload * 12u;
-	uint64_t text_a = copy_text ? (((uint64_t)text_sz + 15u) & ~(uint64_t)15u) : 0u;
+	uint64_t text_a = copy_text ? copied_text_map_size(text_sz) : 0u;
 	if (text_a + rw_a + loadmap_sz > region_size)
 		return LXP_ERR_NO_MEMORY;
 
@@ -848,9 +851,8 @@ int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t regio
 		if (rw_lo == UINT32_MAX || dyn_vaddr < rw_lo ||
 		    (uint64_t)dyn_vaddr + dyn_sz > rw_hi)
 			return LXP_ERR_INVALID_PARAM;
-		const uint8_t *dyn = fdpic_file_range(img, image_size, phoff,
-						     phentsize, phnum,
-						     dyn_vaddr, dyn_sz);
+		const uint8_t *dyn = fdpic_file_range(img, image_size, phoff, phentsize, phnum,
+						      dyn_vaddr, dyn_sz);
 		if (!dyn)
 			return LXP_ERR_INVALID_PARAM;
 		for (uint32_t off = 0; off + 8u <= dyn_sz; off += 8u) {
@@ -897,7 +899,8 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	uint32_t e_phoff = le32(img + 28);
 	uint16_t e_phentsize = le16(img + 42);
 	uint16_t e_phnum = le16(img + 44);
-	if (e_phentsize < 32) /* a valid Elf32_Phdr is 32B; a smaller entry lets the ph+N reads spill */
+	if (e_phentsize <
+	    32) /* a valid Elf32_Phdr is 32B; a smaller entry lets the ph+N reads spill */
 		return LXP_ERR_INVALID_PARAM;
 	if ((uint64_t)e_phoff + (uint64_t)e_phnum * e_phentsize > image_size)
 		return LXP_ERR_INVALID_PARAM;
@@ -955,16 +958,16 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 		dyn_off = 0;
 	uint32_t rw_a = (rw_span + 3u) & ~3u; /* the loadmap follows the RW block, 4-aligned */
 	uint32_t loadmap_sz = 4u + (uint32_t)nload * 12u;
-	/* A copy_text load reserves the region's head for the program's own text (copied in below,
-	 * run from RAM because its image is not the executable XIP window); the RW block + loadmap +
-	 * pool follow it. A normal load leaves the text shared in-place from the image (text_a = 0). */
-	/* Align in 64-bit: a hostile text p_memsz near UINT32_MAX would otherwise make
-	 * (text_sz + 15) & ~15 wrap to a tiny value that slips the region_size check below and
-	 * mis-places `base`. text_a is narrowed only after the check bounds it to the region. */
-	uint64_t text_a64 = copy_text ? (((uint64_t)text_sz + 15u) & ~(uint64_t)15u) : 0;
+	/* A copy_text load reserves a power-of-two prefix for the program's own text. All seams can
+	 * express that prefix as a higher-priority RO+X MPU overlay above the full RW+XN program
+	 * region. The RW block, loadmap and pool follow it. A normal load leaves text shared in-place
+	 * from the image (text_a = 0). Compute in 64-bit so hostile sizes cannot wrap the bound. */
+	uint64_t text_a64 = copy_text ? copied_text_map_size(text_sz) : 0;
 	if (text_a64 + rw_a + loadmap_sz > region_size)
 		return LXP_ERR_NO_MEMORY;
 	uint32_t text_a = (uint32_t)text_a64;
+	if (copy_text)
+		memset(region, 0, text_a);
 
 	/* For a normal load the region holds ONLY the RW block (text shared in-place) + the loadmap +
 	 * the descriptor pool. For a copy_text load the region head additionally holds the text. */
@@ -994,7 +997,8 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 		uint32_t p_off = le32(ph + 4), p_vaddr = le32(ph + 8);
 		uint32_t p_filesz = le32(ph + 16), p_memsz = le32(ph + 20);
 		uint32_t p_flags = le32(ph + 24);
-		if (p_filesz > p_memsz) /* the copy is p_filesz bytes into a p_memsz-sized region slot */
+		if (p_filesz >
+		    p_memsz) /* the copy is p_filesz bytes into a p_memsz-sized region slot */
 			return LXP_ERR_INVALID_PARAM;
 		if ((uint64_t)p_off + p_filesz > image_size)
 			return LXP_ERR_INVALID_PARAM;
@@ -1013,7 +1017,9 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 				memcpy((uint8_t *)region, img + p_off, p_filesz);
 				seg_addr = (uint32_t)(uintptr_t)region;
 			} else {
-				seg_addr = (uint32_t)(uintptr_t)(img + p_off); /* shared in-place from the cpio */
+				seg_addr =
+					(uint32_t)(uintptr_t)(img +
+							      p_off); /* shared in-place from the cpio */
 			}
 		} else {
 			uint8_t *d = base + (p_vaddr - rw_lo);
@@ -1037,7 +1043,8 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 		/* Bound the whole [dyn_off, dyn_off+dyn_sz) table to a single backed segment (as the
 		 * reloc table already is): fdpic_rt would map only the start and let the dyn_sz walk
 		 * below run off the end of the segment's backing (found by the fdpic fuzzer). */
-		const uint8_t *dp = (const uint8_t *)(uintptr_t)fdpic_rt_n(lm, nload, dyn_off, dyn_sz);
+		const uint8_t *dp =
+			(const uint8_t *)(uintptr_t)fdpic_rt_n(lm, nload, dyn_off, dyn_sz);
 		for (uint32_t o = 0; dp && o + 8 <= dyn_sz; o += 8) {
 			uint32_t tag = le32(dp + o), val = le32(dp + o + 4);
 			if (tag == ELF_DT_NULL)
@@ -1090,7 +1097,8 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	 * applying .rel.dyn here would double-bias R_ARM_RELATIVE. Only a STATIC exec relocates
 	 * here (nothing else would). Every address goes through fdpic_rt: the rel/symtab are read
 	 * from the in-place text, the relocated GOT slots written in the per-process RW region. */
-	for (uint32_t o = 0; !is_interp && !is_dynamic && rel0 && o + rel_ent <= rel_sz; o += rel_ent) {
+	for (uint32_t o = 0; !is_interp && !is_dynamic && rel0 && o + rel_ent <= rel_sz;
+	     o += rel_ent) {
 		const uint8_t *r = rel0 + o;
 		uint32_t r_offset = le32(r), r_info = le32(r + 4);
 		uint32_t r_type = r_info & 0xffu, r_sym = r_info >> 8;
@@ -1125,7 +1133,8 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 			const uint8_t *sym = (const uint8_t *)(uintptr_t)fdpic_rt_n(
 				lm, nload, (uint64_t)sym_v + (uint64_t)r_sym * 16u, 16u);
 			uint32_t descr = 0;
-			if (sym_v && sym && le16(sym + 14) != 0) { /* defined (st_shndx != SHN_UNDEF) */
+			if (sym_v && sym &&
+			    le16(sym + 14) != 0) { /* defined (st_shndx != SHN_UNDEF) */
 				for (uint32_t p = 0; p + rel_ent <= rel_sz; p += rel_ent) {
 					uint32_t i2 = le32(rel0 + p + 4);
 					if ((i2 & 0xffu) == ELF_R_ARM_FUNCDESC_VALUE &&
@@ -1156,9 +1165,11 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	/* bytes consumed from the TRUE region base: the reserved+copied text (copy_text only) plus
 	 * the RW block + loadmap + descriptor pool. The launcher lays the stack out above this. */
 	prog->region_used = text_a + pool_off + pool_used;
-	prog->text_base = copy_text ? (uintptr_t)region	       /* copied into the region head */
-				    : (uintptr_t)(img + text_off); /* shared IN-PLACE from the cpio */
+	prog->text_base = copy_text
+				  ? (uintptr_t)region		 /* copied into the region head */
+				  : (uintptr_t)(img + text_off); /* shared IN-PLACE from the cpio */
 	prog->text_size = text_sz;
+	prog->text_map_size = copy_text ? text_a : 0u;
 	prog->data_base = (uintptr_t)fdpic_rt(lm, nload, data_v); /* RW block in the region */
 	prog->data_size = data_fsz;
 	prog->bss_size = data_msz - data_fsz;
@@ -1171,7 +1182,8 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	prog->phdr = copy_text ? ((uintptr_t)region + (e_phoff - text_off))
 			       : (uintptr_t)(img + e_phoff);
 	prog->phnum = e_phnum;
-	prog->region_exec = copy_text; /* the engine maps the region executable for a RAM-text exec */
+	prog->region_exec =
+		copy_text; /* the engine overlays the copied prefix RO+X for a RAM-text exec */
 	prog->is_dynamic = is_dynamic; /* exec with DT_NEEDED → caller loads + enters ld.so */
 	prog->got = got_base;	       /* DT_PLTGOT base */
 	/* PT_DYNAMIC runtime addr — for an interpreter this is r9 at entry (uClibc-ng's FDPIC

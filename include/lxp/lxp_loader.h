@@ -24,11 +24,11 @@
  * program loader.
  *
  * The loader is backend-independent: it neither allocates nor changes memory
- * protection. The caller supplies the destination @p region and guarantees it
- * is executable before any loaded function is called (e.g. an MPU-RX region
- * on target, an @c mprotect'd mapping on a host). On architectures with a
- * split I/D cache the caller is also responsible for the post-load i-cache
- * sync.
+ * protection. The caller supplies a writable destination @p region, then
+ * guarantees the loaded code is executable before calling it (e.g. by
+ * switching to an MPU-RX region on target or using @c mprotect on a host).
+ * On architectures with a split I/D cache the caller is also responsible for
+ * the post-load i-cache sync.
  *
  * Supported: ELFCLASS64 / x86-64 (host development) and ELFCLASS32 / EM_ARM
  * (Cortex-M target). ARM support covers the data relocations
@@ -77,12 +77,13 @@ typedef struct lxp_module {
 	size_t region_used;			 /**< Bytes of @c region consumed by the load. */
 	uint16_t n_sections;			 /**< Section count. */
 	void *sec_addr[LXP_LOADER_MAX_SECTIONS]; /**< Runtime base per section. */
-	uint32_t sec_size[LXP_LOADER_MAX_SECTIONS]; /**< Byte size per section (bounds a reloc r_offset). */
-	const void *symtab;			 /**< Symbol table (within @c image). */
-	uint32_t sym_count;			 /**< Number of symbols. */
-	const char *strtab;			 /**< String table (within @c image). */
-	uint32_t strtab_size;			 /**< Size of the string table, bytes. */
-	uint8_t is_elf64;			 /**< Non-zero for ELFCLASS64, else ELFCLASS32. */
+	uint32_t sec_size
+		[LXP_LOADER_MAX_SECTIONS]; /**< Byte size per section (bounds a reloc r_offset). */
+	const void *symtab;		   /**< Symbol table (within @c image). */
+	uint32_t sym_count;		   /**< Number of symbols. */
+	const char *strtab;		   /**< String table (within @c image). */
+	uint32_t strtab_size;		   /**< Size of the string table, bytes. */
+	uint8_t is_elf64;		   /**< Non-zero for ELFCLASS64, else ELFCLASS32. */
 } lxp_module_t;
 
 /**
@@ -91,8 +92,9 @@ typedef struct lxp_module {
  * @param[out] mod          Module control block to fill.
  * @param[in]  image        ELF @c ET_REL image.
  * @param[in]  image_size   Size of @p image in bytes.
- * @param[in]  region       Destination for the module's allocatable sections.
- *                          Must be executable before any loaded code runs.
+ * @param[in]  region       Writable destination for the module's allocatable
+ *                          sections. It must be executable before any loaded
+ *                          code runs.
  * @param[in]  region_size  Size of @p region in bytes.
  * @param[in]  imports      Symbols the module may reference (undefined symbols
  *                          are resolved against this table). May be NULL when
@@ -132,36 +134,40 @@ size_t lxp_loader_image_size(const lxp_module_t *mod);
  * with the now-removed bFLT loader, but only FDPIC ELF programs are loaded now.
  */
 typedef struct lxp_flat {
-	uint8_t *region;     /**< Destination region (caller-owned; must be RX). */
-	size_t region_size;  /**< Size of @c region. */
-	size_t region_used;  /**< Bytes consumed (text + data + bss). */
-	uintptr_t entry;     /**< Runtime entry address; directly callable (carries
+	uint8_t *region;      /**< Writable destination region (caller-owned). */
+	size_t region_size;   /**< Size of @c region. */
+	size_t region_used;   /**< Bytes consumed (text + data + bss). */
+	uintptr_t entry;      /**< Runtime entry address; directly callable (carries
 			      *   the ARM Thumb bit where applicable). */
-	uintptr_t text_base; /**< Runtime base of the text segment (== @c region). */
-	size_t text_size;    /**< Text segment size. */
-	uintptr_t data_base; /**< Runtime base of the data segment. */
-	size_t data_size;    /**< Initialised-data size. */
-	size_t bss_size;     /**< Zero-initialised data size. */
-	size_t stack_size;   /**< Stack size the program requests. */
-	int is_fdpic;	     /**< Non-zero if loaded from an FDPIC ELF (PIC, self-relocating). */
-	uintptr_t loadmap;   /**< FDPIC: the elf32_fdpic_loadmap to pass in r7 at entry (the
+	uintptr_t text_base;  /**< Runtime base of the text segment (== @c region). */
+	size_t text_size;     /**< Text segment size. */
+	size_t text_map_size; /**< Copied-text MPU extent, rounded up to a representable
+			       *   power-of-two range and zero-filled past @c text_size.
+			       *   Zero when text executes in place from the image. */
+	uintptr_t data_base;  /**< Runtime base of the data segment. */
+	size_t data_size;     /**< Initialised-data size. */
+	size_t bss_size;      /**< Zero-initialised data size. */
+	size_t stack_size;    /**< Stack size the program requests. */
+	int is_fdpic;	      /**< Non-zero if loaded from an FDPIC ELF (PIC, self-relocating). */
+	uintptr_t loadmap;    /**< FDPIC: the elf32_fdpic_loadmap to pass in r7 at entry (the
 			      *   crt _start self-relocates from it). */
-	uintptr_t phdr;	     /**< FDPIC: runtime address of the program headers (AT_PHDR). */
-	int phnum;	     /**< FDPIC: number of program headers (AT_PHNUM). */
-	int is_dynamic;	     /**< FDPIC: non-zero if the exec has DT_NEEDED (needs ld.so). The
+	uintptr_t phdr;	      /**< FDPIC: runtime address of the program headers (AT_PHDR). */
+	int phnum;	      /**< FDPIC: number of program headers (AT_PHNUM). */
+	int is_dynamic;	      /**< FDPIC: non-zero if the exec has DT_NEEDED (needs ld.so). The
 			      *   personality must then ALSO load the interpreter + enter it. */
-	uintptr_t got;	     /**< FDPIC: the GOT base (DT_PLTGOT-relative); for the exec it is
+	uintptr_t got;	      /**< FDPIC: the GOT base (DT_PLTGOT-relative); for the exec it is
 			      *   what ld.so installs as the program GOT. */
-	uintptr_t dynamic;   /**< FDPIC: runtime address of PT_DYNAMIC (_DYNAMIC). For the
+	uintptr_t dynamic;    /**< FDPIC: runtime address of PT_DYNAMIC (_DYNAMIC). For the
 			      *   INTERPRETER this is r9 at entry — uClibc-ng's FDPIC
 			      *   dl_boot_ldso_dyn_pointer, which DL_BOOT_COMPUTE_DYN uses as the
 			      *   dpnt (NOT the GOT). 0 if the object has no PT_DYNAMIC. */
 	uintptr_t interp_loadmap; /**< FDPIC dynamic: the interpreter (ld.so) loadmap → r8 at
 				   *   entry; 0 for static. Filled by the launcher, not the
 				   *   loader (which loads one object at a time). */
-	int region_exec;     /**< A @c copy_text load put the program's own text INTO @c region
-			      *   (a remote/RAM exec), so the engine must map the region EXECUTABLE
-			      *   (RWX — W^X-relaxed for this process). 0 for the normal XIP-text load. */
+	int region_exec;	  /**< A @c copy_text load put the program's own text into the
+			      *   power-of-two prefix described by @c text_base / @c text_map_size.
+			      *   The engine maps that prefix RO+X over the full RW+XN program
+			      *   region. 0 for the normal XIP-text load. */
 } lxp_flat_t;
 
 /**
