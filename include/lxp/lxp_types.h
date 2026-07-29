@@ -63,6 +63,7 @@ typedef enum lxp_err {
 	LXP_ERR_EOF = -19,
 	LXP_ERR_INVAL = -20,
 	LXP_ERR_NOT_FOUND = -21,
+	LXP_ERR_NET_ADDR_NOT_AVAILABLE = -22,
 } lxp_err_t;
 
 /** @brief Timeout value that means "block indefinitely". */
@@ -85,6 +86,8 @@ LXP_STATIC_ASSERT(LXP_ERR_NET_RESET == -11, "LXP_ERR_NET_RESET drifted");
 LXP_STATIC_ASSERT(LXP_ERR_NET_DNS_FAIL == -12, "LXP_ERR_NET_DNS_FAIL drifted");
 LXP_STATIC_ASSERT(LXP_ERR_NET_CLOSED == -13, "LXP_ERR_NET_CLOSED drifted");
 LXP_STATIC_ASSERT(LXP_ERR_NOT_FOUND == -21, "LXP_ERR_NOT_FOUND drifted");
+LXP_STATIC_ASSERT(LXP_ERR_NET_ADDR_NOT_AVAILABLE == -22,
+		  "LXP_ERR_NET_ADDR_NOT_AVAILABLE drifted");
 LXP_STATIC_ASSERT(LXP_WAIT_FOREVER == UINT64_MAX, "LXP_WAIT_FOREVER drifted");
 
 /* ---- thread introspection (for the ps/top /proc snapshot) ------------------ */

@@ -97,6 +97,8 @@ static long net_errno_to_lnx(int e)
 		return -LXP_ENETUNREACH;
 	case LXP_ERR_NET_ADDR_IN_USE:
 		return -LXP_EADDRINUSE;
+	case LXP_ERR_NET_ADDR_NOT_AVAILABLE:
+		return -LXP_EADDRNOTAVAIL;
 	case LXP_ERR_NET_RESET:
 		return -LXP_ECONNRESET;
 	case LXP_ERR_NET_CLOSED:

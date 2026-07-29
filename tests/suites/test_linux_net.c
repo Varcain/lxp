@@ -156,6 +156,30 @@ static void test_net_connect_errors(void **state)
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
 
+static void test_net_bind_address_not_available(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_DGRAM, 0, 0, 0, 0);
+	assert_true(fd >= 3);
+
+	/* TEST-NET-1 is not assigned to a host interface. The provider must
+	 * preserve EADDRNOTAVAIL instead of collapsing it to EOPNOTSUPP. */
+	lxp_sockaddr_in a;
+	memset(&a, 0, sizeof(a));
+	a.sin_family = LXP_AF_INET;
+	a.sin_port = 0;
+	a.sin_addr = htonl(0xc0000201u);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_bind, fd, (long)(uintptr_t)&a, sizeof(a), 0, 0,
+				     0),
+			 -LXP_EADDRNOTAVAIL);
+
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
+}
+
 static void test_net_loopback_roundtrip(void **state)
 {
 	(void)state;
@@ -571,6 +595,7 @@ int test_linux_net_run(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_net_socket_open_stat),
 		cmocka_unit_test(test_net_connect_errors),
+		cmocka_unit_test(test_net_bind_address_not_available),
 		cmocka_unit_test(test_net_loopback_roundtrip),
 		cmocka_unit_test(test_net_sendmsg_recvmsg),
 		cmocka_unit_test(test_net_sendmsg_dgram),

@@ -103,6 +103,8 @@ static int to_lxp_err(int e)
 		return LXP_ERR_NET_UNREACHABLE;
 	case EADDRINUSE:
 		return LXP_ERR_NET_ADDR_IN_USE;
+	case EADDRNOTAVAIL:
+		return LXP_ERR_NET_ADDR_NOT_AVAILABLE;
 	case ECONNRESET:
 		return LXP_ERR_NET_RESET;
 	case EPIPE:
