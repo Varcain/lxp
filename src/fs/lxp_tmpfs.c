@@ -43,15 +43,6 @@ lxp_wnode_t *wnode_at(int i)
 	return &g_wnodes[i];
 }
 
-static uint8_t *wfs_alloc(size_t n)
-{
-	if (!g_wfs_ready) {
-		lxp_arena_init(&g_wfs_arena, g_wfs_pool, LXP_WFS_POOL);
-		g_wfs_ready = 1;
-	}
-	return (uint8_t *)lxp_arena_alloc(&g_wfs_arena, n); /* the arena aligns internally */
-}
-
 int wfs_find(const char *abspath)
 {
 	for (int i = 0; i < LXP_NWNODE; i++)
@@ -82,20 +73,32 @@ int wfs_reserve(int i, size_t need)
 	lxp_wnode_t *w = &g_wnodes[i];
 	if (need <= w->cap)
 		return 0;
-	if (need > LXP_WFS_POOL) /* reject before the 256-round wraps a 32-bit size_t → tiny alloc */
+	/*
+	 * One aligned allocator header lives inside the pool. Reject before the
+	 * 256-round wraps size_t and keep the advertised file capacity honest.
+	 */
+	const size_t max_payload = LXP_WFS_POOL - LXP_ARENA_ALIGN;
+	if (need > max_payload)
 		return -1;
-	size_t ncap = (need + 255u) & ~(size_t)255u;
-	if (w->cap * 2 > ncap) /* geometric growth: O(n), not O(n^2), on echo-style appends */
+	if (need > SIZE_MAX - 255u)
+		return -1;
+	size_t mincap = (need + 255u) & ~(size_t)255u;
+	size_t ncap = mincap;
+	if (w->cap > max_payload / 2u)
+		ncap = max_payload;
+	else if (w->cap * 2u > ncap) /* geometric growth: O(n), not O(n^2) */
 		ncap = w->cap * 2;
-	if (ncap > LXP_WFS_POOL) /* but never exceed the pool (need itself is already <= pool) */
-		ncap = LXP_WFS_POOL;
-	uint8_t *nd = wfs_alloc(ncap);
+	if (ncap > max_payload)
+		ncap = max_payload;
+	if (!g_wfs_ready) {
+		lxp_arena_init(&g_wfs_arena, g_wfs_pool, LXP_WFS_POOL);
+		g_wfs_ready = 1;
+	}
+	uint8_t *nd = lxp_arena_realloc(&g_wfs_arena, w->data, ncap);
+	if (!nd && ncap != mincap)
+		nd = lxp_arena_realloc(&g_wfs_arena, w->data, mincap);
 	if (!nd)
 		return -1;
-	if (w->data && w->size)
-		memcpy(nd, w->data, w->size);
-	if (w->data)
-		lxp_arena_free(&g_wfs_arena, w->data); /* reclaim the old (smaller) block */
 	w->data = nd;
 	w->cap = ncap;
 	return 0;

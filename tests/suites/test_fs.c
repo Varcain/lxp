@@ -104,10 +104,8 @@ static void wfs_reset(void)
 {
 	for (int i = 0; i < LXP_NWNODE; i++) {
 		lxp_wnode_t *w = wnode_at(i);
-		w->used = 0;
-		w->size = 0;
-		w->cap = 0;
-		w->data = NULL;
+		if (w->used)
+			wfs_free(i);
 	}
 }
 
@@ -131,7 +129,7 @@ static void test_tmpfs_nodes(void **s)
 	assert_int_equal(wfs_reserve(a, 100), 0);
 	assert_true(wnode_at(a)->cap >= 100);
 	assert_non_null(wnode_at(a)->data);
-	assert_int_equal(wfs_reserve(a, (size_t)LXP_WFS_POOL + 1u), -1);
+	assert_int_equal(wfs_reserve(a, (size_t)LXP_WFS_POOL - LXP_ARENA_ALIGN + 1u), -1);
 }
 
 /* The pool reclaims freed blocks (arena-backed, not a leaky bump pool). Both cases
@@ -151,14 +149,13 @@ static void test_tmpfs_reclaim(void **s)
 		wfs_free(n);
 	}
 
-	/* growth reclaims the old block: grow one node through many sizes up to 16K in 1K
-	 * steps (each grow frees the previous block, so the leaked sum — well over the pool —
-	 * never accumulates; capped at 16K so the brief old+new overlap during the copy fits). */
+	/* Growth reuses the adjacent free tail in place. Cross half the pool to prove
+	 * capacity is not artificially limited by an old+new copy overlap. */
 	int g = wfs_create("/tmp/grow", LXP_S_IFREG | 0644u);
 	assert_true(g >= 0);
-	for (size_t sz = 1024; sz <= 16u * 1024u; sz += 1024)
+	for (size_t sz = 1024; sz <= 3u * LXP_WFS_POOL / 4u; sz += 1024)
 		assert_int_equal(wfs_reserve(g, sz), 0);
-	assert_true(wnode_at(g)->cap >= 16u * 1024u);
+	assert_true(wnode_at(g)->cap >= 3u * LXP_WFS_POOL / 4u);
 	wfs_free(g);
 	assert_null(wnode_at(g)->data); /* wfs_free clears the node */
 }

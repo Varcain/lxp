@@ -105,6 +105,22 @@ void *lxp_arena_alloc(lxp_arena_t *arena, size_t size);
 void *lxp_arena_calloc(lxp_arena_t *arena, size_t size);
 
 /**
+ * @brief Resize an arena allocation while preserving its contents.
+ *
+ * The allocator first grows into an adjacent free extent, so a buffer can
+ * consume the arena's remaining capacity without temporarily needing a second
+ * full-size allocation. If in-place growth is impossible, it falls back to an
+ * allocate-copy-free transaction; failure leaves @p ptr and its contents
+ * unchanged. Tracked allocations retain their tracking record.
+ *
+ * @param[in] arena Initialised arena.
+ * @param[in] ptr   Existing allocation, or NULL to allocate a new block.
+ * @param[in] size  Requested bytes (0 is treated as 1).
+ * @return The resized allocation, or NULL on failure.
+ */
+void *lxp_arena_realloc(lxp_arena_t *arena, void *ptr, size_t size);
+
+/**
  * @brief Allocate a block and register its exact externally-visible extent.
  *
  * This is intended for arena-backed mmap(2). Registration is kept outside the

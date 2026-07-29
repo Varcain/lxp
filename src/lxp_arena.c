@@ -205,6 +205,79 @@ void *lxp_arena_calloc(lxp_arena_t *arena, size_t size)
 	return p;
 }
 
+static bool arena_free_block(lxp_arena_t *arena, void *ptr);
+
+void *lxp_arena_realloc(lxp_arena_t *arena, void *ptr, size_t size)
+{
+	if (ptr == NULL)
+		return lxp_arena_alloc(arena, size);
+	if (!arena || !arena_layout_valid(arena))
+		return NULL;
+
+	size_t need = arena_align(size == 0 ? 1 : size);
+	if (need == 0)
+		return NULL;
+
+	struct lxp_arena_blk *b = arena_find_payload(arena, ptr, NULL);
+	if (!b || b->is_free)
+		return NULL;
+	size_t old_payload = b->payload;
+	if (need <= old_payload)
+		return ptr;
+
+	/*
+	 * Prefer consuming the following free block. This is the important case
+	 * for geometrically growing buffers: it avoids requiring old+new capacity
+	 * at the same time and keeps the operation failure-atomic.
+	 */
+	uintptr_t end = (uintptr_t)arena->base + arena->size;
+	uintptr_t next_addr = (uintptr_t)b + ARENA_HDR + old_payload;
+	if (next_addr < end) {
+		struct lxp_arena_blk *next = (struct lxp_arena_blk *)next_addr;
+		size_t combined = old_payload + ARENA_HDR + next->payload;
+		if (next->is_free && combined >= need) {
+			next->magic = 0;
+			b->payload = combined;
+			if (combined - need >= ARENA_HDR + LXP_ARENA_ALIGN) {
+				struct lxp_arena_blk *rem =
+					(struct lxp_arena_blk *)((uint8_t *)b + ARENA_HDR + need);
+				rem->payload = combined - need - ARENA_HDR;
+				rem->is_free = 1;
+				rem->magic = ARENA_MAGIC;
+				b->payload = need;
+			}
+			arena->used += b->payload - old_payload;
+			if (arena->used > arena->high_water)
+				arena->high_water = arena->used;
+			for (size_t i = 0; i < LXP_ARENA_MAX_MAPPINGS; i++)
+				if (arena->mappings[i].addr == (uintptr_t)ptr)
+					arena->mappings[i].len = size;
+			return ptr;
+		}
+	}
+
+	void *replacement = lxp_arena_alloc(arena, size);
+	if (!replacement)
+		return NULL;
+	memcpy(replacement, ptr, old_payload < size ? old_payload : size);
+
+	size_t tracked = LXP_ARENA_MAX_MAPPINGS;
+	for (size_t i = 0; i < LXP_ARENA_MAX_MAPPINGS; i++)
+		if (arena->mappings[i].addr == (uintptr_t)ptr) {
+			tracked = i;
+			break;
+		}
+	if (!arena_free_block(arena, ptr)) {
+		lxp_arena_free(arena, replacement);
+		return NULL;
+	}
+	if (tracked < LXP_ARENA_MAX_MAPPINGS) {
+		arena->mappings[tracked].addr = (uintptr_t)replacement;
+		arena->mappings[tracked].len = size;
+	}
+	return replacement;
+}
+
 static bool arena_free_block(lxp_arena_t *arena, void *ptr)
 {
 	if (!arena || !ptr || !arena_layout_valid(arena))

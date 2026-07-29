@@ -103,6 +103,23 @@ static void test_arena_calloc(void **s)
 		assert_int_equal(z[i], 0);
 }
 
+/* realloc grows into the adjacent free tail, preserves bytes, and does not
+ * require enough free space for old and new blocks simultaneously. */
+static void test_arena_realloc_in_place(void **s)
+{
+	(void)s;
+	lxp_arena_t a;
+	assert_int_equal(lxp_arena_init(&a, g_buf, sizeof(g_buf)), LXP_OK);
+	uint8_t *p = lxp_arena_alloc(&a, sizeof(g_buf) / 2);
+	assert_non_null(p);
+	memset(p, 0x5a, sizeof(g_buf) / 2);
+
+	uint8_t *grown = lxp_arena_realloc(&a, p, 3 * sizeof(g_buf) / 4);
+	assert_ptr_equal(grown, p);
+	for (size_t i = 0; i < sizeof(g_buf) / 2; i++)
+		assert_int_equal(grown[i], 0x5a);
+}
+
 /* An allocation larger than the region fails (NULL), leaving the arena usable. */
 static void test_arena_exhaustion(void **s)
 {
@@ -230,6 +247,23 @@ static void test_arena_tracked_extent(void **s)
 	assert_false(lxp_arena_free_tracked(&a, p, 100));
 }
 
+/* A tracked allocation keeps an exact, updated extent after in-place growth. */
+static void test_arena_realloc_tracked_extent(void **s)
+{
+	(void)s;
+	lxp_arena_t a;
+	assert_int_equal(lxp_arena_init(&a, g_buf, sizeof(g_buf)), LXP_OK);
+	uint8_t *p = lxp_arena_alloc_tracked(&a, 100);
+	assert_non_null(p);
+	p[0] = 0xa5;
+
+	uint8_t *grown = lxp_arena_realloc(&a, p, 1000);
+	assert_ptr_equal(grown, p);
+	assert_int_equal(grown[0], 0xa5);
+	assert_false(lxp_arena_free_tracked(&a, grown, 100));
+	assert_true(lxp_arena_free_tracked(&a, grown, 1000));
+}
+
 /* The privileged tracking table is deliberately fixed-size. Exhaustion must
  * return NULL without consuming another arena block, and every recorded block
  * must remain reclaimable. */
@@ -258,12 +292,14 @@ int test_arena_run(void)
 		cmocka_unit_test(test_arena_init),
 		cmocka_unit_test(test_arena_alloc),
 		cmocka_unit_test(test_arena_calloc),
+		cmocka_unit_test(test_arena_realloc_in_place),
 		cmocka_unit_test(test_arena_exhaustion),
 		cmocka_unit_test(test_arena_free_coalesce),
 		cmocka_unit_test(test_arena_reset),
 		cmocka_unit_test(test_arena_rejects_forged_links),
 		cmocka_unit_test(test_arena_corruption_fails_closed),
 		cmocka_unit_test(test_arena_tracked_extent),
+		cmocka_unit_test(test_arena_realloc_tracked_extent),
 		cmocka_unit_test(test_arena_tracked_extent_limit),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
