@@ -534,7 +534,18 @@ static long fop_read_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 static long fop_read_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	(void)p;
-	return lxp_hostfs_read(s->file_idx, buf, len);
+	/*
+	 * The storage provider may fill a guest buffer from a privileged worker
+	 * whose MPU/cache view is not coherent with the guest task. Preserve dirty
+	 * bytes sharing the boundary cache lines before that host write, then make
+	 * the bytes actually produced visible before the guest resumes.
+	 */
+	if (len)
+		lxp_cache_clean(buf, len);
+	long result = lxp_hostfs_read(s->file_idx, buf, len);
+	if (result > 0)
+		lxp_cache_invalidate(buf, (size_t)result);
+	return result;
 }
 #endif
 #if LXP_ENABLE_PTY
@@ -1217,7 +1228,12 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off
 	if (s->kind == LXP_FD_HOSTFS) {
 		if (s->accmode == LXP_O_WRONLY)
 			return -LXP_EBADF;
-		return lxp_hostfs_pread(s->file_idx, buf, len, off);
+		if (len)
+			lxp_cache_clean(buf, len);
+		long result = lxp_hostfs_pread(s->file_idx, buf, len, off);
+		if (result > 0)
+			lxp_cache_invalidate(buf, (size_t)result);
+		return result;
 	}
 #endif
 	const uint8_t *data;
