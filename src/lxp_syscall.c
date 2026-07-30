@@ -809,7 +809,7 @@ static long fop_fstat_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 	long rc = lxp_hostfs_stat(s->file_idx, &stat);
 	if (rc < 0)
 		return rc;
-	fill_kstat64(statbuf, 0x700000u + (uint32_t)s->file_idx, hostfs_mode(&stat),
+	fill_kstat64(statbuf, lxp_hostfs_inode(s->file_idx), hostfs_mode(&stat),
 		     stat.size);
 	((struct lxp_kstat64 *)statbuf)->st_mtime = (uint32_t)stat.mtime_sec;
 	return 0;
@@ -1874,7 +1874,8 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 		long rc = lxp_hostfs_path_stat(abspath, &stat);
 		if (rc < 0)
 			return rc;
-		fill_kstat64(statbuf, 0x700000u, hostfs_mode(&stat), stat.size);
+		fill_kstat64(statbuf, lxp_hostfs_path_inode(abspath), hostfs_mode(&stat),
+			     stat.size);
 		((struct lxp_kstat64 *)statbuf)->st_mtime = (uint32_t)stat.mtime_sec;
 		return 0;
 	}
@@ -2418,7 +2419,8 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 	/* The mounted namespace exists independently of any same-named rootfs
 	 * placeholder. Media availability is reported when /data is accessed. */
 	if (!full && strcmp(dirpath, "/") == 0 &&
-	    !dirent_emit(out, count, &filled, &pos, s, 0x700000u, "data", LXP_S_IFDIR))
+	    !dirent_emit(out, count, &filled, &pos, s,
+			 lxp_hostfs_path_inode(LXP_HOSTFS_MOUNT), "data", LXP_S_IFDIR))
 		full = 1;
 #endif
 #if LXP_ENABLE_DEV
@@ -2566,7 +2568,7 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 				return rc;
 			mode = hostfs_mode(&stat);
 			size = stat.size;
-			ino = 0x700000u;
+			ino = lxp_hostfs_path_inode(abspath);
 #endif
 		} else if ((wi = wfs_find(abspath)) >= 0) { /* writable overlay shadows rootfs */
 			mode = wnode_at(wi)->mode;
@@ -2624,7 +2626,7 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 				return rc;
 			mode = hostfs_mode(&stat);
 			size = stat.size;
-			ino = 0x700000u + (uint32_t)s->file_idx;
+			ino = lxp_hostfs_inode(s->file_idx);
 #endif
 		} else {
 			mode = LXP_S_IFCHR | 0620u;

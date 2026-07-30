@@ -23,6 +23,7 @@ typedef struct lxp_hostfs_open {
 		lxp_fs_dir_t dir;
 	} handle;
 	lxp_fs_dirent_t pending;
+	uint32_t inode;
 	uint8_t used;
 	uint8_t is_dir;
 	uint8_t has_pending;
@@ -96,6 +97,22 @@ const char *lxp_hostfs_relative(const char *abspath)
 	return abspath[mount_len] ? abspath + mount_len : "/";
 }
 
+uint32_t lxp_hostfs_path_inode(const char *abspath)
+{
+	if (!lxp_hostfs_match(abspath))
+		return 0;
+
+	/* The provider API deliberately exposes no RTOS-specific inode. Use a
+	 * stable namespace-tagged FNV-1a value so stat(path), fstat(open(path)),
+	 * and statx agree independent of the transient open-pool slot. */
+	uint32_t hash = 2166136261u;
+	for (const unsigned char *p = (const unsigned char *)abspath; *p; p++) {
+		hash ^= *p;
+		hash *= 16777619u;
+	}
+	return 0x70000000u | (hash & 0x0fffffffu);
+}
+
 static lxp_hostfs_open_t *hostfs_slot(int index)
 {
 	if (index < 0 || index >= LXP_NHOSTFS_OPEN || !g_hostfs_open[index].used)
@@ -160,6 +177,7 @@ long lxp_hostfs_open(const char *abspath, int linux_flags)
 			return lxp_hostfs_error(rc);
 		g_hostfs_open[index].used = 1;
 		g_hostfs_open[index].is_dir = 1;
+		g_hostfs_open[index].inode = lxp_hostfs_path_inode(abspath);
 		return index;
 	}
 	if (sr != LXP_OK && sr != LXP_ERR_NOT_FOUND)
@@ -172,6 +190,7 @@ long lxp_hostfs_open(const char *abspath, int linux_flags)
 	if (rc != LXP_OK)
 		return lxp_hostfs_error(rc);
 	g_hostfs_open[index].used = 1;
+	g_hostfs_open[index].inode = lxp_hostfs_path_inode(abspath);
 	return index;
 }
 
@@ -179,6 +198,12 @@ int lxp_hostfs_is_dir(int index)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	return slot ? slot->is_dir != 0 : 0;
+}
+
+uint32_t lxp_hostfs_inode(int index)
+{
+	lxp_hostfs_open_t *slot = hostfs_slot(index);
+	return slot ? slot->inode : 0;
 }
 
 long lxp_hostfs_read(int index, void *buf, size_t len)

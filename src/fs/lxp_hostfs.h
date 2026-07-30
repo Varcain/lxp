@@ -27,6 +27,10 @@ const char *lxp_hostfs_relative(const char *abspath);
 /** Open a file or directory and return a hostfs open-pool index. */
 long lxp_hostfs_open(const char *abspath, int linux_flags);
 int lxp_hostfs_is_dir(int index);
+/** Stable synthetic inode captured when an object is opened. */
+uint32_t lxp_hostfs_inode(int index);
+/** Stable synthetic inode for a normalized guest-visible hostfs path. */
+uint32_t lxp_hostfs_path_inode(const char *abspath);
 long lxp_hostfs_read(int index, void *buf, size_t len);
 long lxp_hostfs_write(int index, const void *buf, size_t len);
 long lxp_hostfs_seek(int index, int64_t offset, int whence);

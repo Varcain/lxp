@@ -332,6 +332,44 @@ static void test_hostfs_write_stat_and_chdir(void **state)
 	assert_int_equal(call(&proc, LXP_NR_access, (long)(uintptr_t)"/data/hello.txt", 0, 0), 0);
 }
 
+static void test_hostfs_inode_is_stable_across_open_slots(void **state)
+{
+	(void)state;
+	lxp_proc_t proc;
+	lxp_arena_t arena;
+	setup(&proc, &arena);
+
+	long first = call(&proc, LXP_NR_openat, LXP_AT_FDCWD,
+			  (long)(uintptr_t)"/data/hello.txt", LXP_O_RDONLY);
+	long second = call(&proc, LXP_NR_openat, LXP_AT_FDCWD,
+			   (long)(uintptr_t)"/data/hello.txt", LXP_O_RDONLY);
+	assert_true(first >= 0);
+	assert_true(second >= 0);
+
+	uint8_t path_stat[104] = {0};
+	uint8_t first_stat[104] = {0};
+	uint8_t second_stat[104] = {0};
+	assert_int_equal(call(&proc, LXP_NR_stat64, (long)(uintptr_t)"/data/hello.txt",
+			      (long)(uintptr_t)path_stat, 0),
+			 0);
+	assert_int_equal(call(&proc, LXP_NR_fstat64, first, (long)(uintptr_t)first_stat, 0), 0);
+	assert_int_equal(call(&proc, LXP_NR_fstat64, second, (long)(uintptr_t)second_stat, 0),
+			 0);
+
+	uint64_t path_inode;
+	uint64_t first_inode;
+	uint64_t second_inode;
+	memcpy(&path_inode, path_stat + 96, sizeof(path_inode));
+	memcpy(&first_inode, first_stat + 96, sizeof(first_inode));
+	memcpy(&second_inode, second_stat + 96, sizeof(second_inode));
+	assert_true(path_inode != 0);
+	assert_int_equal(first_inode, path_inode);
+	assert_int_equal(second_inode, path_inode);
+
+	assert_int_equal(call(&proc, LXP_NR_close, first, 0, 0), 0);
+	assert_int_equal(call(&proc, LXP_NR_close, second, 0, 0), 0);
+}
+
 static void test_hostfs_directory_paging_and_mount_boundary(void **state)
 {
 	(void)state;
@@ -496,6 +534,7 @@ int test_linux_hostfs_run(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_hostfs_file_lifetime_and_io),
 		cmocka_unit_test(test_hostfs_write_stat_and_chdir),
+		cmocka_unit_test(test_hostfs_inode_is_stable_across_open_slots),
 		cmocka_unit_test(test_hostfs_directory_paging_and_mount_boundary),
 		cmocka_unit_test(test_hostfs_positioned_io_truncate_and_sync),
 		cmocka_unit_test(test_hostfs_mutations_and_cross_mount_errors),
