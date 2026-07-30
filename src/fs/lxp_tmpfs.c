@@ -46,7 +46,8 @@ lxp_wnode_t *wnode_at(int i)
 int wfs_find(const char *abspath)
 {
 	for (int i = 0; i < LXP_NWNODE; i++)
-		if (g_wnodes[i].used && strcmp(g_wnodes[i].path, abspath) == 0)
+		if (g_wnodes[i].used && g_wnodes[i].linked &&
+		    strcmp(g_wnodes[i].path, abspath) == 0)
 			return i;
 	return -1;
 }
@@ -63,6 +64,8 @@ int wfs_create(const char *abspath, uint32_t mode)
 			g_wnodes[i].size = 0;
 			g_wnodes[i].cap = 0;
 			g_wnodes[i].used = 1;
+			g_wnodes[i].linked = 1;
+			g_wnodes[i].open_refs = 0;
 			return i;
 		}
 	return -1;
@@ -104,13 +107,43 @@ int wfs_reserve(int i, size_t need)
 	return 0;
 }
 
-void wfs_free(int i)
+static void wfs_reclaim(int i)
 {
 	lxp_wnode_t *w = &g_wnodes[i];
 	if (w->data)
 		lxp_arena_free(&g_wfs_arena, w->data); /* reclaim the node's pool bytes */
-	w->data = NULL;
-	w->size = 0;
-	w->cap = 0;
-	w->used = 0;
+	memset(w, 0, sizeof(*w));
+}
+
+int wfs_open(int i)
+{
+	if (i < 0 || i >= LXP_NWNODE || !g_wnodes[i].used ||
+	    g_wnodes[i].open_refs == UINT16_MAX)
+		return -1;
+	g_wnodes[i].open_refs++;
+	return 0;
+}
+
+void wfs_close(int i)
+{
+	if (i < 0 || i >= LXP_NWNODE || !g_wnodes[i].used ||
+	    g_wnodes[i].open_refs == 0)
+		return;
+	if (--g_wnodes[i].open_refs == 0 && !g_wnodes[i].linked)
+		wfs_reclaim(i);
+}
+
+void wfs_free(int i)
+{
+	if (i < 0 || i >= LXP_NWNODE || !g_wnodes[i].used)
+		return;
+	/*
+	 * unlink(2) removes the directory entry, not an already-open file
+	 * description. SQLite relies on this for anonymous temporary databases:
+	 * it opens a file, unlinks the name, then continues using the descriptor.
+	 */
+	g_wnodes[i].linked = 0;
+	g_wnodes[i].path[0] = '\0';
+	if (g_wnodes[i].open_refs == 0)
+		wfs_reclaim(i);
 }

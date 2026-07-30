@@ -747,8 +747,10 @@ static long fop_fstat_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	(void)p;
-	fill_kstat64(statbuf, 0x100000u + (uint32_t)s->file_idx, wnode_at(s->file_idx)->mode,
-		     wnode_at(s->file_idx)->size);
+	lxp_wnode_t *node = wnode_at(s->file_idx);
+	fill_kstat64(statbuf, 0x100000u + (uint32_t)s->file_idx, node->mode, node->size);
+	if (!node->linked)
+		((struct lxp_kstat64 *)statbuf)->st_nlink = 0;
 	return 0;
 }
 
@@ -826,6 +828,12 @@ static long fop_fstat_pty(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 #endif
 
 /* ---- close fops (release the backing object; kinds with no backing omit it) ---- */
+static void fop_close_tmpfs(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	wfs_close(s->file_idx);
+}
+
 static void fop_close_pipe(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
@@ -1016,7 +1024,8 @@ static const lxp_file_ops_t rootfs_fops = {.read = fop_read_rootfs, /* read-only
 static const lxp_file_ops_t tmpfs_fops = {.read = fop_read_tmpfs,
 					  .write = fop_write_tmpfs,
 					  .lseek = fop_lseek_tmpfs,
-					  .fstat = fop_fstat_tmpfs};
+					  .fstat = fop_fstat_tmpfs,
+					  .close = fop_close_tmpfs};
 static const lxp_file_ops_t pipe_fops = {
 	.read = fop_read_pipe,
 	.write = fop_write_pipe,
@@ -1418,7 +1427,12 @@ static long sys_munmap(lxp_proc_t *p, uintptr_t addr, size_t len)
 /* Claim the lowest free fd for (kind, idx, off); -EMFILE if the table is full. */
 static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
 {
-	return lxp_fd_open(p, kind, idx, off, ops_for_kind(kind));
+	if (kind == LXP_FD_TMPFS && wfs_open(idx) != 0)
+		return -LXP_EMFILE;
+	int fd = lxp_fd_open(p, kind, idx, off, ops_for_kind(kind));
+	if (fd < 0 && kind == LXP_FD_TMPFS)
+		wfs_close(idx);
+	return fd;
 }
 
 /* Public wrapper so the socket bridge can mint an accept(2) fd (the fd table is

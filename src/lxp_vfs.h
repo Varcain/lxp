@@ -39,8 +39,8 @@ struct lxp_file_ops {
 	 *  syscall reports a bare character device (console/pipe/eventfd). */
 	long (*fstat)(lxp_proc_t *p, lxp_ofd_t *f, void *statbuf);
 	/** release the fd's backing object at close(2) (drop a refcount / free a pool
-	 *  slot). NULL means the kind holds nothing to release (console/file/tmpfs/
-	 *  pipe/pty — the slot is simply freed). Cannot fail. */
+	 *  slot). NULL means the kind holds nothing to release (console/rootfs).
+	 *  Cannot fail. */
 	void (*close)(lxp_proc_t *p, lxp_ofd_t *f);
 	/** ioctl(2): the result, or a negated errno. NULL means the kind is not a
 	 *  character device / socket (the syscall returns -ENOTTY). @p arg is the raw

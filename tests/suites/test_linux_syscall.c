@@ -730,6 +730,53 @@ static void test_lnx_tmpfs(void **state)
 			 -LXP_ENOENT);
 }
 
+/* unlink removes the name but an existing open-file description keeps the
+ * inode and bytes alive. SQLite opens and immediately unlinks temp databases. */
+static void test_lnx_tmpfs_unlink_open(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+
+	const char *path = "/tmp/unlinked.db";
+	long oldfd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				 (long)(uintptr_t)path,
+				 LXP_O_RDWR | LXP_O_CREAT | LXP_O_TRUNC, 0644, 0, 0);
+	assert_true(oldfd >= 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, oldfd,
+				     (long)(uintptr_t)"old", 3, 0, 0, 0), 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_unlink, (long)(uintptr_t)path,
+				     0, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				     (long)(uintptr_t)path, LXP_O_RDONLY, 0, 0, 0),
+			 -LXP_ENOENT);
+
+	assert_int_equal(lxp_syscall(&p, LXP_NR_lseek, oldfd, 0, LXP_SEEK_SET, 0, 0, 0), 0);
+	char old[3];
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, oldfd,
+				     (long)(uintptr_t)old, sizeof(old), 0, 0, 0), 3);
+	assert_memory_equal(old, "old", 3);
+
+	/* Reusing the pathname creates a distinct live node. Closing the old,
+	 * unlinked fd must not reclaim the replacement. */
+	long newfd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				 (long)(uintptr_t)path,
+				 LXP_O_RDWR | LXP_O_CREAT | LXP_O_TRUNC, 0644, 0, 0);
+	assert_true(newfd >= 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, newfd,
+				     (long)(uintptr_t)"new", 3, 0, 0, 0), 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, oldfd, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_lseek, newfd, 0, LXP_SEEK_SET, 0, 0, 0), 0);
+	char fresh[3];
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, newfd,
+				     (long)(uintptr_t)fresh, sizeof(fresh), 0, 0, 0), 3);
+	assert_memory_equal(fresh, "new", 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, newfd, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_unlink, (long)(uintptr_t)path,
+				     0, 0, 0, 0, 0), 0);
+}
+
 /* Search a getdents64 buffer for an entry by name; returns its d_type or -1. */
 static int dirents_find(const uint8_t *buf, long len, const char *name)
 {
@@ -1221,6 +1268,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_exec_capture_is_per_proc),
 		cmocka_unit_test(test_lnx_fcntl_getfl_access_mode),
 		cmocka_unit_test(test_lnx_tmpfs),
+		cmocka_unit_test(test_lnx_tmpfs_unlink_open),
 		cmocka_unit_test(test_lnx_getdents),
 		cmocka_unit_test(test_lnx_execve),
 		cmocka_unit_test(test_lnx_exit_and_unknown),

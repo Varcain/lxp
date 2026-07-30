@@ -31,6 +31,8 @@ typedef struct {
 	size_t size;
 	size_t cap;
 	int used;
+	uint16_t open_refs;
+	uint8_t linked;
 } lxp_wnode_t;
 
 /* The i-th node (0 <= i < LXP_NWNODE). The pool is otherwise private to lxp_tmpfs.c. */
@@ -46,8 +48,15 @@ int wfs_create(const char *abspath, uint32_t mode);
  * block). 0 on success, -1 if the pool is exhausted. */
 int wfs_reserve(int i, size_t need);
 
-/* Free node i: reclaim its pool bytes and mark the slot unused (unlink/rmdir, or a
- * rename replacing an existing destination). */
+/* Retain/release one open-file description for node i. dup/fork aliases share
+ * that description and therefore do not add another node reference. */
+int wfs_open(int i);
+void wfs_close(int i);
+
+/* Remove node i's directory entry (unlink/rmdir, or rename replacing an
+ * existing destination). Its bytes remain accessible to existing open-file
+ * descriptions and are reclaimed after the final close. Nodes without open
+ * descriptions are reclaimed immediately. */
 void wfs_free(int i);
 
 #endif /* LXP_FS_TMPFS_H */
