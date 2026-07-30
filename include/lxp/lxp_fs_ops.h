@@ -67,7 +67,15 @@ typedef struct lxp_fs_dirent {
  *
  * Paths are relative to the provider's mounted volume. "/" denotes its root.
  * The personality is solely responsible for selecting the mount and removing
- * the guest-visible prefix before calling the provider. */
+ * the guest-visible prefix before calling the provider.
+ *
+ * Buffers passed to file_read/file_write belong to the guest address space,
+ * but each synchronous call must return with normal CPU loads observing the
+ * completed data. A provider that uses DMA must perform its cache maintenance
+ * internally or stage through provider-owned DMA memory. The personality must
+ * not invalidate a buffer after file_read: on a single-core system where a
+ * privileged worker and guest share one write-back cache, that would discard
+ * the worker's dirty CPU writes rather than publish them. */
 typedef struct lxp_fs_ops {
 	uint32_t abi_version; /**< Must be LXP_FS_OPS_ABI_VERSION. */
 	uint32_t struct_size; /**< Must be sizeof(lxp_fs_ops_t). */

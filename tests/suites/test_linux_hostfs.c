@@ -37,12 +37,6 @@ static char g_mutation_path[LXP_FS_NAME_MAX];
 static char g_rename_new_path[LXP_FS_NAME_MAX];
 static const lxp_net_ops_t *g_saved_net;
 static const lxp_display_ops_t *g_saved_display;
-extern size_t g_lxp_test_cache_clean_calls;
-extern const void *g_lxp_test_cache_clean_base;
-extern size_t g_lxp_test_cache_clean_len;
-extern size_t g_lxp_test_cache_invalidate_calls;
-extern const void *g_lxp_test_cache_invalidate_base;
-extern size_t g_lxp_test_cache_invalidate_len;
 
 static int fake_run_begin(void)
 {
@@ -257,12 +251,6 @@ static void setup(lxp_proc_t *proc, lxp_arena_t *arena)
 	g_mutation[0] = '\0';
 	g_mutation_path[0] = '\0';
 	g_rename_new_path[0] = '\0';
-	g_lxp_test_cache_clean_calls = 0;
-	g_lxp_test_cache_clean_base = NULL;
-	g_lxp_test_cache_clean_len = 0;
-	g_lxp_test_cache_invalidate_calls = 0;
-	g_lxp_test_cache_invalidate_base = NULL;
-	g_lxp_test_cache_invalidate_len = 0;
 }
 
 static long call(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
@@ -303,12 +291,6 @@ static void test_hostfs_file_lifetime_and_io(void **state)
 	assert_int_equal(call(&proc, LXP_NR_read, fd, (long)(uintptr_t)out, 0), 0);
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_read, fd, (long)(uintptr_t)out, 5, 0, 0, 0), 5);
 	assert_memory_equal(out, "hello", 5);
-	assert_int_equal(g_lxp_test_cache_clean_calls, 1);
-	assert_ptr_equal(g_lxp_test_cache_clean_base, out);
-	assert_int_equal(g_lxp_test_cache_clean_len, 5);
-	assert_int_equal(g_lxp_test_cache_invalidate_calls, 1);
-	assert_ptr_equal(g_lxp_test_cache_invalidate_base, out);
-	assert_int_equal(g_lxp_test_cache_invalidate_len, 5);
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_lseek, fd, 0, LXP_SEEK_END, 0, 0, 0), 5);
 
 	long alias = lxp_syscall(&proc, LXP_NR_dup, fd, 0, 0, 0, 0, 0);
@@ -400,17 +382,9 @@ static void test_hostfs_positioned_io_truncate_and_sync(void **state)
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_lseek, fd, 0, LXP_SEEK_CUR, 0, 0, 0), 2);
 
 	char out[6] = {0};
-	g_lxp_test_cache_clean_calls = 0;
-	g_lxp_test_cache_invalidate_calls = 0;
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_pread64, fd, (long)(uintptr_t)out, 5, 0, 0, 0),
 			 5);
 	assert_memory_equal(out, "hAllo", 5);
-	assert_int_equal(g_lxp_test_cache_clean_calls, 1);
-	assert_ptr_equal(g_lxp_test_cache_clean_base, out);
-	assert_int_equal(g_lxp_test_cache_clean_len, 5);
-	assert_int_equal(g_lxp_test_cache_invalidate_calls, 1);
-	assert_ptr_equal(g_lxp_test_cache_invalidate_base, out);
-	assert_int_equal(g_lxp_test_cache_invalidate_len, 5);
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_lseek, fd, 0, LXP_SEEK_CUR, 0, 0, 0), 2);
 
 	/* Positioned writes must grow a zero-filled hole even when an embedded
