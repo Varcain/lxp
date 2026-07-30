@@ -241,8 +241,30 @@ static long hostfs_positioned(int index, void *buf, size_t len, uint64_t offset,
 		return lxp_hostfs_error(rc);
 	uint64_t ignored = 0;
 	rc = g_lxp_fs_ops->file_seek(slot->handle.file, (int64_t)offset, LXP_FS_SEEK_SET, &ignored);
-	if (rc != LXP_OK)
-		return lxp_hostfs_error(rc);
+	if (rc != LXP_OK) {
+		/*
+		 * Some embedded filesystems reject seeks beyond EOF even though
+		 * POSIX pread/pwrite require an absolute offset. Reads beyond EOF
+		 * are empty; writes create a zero-filled hole before their payload.
+		 * Keep ordinary lseek semantics in the provider, and adapt only this
+		 * positioned-I/O path when the direct seek is rejected.
+		 */
+		lxp_fs_stat_t stat;
+		int sr = g_lxp_fs_ops->file_stat(slot->handle.file, &stat);
+		if (sr != LXP_OK)
+			return lxp_hostfs_error(rc);
+		if (!write && offset >= stat.size)
+			return 0;
+		if (!write || offset <= stat.size)
+			return lxp_hostfs_error(rc);
+		int tr = g_lxp_fs_ops->file_truncate(slot->handle.file, offset);
+		if (tr != LXP_OK)
+			return lxp_hostfs_error(tr);
+		rc = g_lxp_fs_ops->file_seek(slot->handle.file, (int64_t)offset,
+					     LXP_FS_SEEK_SET, &ignored);
+		if (rc != LXP_OK)
+			return lxp_hostfs_error(rc);
+	}
 
 	long result = write ? lxp_hostfs_write(index, buf, len) : lxp_hostfs_read(index, buf, len);
 	int restore = saved > (uint64_t)INT64_MAX

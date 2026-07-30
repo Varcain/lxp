@@ -117,7 +117,8 @@ static int fake_file_seek(lxp_fs_file_t file, int64_t offset, int whence, uint64
 	int64_t base = whence == LXP_FS_SEEK_SET   ? 0
 		       : whence == LXP_FS_SEEK_CUR ? (int64_t)f->position
 						   : (int64_t)g_content_len;
-	if (whence < LXP_FS_SEEK_SET || whence > LXP_FS_SEEK_END || base + offset < 0)
+	if (whence < LXP_FS_SEEK_SET || whence > LXP_FS_SEEK_END || base + offset < 0 ||
+	    (uint64_t)(base + offset) > g_content_len)
 		return LXP_ERR_INVALID_PARAM;
 	f->position = (size_t)(base + offset);
 	*new_offset = f->position;
@@ -410,6 +411,19 @@ static void test_hostfs_positioned_io_truncate_and_sync(void **state)
 	assert_int_equal(g_lxp_test_cache_invalidate_calls, 1);
 	assert_ptr_equal(g_lxp_test_cache_invalidate_base, out);
 	assert_int_equal(g_lxp_test_cache_invalidate_len, 5);
+	assert_int_equal(lxp_syscall(&proc, LXP_NR_lseek, fd, 0, LXP_SEEK_CUR, 0, 0, 0), 2);
+
+	/* Positioned writes must grow a zero-filled hole even when an embedded
+	 * provider rejects seeking beyond EOF. Simulate that provider policy. */
+	assert_int_equal(fake_file_truncate((lxp_fs_file_t)&g_file, 3), LXP_OK);
+	assert_int_equal(lxp_syscall(&proc, LXP_NR_pwrite64, fd, (long)(uintptr_t)"Z", 1, 0, 6, 0),
+			 1);
+	assert_int_equal(g_content_len, 7);
+	assert_memory_equal(g_content, "hAl\0\0\0Z", 7);
+	assert_int_equal(lxp_syscall(&proc, LXP_NR_lseek, fd, 0, LXP_SEEK_CUR, 0, 0, 0), 2);
+	assert_int_equal(
+		lxp_syscall(&proc, LXP_NR_pread64, fd, (long)(uintptr_t)out, 1, 0, 20, 0),
+		0);
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_lseek, fd, 0, LXP_SEEK_CUR, 0, 0, 0), 2);
 
 	/* ARM ftruncate64 aligns the 64-bit length to a2/a3. */
