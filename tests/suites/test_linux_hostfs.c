@@ -486,7 +486,10 @@ static void test_hostfs_mutations_and_cross_mount_errors(void **state)
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_symlink, (long)(uintptr_t)"target",
 				     (long)(uintptr_t)"/data/link", 0, 0, 0, 0),
 			 -LXP_EOPNOTSUPP);
-	assert_int_equal(call(&proc, LXP_NR_mkdir, (long)(uintptr_t)"/data", 0755, 0), -LXP_EBUSY);
+	/* The mount root is an existing directory: mkdir must report EEXIST so
+	 * mkdir -p can safely walk through it. Destructive mutations stay busy. */
+	assert_int_equal(call(&proc, LXP_NR_mkdir, (long)(uintptr_t)"/data", 0755, 0),
+			 -LXP_EEXIST);
 }
 
 static void test_hostfs_access_modes(void **state)

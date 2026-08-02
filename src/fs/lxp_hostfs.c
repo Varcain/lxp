@@ -422,6 +422,12 @@ static long hostfs_path_call(const char *abspath, int (*operation)(const char *)
 
 long lxp_hostfs_mkdir(const char *abspath)
 {
+	const char *path = lxp_hostfs_relative(abspath);
+	/* The mount root already exists in the guest namespace. POSIX mkdir(2)
+	 * reports EEXIST for an existing directory; mkdir -p depends on that
+	 * distinction to continue creating descendants below /data. */
+	if (path && strcmp(path, "/") == 0)
+		return -LXP_EEXIST;
 	return hostfs_path_call(abspath, g_lxp_fs_ops ? g_lxp_fs_ops->path_mkdir : NULL);
 }
 
