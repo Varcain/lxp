@@ -260,6 +260,31 @@ static long hostfs_positioned(int index, void *buf, size_t len, uint64_t offset,
 	if (offset > (uint64_t)INT64_MAX)
 		return -LXP_EOVERFLOW;
 
+	lxp_fs_stat_t stat;
+	int sr = g_lxp_fs_ops->file_stat(slot->handle.file, &stat);
+	if (sr != LXP_OK)
+		return lxp_hostfs_error(sr);
+	/*
+	 * POSIX pread() beyond EOF returns zero without changing either the open
+	 * file position or its size. Some embedded providers implement seek with
+	 * APIs such as FatFs f_lseek(), which extends a writable file as a side
+	 * effect when the target is beyond EOF. Do not let a read-only probe
+	 * mutate storage before the provider ever sees it.
+	 */
+	if (!write && offset >= stat.size)
+		return 0;
+	/*
+	 * Likewise, make the provider's truncate contract own hole creation
+	 * before a positioned write. This gives every backend one explicit place
+	 * to enforce the required zero-filled gap rather than depending on its
+	 * seek primitive's engine-specific growth behavior.
+	 */
+	if (write && offset > stat.size) {
+		int tr = g_lxp_fs_ops->file_truncate(slot->handle.file, offset);
+		if (tr != LXP_OK)
+			return lxp_hostfs_error(tr);
+	}
+
 	uint64_t saved = 0;
 	int rc = g_lxp_fs_ops->file_seek(slot->handle.file, 0, LXP_FS_SEEK_CUR, &saved);
 	if (rc != LXP_OK)
@@ -274,10 +299,6 @@ static long hostfs_positioned(int index, void *buf, size_t len, uint64_t offset,
 		 * Keep ordinary lseek semantics in the provider, and adapt only this
 		 * positioned-I/O path when the direct seek is rejected.
 		 */
-		lxp_fs_stat_t stat;
-		int sr = g_lxp_fs_ops->file_stat(slot->handle.file, &stat);
-		if (sr != LXP_OK)
-			return lxp_hostfs_error(rc);
 		if (!write && offset >= stat.size)
 			return 0;
 		if (!write || offset <= stat.size)

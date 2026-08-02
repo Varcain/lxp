@@ -32,6 +32,7 @@ static char g_open_path[LXP_FS_NAME_MAX];
 static unsigned g_open_flags;
 static unsigned g_close_count;
 static unsigned g_sync_count;
+static int g_seek_extends_file;
 static char g_mutation[16];
 static char g_mutation_path[LXP_FS_NAME_MAX];
 static char g_rename_new_path[LXP_FS_NAME_MAX];
@@ -111,9 +112,15 @@ static int fake_file_seek(lxp_fs_file_t file, int64_t offset, int whence, uint64
 	int64_t base = whence == LXP_FS_SEEK_SET   ? 0
 		       : whence == LXP_FS_SEEK_CUR ? (int64_t)f->position
 						   : (int64_t)g_content_len;
-	if (whence < LXP_FS_SEEK_SET || whence > LXP_FS_SEEK_END || base + offset < 0 ||
-	    (uint64_t)(base + offset) > g_content_len)
+	if (whence < LXP_FS_SEEK_SET || whence > LXP_FS_SEEK_END || base + offset < 0)
 		return LXP_ERR_INVALID_PARAM;
+	if ((uint64_t)(base + offset) > g_content_len) {
+		if (!g_seek_extends_file)
+			return LXP_ERR_INVALID_PARAM;
+		memset(g_content + g_content_len, 0xa5,
+		       (size_t)(base + offset) - g_content_len);
+		g_content_len = (size_t)(base + offset);
+	}
 	f->position = (size_t)(base + offset);
 	*new_offset = f->position;
 	return LXP_OK;
@@ -248,6 +255,7 @@ static void setup(lxp_proc_t *proc, lxp_arena_t *arena)
 	g_open_flags = 0;
 	g_close_count = 0;
 	g_sync_count = 0;
+	g_seek_extends_file = 0;
 	g_mutation[0] = '\0';
 	g_mutation_path[0] = '\0';
 	g_rename_new_path[0] = '\0';
@@ -433,9 +441,13 @@ static void test_hostfs_positioned_io_truncate_and_sync(void **state)
 	assert_int_equal(g_content_len, 7);
 	assert_memory_equal(g_content, "hAl\0\0\0Z", 7);
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_lseek, fd, 0, LXP_SEEK_CUR, 0, 0, 0), 2);
+	/* A provider whose seek primitive extends writable files must never see
+	 * the beyond-EOF pread probe. */
+	g_seek_extends_file = 1;
 	assert_int_equal(
 		lxp_syscall(&proc, LXP_NR_pread64, fd, (long)(uintptr_t)out, 1, 0, 20, 0),
 		0);
+	assert_int_equal(g_content_len, 7);
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_lseek, fd, 0, LXP_SEEK_CUR, 0, 0, 0), 2);
 
 	/* ARM ftruncate64 aligns the 64-bit length to a2/a3. */
