@@ -218,6 +218,13 @@ static struct vfork_snapshot_guard g_vfork_guard[LXP_NSLOT];
 static const lxp_run_config_t *g_cfg;
 static const lxp_os_ops_t *g_eng; /* for the dispatch to post coordinator events */
 
+long lxp_rt_scope_read(char *buf, size_t cap)
+{
+	if (!buf || !g_cfg || !g_cfg->rt_scope_read)
+		return -1;
+	return g_cfg->rt_scope_read(g_cfg->rt_scope_ctx, buf, cap);
+}
+
 static lxp_region_ref_t region_ref_at(int region);
 int lxp_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_owner);
 

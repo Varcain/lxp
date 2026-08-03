@@ -94,6 +94,13 @@ const char *lxp_system_version(void)
 {
 	return "TestRTOS 1.2.3 ove-abcdef0 lxp-1234567";
 }
+
+long lxp_rt_scope_read(char *buf, size_t cap)
+{
+	(void)buf;
+	(void)cap;
+	return -1;
+}
 void lxp_cache_clean(const void *base, size_t len)
 {
 	g_lxp_test_cache_clean_calls++;

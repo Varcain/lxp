@@ -224,6 +224,11 @@ static void test_procfs(void **s)
 	assert_non_null(strstr(out, "host_heap_total 12582912\n"));
 	assert_non_null(strstr(out, "host_heap_free 3145728\n"));
 
+	r = proc_gen("/proc/rt_scope", &p, out, sizeof(out) - 1);
+	assert_true(r > 0);
+	out[r] = '\0';
+	assert_string_equal(out, "available 0\n");
+
 	r = proc_gen("/proc/version", &p, out, sizeof(out) - 1);
 	assert_true(r > 0);
 	assert_true((size_t)r < sizeof(out));

@@ -37,6 +37,11 @@ typedef struct lxp_guest_exit_info {
 	uintptr_t address; /**< Port-defined fault address, or 0 when unavailable. */
 } lxp_guest_exit_info_t;
 
+/** Host-owned formatter for the optional real-time diagnostic proc node.
+ * The callback must not block or mutate the measured interval. It returns the
+ * number of bytes placed in @p buf, or a negative value when unavailable. */
+typedef long (*lxp_rt_scope_read_fn)(void *ctx, char *buf, size_t cap);
+
 /**
  * @file
  * @defgroup lxp_run Linux personality runner
@@ -99,6 +104,9 @@ typedef struct lxp_run_config {
 	 * storage; process counts and pool sizes remain compile-time properties. */
 	uint16_t display_width;
 	uint16_t display_height;
+	/** Optional host real-time snapshot exposed verbatim as /proc/rt_scope. */
+	lxp_rt_scope_read_fn rt_scope_read;
+	void *rt_scope_ctx; /**< Opaque, passed to @p rt_scope_read. */
 } lxp_run_config_t;
 
 /** @ref lxp_run outcomes (negative; a non-negative result is the init

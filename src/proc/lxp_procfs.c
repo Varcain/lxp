@@ -115,7 +115,7 @@ const char *const g_proc_files[] = {"version", "uptime", "meminfo", "lxp_resourc
 #if LXP_ENABLE_FS
 				   "lxp_fs",
 #endif
-				   "cpuinfo", "mounts", "stat", "loadavg", "filesystems",
+				   "rt_scope", "cpuinfo", "mounts", "stat", "loadavg", "filesystems",
 					   NULL};
 
 /* st_mode for a /proc node, or 0 if the path is not a synthetic /proc node. */
@@ -317,6 +317,13 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		FS_METRIC_LINE("budget_overruns", metrics.budget_overruns);
 #undef FS_METRIC_LINE
 #endif
+	} else if (strcmp(abs, "/proc/rt_scope") == 0) {
+		long length = lxp_rt_scope_read(buf, cap);
+		if (length < 0) {
+			o = p_str(buf, o, cap, "available 0\n");
+		} else {
+			return length;
+		}
 	} else if (strcmp(abs, "/proc/cpuinfo") == 0) {
 		o = p_str(buf, o, cap,
 			  "processor\t: 0\nmodel name\t: ARM Cortex-M\nFeatures\t: thumb\n\n");

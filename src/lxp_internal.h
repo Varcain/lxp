@@ -61,6 +61,9 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out);
 /* Host-supplied utsname.version identity, or the honest module fallback "lxp". */
 const char *lxp_system_version(void);
 
+/* Format the active run's optional host real-time snapshot. */
+long lxp_rt_scope_read(char *buf, size_t cap);
+
 /* reboot(2)/poweroff requests are private core state, not part of the RTOS seam. */
 void lxp_request_halt(void);
 void lxp_reset_halt_request(void);
