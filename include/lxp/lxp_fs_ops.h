@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-#define LXP_FS_OPS_ABI_VERSION 2u
+#define LXP_FS_OPS_ABI_VERSION 3u
 #define LXP_FS_NAME_MAX 256u
 
 /* Provider open flags. Access mode is explicit instead of encoded in low bits
@@ -60,6 +60,15 @@ typedef struct lxp_fs_dirent {
 	uint8_t type;
 	uint8_t _reserved[7];
 } lxp_fs_dirent_t;
+
+typedef struct lxp_fs_open_result {
+	union {
+		lxp_fs_file_t file;
+		lxp_fs_dir_t dir;
+	} handle;
+	uint8_t type;
+	uint8_t _reserved[7];
+} lxp_fs_open_result_t;
 
 /* Run-scoped provider telemetry. Counters reset in run_begin(). Durations are
  * measured on the host side so they include native queueing and service time,
@@ -105,6 +114,10 @@ typedef struct lxp_fs_ops {
 	void (*run_end)(void);
 
 	int (*file_open)(const char *path, unsigned flags, lxp_fs_file_t *out);
+	/** Atomically classify and open one path. @p require_dir implements
+	 * O_DIRECTORY without a separate stat/open race. */
+	int (*object_open)(const char *path, unsigned flags, int require_dir,
+			   lxp_fs_open_result_t *out);
 	int (*file_close)(lxp_fs_file_t file);
 	int (*file_read)(lxp_fs_file_t file, void *buf, size_t count, size_t *bytes_read);
 	int (*file_write)(lxp_fs_file_t file, const void *buf, size_t count, size_t *bytes_written);
@@ -112,6 +125,11 @@ typedef struct lxp_fs_ops {
 	int (*file_stat)(lxp_fs_file_t file, lxp_fs_stat_t *out);
 	int (*file_truncate)(lxp_fs_file_t file, uint64_t length);
 	int (*file_sync)(lxp_fs_file_t file);
+	/** Positioned operations preserve the shared open-file offset atomically. */
+	int (*file_pread)(lxp_fs_file_t file, void *buf, size_t count, uint64_t offset,
+			 size_t *bytes_read);
+	int (*file_pwrite)(lxp_fs_file_t file, const void *buf, size_t count, uint64_t offset,
+			  size_t *bytes_written);
 
 	int (*dir_open)(const char *path, lxp_fs_dir_t *out);
 	int (*dir_read)(lxp_fs_dir_t dir, lxp_fs_dirent_t *entry);

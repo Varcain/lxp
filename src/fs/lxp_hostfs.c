@@ -166,29 +166,21 @@ long lxp_hostfs_open(const char *abspath, int linux_flags)
 	if (index < 0)
 		return -LXP_EMFILE;
 
-	lxp_fs_stat_t stat;
-	int sr = ops->path_stat(path, &stat);
-	if (sr == LXP_OK && stat.type == LXP_FS_TYPE_DIR) {
-		if ((linux_flags & LXP_O_ACCMODE) != LXP_O_RDONLY ||
-		    (linux_flags & (LXP_O_CREAT | LXP_O_TRUNC)))
-			return -LXP_EISDIR;
-		int rc = ops->dir_open(path, &g_hostfs_open[index].handle.dir);
-		if (rc != LXP_OK)
-			return lxp_hostfs_error(rc);
+	lxp_fs_open_result_t opened;
+	int rc = ops->object_open(path, hostfs_open_flags(linux_flags),
+				  (linux_flags & LXP_O_DIRECTORY) != 0, &opened);
+	if (rc != LXP_OK)
+		return lxp_hostfs_error(rc);
+	if (opened.type == LXP_FS_TYPE_DIR) {
+		g_hostfs_open[index].handle.dir = opened.handle.dir;
 		g_hostfs_open[index].used = 1;
 		g_hostfs_open[index].is_dir = 1;
 		g_hostfs_open[index].inode = lxp_hostfs_path_inode(abspath);
 		return index;
 	}
-	if (sr != LXP_OK && sr != LXP_ERR_NOT_FOUND)
-		return lxp_hostfs_error(sr);
-	if ((linux_flags & LXP_O_DIRECTORY) != 0)
-		return sr == LXP_ERR_NOT_FOUND ? -LXP_ENOENT : -LXP_ENOTDIR;
-
-	int rc = ops->file_open(path, hostfs_open_flags(linux_flags),
-				&g_hostfs_open[index].handle.file);
-	if (rc != LXP_OK)
-		return lxp_hostfs_error(rc);
+	if (opened.type != LXP_FS_TYPE_FILE)
+		return -LXP_EIO;
+	g_hostfs_open[index].handle.file = opened.handle.file;
 	g_hostfs_open[index].used = 1;
 	g_hostfs_open[index].inode = lxp_hostfs_path_inode(abspath);
 	return index;
@@ -260,64 +252,13 @@ static long hostfs_positioned(int index, void *buf, size_t len, uint64_t offset,
 	if (offset > (uint64_t)INT64_MAX)
 		return -LXP_EOVERFLOW;
 
-	lxp_fs_stat_t stat;
-	int sr = g_lxp_fs_ops->file_stat(slot->handle.file, &stat);
-	if (sr != LXP_OK)
-		return lxp_hostfs_error(sr);
-	/*
-	 * POSIX pread() beyond EOF returns zero without changing either the open
-	 * file position or its size. Some embedded providers implement seek with
-	 * APIs such as FatFs f_lseek(), which extends a writable file as a side
-	 * effect when the target is beyond EOF. Do not let a read-only probe
-	 * mutate storage before the provider ever sees it.
-	 */
-	if (!write && offset >= stat.size)
-		return 0;
-	/*
-	 * Likewise, make the provider's truncate contract own hole creation
-	 * before a positioned write. This gives every backend one explicit place
-	 * to enforce the required zero-filled gap rather than depending on its
-	 * seek primitive's engine-specific growth behavior.
-	 */
-	if (write && offset > stat.size) {
-		int tr = g_lxp_fs_ops->file_truncate(slot->handle.file, offset);
-		if (tr != LXP_OK)
-			return lxp_hostfs_error(tr);
-	}
-
-	uint64_t saved = 0;
-	int rc = g_lxp_fs_ops->file_seek(slot->handle.file, 0, LXP_FS_SEEK_CUR, &saved);
-	if (rc != LXP_OK)
-		return lxp_hostfs_error(rc);
-	uint64_t ignored = 0;
-	rc = g_lxp_fs_ops->file_seek(slot->handle.file, (int64_t)offset, LXP_FS_SEEK_SET, &ignored);
-	if (rc != LXP_OK) {
-		/*
-		 * Some embedded filesystems reject seeks beyond EOF even though
-		 * POSIX pread/pwrite require an absolute offset. Reads beyond EOF
-		 * are empty; writes create a zero-filled hole before their payload.
-		 * Keep ordinary lseek semantics in the provider, and adapt only this
-		 * positioned-I/O path when the direct seek is rejected.
-		 */
-		if (!write && offset >= stat.size)
-			return 0;
-		if (!write || offset <= stat.size)
-			return lxp_hostfs_error(rc);
-		int tr = g_lxp_fs_ops->file_truncate(slot->handle.file, offset);
-		if (tr != LXP_OK)
-			return lxp_hostfs_error(tr);
-		rc = g_lxp_fs_ops->file_seek(slot->handle.file, (int64_t)offset,
-					     LXP_FS_SEEK_SET, &ignored);
-		if (rc != LXP_OK)
-			return lxp_hostfs_error(rc);
-	}
-
-	long result = write ? lxp_hostfs_write(index, buf, len) : lxp_hostfs_read(index, buf, len);
-	int restore = saved > (uint64_t)INT64_MAX
-			      ? LXP_ERR_INVALID_PARAM
-			      : g_lxp_fs_ops->file_seek(slot->handle.file, (int64_t)saved,
-							LXP_FS_SEEK_SET, &ignored);
-	return result >= 0 && restore != LXP_OK ? lxp_hostfs_error(restore) : result;
+	size_t done = 0;
+	int rc = write ? g_lxp_fs_ops->file_pwrite(slot->handle.file, buf, len, offset, &done)
+		       : g_lxp_fs_ops->file_pread(slot->handle.file, buf, len, offset, &done);
+	if (done > len)
+		return -LXP_EIO;
+	return rc == LXP_OK || (!write && rc == LXP_ERR_EOF) ? (long)done
+								 : lxp_hostfs_error(rc);
 }
 
 long lxp_hostfs_pread(int index, void *buf, size_t len, uint64_t offset)

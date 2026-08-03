@@ -76,6 +76,30 @@ static int fake_file_open(const char *path, unsigned flags, lxp_fs_file_t *out)
 	return LXP_OK;
 }
 
+static int fake_dir_open(const char *path, lxp_fs_dir_t *out);
+
+static int fake_object_open(const char *path, unsigned flags, int require_dir,
+			    lxp_fs_open_result_t *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (strcmp(path, "/") == 0 || strcmp(path, "/sub") == 0) {
+		if (require_dir == 0 &&
+		    ((flags & LXP_FS_O_WRITE) != 0 ||
+		     (flags & (LXP_FS_O_CREATE | LXP_FS_O_TRUNC)) != 0))
+			return LXP_ERR_IS_DIR;
+		int rc = fake_dir_open(path, &out->handle.dir);
+		if (rc == LXP_OK)
+			out->type = LXP_FS_TYPE_DIR;
+		return rc;
+	}
+	if (require_dir)
+		return LXP_ERR_NOT_DIR;
+	int rc = fake_file_open(path, flags, &out->handle.file);
+	if (rc == LXP_OK)
+		out->type = LXP_FS_TYPE_FILE;
+	return rc;
+}
+
 static int fake_file_close(lxp_fs_file_t file)
 {
 	assert_ptr_equal(file, &g_file);
@@ -149,6 +173,37 @@ static int fake_file_sync(lxp_fs_file_t file)
 	(void)file;
 	g_sync_count++;
 	return LXP_OK;
+}
+
+static int fake_file_pread(lxp_fs_file_t file, void *buf, size_t count, uint64_t offset,
+			   size_t *bytes_read)
+{
+	struct fake_file *f = (struct fake_file *)file;
+	size_t saved = f->position;
+	if (offset > g_content_len) {
+		*bytes_read = 0;
+		return LXP_ERR_EOF;
+	}
+	f->position = (size_t)offset;
+	int rc = fake_file_read(file, buf, count, bytes_read);
+	f->position = saved;
+	return rc;
+}
+
+static int fake_file_pwrite(lxp_fs_file_t file, const void *buf, size_t count, uint64_t offset,
+			    size_t *bytes_written)
+{
+	struct fake_file *f = (struct fake_file *)file;
+	size_t saved = f->position;
+	if (offset > g_content_len) {
+		int rc = fake_file_truncate(file, offset);
+		if (rc != LXP_OK)
+			return rc;
+	}
+	f->position = (size_t)offset;
+	int rc = fake_file_write(file, buf, count, bytes_written);
+	f->position = saved;
+	return rc;
 }
 
 static int fake_dir_open(const char *path, lxp_fs_dir_t *out)
@@ -238,6 +293,7 @@ static const lxp_fs_ops_t g_fake_ops = {
 	.run_begin = fake_run_begin,
 	.run_end = fake_run_end,
 	.file_open = fake_file_open,
+	.object_open = fake_object_open,
 	.file_close = fake_file_close,
 	.file_read = fake_file_read,
 	.file_write = fake_file_write,
@@ -245,6 +301,8 @@ static const lxp_fs_ops_t g_fake_ops = {
 	.file_stat = fake_file_stat,
 	.file_truncate = fake_file_truncate,
 	.file_sync = fake_file_sync,
+	.file_pread = fake_file_pread,
+	.file_pwrite = fake_file_pwrite,
 	.dir_open = fake_dir_open,
 	.dir_read = fake_dir_read,
 	.dir_close = fake_dir_close,
