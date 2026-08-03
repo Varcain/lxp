@@ -136,6 +136,15 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const char *const argv[]);
 
 /**
+ * Notify the active coordinator that console input became ready.
+ *
+ * Console providers call this from their RX-ready path after publishing the
+ * byte(s). It is safe before/after a run and becomes a no-op when no
+ * coordinator owns the provider.
+ */
+void lxp_console_kick(void);
+
+/**
  * Whether the tty is in ISIG (canonical) mode. A @c read_fn consults this to
  * decide whether a console ^C is the interrupt key (raise SIGINT) or a literal
  * byte (the shell's raw line editor turns ISIG off). Tracked from TCSETS.

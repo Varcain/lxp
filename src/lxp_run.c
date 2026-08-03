@@ -400,6 +400,12 @@ void lxp_dev_kick(void)
 }
 #endif
 
+void lxp_console_kick(void)
+{
+	if (g_eng && g_eng->event_post)
+		g_eng->event_post();
+}
+
 #if LXP_ENABLE_NET
 /* Wake the coordinator so it retries parked socket I/O at once — the network RX task calls
  * this after delivering a batch of frames to the stack, so a parked recv/connect/accept
