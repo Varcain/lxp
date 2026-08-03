@@ -3427,7 +3427,10 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_nice: {
 		int64_t requested = (int64_t)lxp_proc_nice_get(proc) + (int32_t)a0;
 		lxp_proc_nice_set(proc, requested < -20 ? -20 : requested > 19 ? 19 : (int)requested);
-		return lxp_proc_nice_get(proc);
+		/* Linux's raw nice(2) syscall returns zero on success. Returning the
+		 * resulting negative nice value would cross the -errno ABI boundary and
+		 * make libc report a successful priority raise as an error. */
+		return 0;
 	}
 	case LXP_NR_getpriority:
 		if ((int)a0 != 0 || ((int)a1 != 0 && (int)a1 != proc->pid))

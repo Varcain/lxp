@@ -97,11 +97,13 @@ static void test_lnx_niceness(void **state)
 	/* The raw getpriority syscall uses 20-nice so negative nice values cannot
 	 * be confused with a negative errno by libc. */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_getpriority, 0, 0, 0, 0, 0, 0), 20);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, -7, 0, 0, 0, 0, 0), -7);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, -7, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_proc_nice_get(&p), -7);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_getpriority, 0, p.pid, 0, 0, 0, 0), 27);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_setpriority, 0, 0, 50, 0, 0, 0), 0);
 	assert_int_equal(lxp_proc_nice_get(&p), 19);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, INT32_MIN, 0, 0, 0, 0, 0), -20);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, INT32_MIN, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_proc_nice_get(&p), -20);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_getpriority, 0, 99, 0, 0, 0, 0),
 			 -LXP_ESRCH);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_setpriority, 3, 0, 0, 0, 0, 0),
