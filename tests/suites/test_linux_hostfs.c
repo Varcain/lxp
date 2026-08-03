@@ -13,6 +13,7 @@
 #include "lxp/lxp_guest.h"
 #include "lxp/lxp_syscall.h"
 #include "lxp_provider.h"
+#include "proc/lxp_procfs.h"
 
 #include <string.h>
 
@@ -213,6 +214,24 @@ static int fake_rename(const char *old_path, const char *new_path)
 	return LXP_OK;
 }
 
+static int fake_metrics(lxp_fs_metrics_t *out)
+{
+	memset(out, 0, sizeof(*out));
+	out->requests_submitted = 17;
+	out->requests_completed = 16;
+	out->requests_failed = 2;
+	out->bytes_read = 4096;
+	out->bytes_written = 2048;
+	out->queue_wait_us_total = 120;
+	out->queue_wait_us_max = 45;
+	out->service_us_total = 800;
+	out->service_us_max = 210;
+	out->budget_overruns = 3;
+	out->pending = 1;
+	out->queue_depth_max = 1;
+	return LXP_OK;
+}
+
 static const lxp_fs_ops_t g_fake_ops = {
 	.abi_version = LXP_FS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_fs_ops_t),
@@ -234,6 +253,7 @@ static const lxp_fs_ops_t g_fake_ops = {
 	.path_rmdir = fake_rmdir,
 	.path_unlink = fake_unlink,
 	.path_rename = fake_rename,
+	.metrics = fake_metrics,
 };
 
 static uint8_t g_pool[8192] __attribute__((aligned(16)));
@@ -527,6 +547,27 @@ static void test_hostfs_access_modes(void **state)
 	assert_int_equal(call(&proc, LXP_NR_close, fd, 0, 0), 0);
 }
 
+static void test_hostfs_metrics_proc(void **state)
+{
+	(void)state;
+	lxp_proc_t proc;
+	lxp_arena_t arena;
+	char out[512];
+	setup(&proc, &arena);
+
+	long len = proc_gen("/proc/lxp_fs", &proc, out, sizeof(out) - 1u);
+	assert_true(len > 0);
+	out[len] = '\0';
+	assert_non_null(strstr(out, "provider_available 1\n"));
+	assert_non_null(strstr(out, "requests_submitted 17\n"));
+	assert_non_null(strstr(out, "requests_completed 16\n"));
+	assert_non_null(strstr(out, "requests_failed 2\n"));
+	assert_non_null(strstr(out, "pending 1\n"));
+	assert_non_null(strstr(out, "bytes_read 4096\n"));
+	assert_non_null(strstr(out, "service_us_max 210\n"));
+	assert_non_null(strstr(out, "budget_overruns 3\n"));
+}
+
 static int group_setup(void **state)
 {
 	(void)state;
@@ -554,6 +595,7 @@ int test_linux_hostfs_run(void)
 		cmocka_unit_test(test_hostfs_positioned_io_truncate_and_sync),
 		cmocka_unit_test(test_hostfs_mutations_and_cross_mount_errors),
 		cmocka_unit_test(test_hostfs_access_modes),
+		cmocka_unit_test(test_hostfs_metrics_proc),
 	};
 	return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

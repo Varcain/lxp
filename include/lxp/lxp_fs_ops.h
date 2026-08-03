@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-#define LXP_FS_OPS_ABI_VERSION 1u
+#define LXP_FS_OPS_ABI_VERSION 2u
 #define LXP_FS_NAME_MAX 256u
 
 /* Provider open flags. Access mode is explicit instead of encoded in low bits
@@ -60,6 +60,24 @@ typedef struct lxp_fs_dirent {
 	uint8_t type;
 	uint8_t _reserved[7];
 } lxp_fs_dirent_t;
+
+/* Run-scoped provider telemetry. Counters reset in run_begin(). Durations are
+ * measured on the host side so they include native queueing and service time,
+ * but exclude guest-side syscall dispatch. */
+typedef struct lxp_fs_metrics {
+	uint64_t requests_submitted;
+	uint64_t requests_completed;
+	uint64_t requests_failed;
+	uint64_t bytes_read;
+	uint64_t bytes_written;
+	uint64_t queue_wait_us_total;
+	uint64_t queue_wait_us_max;
+	uint64_t service_us_total;
+	uint64_t service_us_max;
+	uint64_t budget_overruns;
+	uint32_t pending;
+	uint32_t queue_depth_max;
+} lxp_fs_metrics_t;
 
 /* All calls execute in privileged host context. A synchronous provider may
  * perform the operation directly; a real-time host may implement the same
@@ -104,6 +122,9 @@ typedef struct lxp_fs_ops {
 	int (*path_rmdir)(const char *path);
 	int (*path_unlink)(const char *path);
 	int (*path_rename)(const char *old_path, const char *new_path);
+
+	/** Snapshot run-scoped service telemetry without resetting it. */
+	int (*metrics)(lxp_fs_metrics_t *out);
 } lxp_fs_ops_t;
 
 #ifdef __cplusplus

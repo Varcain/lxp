@@ -15,6 +15,9 @@
 #include "lxp/lxp_proc.h"
 #include "lxp/lxp_stats.h"
 #include "lxp_internal.h"
+#if LXP_ENABLE_FS
+#include "lxp_provider.h"
+#endif
 #if LXP_ENABLE_NET
 #include "lxp/lxp_net.h"
 #endif
@@ -100,7 +103,10 @@ int proc_pid_known(const lxp_proc_t *p, int pid)
 }
 
 const char *const g_proc_files[] = {"version", "uptime", "meminfo", "lxp_resources",
-					   "cpuinfo", "mounts", "stat", "loadavg", "filesystems",
+#if LXP_ENABLE_FS
+				   "lxp_fs",
+#endif
+				   "cpuinfo", "mounts", "stat", "loadavg", "filesystems",
 					   NULL};
 
 /* st_mode for a /proc node, or 0 if the path is not a synthetic /proc node. */
@@ -267,6 +273,33 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		RESOURCE_LINE("host_heap_total", heap.total);
 		RESOURCE_LINE("host_heap_free", heap.free);
 #undef RESOURCE_LINE
+#if LXP_ENABLE_FS
+	} else if (strcmp(abs, "/proc/lxp_fs") == 0) {
+		lxp_fs_metrics_t metrics;
+		memset(&metrics, 0, sizeof(metrics));
+		int available = g_lxp_fs_ops != NULL && g_lxp_fs_ops->metrics != NULL &&
+				g_lxp_fs_ops->metrics(&metrics) == LXP_OK;
+#define FS_METRIC_LINE(name, value)                     \
+	do {                                               \
+		o = p_str(buf, o, cap, name " ");            \
+		o = p_dec(buf, o, cap, (uint64_t)(value));   \
+		o = p_str(buf, o, cap, "\n");               \
+	} while (0)
+		FS_METRIC_LINE("provider_available", available);
+		FS_METRIC_LINE("requests_submitted", metrics.requests_submitted);
+		FS_METRIC_LINE("requests_completed", metrics.requests_completed);
+		FS_METRIC_LINE("requests_failed", metrics.requests_failed);
+		FS_METRIC_LINE("pending", metrics.pending);
+		FS_METRIC_LINE("queue_depth_max", metrics.queue_depth_max);
+		FS_METRIC_LINE("bytes_read", metrics.bytes_read);
+		FS_METRIC_LINE("bytes_written", metrics.bytes_written);
+		FS_METRIC_LINE("queue_wait_us_total", metrics.queue_wait_us_total);
+		FS_METRIC_LINE("queue_wait_us_max", metrics.queue_wait_us_max);
+		FS_METRIC_LINE("service_us_total", metrics.service_us_total);
+		FS_METRIC_LINE("service_us_max", metrics.service_us_max);
+		FS_METRIC_LINE("budget_overruns", metrics.budget_overruns);
+#undef FS_METRIC_LINE
+#endif
 	} else if (strcmp(abs, "/proc/cpuinfo") == 0) {
 		o = p_str(buf, o, cap,
 			  "processor\t: 0\nmodel name\t: ARM Cortex-M\nFeatures\t: thumb\n\n");
