@@ -91,6 +91,7 @@ static void exec_txn_detach_old(struct exec_txn *tx)
 	tx->old_sighand = old->sighand;
 	tx->saved_group = old->group;
 	tx->saved_mask = old->sig_blocked;
+	tx->saved_nice = lxp_proc_nice_get(old);
 	old->files = NULL;
 	old->fs_context = NULL;
 	old->sighand = NULL;
@@ -162,6 +163,7 @@ static void exec_txn_adopt_old_resources(struct exec_txn *tx)
 	image->fs_context = tx->saved_fs;
 	image->group = tx->saved_group;
 	image->sig_blocked = tx->saved_mask;
+	lxp_proc_nice_set(image, tx->saved_nice);
 	image->exec_file_idx = tx->image_index;
 	image->vfork_parent = tx->parent_ref;
 	tx->saved_files = NULL;

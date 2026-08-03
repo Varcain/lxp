@@ -107,7 +107,7 @@ void lxp_stats_begin(void)
 }
 
 int lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu_us,
-		      int is_kernel)
+		      int nice, int is_kernel)
 {
 	int slot = -1, stale_slot = -1;
 	for (int i = 0; i < g_npent; i++) {
@@ -137,6 +137,7 @@ int lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu_
 	e->comm[m] = '\0';
 	e->state = state;
 	e->cpu_us = cpu_us;
+	e->nice = nice;
 	e->is_kernel = is_kernel;
 	e->live = 1;
 	return LXP_OK;

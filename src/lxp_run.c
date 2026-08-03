@@ -163,7 +163,7 @@ static void refresh_stats(void)
 			continue;
 		char state = (slot_runnable_load(s) && p->wait.kind == LXP_WAIT_NONE) ? 'R' : 'S';
 		if (lxp_stats_add(p->pid, p->group->ppid, p->comm, state, lxp_proc_cpu_us(p->pid),
-				  0) != LXP_OK)
+				  lxp_proc_nice_get(p), 0) != LXP_OK)
 			overflow = 1;
 	}
 	for (size_t i = 0; i < n; i++) {
@@ -172,12 +172,13 @@ static void refresh_stats(void)
 			continue; /* idle or a Linux slot thread */
 		int kpid = lxp_kpid_for(name);
 		if (kpid < 0 ||
-		    lxp_stats_add(kpid, 0, name, 'S', ti[i].state_times.running_us, 1) != LXP_OK)
+		    lxp_stats_add(kpid, 0, name, 'S', ti[i].state_times.running_us, 0, 1) !=
+			    LXP_OK)
 			overflow = 1;
 	}
 	if (overflow)
 		(void)lxp_stats_add(LXP_KPID_BASE + LXP_MAX_KTHREAD, 0, "threads-overflow", 'S', 0,
-				    1);
+				    0, 1);
 	lxp_stats_set_cpu(idle, busy);
 }
 
@@ -1237,6 +1238,9 @@ static int syscall_is_fast(long nr)
 	case LXP_NR_umask:
 	case LXP_NR_prctl:
 	case LXP_NR_sched_yield:
+	case LXP_NR_nice:
+	case LXP_NR_getpriority:
+	case LXP_NR_setpriority:
 	case LXP_NR_setpgid:
 	case LXP_NR_getpgrp:
 	case LXP_NR_setsid:
@@ -1263,6 +1267,51 @@ static int syscall_is_fast(long nr)
 static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	long nr = (long)(int32_t)f->r[7];
+	if (nr == LXP_NR_getpriority || nr == LXP_NR_setpriority) {
+		enum { PRIO_PROCESS = 0, PRIO_PGRP = 1, PRIO_USER = 2 };
+		int which = (int)f->r[0];
+		int who = (int)f->r[1];
+		int caller_pgid = proc->group ? proc->group->pgid : proc->pid;
+		int found = 0;
+		int best = 19;
+		int requested = (int)f->r[2];
+		if (which < PRIO_PROCESS || which > PRIO_USER || who < 0) {
+			f->r[0] = -LXP_EINVAL;
+			return;
+		}
+		if (requested < -20)
+			requested = -20;
+		else if (requested > 19)
+			requested = 19;
+		for (int s = 0; s < LXP_NSLOT; s++) {
+			lxp_proc_t *target = &g_lxp_slots[s].proc;
+			if (!target->alive)
+				continue;
+			int match = (which == PRIO_PROCESS)
+					    ? (who == 0 ? target == proc : target->pid == who)
+					    : (which == PRIO_PGRP)
+						      ? (target->group && target->group->pgid ==
+										(who == 0 ? caller_pgid : who))
+						      : (who == 0); /* every guest has uid 0 */
+			if (!match)
+				continue;
+			found = 1;
+			if (nr == LXP_NR_setpriority)
+				lxp_proc_nice_set(target, requested);
+			else {
+				int nice = lxp_proc_nice_get(target);
+				if (nice < best)
+					best = nice;
+			}
+		}
+		if (!found) {
+			f->r[0] = -LXP_ESRCH;
+			return;
+		}
+		/* The raw syscall returns 40..1; libc translates that to nice -20..19. */
+		f->r[0] = nr == LXP_NR_getpriority ? (uint32_t)(20 - best) : 0u;
+		return;
+	}
 	if (nr == LXP_NR_kill || nr == LXP_NR_tkill || nr == LXP_NR_tgkill) {
 		int sig = (nr == LXP_NR_tgkill) ? (int)f->r[2] : (int)f->r[1];
 		int target = (int)f->r[0];
@@ -1396,6 +1445,13 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		return;
 	}
 	f->r[0] = (uint32_t)r;
+}
+
+uint32_t lxp_guest_sched_weight(int slot)
+{
+	if (slot < 0 || slot >= LXP_NSLOT || !slot_runnable_load(slot))
+		return 0;
+	return lxp_nice_weight(lxp_proc_nice_get(&g_lxp_slots[slot].proc));
 }
 
 /* ---- host task lifecycle --------------------------------------------------- */

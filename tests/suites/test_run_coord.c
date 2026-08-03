@@ -473,6 +473,44 @@ static lxp_region_ref_t make_address_space_region(int region, int slot)
 	return ref;
 }
 
+static void test_priority_syscalls_update_bounded_guest_weights(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	make_valid_running_slot(1, 1);
+	g_lxp_slots[0].proc.group->pgid = 7;
+	g_lxp_slots[1].proc.group->pgid = 7;
+
+	struct lxp_frame frame = {0};
+	frame.r[7] = LXP_NR_setpriority;
+	frame.r[0] = 0; /* PRIO_PROCESS */
+	frame.r[1] = (uint32_t)g_lxp_slots[1].proc.pid;
+	frame.r[2] = (uint32_t)-10;
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal((int32_t)frame.r[0], 0);
+	assert_int_equal(lxp_proc_nice_get(&g_lxp_slots[1].proc), -10);
+	assert_int_equal(lxp_guest_sched_weight(1), 30);
+
+	memset(&frame, 0, sizeof(frame));
+	frame.r[7] = LXP_NR_getpriority;
+	frame.r[0] = 1; /* PRIO_PGRP */
+	frame.r[1] = 7;
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal(frame.r[0], 30); /* raw 20 - best nice (-10) */
+
+	memset(&frame, 0, sizeof(frame));
+	frame.r[7] = LXP_NR_setpriority;
+	frame.r[0] = 1; /* PRIO_PGRP */
+	frame.r[1] = 7;
+	frame.r[2] = 99; /* clamped to nice 19 */
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal(lxp_proc_nice_get(&g_lxp_slots[0].proc), 19);
+	assert_int_equal(lxp_proc_nice_get(&g_lxp_slots[1].proc), 19);
+	assert_int_equal(lxp_guest_sched_weight(0), 1);
+	assert_int_equal(lxp_guest_sched_weight(1), 1);
+	assert_int_equal(lxp_guest_sched_weight(2), 0); /* not runnable */
+}
+
 static long child_test_write(void *ctx, int fd, const void *buf, size_t len)
 {
 	(void)ctx;
@@ -507,6 +545,7 @@ static void prepare_child_test_parent(lxp_proc_t *parent)
 	parent->fs_count = 1;
 	memcpy(parent->comm, "parent-image", sizeof("parent-image"));
 	parent->sig_blocked = UINT64_C(0x1122334455667788);
+	lxp_proc_nice_set(parent, -9);
 	parent->exec_file_idx = 17;
 	parent->stack_lo = (uintptr_t)g_mock_regions[0] + 128u;
 	parent->is_fdpic = 1;
@@ -540,6 +579,7 @@ static void assert_child_local_state(const lxp_proc_t *child, int child_pid)
 	assert_int_equal(child->fs_count, 1);
 	assert_string_equal(child->comm, "parent-image");
 	assert_int_equal(child->sig_blocked, UINT64_C(0x1122334455667788));
+	assert_int_equal(lxp_proc_nice_get(child), -9);
 	assert_int_equal(child->exec_file_idx, 17);
 	assert_int_equal(child->stack_lo, (uintptr_t)g_mock_regions[0] + 128u);
 	assert_int_equal(child->is_fdpic, 1);
@@ -4157,6 +4197,8 @@ int main(void)
 		cmocka_unit_test_setup(test_rootfs_requires_one_explicit_trusted_window,
 				       reset_state),
 		cmocka_unit_test_setup(test_resource_stats_track_slots_and_reserved_regions,
+				       reset_state),
+		cmocka_unit_test_setup(test_priority_syscalls_update_bounded_guest_weights,
 				       reset_state),
 		cmocka_unit_test_setup(test_coordinator_socket_wait_uses_readiness_events,
 				       reset_state),

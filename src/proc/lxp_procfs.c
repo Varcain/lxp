@@ -45,6 +45,15 @@ size_t p_dec(char *o, size_t off, size_t cap, uint64_t v)
 		o[off++] = t[--n];
 	return off;
 }
+static size_t p_sdec(char *o, size_t off, size_t cap, int v)
+{
+	if (v < 0) {
+		if (off < cap)
+			o[off++] = '-';
+		return p_dec(o, off, cap, (uint64_t)(-(int64_t)v));
+	}
+	return p_dec(o, off, cap, (uint64_t)v);
+}
 #if LXP_ENABLE_NET
 /* Format a 4-byte IPv4 address as the 8 upper-hex digits the kernel writes in
  * /proc/net/route: the __be32 value read in the host's (little-endian) order. */
@@ -148,7 +157,7 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		 * kernel threads get an empty cmdline so ps/top bracket them as [name]. */
 		const struct lxp_pentry *e = lxp_pent_find(pid);
 		char comm[20];
-		int ppid, is_kernel;
+		int ppid, nice, is_kernel;
 		char state;
 		uint64_t cpu_us;
 		size_t ci = 0;
@@ -158,6 +167,7 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 			ppid = e->ppid;
 			state = e->state;
 			cpu_us = e->cpu_us;
+			nice = e->nice;
 			is_kernel = e->is_kernel;
 		} else {
 			const char *c = (pid == 1)			? "init"
@@ -168,6 +178,7 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 			ppid = (pid == 1) ? 0 : (pid == p->pid) ? p->group->ppid : 1;
 			state = (pid == p->pid) ? 'R' : 'S';
 			cpu_us = lxp_proc_cpu_us(pid);
+			nice = pid == p->pid ? lxp_proc_nice_get(p) : 0;
 			is_kernel = 0;
 		}
 		comm[ci] = '\0';
@@ -184,7 +195,11 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 			/* fields 5..13 (pgrp..cmajflt), then field 14 utime, then 15..24. */
 			o = p_str(buf, o, cap, " 0 0 0 0 0 0 0 0 0 ");
 			o = p_dec(buf, o, cap, utime);
-			o = p_str(buf, o, cap, " 0 0 0 0 0 0 0 0 0 0\n");
+			o = p_str(buf, o, cap, " 0 0 0 ");
+			o = p_sdec(buf, o, cap, 20 + nice);
+			o = p_str(buf, o, cap, " ");
+			o = p_sdec(buf, o, cap, nice);
+			o = p_str(buf, o, cap, " 0 0 0 0 0\n");
 		} else if (strcmp(file, "cmdline") == 0) {
 			/* kernel threads have a 0-byte cmdline so ps/top bracket them. */
 			if (!is_kernel) {
@@ -206,6 +221,8 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 			o = p_dec(buf, o, cap, (uint64_t)pid);
 			o = p_str(buf, o, cap, "\nPPid:\t");
 			o = p_dec(buf, o, cap, (uint64_t)ppid);
+			o = p_str(buf, o, cap, "\nNice:\t");
+			o = p_sdec(buf, o, cap, nice);
 			o = p_str(buf, o, cap, "\n");
 		} else {
 			return -1;

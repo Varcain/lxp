@@ -503,6 +503,7 @@ typedef struct lxp_proc {
 	int fs_count;			/**< Number of entries in @c fs. */
 	lxp_files_t *files;		/**< Refcounted descriptor table; 0/1/2 are std streams. */
 	int pid;			/**< Linux task id (TID; 1 for the initial task). */
+	int nice;			/**< Linux per-task nice value, clamped to [-20, 19]. */
 	lxp_thread_group_t *group;    /**< Refcounted process identity, children and job control. */
 	char comm[16];		      /**< Program name (argv[0] basename) for ps/top. */
 	lxp_fs_context_t *fs_context; /**< Refcounted cwd + umask context. */
@@ -706,6 +707,13 @@ long lxp_rootfs_resolve(const lxp_file_t *fs, int count, const char *abspath, co
  * @note Requires @c LXP_ENABLE_LINUX.
  */
 int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes);
+
+/** Lock-free niceness accessors shared with the coordinator and RTOS seams. */
+int lxp_proc_nice_get(const lxp_proc_t *proc);
+void lxp_proc_nice_set(lxp_proc_t *proc, int nice);
+
+/** Bounded embedded guest-share weight: nice -20..19 maps to 40..1. */
+uint32_t lxp_nice_weight(int nice);
 
 /** Bind and clear the transient exec capture owned by @p proc's process slot. */
 void lxp_proc_bind_exec_capture(lxp_proc_t *proc, lxp_exec_capture_t *capture);

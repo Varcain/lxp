@@ -38,6 +38,7 @@ struct lxp_pentry {
 	char comm[16];	 /* program name; rendered "[name]" when is_kernel */
 	char state;	 /* 'R' running, 'S' sleeping */
 	uint64_t cpu_us; /* cumulative CPU time (µs) */
+	int nice;        /* Linux nice value; zero for host kernel threads */
 	int is_kernel;
 	int live;
 };
@@ -50,7 +51,7 @@ void lxp_stats_prune(void);
 void lxp_stats_begin(void); /* start a refresh: mark all entries not-live */
 /* Add/update one entry (matched by pid). */
 int lxp_stats_add(int pid, int ppid, const char *comm, char state, uint64_t cpu_us,
-		      int is_kernel);
+		      int nice, int is_kernel);
 /* Charge a slice of a Linux process's CPU: accumulate (thread_running_us - baseline)
  * across native-task replacement during exec, and return the process total. */
 uint64_t lxp_stats_charge(int pid, uint64_t thread_running_us);

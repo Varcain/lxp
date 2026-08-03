@@ -231,6 +231,16 @@ static void test_procfs(void **s)
 	assert_string_equal(out,
 			    "Linux version 6.1.0 (TestRTOS 1.2.3 ove-abcdef0 lxp-1234567) "
 			    "(uClibc)\n");
+
+	lxp_proc_nice_set(&p, -7);
+	r = proc_gen("/proc/self/stat", &p, out, sizeof(out) - 1);
+	assert_true(r > 0);
+	out[r] = '\0';
+	assert_non_null(strstr(out, " 13 -7 0 0 0 0 0\n"));
+	r = proc_gen("/proc/self/status", &p, out, sizeof(out) - 1);
+	assert_true(r > 0);
+	out[r] = '\0';
+	assert_non_null(strstr(out, "Nice:\t-7\n"));
 }
 
 /* ---- pointer validators: lxp_guest_access_ok / lxp_guest_strnlen / file_mode ------------------- */

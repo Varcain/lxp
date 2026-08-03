@@ -39,6 +39,7 @@ struct exec_txn {
 	int ppid;
 	int image_index;
 	uint64_t saved_mask;
+	int saved_nice;
 	char comm[sizeof(((lxp_proc_t *)0)->comm)];
 	uint8_t region_acquired;
 	uint8_t uses_snapshot;

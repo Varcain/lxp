@@ -41,6 +41,7 @@
 #define LXP_NR_close 6
 #define LXP_NR_chdir 12
 #define LXP_NR_execve 11
+#define LXP_NR_nice 34
 #define LXP_NR_lseek 19
 #define LXP_NR__llseek 140
 #define LXP_NR_ftruncate64 194
@@ -135,6 +136,8 @@
 #define LXP_NR_getpgrp 65
 #define LXP_NR_setsid 66
 #define LXP_NR_reboot 88
+#define LXP_NR_getpriority 96
+#define LXP_NR_setpriority 97
 #define LXP_NR_fchmod 94
 #define LXP_NR_setitimer 104
 #define LXP_NR_clone 120

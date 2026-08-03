@@ -83,6 +83,31 @@ static void test_lnx_write(void **state)
 			 -LXP_EBADF);
 }
 
+static void test_lnx_niceness(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+
+	assert_int_equal(lxp_proc_nice_get(&p), 0);
+	assert_int_equal(lxp_nice_weight(0), 20);
+	assert_int_equal(lxp_nice_weight(-20), 40);
+	assert_int_equal(lxp_nice_weight(19), 1);
+	/* The raw getpriority syscall uses 20-nice so negative nice values cannot
+	 * be confused with a negative errno by libc. */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getpriority, 0, 0, 0, 0, 0, 0), 20);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, -7, 0, 0, 0, 0, 0), -7);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getpriority, 0, p.pid, 0, 0, 0, 0), 27);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_setpriority, 0, 0, 50, 0, 0, 0), 0);
+	assert_int_equal(lxp_proc_nice_get(&p), 19);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, INT32_MIN, 0, 0, 0, 0, 0), -20);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getpriority, 0, 99, 0, 0, 0, 0),
+			 -LXP_ESRCH);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_setpriority, 3, 0, 0, 0, 0, 0),
+			 -LXP_EINVAL);
+}
+
 static void test_lnx_writev(void **state)
 {
 	(void)state;
@@ -1254,6 +1279,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_readlink_self_exe),
 		cmocka_unit_test(test_lnx_sigprocmask),
 		cmocka_unit_test(test_lnx_write),
+		cmocka_unit_test(test_lnx_niceness),
 		cmocka_unit_test(test_lnx_writev),
 		cmocka_unit_test(test_lnx_brk),
 		cmocka_unit_test(test_lnx_mmap),

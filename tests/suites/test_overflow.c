@@ -362,7 +362,7 @@ static void test_stats_snapshot_reuses_stale_entries(void **st)
 	for (int pid = 1; pid <= LXP_MAX_PENT + 8; pid++) {
 		lxp_stats_begin();
 		assert_int_equal(lxp_stats_add(pid, 0, "short", 'R',
-					       (uint64_t)pid * 1000u, 0),
+					       (uint64_t)pid * 1000u, 0, 0),
 				 LXP_OK);
 		assert_int_equal(lxp_pent_count(), 1);
 		assert_non_null(lxp_pent_find(pid));
@@ -379,10 +379,10 @@ static void test_stats_capacity_reports_overflow(void **st)
 	lxp_stats_reset();
 	lxp_stats_begin();
 	for (int i = 0; i < LXP_MAX_PENT; i++)
-		assert_int_equal(lxp_stats_add(i + 1, 0, "full", 'S', 0, 1),
+		assert_int_equal(lxp_stats_add(i + 1, 0, "full", 'S', 0, 0, 1),
 				 LXP_OK);
 	assert_int_equal(lxp_stats_add(LXP_MAX_PENT + 1, 0, "overflow", 'S',
-				       0, 1),
+				       0, 0, 1),
 			 LXP_ERR_QUEUE_FULL);
 	assert_int_equal(lxp_pent_count(), LXP_MAX_PENT);
 	assert_int_equal(lxp_stats_classify("lnx12"), 0);
@@ -402,7 +402,7 @@ static void test_stats_prunes_exited_cpu_records(void **st)
 
 	lxp_stats_begin();
 	assert_int_equal(lxp_stats_add(LXP_MAX_PENT, 0, "live", 'R',
-				       lxp_proc_cpu_us(LXP_MAX_PENT), 0),
+				       lxp_proc_cpu_us(LXP_MAX_PENT), 0, 0),
 			 LXP_OK);
 	lxp_stats_prune();
 

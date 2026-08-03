@@ -174,6 +174,16 @@ typedef struct lxp_run_health {
 /** Snapshot coordinator liveness into @p out (ignored if NULL). */
 void lxp_run_health(lxp_run_health_t *out);
 
+/**
+ * Return a lock-free scheduling-share weight for one live guest slot.
+ *
+ * The bounded range is 1..40 (nice 19..-20); zero means that @p slot is not a
+ * live guest. Ports may use this only to divide time among guests in their
+ * existing best-effort RTOS class. It is never an RTOS priority and must not
+ * let a guest outrank the coordinator, service workers, or real-time tasks.
+ */
+uint32_t lxp_guest_sched_weight(int slot);
+
 /** @} */
 
 #ifdef __cplusplus

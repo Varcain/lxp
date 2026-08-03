@@ -320,6 +320,7 @@ static void proc_child_copy_values(lxp_proc_t *child, const lxp_proc_t *parent, 
 	child->fs = parent->fs;
 	child->fs_count = parent->fs_count;
 	child->pid = child_pid;
+	child->nice = lxp_proc_nice_get(parent);
 	memcpy(child->comm, parent->comm, sizeof(child->comm));
 	child->sig_blocked = parent->sig_blocked;
 	child->exec_file_idx = parent->exec_file_idx;
@@ -411,6 +412,31 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 		proc->mm->brk_max = proc->mm->brk_base + brk_bytes;
 	}
 	return LXP_OK;
+}
+
+int lxp_proc_nice_get(const lxp_proc_t *proc)
+{
+	return proc ? __atomic_load_n(&proc->nice, __ATOMIC_ACQUIRE) : 0;
+}
+
+void lxp_proc_nice_set(lxp_proc_t *proc, int nice)
+{
+	if (!proc)
+		return;
+	if (nice < -20)
+		nice = -20;
+	else if (nice > 19)
+		nice = 19;
+	__atomic_store_n(&proc->nice, nice, __ATOMIC_RELEASE);
+}
+
+uint32_t lxp_nice_weight(int nice)
+{
+	if (nice < -20)
+		nice = -20;
+	else if (nice > 19)
+		nice = 19;
+	return (uint32_t)(20 - nice);
 }
 
 void lxp_proc_bind_exec_capture(lxp_proc_t *proc, lxp_exec_capture_t *capture)
