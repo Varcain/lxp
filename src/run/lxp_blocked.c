@@ -77,22 +77,20 @@ static int lxp_wait_service_class(lxp_wait_kind_t kind)
 static int lxp_service_select(const uint8_t pending[LXP_SERVICE_COUNT],
 			      const uint64_t oldest[LXP_SERVICE_COUNT], uint64_t now)
 {
-	int aged = -1;
-	uint64_t aged_since = UINT64_MAX;
+	uint8_t aged[LXP_SERVICE_COUNT] = {0};
+	int any_aged = 0;
 	for (int cls = 0; cls < LXP_SERVICE_COUNT; cls++) {
-		if (pending[cls] && oldest[cls] <= now && now - oldest[cls] >= LXP_SERVICE_AGING_US &&
-		    oldest[cls] < aged_since) {
-			aged = cls;
-			aged_since = oldest[cls];
+		if (pending[cls] && oldest[cls] <= now &&
+		    now - oldest[cls] >= LXP_SERVICE_AGING_US) {
+			aged[cls] = 1;
+			any_aged = 1;
 		}
 	}
-	if (aged >= 0)
-		return aged;
 
 	for (size_t i = 0; i < sizeof(g_service_schedule); i++) {
 		int cls = g_service_schedule[g_service_cursor];
 		g_service_cursor = (uint8_t)((g_service_cursor + 1u) % sizeof(g_service_schedule));
-		if (pending[cls])
+		if ((any_aged ? aged[cls] : pending[cls]))
 			return cls;
 	}
 	return -1;

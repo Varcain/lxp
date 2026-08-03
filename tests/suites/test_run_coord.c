@@ -1899,6 +1899,16 @@ static void test_coordinator_service_classes_are_weighted_and_aged(void **state)
 	const uint64_t aged[4] = {20001, 20001, 1, 20001};
 	lxp_blocked_fair_reset();
 	assert_int_equal(lxp_test_service_select(0x0fu, aged, 20001), 2);
+
+	/* Several old-but-not-ready classes must not let the single oldest class
+	 * monopolize every retry. A parked socket is older than the console here;
+	 * both remain aged and still advance through their weighted opportunities. */
+	const uint64_t multiple_aged[4] = {20001, 1, 2, 20001};
+	const int aged_expected[] = {1, 1, 1, 2, 2};
+	lxp_blocked_fair_reset();
+	for (size_t i = 0; i < sizeof(aged_expected) / sizeof(aged_expected[0]); i++)
+		assert_int_equal(lxp_test_service_select(0x06u, multiple_aged, 20002),
+				 aged_expected[i]);
 }
 
 /* The per-slot claim helper maps one typed intent/wait without consuming its
