@@ -430,6 +430,14 @@ static unsigned coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_
 	return ((wait_policy & LXP_BLOCKED_WAIT_POLL) || socket_poll) ? 5u : 50u;
 }
 
+#define LXP_COORDINATOR_EVENT_BURST 4u
+
+static int coordinator_control_event(int event)
+{
+	return event == LXP_EV_EXIT || event == LXP_EV_EXEC || event == LXP_EV_FORK ||
+	       event == LXP_EV_STOP;
+}
+
 uint8_t deferred_state_load(int slot)
 {
 	return __atomic_load_n(&g_lxp_slots[slot].deferred.state, __ATOMIC_ACQUIRE);
@@ -2408,6 +2416,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, 
 		deferred_slot_reassign(i);
 	}
 	lxp_primary_events_reset();
+	lxp_blocked_fair_reset();
 	memset(g_regions, 0, sizeof(g_regions));
 	for (int r = 0; r < LXP_NREG; r++)
 		g_regions[r].lease_owner = lxp_slot_ref_none();
@@ -2464,6 +2473,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, 
 	int next_pid = 2;
 	int idle = 0;
 	unsigned event_cursor = 0;
+	unsigned guest_event_burst = 0;
 	uint64_t last_refresh_us = 0;
 #if LXP_ENABLE_LATENCY
 	/* The dispatch below leaves via `continue` from many arms, so the service
@@ -2498,6 +2508,16 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, 
 		struct lxp_claimed_event claimed = coordinator_claim_event(eng, &event_cursor);
 		int es = claimed.slot;
 		int et = claimed.type;
+		/* Lifecycle/control work remains strict. Ordinary guest publications are
+		 * capped so an always-runnable syscall producer cannot prevent parked
+		 * service classes from reaching their weighted scan. */
+		if (es >= 0 && et != LXP_EV_NONE && !coordinator_control_event(et) &&
+		    guest_event_burst >= LXP_COORDINATOR_EVENT_BURST) {
+			primary_slot_mark(es);
+			es = -1;
+			et = LXP_EV_NONE;
+			guest_event_burst = 0;
+		}
 #if LXP_ENABLE_LATENCY
 		if (es >= 0 && et) { /* dispatch starts here; closed at the loop top */
 			lxp_time_ns(&lat_t0);
@@ -2516,6 +2536,10 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, 
 			break;
 		}
 		if (primary.flow == LXP_PRIMARY_HANDLED) {
+			if (coordinator_control_event(et))
+				guest_event_burst = 0;
+			else if (et != LXP_EV_NONE)
+				guest_event_burst++;
 			idle = 0;
 			continue;
 		}
@@ -2529,6 +2553,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, 
 			break;
 		}
 		if (blocked.progress) {
+			guest_event_burst = 0;
 			idle = 0;
 			continue;
 		}

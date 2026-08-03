@@ -442,6 +442,7 @@ typedef struct lxp_wait {
 	uint8_t op;    /**< Subsystem-specific LXP_*W_* operation. */
 	uint8_t flags; /**< Wait-kind-specific flags (socket select currently uses bit 0). */
 	uint16_t _pad;
+	uint64_t enqueued_us; /**< Coordinator-service aging timestamp. */
 	union {
 		struct {
 			uint64_t deadline_us;

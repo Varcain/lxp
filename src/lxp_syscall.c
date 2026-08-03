@@ -103,6 +103,7 @@ int lxp_wait_begin(lxp_proc_t *proc, const lxp_wait_t *wait)
 	if (proc->wait.kind != LXP_WAIT_NONE || proc->intent.kind != LXP_INTENT_NONE)
 		return -LXP_EAGAIN;
 	proc->wait = *wait;
+	(void)lxp_time_us(&proc->wait.enqueued_us);
 	return 0;
 }
 

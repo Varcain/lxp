@@ -51,5 +51,6 @@ int lxp_test_os_ops_valid(const lxp_os_ops_t *ops);
 int lxp_test_run_config_valid(const lxp_run_config_t *cfg);
 void lxp_test_futex(struct lxp_frame *frame, lxp_proc_t *proc, int is_time64);
 void lxp_test_dispatch(struct lxp_frame *frame, lxp_proc_t *proc);
+int lxp_test_service_select(uint8_t pending_mask, const uint64_t oldest[4], uint64_t now);
 
 #endif /* LXP_RUNTIME_TEST_H */

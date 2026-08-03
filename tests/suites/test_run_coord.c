@@ -416,6 +416,7 @@ static int reset_state(void **state)
 		g_lxp_slots[s].proc.alive = 0;
 	}
 	lxp_primary_events_reset();
+	lxp_blocked_fair_reset();
 	memset(g_regions, 0, sizeof(*g_regions) * LXP_NREG);
 	memset(g_vfork_guard, 0, sizeof(*g_vfork_guard) * LXP_NSLOT);
 	memset(g_sig_save, 0, sizeof(g_sig_save));
@@ -1843,6 +1844,21 @@ static void test_coordinator_socket_wait_uses_readiness_events(void **state)
 	assert_int_equal(
 		coordinator_wait_timeout(LXP_BLOCKED_WAIT_POLL | LXP_BLOCKED_WAIT_SOCKET, 1), 5);
 	assert_int_equal(coordinator_wait_timeout(0, 0), 50);
+}
+
+static void test_coordinator_service_classes_are_weighted_and_aged(void **state)
+{
+	(void)state;
+	const uint64_t fresh[4] = {100, 100, 100, 100};
+	const int expected[] = {0, 0, 0, 0, 1, 1, 1, 2, 2, 3};
+	lxp_blocked_fair_reset();
+	for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
+		assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), expected[i]);
+
+	/* A low-weight class bypasses the schedule after the bounded age. */
+	const uint64_t aged[4] = {20001, 20001, 1, 20001};
+	lxp_blocked_fair_reset();
+	assert_int_equal(lxp_test_service_select(0x0fu, aged, 20001), 2);
 }
 
 /* The per-slot claim helper maps one typed intent/wait without consuming its
@@ -4143,6 +4159,8 @@ int main(void)
 		cmocka_unit_test_setup(test_resource_stats_track_slots_and_reserved_regions,
 				       reset_state),
 		cmocka_unit_test_setup(test_coordinator_socket_wait_uses_readiness_events,
+				       reset_state),
+		cmocka_unit_test_setup(test_coordinator_service_classes_are_weighted_and_aged,
 				       reset_state),
 		cmocka_unit_test_setup(test_claim_slot_event_priority_and_consumption, reset_state),
 		cmocka_unit_test_setup(

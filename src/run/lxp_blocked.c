@@ -26,6 +26,89 @@
 #include "lxp/lxp_pty.h"
 #endif
 
+enum lxp_service_class {
+	LXP_SERVICE_FS = 0,
+	LXP_SERVICE_SOCKET,
+	LXP_SERVICE_CONSOLE,
+	LXP_SERVICE_ORDINARY,
+	LXP_SERVICE_COUNT,
+};
+
+#define LXP_SERVICE_AGING_US 20000ull
+
+/* Four FS, three socket, two console and one ordinary opportunity per cycle.
+ * Aging can override the sequence once a class has waited for 20 ms. */
+static const uint8_t g_service_schedule[] = {
+	LXP_SERVICE_FS,      LXP_SERVICE_FS,      LXP_SERVICE_FS, LXP_SERVICE_FS,
+	LXP_SERVICE_SOCKET,  LXP_SERVICE_SOCKET,  LXP_SERVICE_SOCKET,
+	LXP_SERVICE_CONSOLE, LXP_SERVICE_CONSOLE, LXP_SERVICE_ORDINARY,
+};
+static uint8_t g_service_cursor;
+static uint8_t g_service_slot_cursor[LXP_SERVICE_COUNT];
+
+void lxp_blocked_fair_reset(void)
+{
+	g_service_cursor = 0;
+	for (int i = 0; i < LXP_SERVICE_COUNT; i++)
+		g_service_slot_cursor[i] = 0;
+}
+
+static int lxp_wait_service_class(lxp_wait_kind_t kind)
+{
+	switch (kind) {
+	case LXP_WAIT_HOSTFS:
+		return LXP_SERVICE_FS;
+	case LXP_WAIT_SOCKET:
+		return LXP_SERVICE_SOCKET;
+	case LXP_WAIT_CONSOLE:
+		return LXP_SERVICE_CONSOLE;
+	case LXP_WAIT_TIMER:
+	case LXP_WAIT_FUTEX:
+	case LXP_WAIT_PIPE:
+	case LXP_WAIT_DEVICE:
+	case LXP_WAIT_NETFS:
+	case LXP_WAIT_PTY:
+		return LXP_SERVICE_ORDINARY;
+	default:
+		return -1;
+	}
+}
+
+static int lxp_service_select(const uint8_t pending[LXP_SERVICE_COUNT],
+			      const uint64_t oldest[LXP_SERVICE_COUNT], uint64_t now)
+{
+	int aged = -1;
+	uint64_t aged_since = UINT64_MAX;
+	for (int cls = 0; cls < LXP_SERVICE_COUNT; cls++) {
+		if (pending[cls] && oldest[cls] <= now && now - oldest[cls] >= LXP_SERVICE_AGING_US &&
+		    oldest[cls] < aged_since) {
+			aged = cls;
+			aged_since = oldest[cls];
+		}
+	}
+	if (aged >= 0)
+		return aged;
+
+	for (size_t i = 0; i < sizeof(g_service_schedule); i++) {
+		int cls = g_service_schedule[g_service_cursor];
+		g_service_cursor = (uint8_t)((g_service_cursor + 1u) % sizeof(g_service_schedule));
+		if (pending[cls])
+			return cls;
+	}
+	return -1;
+}
+
+#if defined(LXP_TEST_INTERNALS)
+int lxp_test_service_select(uint8_t pending_mask, const uint64_t oldest[LXP_SERVICE_COUNT],
+			    uint64_t now)
+{
+	uint8_t pending[LXP_SERVICE_COUNT];
+	for (int cls = 0; cls < LXP_SERVICE_COUNT; cls++)
+		pending[cls] = (uint8_t)((pending_mask >> cls) & 1u);
+	return lxp_service_select(pending, oldest, now);
+}
+#endif
+
 static uint32_t lxp_blocked_wait_policy(lxp_wait_kind_t kind)
 {
 	switch (kind) {
@@ -388,8 +471,27 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 	struct lxp_blocked_scan scan = {
 		.next_deadline_us = UINT64_MAX,
 	};
-
+	uint8_t pending[LXP_SERVICE_COUNT] = {0};
+	uint64_t oldest[LXP_SERVICE_COUNT];
+	for (int cls = 0; cls < LXP_SERVICE_COUNT; cls++)
+		oldest[cls] = UINT64_MAX;
 	for (int slot = 0; slot < LXP_NSLOT; slot++) {
+		lxp_proc_t *proc = lxp_slot_proc(slot);
+		if (!proc->alive || slot_runnable_load(slot))
+			continue;
+		int cls = lxp_wait_service_class(proc->wait.kind);
+		if (cls < 0)
+			continue;
+		uint64_t since = proc->wait.enqueued_us ? proc->wait.enqueued_us : now;
+		pending[cls] = 1;
+		if (since < oldest[cls])
+			oldest[cls] = since;
+	}
+	int selected = lxp_service_select(pending, oldest, now);
+	int start_slot = selected >= 0 ? g_service_slot_cursor[selected] : 0;
+
+	for (int pass = 0; pass < LXP_NSLOT; pass++) {
+		int slot = (start_slot + pass) % LXP_NSLOT;
 		lxp_proc_t *proc = lxp_slot_proc(slot);
 		if (!proc->alive)
 			continue;
@@ -427,28 +529,40 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 				lxp_guest_view_end(&view);
 			continue;
 		}
-		lxp_blocked_retry_timer(eng, slot, proc, now, &scan);
-		lxp_blocked_retry_futex(eng, slot, proc, now, &scan);
-		lxp_blocked_retry_pipe(eng, slot, proc, &scan);
+		if (proc->wait.kind == LXP_WAIT_TIMER && proc->wait.data.timer.deadline_us > now)
+			lxp_blocked_note_deadline(&scan, proc->wait.data.timer.deadline_us);
+		else if (proc->wait.kind == LXP_WAIT_FUTEX && !proc->wait.data.futex.woken &&
+			 proc->wait.data.futex.deadline_us > now)
+			lxp_blocked_note_deadline(&scan, proc->wait.data.futex.deadline_us);
+
+		if (!scan.progress && lxp_wait_service_class(proc->wait.kind) == selected) {
+			lxp_blocked_retry_timer(eng, slot, proc, now, &scan);
+			lxp_blocked_retry_futex(eng, slot, proc, now, &scan);
+			lxp_blocked_retry_pipe(eng, slot, proc, &scan);
 #if LXP_ENABLE_DEV
-		lxp_blocked_retry_device(eng, slot, proc, &scan);
+			lxp_blocked_retry_device(eng, slot, proc, &scan);
 #endif
 #if LXP_ENABLE_NET
-		lxp_blocked_retry_socket(eng, slot, proc, &scan);
+			lxp_blocked_retry_socket(eng, slot, proc, &scan);
 #endif
 #if LXP_ENABLE_NETFS
-		lxp_blocked_retry_netfs(eng, slot, proc, &scan);
+			lxp_blocked_retry_netfs(eng, slot, proc, &scan);
 #endif
 #if LXP_ENABLE_FS
-		lxp_blocked_retry_hostfs(eng, slot, proc, &scan);
+			lxp_blocked_retry_hostfs(eng, slot, proc, &scan);
 #endif
 #if LXP_ENABLE_PTY
-		lxp_blocked_retry_pty(eng, slot, proc, &scan);
+			lxp_blocked_retry_pty(eng, slot, proc, &scan);
 #endif
-		(void)lxp_blocked_retry_console(eng, slot, proc, &scan);
+			(void)lxp_blocked_retry_console(eng, slot, proc, &scan);
+			if (scan.progress)
+				g_service_slot_cursor[selected] = (uint8_t)((slot + 1) % LXP_NSLOT);
+		}
 		if (view_active)
 			lxp_guest_view_end(&view);
 	}
+	if (selected >= 0 && !scan.progress)
+		g_service_slot_cursor[selected] = (uint8_t)((start_slot + 1) % LXP_NSLOT);
 
 	/* Async ^C/^Z for a foreground program that never reads stdin. */
 	if (lxp_tty_isig() && !(scan.wait_policy & LXP_BLOCKED_WAIT_CONSOLE) && cfg &&

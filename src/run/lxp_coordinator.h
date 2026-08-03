@@ -183,6 +183,7 @@ struct lxp_primary_result lxp_handle_primary_event(const lxp_os_ops_t *eng,
 						   int event, int *next_pid);
 struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng,
 					 const lxp_run_config_t *cfg, uint64_t now);
+void lxp_blocked_fair_reset(void);
 #if LXP_ENABLE_NETFS
 void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
 				      long rc, struct lxp_blocked_scan *scan);
