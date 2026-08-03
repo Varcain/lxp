@@ -12,6 +12,7 @@
 #include "lxp/lxp_fs_ops.h"
 #include "lxp/lxp_guest.h"
 #include "lxp/lxp_syscall.h"
+#include "fs/lxp_hostfs.h"
 #include "lxp_provider.h"
 #include "proc/lxp_procfs.h"
 
@@ -37,6 +38,11 @@ static int g_seek_extends_file;
 static char g_mutation[16];
 static char g_mutation_path[LXP_FS_NAME_MAX];
 static char g_rename_new_path[LXP_FS_NAME_MAX];
+static uint64_t g_request_owner;
+static uint64_t g_cancelled_owner;
+static int g_async_once;
+static int g_async_pending;
+static int g_async_ready;
 static const lxp_net_ops_t *g_saved_net;
 static const lxp_display_ops_t *g_saved_display;
 
@@ -47,6 +53,18 @@ static int fake_run_begin(void)
 
 static void fake_run_end(void)
 {
+}
+
+static void fake_request_owner(uint64_t owner)
+{
+	g_request_owner = owner;
+}
+
+static void fake_request_cancel(uint64_t owner)
+{
+	g_cancelled_owner = owner;
+	if (owner == g_request_owner)
+		g_async_pending = 0;
 }
 
 static int fake_path_stat(const char *path, lxp_fs_stat_t *out)
@@ -109,6 +127,14 @@ static int fake_file_close(lxp_fs_file_t file)
 
 static int fake_file_read(lxp_fs_file_t file, void *buf, size_t count, size_t *bytes_read)
 {
+	if (g_async_pending && !g_async_ready)
+		return LXP_ERR_WOULD_BLOCK;
+	if (g_async_once) {
+		g_async_once = 0;
+		g_async_pending = 1;
+		return LXP_ERR_WOULD_BLOCK;
+	}
+	g_async_pending = 0;
 	struct fake_file *f = (struct fake_file *)file;
 	size_t left = f->position < g_content_len ? g_content_len - f->position : 0;
 	size_t done = count < left ? count : left;
@@ -292,6 +318,8 @@ static const lxp_fs_ops_t g_fake_ops = {
 	.struct_size = sizeof(lxp_fs_ops_t),
 	.run_begin = fake_run_begin,
 	.run_end = fake_run_end,
+	.request_owner = fake_request_owner,
+	.request_cancel = fake_request_cancel,
 	.file_open = fake_file_open,
 	.object_open = fake_object_open,
 	.file_close = fake_file_close,
@@ -337,6 +365,11 @@ static void setup(lxp_proc_t *proc, lxp_arena_t *arena)
 	g_mutation[0] = '\0';
 	g_mutation_path[0] = '\0';
 	g_rename_new_path[0] = '\0';
+	g_request_owner = 0;
+	g_cancelled_owner = 0;
+	g_async_once = 0;
+	g_async_pending = 0;
+	g_async_ready = 0;
 }
 
 static long call(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
@@ -626,6 +659,40 @@ static void test_hostfs_metrics_proc(void **state)
 	assert_non_null(strstr(out, "budget_overruns 3\n"));
 }
 
+static void test_hostfs_async_wait_is_generation_owned(void **state)
+{
+	(void)state;
+	lxp_proc_t proc;
+	lxp_arena_t arena;
+	setup(&proc, &arena);
+	proc.pid = 42;
+	long fd = call(&proc, LXP_NR_openat, LXP_AT_FDCWD,
+		       (long)(uintptr_t)"/data/hello.txt", LXP_O_RDONLY);
+	assert_true(fd >= 0);
+
+	g_async_once = 1;
+	char out[6] = {0};
+	long rc = call(&proc, LXP_NR_read, fd, (long)(uintptr_t)out, 5);
+	assert_int_equal(rc, -LXP_EAGAIN);
+	assert_int_equal(proc.wait.kind, LXP_WAIT_HOSTFS);
+	assert_true(proc.wait.data.hostfs.owner != 0);
+	assert_int_equal(proc.wait.data.hostfs.owner, g_request_owner);
+
+	g_async_ready = 1;
+	rc = call(&proc, LXP_NR_read, fd, (long)(uintptr_t)out, 5);
+	assert_int_equal(rc, 5);
+	assert_memory_equal(out, "hello", 5);
+	assert_int_equal(lxp_wait_complete(&proc, LXP_WAIT_HOSTFS), LXP_OK);
+
+	g_async_once = 1;
+	g_async_ready = 0;
+	rc = call(&proc, LXP_NR_read, fd, (long)(uintptr_t)out, 1);
+	assert_int_equal(rc, -LXP_EAGAIN);
+	uint64_t owner = proc.wait.data.hostfs.owner;
+	lxp_hostfs_cancel(&proc);
+	assert_int_equal(g_cancelled_owner, owner);
+}
+
 static int group_setup(void **state)
 {
 	(void)state;
@@ -654,6 +721,7 @@ int test_linux_hostfs_run(void)
 		cmocka_unit_test(test_hostfs_mutations_and_cross_mount_errors),
 		cmocka_unit_test(test_hostfs_access_modes),
 		cmocka_unit_test(test_hostfs_metrics_proc),
+		cmocka_unit_test(test_hostfs_async_wait_is_generation_owned),
 	};
 	return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

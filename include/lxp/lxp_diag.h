@@ -66,6 +66,7 @@ enum lxp_diag_wait {
 	LXP_DIAG_WAIT_NETFS = 1u << 7,
 	LXP_DIAG_WAIT_PTY = 1u << 8,
 	LXP_DIAG_WAIT_SIGSUSPEND = 1u << 9,
+	LXP_DIAG_WAIT_HOSTFS = 1u << 10,
 };
 
 /** One read-only slot dump. Pointer fields are opaque equality identities. */

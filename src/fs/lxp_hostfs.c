@@ -30,6 +30,65 @@ typedef struct lxp_hostfs_open {
 } lxp_hostfs_open_t;
 
 static lxp_hostfs_open_t g_hostfs_open[LXP_NHOSTFS_OPEN];
+static uint32_t g_hostfs_run_generation = 1u;
+static struct {
+	lxp_proc_t *proc;
+	intptr_t nr;
+	intptr_t args[6];
+} g_hostfs_syscall;
+
+static uint64_t hostfs_owner(const lxp_proc_t *proc)
+{
+	return proc ? ((uint64_t)g_hostfs_run_generation << 32) | (uint32_t)proc->pid : 0;
+}
+
+void lxp_hostfs_syscall_enter(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3,
+			      long a4, long a5)
+{
+	g_hostfs_syscall.proc = proc;
+	g_hostfs_syscall.nr = (intptr_t)nr;
+	g_hostfs_syscall.args[0] = (intptr_t)a0;
+	g_hostfs_syscall.args[1] = (intptr_t)a1;
+	g_hostfs_syscall.args[2] = (intptr_t)a2;
+	g_hostfs_syscall.args[3] = (intptr_t)a3;
+	g_hostfs_syscall.args[4] = (intptr_t)a4;
+	g_hostfs_syscall.args[5] = (intptr_t)a5;
+}
+
+static void hostfs_select(lxp_proc_t *proc)
+{
+	if (g_lxp_fs_ops && g_lxp_fs_ops->request_owner)
+		g_lxp_fs_ops->request_owner(hostfs_owner(proc));
+}
+
+static long hostfs_result(lxp_proc_t *proc, int result)
+{
+	if (result != LXP_ERR_WOULD_BLOCK)
+		return result == LXP_OK ? 0 : lxp_hostfs_error(result);
+	if (!proc || g_hostfs_syscall.proc != proc)
+		return -LXP_EAGAIN;
+	if (proc->wait.kind == LXP_WAIT_HOSTFS)
+		return -LXP_EAGAIN;
+	if (proc->wait.kind != LXP_WAIT_NONE)
+		return -LXP_EAGAIN;
+	lxp_wait_t wait = {
+		.kind = LXP_WAIT_HOSTFS,
+		.data.hostfs.nr = g_hostfs_syscall.nr,
+		.data.hostfs.owner = hostfs_owner(proc),
+	};
+	for (size_t i = 0; i < 6; i++)
+		wait.data.hostfs.args[i] = g_hostfs_syscall.args[i];
+	if (lxp_wait_begin(proc, &wait) != LXP_OK)
+		return -LXP_EAGAIN;
+	return -LXP_EAGAIN;
+}
+
+void lxp_hostfs_cancel(lxp_proc_t *proc)
+{
+	if (proc && proc->wait.kind == LXP_WAIT_HOSTFS && g_lxp_fs_ops &&
+	    g_lxp_fs_ops->request_cancel)
+		g_lxp_fs_ops->request_cancel(proc->wait.data.hostfs.owner);
+}
 
 long lxp_hostfs_error(int result)
 {
@@ -153,7 +212,7 @@ static unsigned hostfs_open_flags(int flags)
 	return out;
 }
 
-long lxp_hostfs_open(const char *abspath, int linux_flags)
+long lxp_hostfs_open(lxp_proc_t *proc, const char *abspath, int linux_flags)
 {
 	const lxp_fs_ops_t *ops = g_lxp_fs_ops;
 	const char *path = lxp_hostfs_relative(abspath);
@@ -167,10 +226,11 @@ long lxp_hostfs_open(const char *abspath, int linux_flags)
 		return -LXP_EMFILE;
 
 	lxp_fs_open_result_t opened;
+	hostfs_select(proc);
 	int rc = ops->object_open(path, hostfs_open_flags(linux_flags),
 				  (linux_flags & LXP_O_DIRECTORY) != 0, &opened);
 	if (rc != LXP_OK)
-		return lxp_hostfs_error(rc);
+		return hostfs_result(proc, rc);
 	if (opened.type == LXP_FS_TYPE_DIR) {
 		g_hostfs_open[index].handle.dir = opened.handle.dir;
 		g_hostfs_open[index].used = 1;
@@ -198,7 +258,7 @@ uint32_t lxp_hostfs_inode(int index)
 	return slot ? slot->inode : 0;
 }
 
-long lxp_hostfs_read(int index, void *buf, size_t len)
+long lxp_hostfs_read(lxp_proc_t *proc, int index, void *buf, size_t len)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot)
@@ -206,13 +266,16 @@ long lxp_hostfs_read(int index, void *buf, size_t len)
 	if (slot->is_dir)
 		return -LXP_EISDIR;
 	size_t done = 0;
+	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->file_read(slot->handle.file, buf, len, &done);
+	if (rc == LXP_ERR_WOULD_BLOCK)
+		return hostfs_result(proc, rc);
 	if (done > len)
 		return -LXP_EIO;
 	return rc == LXP_OK || rc == LXP_ERR_EOF ? (long)done : lxp_hostfs_error(rc);
 }
 
-long lxp_hostfs_write(int index, const void *buf, size_t len)
+long lxp_hostfs_write(lxp_proc_t *proc, int index, const void *buf, size_t len)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot)
@@ -220,13 +283,16 @@ long lxp_hostfs_write(int index, const void *buf, size_t len)
 	if (slot->is_dir)
 		return -LXP_EISDIR;
 	size_t done = 0;
+	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->file_write(slot->handle.file, buf, len, &done);
+	if (rc == LXP_ERR_WOULD_BLOCK)
+		return hostfs_result(proc, rc);
 	if (done > len)
 		return -LXP_EIO;
 	return rc == LXP_OK ? (long)done : lxp_hostfs_error(rc);
 }
 
-long lxp_hostfs_seek(int index, int64_t offset, int whence)
+long lxp_hostfs_seek(lxp_proc_t *proc, int index, int64_t offset, int whence)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot)
@@ -234,15 +300,17 @@ long lxp_hostfs_seek(int index, int64_t offset, int whence)
 	if (slot->is_dir)
 		return -LXP_ESPIPE;
 	uint64_t position = 0;
+	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->file_seek(slot->handle.file, offset, whence, &position);
 	if (rc != LXP_OK)
-		return lxp_hostfs_error(rc);
+		return hostfs_result(proc, rc);
 	if (position > (uint64_t)INT32_MAX)
 		return -LXP_EOVERFLOW;
 	return (long)position;
 }
 
-static long hostfs_positioned(int index, void *buf, size_t len, uint64_t offset, int write)
+static long hostfs_positioned(lxp_proc_t *proc, int index, void *buf, size_t len,
+			      uint64_t offset, int write)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot)
@@ -253,25 +321,28 @@ static long hostfs_positioned(int index, void *buf, size_t len, uint64_t offset,
 		return -LXP_EOVERFLOW;
 
 	size_t done = 0;
+	hostfs_select(proc);
 	int rc = write ? g_lxp_fs_ops->file_pwrite(slot->handle.file, buf, len, offset, &done)
 		       : g_lxp_fs_ops->file_pread(slot->handle.file, buf, len, offset, &done);
+	if (rc == LXP_ERR_WOULD_BLOCK)
+		return hostfs_result(proc, rc);
 	if (done > len)
 		return -LXP_EIO;
 	return rc == LXP_OK || (!write && rc == LXP_ERR_EOF) ? (long)done
 								 : lxp_hostfs_error(rc);
 }
 
-long lxp_hostfs_pread(int index, void *buf, size_t len, uint64_t offset)
+long lxp_hostfs_pread(lxp_proc_t *proc, int index, void *buf, size_t len, uint64_t offset)
 {
-	return hostfs_positioned(index, buf, len, offset, 0);
+	return hostfs_positioned(proc, index, buf, len, offset, 0);
 }
 
-long lxp_hostfs_pwrite(int index, const void *buf, size_t len, uint64_t offset)
+long lxp_hostfs_pwrite(lxp_proc_t *proc, int index, const void *buf, size_t len, uint64_t offset)
 {
-	return hostfs_positioned(index, (void *)buf, len, offset, 1);
+	return hostfs_positioned(proc, index, (void *)buf, len, offset, 1);
 }
 
-long lxp_hostfs_stat(int index, lxp_fs_stat_t *out)
+long lxp_hostfs_stat(lxp_proc_t *proc, int index, lxp_fs_stat_t *out)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot || !out)
@@ -281,30 +352,33 @@ long lxp_hostfs_stat(int index, lxp_fs_stat_t *out)
 		out->type = LXP_FS_TYPE_DIR;
 		return 0;
 	}
+	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->file_stat(slot->handle.file, out);
-	return rc == LXP_OK ? 0 : lxp_hostfs_error(rc);
+	return hostfs_result(proc, rc);
 }
 
-long lxp_hostfs_truncate(int index, uint64_t length)
+long lxp_hostfs_truncate(lxp_proc_t *proc, int index, uint64_t length)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot)
 		return -LXP_EBADF;
 	if (slot->is_dir)
 		return -LXP_EISDIR;
+	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->file_truncate(slot->handle.file, length);
-	return rc == LXP_OK ? 0 : lxp_hostfs_error(rc);
+	return hostfs_result(proc, rc);
 }
 
-long lxp_hostfs_sync(int index)
+long lxp_hostfs_sync(lxp_proc_t *proc, int index)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot)
 		return -LXP_EBADF;
 	if (slot->is_dir)
 		return -LXP_EINVAL;
+	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->file_sync(slot->handle.file);
-	return rc == LXP_OK ? 0 : lxp_hostfs_error(rc);
+	return hostfs_result(proc, rc);
 }
 
 long lxp_hostfs_sync_all(void)
@@ -312,7 +386,9 @@ long lxp_hostfs_sync_all(void)
 	for (int i = 0; i < LXP_NHOSTFS_OPEN; i++) {
 		if (!g_hostfs_open[i].used || g_hostfs_open[i].is_dir)
 			continue;
-		long rc = lxp_hostfs_sync(i);
+		hostfs_select(NULL);
+		int native = g_lxp_fs_ops->file_sync(g_hostfs_open[i].handle.file);
+		long rc = native == LXP_OK ? 0 : lxp_hostfs_error(native);
 		if (rc < 0)
 			return rc;
 	}
@@ -324,6 +400,7 @@ void lxp_hostfs_close(int index)
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot)
 		return;
+	hostfs_select(NULL);
 	if (slot->is_dir)
 		(void)g_lxp_fs_ops->dir_close(slot->handle.dir);
 	else
@@ -331,7 +408,7 @@ void lxp_hostfs_close(int index)
 	memset(slot, 0, sizeof(*slot));
 }
 
-long lxp_hostfs_dir_peek(int index, const lxp_fs_dirent_t **entry)
+long lxp_hostfs_dir_peek(lxp_proc_t *proc, int index, const lxp_fs_dirent_t **entry)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot)
@@ -339,7 +416,10 @@ long lxp_hostfs_dir_peek(int index, const lxp_fs_dirent_t **entry)
 	if (!slot->is_dir)
 		return -LXP_ENOTDIR;
 	if (!slot->has_pending) {
+		hostfs_select(proc);
 		int rc = g_lxp_fs_ops->dir_read(slot->handle.dir, &slot->pending);
+		if (rc == LXP_ERR_WOULD_BLOCK)
+			return hostfs_result(proc, rc);
 		if (rc == LXP_ERR_EOF)
 			return 0;
 		if (rc != LXP_OK)
@@ -358,18 +438,20 @@ void lxp_hostfs_dir_consume(int index)
 		slot->has_pending = 0;
 }
 
-long lxp_hostfs_path_stat(const char *abspath, lxp_fs_stat_t *out)
+long lxp_hostfs_path_stat(lxp_proc_t *proc, const char *abspath, lxp_fs_stat_t *out)
 {
 	const char *path = lxp_hostfs_relative(abspath);
 	if (!path)
 		return -LXP_ENOENT;
 	if (!g_lxp_fs_ops)
 		return -LXP_ENODEV;
+	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->path_stat(path, out);
-	return rc == LXP_OK ? 0 : lxp_hostfs_error(rc);
+	return hostfs_result(proc, rc);
 }
 
-static long hostfs_path_call(const char *abspath, int (*operation)(const char *))
+static long hostfs_path_call(lxp_proc_t *proc, const char *abspath,
+			     int (*operation)(const char *))
 {
 	const char *path = lxp_hostfs_relative(abspath);
 	if (!path)
@@ -378,11 +460,12 @@ static long hostfs_path_call(const char *abspath, int (*operation)(const char *)
 		return -LXP_EBUSY;
 	if (!g_lxp_fs_ops)
 		return -LXP_ENODEV;
+	hostfs_select(proc);
 	int rc = operation(path);
-	return rc == LXP_OK ? 0 : lxp_hostfs_error(rc);
+	return hostfs_result(proc, rc);
 }
 
-long lxp_hostfs_mkdir(const char *abspath)
+long lxp_hostfs_mkdir(lxp_proc_t *proc, const char *abspath)
 {
 	const char *path = lxp_hostfs_relative(abspath);
 	/* The mount root already exists in the guest namespace. POSIX mkdir(2)
@@ -390,20 +473,20 @@ long lxp_hostfs_mkdir(const char *abspath)
 	 * distinction to continue creating descendants below /data. */
 	if (path && strcmp(path, "/") == 0)
 		return -LXP_EEXIST;
-	return hostfs_path_call(abspath, g_lxp_fs_ops ? g_lxp_fs_ops->path_mkdir : NULL);
+	return hostfs_path_call(proc, abspath, g_lxp_fs_ops ? g_lxp_fs_ops->path_mkdir : NULL);
 }
 
-long lxp_hostfs_rmdir(const char *abspath)
+long lxp_hostfs_rmdir(lxp_proc_t *proc, const char *abspath)
 {
-	return hostfs_path_call(abspath, g_lxp_fs_ops ? g_lxp_fs_ops->path_rmdir : NULL);
+	return hostfs_path_call(proc, abspath, g_lxp_fs_ops ? g_lxp_fs_ops->path_rmdir : NULL);
 }
 
-long lxp_hostfs_unlink(const char *abspath)
+long lxp_hostfs_unlink(lxp_proc_t *proc, const char *abspath)
 {
-	return hostfs_path_call(abspath, g_lxp_fs_ops ? g_lxp_fs_ops->path_unlink : NULL);
+	return hostfs_path_call(proc, abspath, g_lxp_fs_ops ? g_lxp_fs_ops->path_unlink : NULL);
 }
 
-long lxp_hostfs_rename(const char *old_abspath, const char *new_abspath)
+long lxp_hostfs_rename(lxp_proc_t *proc, const char *old_abspath, const char *new_abspath)
 {
 	const char *old_path = lxp_hostfs_relative(old_abspath);
 	const char *new_path = lxp_hostfs_relative(new_abspath);
@@ -413,8 +496,9 @@ long lxp_hostfs_rename(const char *old_abspath, const char *new_abspath)
 		return -LXP_EBUSY;
 	if (!g_lxp_fs_ops)
 		return -LXP_ENODEV;
+	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->path_rename(old_path, new_path);
-	return rc == LXP_OK ? 0 : lxp_hostfs_error(rc);
+	return hostfs_result(proc, rc);
 }
 
 void lxp_hostfs_runtime_reset(void)
@@ -423,6 +507,9 @@ void lxp_hostfs_runtime_reset(void)
 		if (g_hostfs_open[i].used)
 			lxp_hostfs_close(i);
 	memset(g_hostfs_open, 0, sizeof(g_hostfs_open));
+	memset(&g_hostfs_syscall, 0, sizeof(g_hostfs_syscall));
+	if (++g_hostfs_run_generation == 0u)
+		g_hostfs_run_generation = 1u;
 }
 
 #endif /* LXP_ENABLE_LINUX && LXP_ENABLE_FS */

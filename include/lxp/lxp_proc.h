@@ -431,6 +431,7 @@ typedef enum lxp_wait_kind {
 	LXP_WAIT_DEVICE,
 	LXP_WAIT_SOCKET,
 	LXP_WAIT_NETFS,
+	LXP_WAIT_HOSTFS,
 	LXP_WAIT_PTY,
 	LXP_WAIT_SIGSUSPEND,
 	LXP_WAIT_COUNT,
@@ -473,6 +474,11 @@ typedef struct lxp_wait {
 			uintptr_t writefds;
 			uintptr_t exceptfds;
 		} socket;
+		struct {
+			intptr_t nr;
+			intptr_t args[6];
+			uint64_t owner;
+		} hostfs;
 	} data;
 } lxp_wait_t;
 

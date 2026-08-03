@@ -412,6 +412,14 @@ void lxp_sock_kick(void)
 }
 #endif
 
+#if LXP_ENABLE_FS
+void lxp_fs_kick(void)
+{
+	if (g_eng && g_eng->event_post)
+		g_eng->event_post();
+}
+#endif
+
 /*
  * Socket waits only need the short retry timeout when the host cannot publish
  * readiness changes. Other wait classes retain their polling fallback.
@@ -629,6 +637,8 @@ static uint32_t diag_wait_mask(const lxp_proc_t *p)
 		return LXP_DIAG_WAIT_SOCKET;
 	case LXP_WAIT_NETFS:
 		return LXP_DIAG_WAIT_NETFS;
+	case LXP_WAIT_HOSTFS:
+		return LXP_DIAG_WAIT_HOSTFS;
 	case LXP_WAIT_PTY:
 		return LXP_DIAG_WAIT_PTY;
 	case LXP_WAIT_SIGSUSPEND:
@@ -2676,6 +2686,7 @@ static int fs_ops_valid(const lxp_fs_ops_t *ops)
 #if LXP_ENABLE_FS
 	if (!ops || ops->abi_version != LXP_FS_OPS_ABI_VERSION ||
 	    ops->struct_size != sizeof(*ops) || !ops->run_begin || !ops->run_end ||
+	    !ops->request_owner || !ops->request_cancel ||
 	    !ops->file_open || !ops->object_open || !ops->file_close || !ops->file_read ||
 	    !ops->file_write ||
 	    !ops->file_seek || !ops->file_stat || !ops->file_truncate || !ops->file_sync ||

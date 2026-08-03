@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-#define LXP_FS_OPS_ABI_VERSION 3u
+#define LXP_FS_OPS_ABI_VERSION 4u
 #define LXP_FS_NAME_MAX 256u
 
 /* Provider open flags. Access mode is explicit instead of encoded in low bits
@@ -112,6 +112,12 @@ typedef struct lxp_fs_ops {
 	 * operations return LXP_ERR_NOT_REGISTERED until media is available. */
 	int (*run_begin)(void);
 	void (*run_end)(void);
+	/** Select the generation-qualified guest owner for the next operation.
+	 * Owner zero denotes host lifecycle work which may execute synchronously. */
+	void (*request_owner)(uint64_t owner);
+	/** Abandon an interrupted owner's outstanding request. Completion may still
+	 * finish in the host, but must never be delivered to a reused guest slot. */
+	void (*request_cancel)(uint64_t owner);
 
 	int (*file_open)(const char *path, unsigned flags, lxp_fs_file_t *out);
 	/** Atomically classify and open one path. @p require_dir implements
@@ -144,6 +150,9 @@ typedef struct lxp_fs_ops {
 	/** Snapshot run-scoped service telemetry without resetting it. */
 	int (*metrics)(lxp_fs_metrics_t *out);
 } lxp_fs_ops_t;
+
+/** Wake the coordinator after a non-blocking provider request completes. */
+void lxp_fs_kick(void);
 
 #ifdef __cplusplus
 }

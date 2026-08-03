@@ -533,8 +533,7 @@ static long fop_read_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 #if LXP_ENABLE_FS
 static long fop_read_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
-	(void)p;
-	return lxp_hostfs_read(s->file_idx, buf, len);
+	return lxp_hostfs_read(p, s->file_idx, buf, len);
 }
 #endif
 #if LXP_ENABLE_PTY
@@ -648,8 +647,7 @@ static long fop_write_netfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t
 #if LXP_ENABLE_FS
 static long fop_write_hostfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
 {
-	(void)p;
-	return lxp_hostfs_write(s->file_idx, buf, len);
+	return lxp_hostfs_write(p, s->file_idx, buf, len);
 }
 #endif
 #if LXP_ENABLE_PTY
@@ -728,8 +726,7 @@ static long fop_lseek_netfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 #if LXP_ENABLE_FS
 static long fop_lseek_hostfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 {
-	(void)p;
-	long position = lxp_hostfs_seek(s->file_idx, off, whence);
+	long position = lxp_hostfs_seek(p, s->file_idx, off, whence);
 	if (position >= 0)
 		s->offset = (size_t)position;
 	return position;
@@ -804,9 +801,8 @@ static uint32_t hostfs_mode(const lxp_fs_stat_t *stat)
 
 static long fop_fstat_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
-	(void)p;
 	lxp_fs_stat_t stat;
-	long rc = lxp_hostfs_stat(s->file_idx, &stat);
+	long rc = lxp_hostfs_stat(p, s->file_idx, &stat);
 	if (rc < 0)
 		return rc;
 	fill_kstat64(statbuf, lxp_hostfs_inode(s->file_idx), hostfs_mode(&stat),
@@ -1226,7 +1222,7 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off
 	if (s->kind == LXP_FD_HOSTFS) {
 		if (s->accmode == LXP_O_WRONLY)
 			return -LXP_EBADF;
-		return lxp_hostfs_pread(s->file_idx, buf, len, off);
+		return lxp_hostfs_pread(p, s->file_idx, buf, len, off);
 	}
 #endif
 	const uint8_t *data;
@@ -1284,7 +1280,7 @@ static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint3
 			return -LXP_EBADF;
 		if (len)
 			lxp_cache_clean(buf, len);
-		return lxp_hostfs_pwrite(s->file_idx, buf, len, off);
+		return lxp_hostfs_pwrite(p, s->file_idx, buf, len, off);
 	}
 #endif
 	if (s->kind == LXP_FD_TMPFS) {
@@ -1555,7 +1551,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 	/* The mount boundary is exact: /data and descendants route to the host
 	 * provider, while /database remains part of the ordinary rootfs/tmpfs. */
 	if (lxp_hostfs_match(path)) {
-		long hi = lxp_hostfs_open(path, flags);
+		long hi = lxp_hostfs_open(p, path, flags);
 		if (hi < 0)
 			return hi;
 		int fd = fd_alloc(p, LXP_FD_HOSTFS, (int)hi, 0);
@@ -1774,7 +1770,7 @@ static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 	if (s->kind == LXP_FD_HOSTFS) {
 		if (s->accmode == LXP_O_RDONLY)
 			return -LXP_EINVAL;
-		return lxp_hostfs_truncate(s->file_idx, length);
+		return lxp_hostfs_truncate(p, s->file_idx, length);
 	}
 #endif
 	if (s->kind != LXP_FD_TMPFS)
@@ -1799,7 +1795,7 @@ static long sys_sync_fd(lxp_proc_t *p, int fd)
 		return -LXP_EBADF;
 #if LXP_ENABLE_FS
 	if (s->kind == LXP_FD_HOSTFS)
-		return lxp_hostfs_sync(s->file_idx);
+		return lxp_hostfs_sync(p, s->file_idx);
 #endif
 	/* tmpfs/rootfs have no backing write queue. Other open descriptors retain
 	 * the historical benign behavior expected by small libc utilities. */
@@ -1871,7 +1867,7 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 #if LXP_ENABLE_FS
 	if (lxp_hostfs_match(abspath)) {
 		lxp_fs_stat_t stat;
-		long rc = lxp_hostfs_path_stat(abspath, &stat);
+		long rc = lxp_hostfs_path_stat(p, abspath, &stat);
 		if (rc < 0)
 			return rc;
 		fill_kstat64(statbuf, lxp_hostfs_path_inode(abspath), hostfs_mode(&stat),
@@ -1972,7 +1968,7 @@ static long sys_access(lxp_proc_t *p, const char *path)
 #if LXP_ENABLE_FS
 	if (lxp_hostfs_match(abspath)) {
 		lxp_fs_stat_t stat;
-		return lxp_hostfs_path_stat(abspath, &stat);
+		return lxp_hostfs_path_stat(p, abspath, &stat);
 	}
 #endif
 	if (wfs_find(abspath) >= 0 || fs_lookup(p, abspath) >= 0)
@@ -1990,7 +1986,7 @@ static long sys_mkdir(lxp_proc_t *p, const char *path, uint32_t mode)
 		return rr;
 #if LXP_ENABLE_FS
 	if (lxp_hostfs_match(abspath))
-		return lxp_hostfs_mkdir(abspath);
+		return lxp_hostfs_mkdir(p, abspath);
 #endif
 	if (wfs_find(abspath) >= 0 || fs_lookup(p, abspath) >= 0)
 		return -LXP_EEXIST;
@@ -2010,7 +2006,7 @@ static long sys_unlink(lxp_proc_t *p, const char *path, int is_rmdir)
 		return rr;
 #if LXP_ENABLE_FS
 	if (lxp_hostfs_match(abspath))
-		return is_rmdir ? lxp_hostfs_rmdir(abspath) : lxp_hostfs_unlink(abspath);
+		return is_rmdir ? lxp_hostfs_rmdir(p, abspath) : lxp_hostfs_unlink(p, abspath);
 #endif
 	int wi = wfs_find(abspath);
 	if (wi < 0)
@@ -2048,7 +2044,7 @@ static long sys_rename(lxp_proc_t *p, const char *oldp, const char *newp, unsign
 	if (old_host != new_host)
 		return -LXP_EXDEV;
 	if (old_host)
-		return lxp_hostfs_rename(oldabs, newabs);
+		return lxp_hostfs_rename(p, oldabs, newabs);
 #endif
 	int wi = wfs_find(oldabs);
 	if (wi < 0)
@@ -2173,7 +2169,7 @@ static long sys_chmod(lxp_proc_t *p, const char *path, uint32_t mode)
 #if LXP_ENABLE_FS
 	if (lxp_hostfs_match(abspath)) {
 		lxp_fs_stat_t stat;
-		return lxp_hostfs_path_stat(abspath, &stat); /* FAT mode bits are inert. */
+		return lxp_hostfs_path_stat(p, abspath, &stat); /* FAT mode bits are inert. */
 	}
 #endif
 	int wi = wfs_find(abspath);
@@ -2197,7 +2193,7 @@ static long sys_utimensat(lxp_proc_t *p, const char *path)
 #if LXP_ENABLE_FS
 	if (lxp_hostfs_match(abspath)) {
 		lxp_fs_stat_t stat;
-		return lxp_hostfs_path_stat(abspath, &stat); /* Provider does not expose timestamps. */
+		return lxp_hostfs_path_stat(p, abspath, &stat); /* Provider does not expose timestamps. */
 	}
 #endif
 	if ((abspath[0] == '/' && abspath[1] == '\0') || wfs_find(abspath) >= 0 ||
@@ -2365,19 +2361,18 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 		uint8_t *out = (uint8_t *)buf;
 		size_t filled = 0;
 		long pos = (long)s->offset;
-		for (;;) {
-			const lxp_fs_dirent_t *entry = NULL;
-			long rc = lxp_hostfs_dir_peek(s->file_idx, &entry);
-			if (rc < 0)
-				return filled ? (long)filled : rc;
-			if (rc == 0)
-				return (long)filled;
-			uint32_t mode = entry->type == LXP_FS_TYPE_DIR ? LXP_S_IFDIR : LXP_S_IFREG;
-			if (!dirent_emit(out, count, &filled, &pos, s,
-					 0x700001u + (uint64_t)s->offset, entry->name, mode))
-				return filled ? (long)filled : -LXP_EINVAL;
-			lxp_hostfs_dir_consume(s->file_idx);
-		}
+		/* One provider entry per syscall keeps an async retry idempotent: no
+		 * earlier directory entries are consumed before a later read parks. */
+		const lxp_fs_dirent_t *entry = NULL;
+		long rc = lxp_hostfs_dir_peek(p, s->file_idx, &entry);
+		if (rc <= 0)
+			return rc;
+		uint32_t mode = entry->type == LXP_FS_TYPE_DIR ? LXP_S_IFDIR : LXP_S_IFREG;
+		if (!dirent_emit(out, count, &filled, &pos, s,
+				 0x700001u + (uint64_t)s->offset, entry->name, mode))
+			return -LXP_EINVAL;
+		lxp_hostfs_dir_consume(s->file_idx);
+		return (long)filled;
 #endif
 	} else {
 		return -LXP_ENOTDIR;
@@ -2563,7 +2558,7 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 #if LXP_ENABLE_FS
 		} else if (lxp_hostfs_match(abspath)) {
 			lxp_fs_stat_t stat;
-			long rc = lxp_hostfs_path_stat(abspath, &stat);
+			long rc = lxp_hostfs_path_stat(p, abspath, &stat);
 			if (rc < 0)
 				return rc;
 			mode = hostfs_mode(&stat);
@@ -2621,7 +2616,7 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 #if LXP_ENABLE_FS
 		} else if (s->kind == LXP_FD_HOSTFS) {
 			lxp_fs_stat_t stat;
-			long rc = lxp_hostfs_stat(s->file_idx, &stat);
+			long rc = lxp_hostfs_stat(p, s->file_idx, &stat);
 			if (rc < 0)
 				return rc;
 			mode = hostfs_mode(&stat);
@@ -3192,6 +3187,9 @@ static long sys_ioctl(lxp_proc_t *proc, long a0, long a1, long a2)
 
 long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, long a4, long a5)
 {
+#if LXP_ENABLE_FS
+	lxp_hostfs_syscall_enter(proc, nr, a0, a1, a2, a3, a4, a5);
+#endif
 	if (!proc)
 		return -LXP_EINVAL;
 
@@ -3454,7 +3452,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 #if LXP_ENABLE_FS
 			if (lxp_hostfs_match(abspath)) {
 				lxp_fs_stat_t stat;
-				long sr = lxp_hostfs_path_stat(abspath, &stat);
+				long sr = lxp_hostfs_path_stat(proc, abspath, &stat);
 				if (sr < 0)
 					return sr;
 				if (stat.type != LXP_FS_TYPE_DIR)

@@ -9,6 +9,7 @@
 #include "lxp_internal.h"
 #include "lxp_run_internal.h"
 #include "lxp/lxp_run.h"
+#include "lxp/lxp_syscall.h"
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h"
 #endif
@@ -17,6 +18,9 @@
 #endif
 #if LXP_ENABLE_NETFS
 #include "lxp/lxp_netfs.h"
+#endif
+#if LXP_ENABLE_FS
+#include "fs/lxp_hostfs.h"
 #endif
 #if LXP_ENABLE_PTY
 #include "lxp/lxp_pty.h"
@@ -38,6 +42,7 @@ static uint32_t lxp_blocked_wait_policy(lxp_wait_kind_t kind)
 	case LXP_WAIT_NONE:
 	case LXP_WAIT_TIMER:
 	case LXP_WAIT_CHILD:
+	case LXP_WAIT_HOSTFS:
 	case LXP_WAIT_SIGSUSPEND:
 	case LXP_WAIT_COUNT:
 	default:
@@ -78,6 +83,10 @@ static void lxp_blocked_interrupt_wait(lxp_proc_t *proc)
 #if LXP_ENABLE_NETFS
 	if (kind == LXP_WAIT_NETFS)
 		lxp_netfs_cancel(proc);
+#endif
+#if LXP_ENABLE_FS
+	if (kind == LXP_WAIT_HOSTFS)
+		lxp_hostfs_cancel(proc);
 #endif
 	(void)lxp_wait_interrupt(proc, kind);
 }
@@ -259,6 +268,26 @@ static void lxp_blocked_retry_device(const lxp_os_ops_t *eng, int slot, lxp_proc
 }
 #endif
 
+#if LXP_ENABLE_FS
+static void lxp_blocked_retry_hostfs(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
+				     struct lxp_blocked_scan *scan)
+{
+	if (proc->wait.kind != LXP_WAIT_HOSTFS || slot_runnable_load(slot))
+		return;
+	scan->any_busy = 1;
+	lxp_wait_t saved = proc->wait;
+	long rc = lxp_syscall(proc, (long)saved.data.hostfs.nr,
+			      (long)saved.data.hostfs.args[0], (long)saved.data.hostfs.args[1],
+			      (long)saved.data.hostfs.args[2], (long)saved.data.hostfs.args[3],
+			      (long)saved.data.hostfs.args[4], (long)saved.data.hostfs.args[5]);
+	if (rc == -LXP_EAGAIN && proc->wait.kind == LXP_WAIT_HOSTFS)
+		return;
+	(void)lxp_wait_complete(proc, LXP_WAIT_HOSTFS);
+	(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+	scan->progress = 1;
+}
+#endif
+
 #if LXP_ENABLE_NET
 static void lxp_blocked_retry_socket(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
 				     struct lxp_blocked_scan *scan)
@@ -409,6 +438,9 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 #endif
 #if LXP_ENABLE_NETFS
 		lxp_blocked_retry_netfs(eng, slot, proc, &scan);
+#endif
+#if LXP_ENABLE_FS
+		lxp_blocked_retry_hostfs(eng, slot, proc, &scan);
 #endif
 #if LXP_ENABLE_PTY
 		lxp_blocked_retry_pty(eng, slot, proc, &scan);
