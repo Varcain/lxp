@@ -353,6 +353,172 @@ static void mock_net_end(void)
 {
 	g_mock.net_end_calls++;
 }
+
+/* The coordinator suite enables the writable-filesystem path so its blocked
+ * completion semantics are compiled exactly as in firmware. Most tests never
+ * perform storage I/O; this complete provider keeps lxp_run() validation and
+ * lifecycle tests representative without introducing host filesystem state. */
+static int mock_fs_begin(void)
+{
+	return LXP_OK;
+}
+static void mock_fs_end(void)
+{
+}
+static void mock_fs_owner(uint64_t owner)
+{
+	(void)owner;
+}
+static int mock_fs_file_open(const char *path, unsigned flags, lxp_fs_file_t *out)
+{
+	(void)path;
+	(void)flags;
+	(void)out;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_object_open(const char *path, unsigned flags, int require_dir,
+			       lxp_fs_open_result_t *out)
+{
+	(void)path;
+	(void)flags;
+	(void)require_dir;
+	(void)out;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_file_close(lxp_fs_file_t file)
+{
+	(void)file;
+	return LXP_OK;
+}
+static int mock_fs_file_read(lxp_fs_file_t file, void *buf, size_t count, size_t *done)
+{
+	(void)file;
+	(void)buf;
+	(void)count;
+	(void)done;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_file_write(lxp_fs_file_t file, const void *buf, size_t count, size_t *done)
+{
+	(void)file;
+	(void)buf;
+	(void)count;
+	(void)done;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_file_seek(lxp_fs_file_t file, int64_t offset, int whence, uint64_t *position)
+{
+	(void)file;
+	(void)offset;
+	(void)whence;
+	(void)position;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_file_stat(lxp_fs_file_t file, lxp_fs_stat_t *out)
+{
+	(void)file;
+	(void)out;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_file_truncate(lxp_fs_file_t file, uint64_t length)
+{
+	(void)file;
+	(void)length;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_file_sync(lxp_fs_file_t file)
+{
+	(void)file;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_file_pread(lxp_fs_file_t file, void *buf, size_t count, uint64_t offset,
+			      size_t *done)
+{
+	(void)file;
+	(void)buf;
+	(void)count;
+	(void)offset;
+	(void)done;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_file_pwrite(lxp_fs_file_t file, const void *buf, size_t count, uint64_t offset,
+			       size_t *done)
+{
+	(void)file;
+	(void)buf;
+	(void)count;
+	(void)offset;
+	(void)done;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_dir_open(const char *path, lxp_fs_dir_t *out)
+{
+	(void)path;
+	(void)out;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_dir_read(lxp_fs_dir_t dir, lxp_fs_dirent_t *entry)
+{
+	(void)dir;
+	(void)entry;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_dir_close(lxp_fs_dir_t dir)
+{
+	(void)dir;
+	return LXP_OK;
+}
+static int mock_fs_path_stat(const char *path, lxp_fs_stat_t *out)
+{
+	(void)path;
+	(void)out;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_path_one(const char *path)
+{
+	(void)path;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_path_rename(const char *old_path, const char *new_path)
+{
+	(void)old_path;
+	(void)new_path;
+	return LXP_ERR_NOT_FOUND;
+}
+static int mock_fs_metrics(lxp_fs_metrics_t *out)
+{
+	memset(out, 0, sizeof(*out));
+	return LXP_OK;
+}
+
+static const lxp_fs_ops_t g_mock_fs_ops = {
+	.abi_version = LXP_FS_OPS_ABI_VERSION,
+	.struct_size = sizeof(lxp_fs_ops_t),
+	.run_begin = mock_fs_begin,
+	.run_end = mock_fs_end,
+	.request_owner = mock_fs_owner,
+	.request_cancel = mock_fs_owner,
+	.file_open = mock_fs_file_open,
+	.object_open = mock_fs_object_open,
+	.file_close = mock_fs_file_close,
+	.file_read = mock_fs_file_read,
+	.file_write = mock_fs_file_write,
+	.file_seek = mock_fs_file_seek,
+	.file_stat = mock_fs_file_stat,
+	.file_truncate = mock_fs_file_truncate,
+	.file_sync = mock_fs_file_sync,
+	.file_pread = mock_fs_file_pread,
+	.file_pwrite = mock_fs_file_pwrite,
+	.dir_open = mock_fs_dir_open,
+	.dir_read = mock_fs_dir_read,
+	.dir_close = mock_fs_dir_close,
+	.path_stat = mock_fs_path_stat,
+	.path_mkdir = mock_fs_path_one,
+	.path_rmdir = mock_fs_path_one,
+	.path_unlink = mock_fs_path_one,
+	.path_rename = mock_fs_path_rename,
+	.metrics = mock_fs_metrics,
+};
 static const char *mock_system_version(void)
 {
 	return "MockRTOS 9.8.7 ove-fedcba9 lxp-7654321";
@@ -1777,13 +1943,15 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	net_ops.run_end = mock_net_end;
 	lxp_net_ops_t invalid_net_ops = net_ops;
 	invalid_net_ops.run_end = NULL;
-	assert_int_equal(lxp_run(&g_mock_eng, &invalid_net_ops, NULL, NULL, &cfg, "/init", 1, argv),
+	assert_int_equal(lxp_run(&g_mock_eng, &invalid_net_ops, NULL, &g_mock_fs_ops, &cfg, "/init",
+				 1, argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.net_begin_calls, 0);
 	assert_int_equal(g_mock.prepare_calls, 0);
 
 	g_mock.prepare_result = -LXP_EIO;
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, NULL, &cfg, "/init", 1, argv),
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, &cfg, "/init", 1,
+				 argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.net_begin_calls, 1);
 	assert_int_equal(g_mock.net_end_calls, 1);
@@ -1798,7 +1966,8 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	/* A rejected provider acquisition never starts host preparation or releases
 	 * an already-active provider state through run_end(). */
 	g_mock.net_begin_result = LXP_ERR_WOULD_BLOCK;
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, NULL, &cfg, "/init", 1, argv),
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, &cfg, "/init", 1,
+				 argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.net_begin_calls, 2);
 	assert_int_equal(g_mock.net_end_calls, 1);
@@ -3304,6 +3473,41 @@ static void test_signal_interrupts_blocked_netfs_before_retry(void **state)
 	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
 }
 
+/* A caught signal must not turn an already-submitted host-FS operation into an
+ * at-most-once violation. Its completion result is retained in the signal
+ * return frame, then the handler runs; libc resumes with that result rather
+ * than retrying an operation whose native cursor may already have advanced. */
+static void test_caught_signal_waits_for_hostfs_completion(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *proc = &g_lxp_slots[0].proc;
+	proc->sighand->handler[LXP_SIGALRM] = 0x1234u;
+	proc->sighand->restorer = 0x5678u;
+	g_lxp_slots[0].resume.pc = 0x2221u;
+	assert_int_equal(lxp_wait_begin(proc,
+					&(lxp_wait_t){
+						.kind = LXP_WAIT_HOSTFS,
+						.data.hostfs.nr = 999,
+					}),
+			 LXP_OK);
+	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
+	lxp_signal_latch(proc, LXP_SIGALRM);
+
+	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, &g_mock_cfg, 1);
+
+	assert_true(scan.progress);
+	assert_int_equal(proc->wait.kind, LXP_WAIT_NONE);
+	assert_false(proc->pending_sigs & lxp_sig_bit(LXP_SIGALRM));
+	assert_int_equal(g_mock.resume_calls, 1);
+	assert_int_equal(g_mock.resume_r0, LXP_SIGALRM);
+	assert_int_equal(g_lxp_slots[0].resume.pc, 0x1235u);
+	assert_int_equal(g_sig_save[0].depth, 1);
+	assert_int_equal((int32_t)g_sig_save[0].frame[0].r0, -LXP_ENOSYS);
+	assert_int_equal(g_sig_save[0].frame[0].pc, 0x2221u);
+	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
+}
+
 /*
  * A remote exec creates its EXEC intent in the coordinator only after the 9P
  * fetch completes. It has no SVC return path to publish that primary event.
@@ -4258,6 +4462,7 @@ int main(void)
 		cmocka_unit_test_setup(test_deferred_signal_cancels_before_execute, reset_state),
 		cmocka_unit_test_setup(test_signal_interrupts_blocked_netfs_before_retry,
 				       reset_state),
+		cmocka_unit_test_setup(test_caught_signal_waits_for_hostfs_completion, reset_state),
 		cmocka_unit_test_setup(test_netfs_exec_completion_publishes_primary_event,
 				       reset_state),
 		cmocka_unit_test_setup(test_exec_commit_discards_older_deferred_request,

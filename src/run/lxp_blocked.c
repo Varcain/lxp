@@ -172,6 +172,20 @@ static void lxp_blocked_interrupt_wait(lxp_proc_t *proc)
 	(void)lxp_wait_interrupt(proc, kind);
 }
 
+/* A host-filesystem request may have completed its native side effect before
+ * its asynchronous completion becomes visible here. Interrupting a caught
+ * signal at that point would discard the result and let libc retry a stateful
+ * read/write/seek against an already-advanced native object. Keep the handler
+ * pending until the request completes instead. Default/fatal dispositions are
+ * deliberately not deferred, so a wedged medium cannot make a task unkillable. */
+static int lxp_blocked_defer_hostfs_signal(const lxp_proc_t *proc, int sig)
+{
+	if (proc->wait.kind != LXP_WAIT_HOSTFS)
+		return 0;
+	uintptr_t handler = lxp_sig_handler_get(proc, sig);
+	return handler != LXP_SIG_DFL && handler != LXP_SIG_IGN;
+}
+
 static int lxp_blocked_handle_stopped(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
 				      struct lxp_blocked_scan *scan)
 {
@@ -201,7 +215,9 @@ static int lxp_blocked_handle_stopped(const lxp_os_ops_t *eng, int slot, lxp_pro
 		int caught = lxp_sig_handler_get(proc, LXP_SIGCONT) != LXP_SIG_DFL &&
 			     lxp_sig_handler_get(proc, LXP_SIGCONT) != LXP_SIG_IGN;
 		int blocked = caught && lxp_sig_blocked(proc, LXP_SIGCONT);
-		int can_deliver = caught && !blocked && (ready || typed_wait);
+		int defer_hostfs = caught && !blocked && typed_wait &&
+				   proc->wait.kind == LXP_WAIT_HOSTFS;
+		int can_deliver = caught && !blocked && (ready || typed_wait) && !defer_hostfs;
 		if (!caught || can_deliver)
 			proc->pending_sigs &= ~lxp_sig_bit(LXP_SIGCONT);
 		lxp_blocked_clear_stop(proc);
@@ -245,6 +261,8 @@ static int lxp_blocked_handle_signal(const lxp_os_ops_t *eng, int slot, lxp_proc
 		return 1;
 	}
 	if (sig && proc->wait.kind != LXP_WAIT_NONE) {
+		if (lxp_blocked_defer_hostfs_signal(proc, sig))
+			return 0;
 		proc->pending_sigs &= ~lxp_sig_bit(sig);
 		if (!sig_swallowed(proc, sig)) {
 			lxp_blocked_interrupt_wait(proc);
@@ -364,7 +382,13 @@ static void lxp_blocked_retry_hostfs(const lxp_os_ops_t *eng, int slot, lxp_proc
 	if (rc == -LXP_EAGAIN && proc->wait.kind == LXP_WAIT_HOSTFS)
 		return;
 	(void)lxp_wait_complete(proc, LXP_WAIT_HOSTFS);
-	(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+	int sig = pending_deliverable(proc);
+	if (sig) {
+		proc->pending_sigs &= ~lxp_sig_bit(sig);
+		deliver_signal_parked(eng, slot, proc, sig, rc);
+	} else {
+		(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+	}
 	scan->progress = 1;
 }
 #endif
