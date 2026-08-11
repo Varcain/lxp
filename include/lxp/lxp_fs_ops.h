@@ -83,6 +83,8 @@ typedef struct lxp_fs_metrics {
 	uint64_t queue_wait_us_max;
 	uint64_t service_us_total;
 	uint64_t service_us_max;
+	uint64_t completion_wait_us_total;
+	uint64_t completion_wait_us_max;
 	uint64_t budget_overruns;
 	uint32_t pending;
 	uint32_t queue_depth_max;

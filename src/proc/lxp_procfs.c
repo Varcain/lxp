@@ -314,6 +314,8 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		FS_METRIC_LINE("queue_wait_us_max", metrics.queue_wait_us_max);
 		FS_METRIC_LINE("service_us_total", metrics.service_us_total);
 		FS_METRIC_LINE("service_us_max", metrics.service_us_max);
+		FS_METRIC_LINE("completion_wait_us_total", metrics.completion_wait_us_total);
+		FS_METRIC_LINE("completion_wait_us_max", metrics.completion_wait_us_max);
 		FS_METRIC_LINE("budget_overruns", metrics.budget_overruns);
 #undef FS_METRIC_LINE
 #endif
