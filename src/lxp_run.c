@@ -427,10 +427,18 @@ void lxp_sock_kick(void)
 #endif
 
 #if LXP_ENABLE_FS
+static int g_fs_completion_ready;
+
 void lxp_fs_kick(void)
 {
+	__atomic_store_n(&g_fs_completion_ready, 1, __ATOMIC_RELEASE);
 	if (g_eng && g_eng->event_post)
 		g_eng->event_post();
+}
+
+int lxp_fs_completion_hint_take(void)
+{
+	return __atomic_exchange_n(&g_fs_completion_ready, 0, __ATOMIC_ACQ_REL);
 }
 #endif
 

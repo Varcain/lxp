@@ -2078,6 +2078,20 @@ static void test_coordinator_service_classes_are_weighted_and_aged(void **state)
 	for (size_t i = 0; i < sizeof(aged_expected) / sizeof(aged_expected[0]); i++)
 		assert_int_equal(lxp_test_service_select(0x06u, multiple_aged, 20002),
 				 aged_expected[i]);
+
+#if LXP_ENABLE_FS
+	/* A native completion is readiness, not merely another pending class.
+	 * It gets the next opportunity without changing the weighted sequence
+	 * used when requests are still in flight. */
+	lxp_blocked_fair_reset();
+	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
+	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
+	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
+	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
+	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 1);
+	lxp_fs_kick();
+	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
+#endif
 }
 
 /* The per-slot claim helper maps one typed intent/wait without consuming its

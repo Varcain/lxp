@@ -51,6 +51,9 @@ void lxp_blocked_fair_reset(void)
 	g_service_cursor = 0;
 	for (int i = 0; i < LXP_SERVICE_COUNT; i++)
 		g_service_slot_cursor[i] = 0;
+#if LXP_ENABLE_FS
+	(void)lxp_fs_completion_hint_take();
+#endif
 }
 
 static int lxp_wait_service_class(lxp_wait_kind_t kind)
@@ -77,6 +80,14 @@ static int lxp_wait_service_class(lxp_wait_kind_t kind)
 static int lxp_service_select(const uint8_t pending[LXP_SERVICE_COUNT],
 			      const uint64_t oldest[LXP_SERVICE_COUNT], uint64_t now)
 {
+#if LXP_ENABLE_FS
+	/* A filesystem kick means the serialized native request has completed,
+	 * unlike the generic presence of a parked request. Consume that one-shot
+	 * readiness before weighted pending-class arbitration so the wake cannot
+	 * be spent probing an unrelated, still-blocked socket or console. */
+	if (pending[LXP_SERVICE_FS] && lxp_fs_completion_hint_take())
+		return LXP_SERVICE_FS;
+#endif
 	uint8_t aged[LXP_SERVICE_COUNT] = {0};
 	int any_aged = 0;
 	for (int cls = 0; cls < LXP_SERVICE_COUNT; cls++) {
