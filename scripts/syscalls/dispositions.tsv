@@ -40,8 +40,8 @@ stat64	implemented
 lstat64	implemented
 fstatat64	implemented
 statx	implemented	mask arg ignored
-statfs64	implemented	synthetic df values
-fstatfs64	implemented	synthetic df values
+statfs64	implemented	provider-backed mounted-volume capacity; synthetic local namespaces
+fstatfs64	implemented	provider-backed mounted-volume capacity; validates descriptor
 getdents	implemented	32-bit dirent (uClibc readdir)
 getdents64	implemented
 access	implemented
@@ -119,9 +119,10 @@ umount2	implemented	provider-backed /data unmount with open-handle exclusion
 mprotect	benign-stub	no-op (NOMMU: no page protection)
 utimensat	benign-stub	times not tracked
 utimensat_time64	benign-stub	times not tracked
-sync	benign-stub	no backing store to flush
+sync	implemented	flushes all open provider-backed files
 fsync	implemented	provider-backed files and block devices flush durable state
 fdatasync	implemented	same provider-backed durability path as fsync
+syncfs	implemented	flushes the provider volume selected by fd
 sched_yield	benign-stub	accepted hint; host scheduling owns fairness
 prctl	benign-stub	accepted (inert)
 setpgid	benign-stub	accepted (inert)

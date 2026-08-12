@@ -503,6 +503,13 @@ static int mock_fs_is_mounted(void)
 {
 	return 1;
 }
+static int mock_fs_volume_stat(lxp_fs_volume_stat_t *out)
+{
+	memset(out, 0, sizeof(*out));
+	out->block_size = 512u;
+	out->fragment_size = 512u;
+	return LXP_OK;
+}
 
 static const lxp_fs_ops_t g_mock_fs_ops = {
 	.abi_version = LXP_FS_OPS_ABI_VERSION,
@@ -514,6 +521,7 @@ static const lxp_fs_ops_t g_mock_fs_ops = {
 	.mount = mock_fs_mount,
 	.unmount = mock_fs_unmount,
 	.is_mounted = mock_fs_is_mounted,
+	.volume_stat = mock_fs_volume_stat,
 	.file_open = mock_fs_file_open,
 	.object_open = mock_fs_object_open,
 	.file_close = mock_fs_file_close,

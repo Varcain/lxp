@@ -219,6 +219,9 @@ struct lxp_kstat64 {
 	uint32_t st_ctime_nsec;
 	uint64_t st_ino;
 };
+#define LXP_HOSTFS_DEV_MAJOR 179u
+#define LXP_HOSTFS_DEV_MINOR 0u
+#define LXP_HOSTFS_DEV ((uint64_t)((LXP_HOSTFS_DEV_MAJOR << 8) | LXP_HOSTFS_DEV_MINOR))
 /* ABI pins: the ARM-EABI struct stat64 layout uClibc-ng expects. A field-order or
  * type drift (which would silently corrupt every stat/fstat) fails the build. The
  * struct uses fixed-width fields, so these hold on the 32-bit target and the 64-bit
@@ -808,6 +811,7 @@ static long fop_fstat_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 	if (rc < 0)
 		return rc;
 	fill_kstat64(statbuf, lxp_hostfs_inode(s->file_idx), hostfs_mode(&stat), stat.size);
+	((struct lxp_kstat64 *)statbuf)->st_dev = LXP_HOSTFS_DEV;
 	((struct lxp_kstat64 *)statbuf)->st_mtime = (uint32_t)stat.mtime_sec;
 	return 0;
 }
@@ -2053,6 +2057,7 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 			return rc;
 		fill_kstat64(statbuf, lxp_hostfs_path_inode(abspath), hostfs_mode(&stat),
 			     stat.size);
+		((struct lxp_kstat64 *)statbuf)->st_dev = LXP_HOSTFS_DEV;
 		((struct lxp_kstat64 *)statbuf)->st_mtime = (uint32_t)stat.mtime_sec;
 		return 0;
 	}
@@ -2439,7 +2444,8 @@ static long sys_getrandom(lxp_proc_t *p, void *buf, size_t count, unsigned flags
 	return random_fill(buf, count, LXP_ENOSYS);
 }
 
-/* statfs64: synthetic filesystem stats (no real block device backs the rootfs). */
+/* ARM-EABI statfs64. Mounted host volumes use provider allocation data; the
+ * in-memory personality namespaces retain bounded synthetic values. */
 struct lxp_statfs64 {
 	uint32_t f_type, f_bsize;
 	uint64_t f_blocks, f_bfree, f_bavail, f_files, f_ffree;
@@ -2449,21 +2455,102 @@ LXP_STATIC_ASSERT(sizeof(struct lxp_statfs64) == 88, "statfs64 ABI size drifted"
 LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_blocks) == 8, "statfs64 f_blocks offset drifted");
 LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_namelen) == 56,
 		  "statfs64 f_namelen offset drifted");
-static long sys_statfs(lxp_proc_t *p, void *buf)
+
+#define LXP_TMPFS_MAGIC 0x01021994u
+#define LXP_MSDOS_SUPER_MAGIC 0x00004d44u
+#define LXP_ST_RDONLY 0x0001u
+#define LXP_ST_NOSUID 0x0002u
+#define LXP_ST_NODEV 0x0004u
+#define LXP_ST_NOEXEC 0x0008u
+
+static void statfs_synthetic(struct lxp_statfs64 *st)
+{
+	memset(st, 0, sizeof(*st));
+	st->f_type = LXP_TMPFS_MAGIC;
+	st->f_bsize = 4096;
+	st->f_frsize = 4096;
+	st->f_blocks = 256;
+	st->f_bfree = 192;
+	st->f_bavail = 192;
+	st->f_files = 64;
+	st->f_ffree = 48;
+	st->f_namelen = 255;
+}
+
+#if LXP_ENABLE_FS
+static long statfs_host(lxp_proc_t *p, struct lxp_statfs64 *st)
+{
+	lxp_fs_volume_stat_t volume;
+	long rc = lxp_hostfs_volume_stat(p, &volume);
+	if (rc < 0)
+		return rc;
+	if (volume.block_size == 0u || volume.fragment_size == 0u ||
+	    volume.blocks_free > volume.blocks || volume.blocks_available > volume.blocks_free)
+		return -LXP_EIO;
+
+	memset(st, 0, sizeof(*st));
+	st->f_type = LXP_MSDOS_SUPER_MAGIC;
+	st->f_bsize = volume.block_size;
+	st->f_frsize = volume.fragment_size;
+	st->f_blocks = volume.blocks;
+	st->f_bfree = volume.blocks_free;
+	st->f_bavail = volume.blocks_available;
+	st->f_files = volume.files;
+	st->f_ffree = volume.files_free;
+	st->f_fsid[0] = LXP_HOSTFS_DEV_MAJOR;
+	st->f_fsid[1] = LXP_HOSTFS_DEV_MINOR;
+	st->f_namelen = volume.name_max;
+	st->f_flags = LXP_ST_NOSUID | LXP_ST_NODEV | LXP_ST_NOEXEC;
+	if (lxp_hostfs_is_read_only())
+		st->f_flags |= LXP_ST_RDONLY;
+	return 0;
+}
+#endif
+
+static long statfs_copy(lxp_proc_t *p, size_t size, void *buf, const struct lxp_statfs64 *st)
+{
+	if (size < sizeof(*st))
+		return -LXP_EINVAL;
+	if (!lxp_guest_access_ok(p, buf, sizeof(*st), 1))
+		return -LXP_EFAULT;
+	return lxp_copy_to_guest(p, (uintptr_t)buf, st, sizeof(*st));
+}
+
+static long sys_statfs_path(lxp_proc_t *p, const char *path, size_t size, void *buf)
 {
 	if (!lxp_guest_access_ok(p, buf, sizeof(struct lxp_statfs64), 1))
 		return -LXP_EFAULT;
-	struct lxp_statfs64 st = {0};
-	st.f_type = 0x01021994u; /* TMPFS_MAGIC */
-	st.f_bsize = 4096;
-	st.f_frsize = 4096;
-	st.f_blocks = 256;
-	st.f_bfree = 192;
-	st.f_bavail = 192;
-	st.f_files = 64;
-	st.f_ffree = 48;
-	st.f_namelen = 255;
-	return lxp_copy_to_guest(p, (uintptr_t)buf, &st, sizeof(st));
+	char abspath[LXP_PATH_MAX];
+	long rc = resolve_path(p, path, abspath, sizeof(abspath));
+	if (rc < 0)
+		return rc;
+	struct lxp_statfs64 st;
+#if LXP_ENABLE_FS
+	if (lxp_hostfs_match(abspath)) {
+		rc = statfs_host(p, &st);
+		return rc < 0 ? rc : statfs_copy(p, size, buf, &st);
+	}
+#endif
+	statfs_synthetic(&st);
+	return statfs_copy(p, size, buf, &st);
+}
+
+static long sys_fstatfs(lxp_proc_t *p, int fd, size_t size, void *buf)
+{
+	if (!lxp_guest_access_ok(p, buf, sizeof(struct lxp_statfs64), 1))
+		return -LXP_EFAULT;
+	lxp_ofd_t *slot = fd_slot(p, fd);
+	if (!slot)
+		return -LXP_EBADF;
+	struct lxp_statfs64 st;
+#if LXP_ENABLE_FS
+	if (slot->kind == LXP_FD_HOSTFS) {
+		long rc = statfs_host(p, &st);
+		return rc < 0 ? rc : statfs_copy(p, size, buf, &st);
+	}
+#endif
+	statfs_synthetic(&st);
+	return statfs_copy(p, size, buf, &st);
 }
 
 /* Directory-entry format for the in-progress getdents: 1 = linux_dirent64 (getdents64),
@@ -2725,6 +2812,8 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 	uint32_t mode;
 	uint64_t size;
 	uint64_t rdev = 0;	  /* device id for a character node, else 0 */
+	uint32_t dev_major = 0;
+	uint32_t dev_minor = 0;
 	uint32_t ino = 0x300000u; /* unique, non-zero inode: ld.so dedups by (st_dev, st_ino) */
 	/* Validate the path pointer before the path[0] empty-check deref below — resolve_path
 	 * validates it too, but only after this reads path[0] (a bad pointer would fault here). */
@@ -2765,6 +2854,8 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 			mode = hostfs_mode(&stat);
 			size = stat.size;
 			ino = lxp_hostfs_path_inode(abspath);
+			dev_major = LXP_HOSTFS_DEV_MAJOR;
+			dev_minor = LXP_HOSTFS_DEV_MINOR;
 #endif
 		} else if ((wi = wfs_find(abspath)) >= 0) { /* writable overlay shadows rootfs */
 			mode = wnode_at(wi)->mode;
@@ -2823,6 +2914,8 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 			mode = hostfs_mode(&stat);
 			size = stat.size;
 			ino = lxp_hostfs_inode(s->file_idx);
+			dev_major = LXP_HOSTFS_DEV_MAJOR;
+			dev_minor = LXP_HOSTFS_DEV_MINOR;
 #endif
 		} else {
 			mode = LXP_S_IFCHR | 0620u;
@@ -2842,6 +2935,8 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 	st->stx_ino = ino; /* ld.so dedups loaded .so objects by (st_dev, st_ino) */
 	st->stx_rdev_major = (uint32_t)(rdev >> 8);
 	st->stx_rdev_minor = (uint32_t)(rdev & 0xffu);
+	st->stx_dev_major = dev_major;
+	st->stx_dev_minor = dev_minor;
 	return 0;
 }
 
@@ -3490,6 +3585,16 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		(void)lxp_hostfs_sync_all();
 #endif
 		return 0;
+	case LXP_NR_syncfs: {
+		lxp_ofd_t *slot = fd_slot(proc, (int)a0);
+		if (!slot)
+			return -LXP_EBADF;
+#if LXP_ENABLE_FS
+		if (slot->kind == LXP_FD_HOSTFS)
+			return lxp_hostfs_sync_all();
+#endif
+		return 0;
+	}
 	case LXP_NR_fstat64:
 		return sys_fstat64(proc, (int)a0, (void *)(uintptr_t)a1);
 	case LXP_NR_stat64: /* (path, statbuf) — follows symlinks */
@@ -3553,9 +3658,11 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 				 (const char *)(uintptr_t)a4);
 	case LXP_NR_umount2:
 		return sys_umount(proc, (const char *)(uintptr_t)a0, (int)a1);
-	case LXP_NR_statfs64:  /* (path, sz, buf) */
+	case LXP_NR_statfs64: /* (path, sz, buf) */
+		return sys_statfs_path(proc, (const char *)(uintptr_t)a0, (size_t)a1,
+				       (void *)(uintptr_t)a2);
 	case LXP_NR_fstatfs64: /* (fd, sz, buf) */
-		return sys_statfs(proc, (void *)(uintptr_t)a2);
+		return sys_fstatfs(proc, (int)a0, (size_t)a1, (void *)(uintptr_t)a2);
 	case LXP_NR_getrandom: /* (buf, count, flags) */
 		return sys_getrandom(proc, (void *)(uintptr_t)a0, (size_t)a1, (unsigned)a2);
 	case LXP_NR_eventfd2: { /* (initval, flags) — curl's threaded-resolver wakeup */

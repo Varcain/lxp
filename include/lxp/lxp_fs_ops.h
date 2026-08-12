@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-#define LXP_FS_OPS_ABI_VERSION 5u
+#define LXP_FS_OPS_ABI_VERSION 6u
 #define LXP_FS_NAME_MAX 256u
 
 /* Provider open flags. Access mode is explicit instead of encoded in low bits
@@ -53,6 +53,19 @@ typedef struct lxp_fs_stat {
 	uint8_t type;
 	uint8_t _reserved[7];
 } lxp_fs_stat_t;
+
+/** Allocation statistics for the provider's currently mounted volume. */
+typedef struct lxp_fs_volume_stat {
+	uint64_t blocks;
+	uint64_t blocks_free;
+	uint64_t blocks_available;
+	uint64_t files;
+	uint64_t files_free;
+	uint32_t block_size;
+	uint32_t fragment_size;
+	uint32_t name_max;
+	uint32_t _reserved;
+} lxp_fs_volume_stat_t;
 
 typedef struct lxp_fs_dirent {
 	char name[LXP_FS_NAME_MAX];
@@ -133,6 +146,7 @@ typedef struct lxp_fs_ops {
 	int (*mount)(const lxp_fs_mount_spec_t *spec);
 	int (*unmount)(void);
 	int (*is_mounted)(void);
+	int (*volume_stat)(lxp_fs_volume_stat_t *out);
 
 	int (*file_open)(const char *path, unsigned flags, lxp_fs_file_t *out);
 	/** Atomically classify and open one path. @p require_dir implements

@@ -8,7 +8,7 @@ Every syscall the lxp personality answers, cross-checked against the ARM EABI re
 Numbers come from `include/lxp/lxp_linux_uapi.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/lxp_run.c` by the coverage guard.
 
-Surface: 143 LXP_NR_* — 104 implemented, 28 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
+Surface: 144 LXP_NR_* — 106 implemented, 27 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
 
 | Number | Name | Disposition | Notes |
 |---:|---|---|---|
@@ -28,7 +28,7 @@ Surface: 143 LXP_NR_* — 104 implemented, 28 benign-stub, 1 refused-eopnotsupp,
 | 21 | mount | implemented | synthetic /proc; provider-backed /data block mount |
 | 33 | access | implemented |  |
 | 34 | nice | implemented | updates the current process niceness within the Linux range |
-| 36 | sync | benign-stub | no backing store to flush |
+| 36 | sync | implemented | flushes all open provider-backed files |
 | 37 | kill | run-loop-handled | self-signal inline / cross-proc via pending_sig |
 | 38 | rename | implemented |  |
 | 39 | mkdir | implemented |  |
@@ -107,8 +107,8 @@ Surface: 143 LXP_NR_* — 104 implemented, 28 benign-stub, 1 refused-eopnotsupp,
 | 256 | set_tid_address | benign-stub | returns a fixed tid |
 | 263 | clock_gettime | implemented | 32-bit time_t |
 | 265 | clock_nanosleep | implemented | parks via the run loop |
-| 266 | statfs64 | implemented | synthetic df values |
-| 267 | fstatfs64 | implemented | synthetic df values |
+| 266 | statfs64 | implemented | provider-backed mounted-volume capacity; synthetic local namespaces |
+| 267 | fstatfs64 | implemented | provider-backed mounted-volume capacity; validates descriptor |
 | 268 | tgkill | run-loop-handled |  |
 | 281 | socket | implemented | NET-gated |
 | 282 | bind | implemented | NET-gated |
@@ -144,6 +144,7 @@ Surface: 143 LXP_NR_* — 104 implemented, 28 benign-stub, 1 refused-eopnotsupp,
 | 359 | pipe2 | implemented |  |
 | 366 | accept4 | implemented | NET-gated |
 | 369 | prlimit64 | benign-stub | reports finite limits; new accepted (inert) |
+| 373 | syncfs | implemented | flushes the provider volume selected by fd |
 | 382 | renameat2 | implemented | flags ignored |
 | 384 | getrandom | implemented | host `random_fill`; bounded; fails closed when unavailable |
 | 397 | statx | implemented | mask arg ignored |

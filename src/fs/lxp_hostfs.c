@@ -430,6 +430,16 @@ int lxp_hostfs_is_mounted(void)
 	return g_lxp_fs_ops && g_lxp_fs_ops->is_mounted && g_lxp_fs_ops->is_mounted() > 0;
 }
 
+long lxp_hostfs_volume_stat(lxp_proc_t *proc, lxp_fs_volume_stat_t *out)
+{
+	if (!out)
+		return -LXP_EFAULT;
+	if (!g_lxp_fs_ops || !g_lxp_fs_ops->volume_stat)
+		return -LXP_ENODEV;
+	hostfs_select(proc);
+	return hostfs_result(proc, g_lxp_fs_ops->volume_stat(out));
+}
+
 long lxp_hostfs_mount(lxp_proc_t *proc, const char *source, const char *target, int read_only)
 {
 	if (!g_lxp_fs_ops || !source || !target)

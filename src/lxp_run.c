@@ -2788,15 +2788,13 @@ static int fs_ops_valid(const lxp_fs_ops_t *ops)
 #if LXP_ENABLE_FS
 	if (!ops || ops->abi_version != LXP_FS_OPS_ABI_VERSION ||
 	    ops->struct_size != sizeof(*ops) || !ops->run_begin || !ops->run_end ||
-	    !ops->request_owner || !ops->request_cancel ||
-	    !ops->mount || !ops->unmount || !ops->is_mounted ||
-	    !ops->file_open || !ops->object_open || !ops->file_close || !ops->file_read ||
-	    !ops->file_write ||
-	    !ops->file_seek || !ops->file_stat || !ops->file_truncate || !ops->file_sync ||
-	    !ops->file_pread || !ops->file_pwrite ||
-	    !ops->dir_open || !ops->dir_read || !ops->dir_close || !ops->path_stat ||
-	    !ops->path_mkdir || !ops->path_rmdir || !ops->path_unlink || !ops->path_rename ||
-	    !ops->metrics)
+	    !ops->request_owner || !ops->request_cancel || !ops->mount || !ops->unmount ||
+	    !ops->is_mounted || !ops->volume_stat || !ops->file_open || !ops->object_open ||
+	    !ops->file_close || !ops->file_read || !ops->file_write || !ops->file_seek ||
+	    !ops->file_stat || !ops->file_truncate || !ops->file_sync || !ops->file_pread ||
+	    !ops->file_pwrite || !ops->dir_open || !ops->dir_read || !ops->dir_close ||
+	    !ops->path_stat || !ops->path_mkdir || !ops->path_rmdir || !ops->path_unlink ||
+	    !ops->path_rename || !ops->metrics)
 		return 0;
 #else
 	(void)ops;

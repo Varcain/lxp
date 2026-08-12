@@ -131,6 +131,7 @@
 #define LXP_NR_times 43
 #define LXP_NR_fsync 118
 #define LXP_NR_fdatasync 148
+#define LXP_NR_syncfs 373
 #define LXP_NR_prlimit64 369
 #define LXP_NR_umask 60
 #define LXP_NR_getpgrp 65

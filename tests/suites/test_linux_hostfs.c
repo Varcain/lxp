@@ -94,6 +94,20 @@ static int fake_is_mounted(void)
 	return 1;
 }
 
+static int fake_volume_stat(lxp_fs_volume_stat_t *out)
+{
+	memset(out, 0, sizeof(*out));
+	out->blocks = 1000u;
+	out->blocks_free = 375u;
+	out->blocks_available = 360u;
+	out->files = 200u;
+	out->files_free = 123u;
+	out->block_size = 512u;
+	out->fragment_size = 32768u;
+	out->name_max = 255u;
+	return LXP_OK;
+}
+
 static void fake_run_end(void)
 {
 }
@@ -364,6 +378,7 @@ static const lxp_fs_ops_t g_fake_ops = {
 	.mount = fake_mount,
 	.unmount = fake_unmount,
 	.is_mounted = fake_is_mounted,
+	.volume_stat = fake_volume_stat,
 	.file_open = fake_file_open,
 	.object_open = fake_object_open,
 	.file_close = fake_file_close,
@@ -522,15 +537,72 @@ static void test_hostfs_inode_is_stable_across_open_slots(void **state)
 	uint64_t path_inode;
 	uint64_t first_inode;
 	uint64_t second_inode;
+	uint64_t path_device;
+	uint64_t first_device;
 	memcpy(&path_inode, path_stat + 96, sizeof(path_inode));
 	memcpy(&first_inode, first_stat + 96, sizeof(first_inode));
 	memcpy(&second_inode, second_stat + 96, sizeof(second_inode));
+	memcpy(&path_device, path_stat, sizeof(path_device));
+	memcpy(&first_device, first_stat, sizeof(first_device));
 	assert_true(path_inode != 0);
 	assert_int_equal(first_inode, path_inode);
 	assert_int_equal(second_inode, path_inode);
+	assert_int_equal(path_device, (179u << 8));
+	assert_int_equal(first_device, path_device);
 
 	assert_int_equal(call(&proc, LXP_NR_close, first, 0, 0), 0);
 	assert_int_equal(call(&proc, LXP_NR_close, second, 0, 0), 0);
+}
+
+static void test_hostfs_volume_stats_and_syncfs(void **state)
+{
+	(void)state;
+	lxp_proc_t proc;
+	lxp_arena_t arena;
+	setup(&proc, &arena);
+	struct statfs_probe {
+		uint32_t type;
+		uint32_t block_size;
+		uint64_t blocks;
+		uint64_t blocks_free;
+		uint64_t blocks_available;
+		uint64_t files;
+		uint64_t files_free;
+		uint32_t fsid[2];
+		uint32_t name_max;
+		uint32_t fragment_size;
+		uint32_t flags;
+		uint32_t spare[4];
+	} stat;
+
+	memset(&stat, 0, sizeof(stat));
+	assert_int_equal(call(&proc, LXP_NR_statfs64, (long)(uintptr_t)"/data", sizeof(stat),
+			      (long)(uintptr_t)&stat),
+			 0);
+	assert_int_equal(stat.type, 0x4d44u);
+	assert_int_equal(stat.block_size, 512u);
+	assert_int_equal(stat.fragment_size, 32768u);
+	assert_int_equal(stat.blocks, 1000u);
+	assert_int_equal(stat.blocks_free, 375u);
+	assert_int_equal(stat.blocks_available, 360u);
+	assert_int_equal(stat.files, 200u);
+	assert_int_equal(stat.files_free, 123u);
+	assert_int_equal(stat.name_max, 255u);
+	assert_int_equal(stat.flags, 0x0eu);
+
+	long fd = call(&proc, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/data/hello.txt",
+		       LXP_O_RDWR);
+	assert_true(fd >= 0);
+	memset(&stat, 0, sizeof(stat));
+	assert_int_equal(call(&proc, LXP_NR_fstatfs64, fd, sizeof(stat), (long)(uintptr_t)&stat),
+			 0);
+	assert_int_equal(stat.blocks_available, 360u);
+	assert_int_equal(call(&proc, LXP_NR_fstatfs64, 99, sizeof(stat), (long)(uintptr_t)&stat),
+			 -LXP_EBADF);
+	assert_int_equal(call(&proc, LXP_NR_syncfs, fd, 0, 0), 0);
+	assert_int_equal(g_sync_count, 1u);
+	assert_int_equal(call(&proc, LXP_NR_syncfs, 99, 0, 0), -LXP_EBADF);
+	assert_int_equal(call(&proc, LXP_NR_close, fd, 0, 0), 0);
 }
 
 static void test_hostfs_directory_paging_and_mount_boundary(void **state)
@@ -802,6 +874,7 @@ int test_linux_hostfs_run(void)
 		cmocka_unit_test(test_hostfs_file_lifetime_and_io),
 		cmocka_unit_test(test_hostfs_write_stat_and_chdir),
 		cmocka_unit_test(test_hostfs_inode_is_stable_across_open_slots),
+		cmocka_unit_test(test_hostfs_volume_stats_and_syncfs),
 		cmocka_unit_test(test_hostfs_directory_paging_and_mount_boundary),
 		cmocka_unit_test(test_hostfs_positioned_io_truncate_and_sync),
 		cmocka_unit_test(test_hostfs_mutations_and_cross_mount_errors),
