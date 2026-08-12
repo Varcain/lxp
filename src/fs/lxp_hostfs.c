@@ -35,6 +35,9 @@ typedef struct lxp_hostfs_open {
 
 static lxp_hostfs_open_t g_hostfs_open[LXP_NHOSTFS_OPEN];
 static uint32_t g_hostfs_run_generation = 1u;
+static char g_hostfs_mount_path[LXP_PATH_MAX] = LXP_HOSTFS_DEFAULT_MOUNT;
+static char g_hostfs_mount_source[LXP_PATH_MAX] = "/dev/mmcblk0";
+static int g_hostfs_read_only;
 static struct {
 	lxp_proc_t *proc;
 	intptr_t nr;
@@ -147,17 +150,32 @@ long lxp_hostfs_error(int result)
 
 int lxp_hostfs_match(const char *abspath)
 {
-	const size_t mount_len = sizeof(LXP_HOSTFS_MOUNT) - 1u;
-	return abspath && strncmp(abspath, LXP_HOSTFS_MOUNT, mount_len) == 0 &&
+	const size_t mount_len = strlen(g_hostfs_mount_path);
+	return abspath && strncmp(abspath, g_hostfs_mount_path, mount_len) == 0 &&
 	       (abspath[mount_len] == '\0' || abspath[mount_len] == '/');
 }
 
 const char *lxp_hostfs_relative(const char *abspath)
 {
-	const size_t mount_len = sizeof(LXP_HOSTFS_MOUNT) - 1u;
+	const size_t mount_len = strlen(g_hostfs_mount_path);
 	if (!lxp_hostfs_match(abspath))
 		return NULL;
 	return abspath[mount_len] ? abspath + mount_len : "/";
+}
+
+const char *lxp_hostfs_mount_path(void)
+{
+	return g_hostfs_mount_path;
+}
+
+const char *lxp_hostfs_mount_source(void)
+{
+	return g_hostfs_mount_source;
+}
+
+int lxp_hostfs_is_read_only(void)
+{
+	return g_hostfs_read_only != 0;
 }
 
 uint32_t lxp_hostfs_path_inode(const char *abspath)
@@ -224,6 +242,9 @@ long lxp_hostfs_open(lxp_proc_t *proc, const char *abspath, int linux_flags)
 		return -LXP_ENOENT;
 	if (!ops)
 		return -LXP_ENODEV;
+	if (g_hostfs_read_only && ((linux_flags & LXP_O_ACCMODE) != LXP_O_RDONLY ||
+				   (linux_flags & (LXP_O_CREAT | LXP_O_TRUNC)) != 0))
+		return -LXP_EROFS;
 
 	int index = hostfs_slot_alloc();
 	if (index < 0)
@@ -286,6 +307,8 @@ long lxp_hostfs_write(lxp_proc_t *proc, int index, const void *buf, size_t len)
 		return -LXP_EBADF;
 	if (slot->is_dir)
 		return -LXP_EISDIR;
+	if (g_hostfs_read_only)
+		return -LXP_EROFS;
 	size_t done = 0;
 	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->file_write(slot->handle.file, buf, len, &done);
@@ -313,14 +336,16 @@ long lxp_hostfs_seek(lxp_proc_t *proc, int index, int64_t offset, int whence)
 	return (long)position;
 }
 
-static long hostfs_positioned(lxp_proc_t *proc, int index, void *buf, size_t len,
-			      uint64_t offset, int write)
+static long hostfs_positioned(lxp_proc_t *proc, int index, void *buf, size_t len, uint64_t offset,
+			      int write)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot)
 		return -LXP_EBADF;
 	if (slot->is_dir)
 		return -LXP_EISDIR;
+	if (write && g_hostfs_read_only)
+		return -LXP_EROFS;
 	if (offset > (uint64_t)INT64_MAX)
 		return -LXP_EOVERFLOW;
 
@@ -332,8 +357,7 @@ static long hostfs_positioned(lxp_proc_t *proc, int index, void *buf, size_t len
 		return hostfs_result(proc, rc);
 	if (done > len)
 		return -LXP_EIO;
-	return rc == LXP_OK || (!write && rc == LXP_ERR_EOF) ? (long)done
-								 : lxp_hostfs_error(rc);
+	return rc == LXP_OK || (!write && rc == LXP_ERR_EOF) ? (long)done : lxp_hostfs_error(rc);
 }
 
 long lxp_hostfs_pread(lxp_proc_t *proc, int index, void *buf, size_t len, uint64_t offset)
@@ -368,6 +392,8 @@ long lxp_hostfs_truncate(lxp_proc_t *proc, int index, uint64_t length)
 		return -LXP_EBADF;
 	if (slot->is_dir)
 		return -LXP_EISDIR;
+	if (g_hostfs_read_only)
+		return -LXP_EROFS;
 	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->file_truncate(slot->handle.file, length);
 	return hostfs_result(proc, rc);
@@ -404,10 +430,13 @@ int lxp_hostfs_is_mounted(void)
 	return g_lxp_fs_ops && g_lxp_fs_ops->is_mounted && g_lxp_fs_ops->is_mounted() > 0;
 }
 
-long lxp_hostfs_mount(lxp_proc_t *proc, const char *source)
+long lxp_hostfs_mount(lxp_proc_t *proc, const char *source, const char *target, int read_only)
 {
-	if (!g_lxp_fs_ops || !source)
+	if (!g_lxp_fs_ops || !source || !target)
 		return -LXP_ENODEV;
+	if (strnlen(source, sizeof(g_hostfs_mount_source)) >= sizeof(g_hostfs_mount_source) ||
+	    strnlen(target, sizeof(g_hostfs_mount_path)) >= sizeof(g_hostfs_mount_path))
+		return -LXP_ENAMETOOLONG;
 #if LXP_ENABLE_BLOCK
 	lxp_block_view_info_t view;
 	int resolved = lxp_block_resolve(source, &view);
@@ -420,22 +449,53 @@ long lxp_hostfs_mount(lxp_proc_t *proc, const char *source)
 		.partition = view.partition,
 	};
 	hostfs_select(proc);
-	return hostfs_result(proc, g_lxp_fs_ops->mount(&spec));
+	long rc = hostfs_result(proc, g_lxp_fs_ops->mount(&spec));
+	if (rc == 0) {
+		strcpy(g_hostfs_mount_source, source);
+		strcpy(g_hostfs_mount_path, target);
+		g_hostfs_read_only = read_only != 0;
+	}
+	return rc;
 #else
 	(void)proc;
+	(void)read_only;
 	return -LXP_ENODEV;
 #endif
 }
 
-long lxp_hostfs_unmount(lxp_proc_t *proc)
+long lxp_hostfs_remount(lxp_proc_t *proc, int read_only)
+{
+	if (!g_lxp_fs_ops || !lxp_hostfs_is_mounted())
+		return -LXP_ENODEV;
+	/* Switching to read-only while a regular file is open can leave a native
+	 * writable handle alive behind the policy boundary. Require a clean handle
+	 * set; callers can sync/close and retry. */
+	if (read_only != 0)
+		for (int i = 0; i < LXP_NHOSTFS_OPEN; i++)
+			if (g_hostfs_open[i].used && !g_hostfs_open[i].is_dir)
+				return -LXP_EBUSY;
+	(void)proc;
+	g_hostfs_read_only = read_only != 0;
+	return 0;
+}
+
+long lxp_hostfs_unmount(lxp_proc_t *proc, const char *target)
 {
 	if (!g_lxp_fs_ops)
 		return -LXP_ENODEV;
+	if (!target || strcmp(target, g_hostfs_mount_path) != 0)
+		return -LXP_EINVAL;
 	for (int i = 0; i < LXP_NHOSTFS_OPEN; i++)
 		if (g_hostfs_open[i].used)
 			return -LXP_EBUSY;
 	hostfs_select(proc);
-	return hostfs_result(proc, g_lxp_fs_ops->unmount());
+	long rc = hostfs_result(proc, g_lxp_fs_ops->unmount());
+	if (rc == 0) {
+		strcpy(g_hostfs_mount_path, LXP_HOSTFS_DEFAULT_MOUNT);
+		strcpy(g_hostfs_mount_source, "/dev/mmcblk0");
+		g_hostfs_read_only = 0;
+	}
+	return rc;
 }
 
 void lxp_hostfs_close(int index)
@@ -493,8 +553,7 @@ long lxp_hostfs_path_stat(lxp_proc_t *proc, const char *abspath, lxp_fs_stat_t *
 	return hostfs_result(proc, rc);
 }
 
-static long hostfs_path_call(lxp_proc_t *proc, const char *abspath,
-			     int (*operation)(const char *))
+static long hostfs_path_call(lxp_proc_t *proc, const char *abspath, int (*operation)(const char *))
 {
 	const char *path = lxp_hostfs_relative(abspath);
 	if (!path)
@@ -503,6 +562,8 @@ static long hostfs_path_call(lxp_proc_t *proc, const char *abspath,
 		return -LXP_EBUSY;
 	if (!g_lxp_fs_ops)
 		return -LXP_ENODEV;
+	if (g_hostfs_read_only)
+		return -LXP_EROFS;
 	hostfs_select(proc);
 	int rc = operation(path);
 	return hostfs_result(proc, rc);
@@ -539,6 +600,8 @@ long lxp_hostfs_rename(lxp_proc_t *proc, const char *old_abspath, const char *ne
 		return -LXP_EBUSY;
 	if (!g_lxp_fs_ops)
 		return -LXP_ENODEV;
+	if (g_hostfs_read_only)
+		return -LXP_EROFS;
 	hostfs_select(proc);
 	int rc = g_lxp_fs_ops->path_rename(old_path, new_path);
 	return hostfs_result(proc, rc);
@@ -551,6 +614,9 @@ void lxp_hostfs_runtime_reset(void)
 			lxp_hostfs_close(i);
 	memset(g_hostfs_open, 0, sizeof(g_hostfs_open));
 	memset(&g_hostfs_syscall, 0, sizeof(g_hostfs_syscall));
+	strcpy(g_hostfs_mount_path, LXP_HOSTFS_DEFAULT_MOUNT);
+	strcpy(g_hostfs_mount_source, "/dev/mmcblk0");
+	g_hostfs_read_only = 0;
 	if (++g_hostfs_run_generation == 0u)
 		g_hostfs_run_generation = 1u;
 }

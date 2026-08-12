@@ -19,6 +19,7 @@
 #include "dev/lxp_dev_block.h"
 #endif
 #if LXP_ENABLE_FS
+#include "fs/lxp_hostfs.h"
 #include "lxp_provider.h"
 #endif
 #if LXP_ENABLE_NET
@@ -34,6 +35,37 @@ static size_t p_str(char *o, size_t off, size_t cap, const char *s)
 		o[off++] = *s++;
 	return off;
 }
+#if LXP_ENABLE_FS
+/* /proc/mounts uses the fstab escaping convention for whitespace and '\\'. */
+static size_t p_mount_field(char *o, size_t off, size_t cap, const char *s)
+{
+	while (*s) {
+		const char *escape = NULL;
+		switch (*s) {
+		case ' ':
+			escape = "\\040";
+			break;
+		case '\t':
+			escape = "\\011";
+			break;
+		case '\n':
+			escape = "\\012";
+			break;
+		case '\\':
+			escape = "\\134";
+			break;
+		default:
+			if (off < cap)
+				o[off++] = *s;
+			break;
+		}
+		if (escape)
+			off = p_str(o, off, cap, escape);
+		s++;
+	}
+	return off;
+}
+#endif
 size_t p_dec(char *o, size_t off, size_t cap, uint64_t v)
 {
 	char t[20];
@@ -93,7 +125,8 @@ int proc_pid(const char *abs, const lxp_proc_t *p, const char **file)
 		s += 4;
 	} else if (*s >= '0' && *s <= '9') {
 		while (*s >= '0' && *s <= '9') {
-			if (pid < 1000000) /* clamp: no real pid is this large; guards int overflow (UB) */
+			if (pid <
+			    1000000) /* clamp: no real pid is this large; guards int overflow (UB) */
 				pid = pid * 10 + (*s - '0');
 			s++;
 		}
@@ -114,15 +147,15 @@ int proc_pid_known(const lxp_proc_t *p, int pid)
 	return pid == 1 || pid == p->pid || lxp_pent_find(pid) != NULL;
 }
 
-const char *const g_proc_files[] = {"version", "uptime", "meminfo", "lxp_resources",
+const char *const g_proc_files[] = {"version",	  "uptime",	 "meminfo", "lxp_resources",
 #if LXP_ENABLE_FS
-				   "lxp_fs",
+				    "lxp_fs",
 #endif
 #if LXP_ENABLE_BLOCK
-				   "partitions",
+				    "partitions",
 #endif
-				   "rt_scope", "cpuinfo", "mounts", "stat", "loadavg", "filesystems",
-					   NULL};
+				    "rt_scope",	  "cpuinfo",	 "mounts",  "stat",
+				    "loadavg",	  "filesystems", NULL};
 
 /* st_mode for a /proc node, or 0 if the path is not a synthetic /proc node. */
 uint32_t proc_mode(const char *abs, const lxp_proc_t *p)
@@ -284,10 +317,10 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		struct lxp_mem_stats heap;
 		lxp_get_resource_stats(&resources);
 		(void)lxp_mem_stats(&heap);
-#define RESOURCE_LINE(name, value)                       \
+#define RESOURCE_LINE(name, value)                         \
 	do {                                               \
-		o = p_str(buf, o, cap, name " ");           \
-		o = p_dec(buf, o, cap, (uint64_t)(value));  \
+		o = p_str(buf, o, cap, name " ");          \
+		o = p_dec(buf, o, cap, (uint64_t)(value)); \
 		o = p_str(buf, o, cap, "\n");              \
 	} while (0)
 		RESOURCE_LINE("slots_total", resources.slots_total);
@@ -308,11 +341,11 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		memset(&metrics, 0, sizeof(metrics));
 		int available = g_lxp_fs_ops != NULL && g_lxp_fs_ops->metrics != NULL &&
 				g_lxp_fs_ops->metrics(&metrics) == LXP_OK;
-#define FS_METRIC_LINE(name, value)                     \
+#define FS_METRIC_LINE(name, value)                        \
 	do {                                               \
-		o = p_str(buf, o, cap, name " ");            \
-		o = p_dec(buf, o, cap, (uint64_t)(value));   \
-		o = p_str(buf, o, cap, "\n");               \
+		o = p_str(buf, o, cap, name " ");          \
+		o = p_dec(buf, o, cap, (uint64_t)(value)); \
+		o = p_str(buf, o, cap, "\n");              \
 	} while (0)
 		FS_METRIC_LINE("provider_available", available);
 		FS_METRIC_LINE("requests_submitted", metrics.requests_submitted);
@@ -345,6 +378,16 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		o = p_str(buf, o, cap,
 			  "rootfs / rootfs ro 0 0\nproc /proc proc rw 0 0\n"
 			  "tmpfs /tmp tmpfs rw 0 0\n");
+#if LXP_ENABLE_FS
+		if (lxp_hostfs_is_mounted()) {
+			o = p_mount_field(buf, o, cap, lxp_hostfs_mount_source());
+			o = p_str(buf, o, cap, " ");
+			o = p_mount_field(buf, o, cap, lxp_hostfs_mount_path());
+			o = p_str(buf, o, cap, " vfat ");
+			o = p_str(buf, o, cap, lxp_hostfs_is_read_only() ? "ro" : "rw");
+			o = p_str(buf, o, cap, ",nosuid,nodev,noexec 0 0\n");
+		}
+#endif
 	} else if (strcmp(abs, "/proc/stat") == 0) {
 		/* All busy time is reported as "user"; top derives %CPU from the
 		 * user-vs-idle delta between two reads (USER_HZ = 100 → jiffies). */
@@ -369,20 +412,25 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		o = p_str(buf, o, cap, "\n");
 	} else if (strcmp(abs, "/proc/filesystems") == 0) {
 		o = p_str(buf, o, cap, "nodev\tproc\nnodev\ttmpfs\n");
+#if LXP_ENABLE_FS
+		o = p_str(buf, o, cap, "\tvfat\n");
+#endif
 #if LXP_ENABLE_NET
 	} else if (strcmp(abs, "/proc/net/dev") == 0) {
 		/* busybox ifconfig reads this to enumerate interfaces + show RX/TX stats.
 		 * The network-provider contract has no traffic counters, so report zeros. */
-		o = p_str(buf, o, cap,
-			  "Inter-|   Receive                                                |  Transmit\n"
-			  " face |bytes    packets errs drop fifo frame compressed multicast|bytes    "
-			  "packets errs drop fifo colls carrier compressed\n");
+		o = p_str(
+			buf, o, cap,
+			"Inter-|   Receive                                                |  Transmit\n"
+			" face |bytes    packets errs drop fifo frame compressed multicast|bytes    "
+			"packets errs drop fifo colls carrier compressed\n");
 		/* One interface (eth0). The SIOC* ioctls ignore ifr_name, so listing a
 		 * loopback here would make busybox print it with eth0's data — omit it. */
 		if (lxp_sock_ifsnapshot(NULL, NULL, NULL, NULL, NULL) == 0)
-			o = p_str(buf, o, cap,
-				  "  eth0:       0       0    0    0    0     0          0         0"
-				  "        0       0    0    0    0     0       0          0\n");
+			o = p_str(
+				buf, o, cap,
+				"  eth0:       0       0    0    0    0     0          0         0"
+				"        0       0    0    0    0     0       0          0\n");
 	} else if (strcmp(abs, "/proc/net/route") == 0) {
 		uint8_t ip[4] = {0}, gw[4] = {0}, nm[4] = {0};
 		o = p_str(buf, o, cap,

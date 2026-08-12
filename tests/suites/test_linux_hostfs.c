@@ -10,6 +10,7 @@
 #include "../framework/lxp_test.h"
 
 #include "lxp/lxp_fs_ops.h"
+#include "lxp/lxp_block_ops.h"
 #include "lxp/lxp_guest.h"
 #include "lxp/lxp_syscall.h"
 #include "fs/lxp_hostfs.h"
@@ -45,6 +46,35 @@ static int g_async_pending;
 static int g_async_ready;
 static const lxp_net_ops_t *g_saved_net;
 static const lxp_display_ops_t *g_saved_display;
+static const lxp_block_ops_t *g_saved_block;
+
+void lxp_dev_autoreg_block(void);
+
+static int fake_block_info(lxp_block_info_t *out)
+{
+	memset(out, 0, sizeof(*out));
+	out->block_count = 4096u;
+	out->logical_block_size = 512u;
+	out->erase_block_size = 512u;
+	out->flags = LXP_BLOCK_F_REMOVABLE | LXP_BLOCK_F_MEDIA_PRESENT;
+	out->generation = 1u;
+	return LXP_OK;
+}
+
+static int fake_block_read(uint64_t offset, void *buf, size_t count, size_t *done)
+{
+	(void)offset;
+	memset(buf, 0, count);
+	*done = count;
+	return LXP_OK;
+}
+
+static const lxp_block_ops_t g_fake_block_ops = {
+	.abi_version = LXP_BLOCK_OPS_ABI_VERSION,
+	.struct_size = sizeof(lxp_block_ops_t),
+	.get_info = fake_block_info,
+	.read = fake_block_read,
+};
 
 static int fake_run_begin(void)
 {
@@ -114,9 +144,8 @@ static int fake_object_open(const char *path, unsigned flags, int require_dir,
 {
 	memset(out, 0, sizeof(*out));
 	if (strcmp(path, "/") == 0 || strcmp(path, "/sub") == 0) {
-		if (require_dir == 0 &&
-		    ((flags & LXP_FS_O_WRITE) != 0 ||
-		     (flags & (LXP_FS_O_CREATE | LXP_FS_O_TRUNC)) != 0))
+		if (require_dir == 0 && ((flags & LXP_FS_O_WRITE) != 0 ||
+					 (flags & (LXP_FS_O_CREATE | LXP_FS_O_TRUNC)) != 0))
 			return LXP_ERR_IS_DIR;
 		int rc = fake_dir_open(path, &out->handle.dir);
 		if (rc == LXP_OK)
@@ -181,8 +210,7 @@ static int fake_file_seek(lxp_fs_file_t file, int64_t offset, int whence, uint64
 	if ((uint64_t)(base + offset) > g_content_len) {
 		if (!g_seek_extends_file)
 			return LXP_ERR_INVALID_PARAM;
-		memset(g_content + g_content_len, 0xa5,
-		       (size_t)(base + offset) - g_content_len);
+		memset(g_content + g_content_len, 0xa5, (size_t)(base + offset) - g_content_len);
 		g_content_len = (size_t)(base + offset);
 	}
 	f->position = (size_t)(base + offset);
@@ -361,6 +389,7 @@ static const lxp_fs_ops_t g_fake_ops = {
 static uint8_t g_pool[8192] __attribute__((aligned(16)));
 static const lxp_file_t g_rootfs[] = {
 	{.path = "/", .mode = LXP_S_IFDIR | 0755u},
+	{.path = "/mnt", .mode = LXP_S_IFDIR | 0755u},
 };
 
 static void setup(lxp_proc_t *proc, lxp_arena_t *arena)
@@ -370,7 +399,7 @@ static void setup(lxp_proc_t *proc, lxp_arena_t *arena)
 	proc->mm->region_lo = 1;
 	proc->mm->region_hi = UINTPTR_MAX;
 	proc->mm->pool_lo = proc->mm->pool_hi = 0;
-	lxp_proc_set_rootfs(proc, g_rootfs, 1);
+	lxp_proc_set_rootfs(proc, g_rootfs, sizeof(g_rootfs) / sizeof(g_rootfs[0]));
 	memcpy(g_content, "hello", 5);
 	g_content_len = 5;
 	g_open_path[0] = '\0';
@@ -474,10 +503,10 @@ static void test_hostfs_inode_is_stable_across_open_slots(void **state)
 	lxp_arena_t arena;
 	setup(&proc, &arena);
 
-	long first = call(&proc, LXP_NR_openat, LXP_AT_FDCWD,
-			  (long)(uintptr_t)"/data/hello.txt", LXP_O_RDONLY);
-	long second = call(&proc, LXP_NR_openat, LXP_AT_FDCWD,
-			   (long)(uintptr_t)"/data/hello.txt", LXP_O_RDONLY);
+	long first = call(&proc, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/data/hello.txt",
+			  LXP_O_RDONLY);
+	long second = call(&proc, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/data/hello.txt",
+			   LXP_O_RDONLY);
 	assert_true(first >= 0);
 	assert_true(second >= 0);
 
@@ -488,8 +517,7 @@ static void test_hostfs_inode_is_stable_across_open_slots(void **state)
 			      (long)(uintptr_t)path_stat, 0),
 			 0);
 	assert_int_equal(call(&proc, LXP_NR_fstat64, first, (long)(uintptr_t)first_stat, 0), 0);
-	assert_int_equal(call(&proc, LXP_NR_fstat64, second, (long)(uintptr_t)second_stat, 0),
-			 0);
+	assert_int_equal(call(&proc, LXP_NR_fstat64, second, (long)(uintptr_t)second_stat, 0), 0);
 
 	uint64_t path_inode;
 	uint64_t first_inode;
@@ -571,9 +599,8 @@ static void test_hostfs_positioned_io_truncate_and_sync(void **state)
 	/* A provider whose seek primitive extends writable files must never see
 	 * the beyond-EOF pread probe. */
 	g_seek_extends_file = 1;
-	assert_int_equal(
-		lxp_syscall(&proc, LXP_NR_pread64, fd, (long)(uintptr_t)out, 1, 0, 20, 0),
-		0);
+	assert_int_equal(lxp_syscall(&proc, LXP_NR_pread64, fd, (long)(uintptr_t)out, 1, 0, 20, 0),
+			 0);
 	assert_int_equal(g_content_len, 7);
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_lseek, fd, 0, LXP_SEEK_CUR, 0, 0, 0), 2);
 
@@ -627,8 +654,7 @@ static void test_hostfs_mutations_and_cross_mount_errors(void **state)
 			 -LXP_EOPNOTSUPP);
 	/* The mount root is an existing directory: mkdir must report EEXIST so
 	 * mkdir -p can safely walk through it. Destructive mutations stay busy. */
-	assert_int_equal(call(&proc, LXP_NR_mkdir, (long)(uintptr_t)"/data", 0755, 0),
-			 -LXP_EEXIST);
+	assert_int_equal(call(&proc, LXP_NR_mkdir, (long)(uintptr_t)"/data", 0755, 0), -LXP_EEXIST);
 }
 
 static void test_hostfs_access_modes(void **state)
@@ -682,8 +708,8 @@ static void test_hostfs_async_wait_is_generation_owned(void **state)
 	lxp_arena_t arena;
 	setup(&proc, &arena);
 	proc.pid = 42;
-	long fd = call(&proc, LXP_NR_openat, LXP_AT_FDCWD,
-		       (long)(uintptr_t)"/data/hello.txt", LXP_O_RDONLY);
+	long fd = call(&proc, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/data/hello.txt",
+		       LXP_O_RDONLY);
 	assert_true(fd >= 0);
 
 	g_async_once = 1;
@@ -707,6 +733,48 @@ static void test_hostfs_async_wait_is_generation_owned(void **state)
 	uint64_t owner = proc.wait.data.hostfs.owner;
 	lxp_hostfs_cancel(&proc);
 	assert_int_equal(g_cancelled_owner, owner);
+	assert_int_equal(call(&proc, LXP_NR_close, fd, 0, 0), 0);
+}
+
+static void test_mount_semantics_read_only_and_proc_reporting(void **state)
+{
+	(void)state;
+	lxp_proc_t proc;
+	lxp_arena_t arena;
+	char out[512];
+	setup(&proc, &arena);
+
+	assert_int_equal(lxp_syscall(&proc, LXP_NR_mount, (long)(uintptr_t)"/dev/mmcblk0",
+				     (long)(uintptr_t)"/mnt", (long)(uintptr_t)"ext2", 0, 0, 0),
+			 -LXP_ENODEV);
+	assert_int_equal(lxp_syscall(&proc, LXP_NR_mount, (long)(uintptr_t)"/dev/mmcblk0",
+				     (long)(uintptr_t)"/mnt", (long)(uintptr_t)"vfat", 0,
+				     (long)(uintptr_t)"uid=0", 0),
+			 -LXP_EOPNOTSUPP);
+	assert_int_equal(lxp_syscall(&proc, LXP_NR_mount, (long)(uintptr_t)"/dev/mmcblk0",
+				     (long)(uintptr_t)"/mnt", (long)(uintptr_t)"vfat", 0,
+				     (long)(uintptr_t)"ro,noexec", 0),
+			 0);
+	assert_string_equal(lxp_hostfs_mount_path(), "/mnt");
+	assert_true(lxp_hostfs_is_read_only());
+	assert_int_equal(call(&proc, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/mnt/hello.txt",
+			      LXP_O_WRONLY),
+			 -LXP_EROFS);
+	assert_int_equal(call(&proc, LXP_NR_access, (long)(uintptr_t)"/mnt/hello.txt", 2, 0),
+			 -LXP_EROFS);
+	assert_int_equal(call(&proc, LXP_NR_access, (long)(uintptr_t)"/mnt/hello.txt", 1, 0),
+			 -LXP_EACCES);
+
+	long len = proc_gen("/proc/mounts", &proc, out, sizeof(out) - 1u);
+	assert_true(len > 0);
+	out[len] = '\0';
+	assert_non_null(strstr(out, "/dev/mmcblk0 /mnt vfat ro,nosuid,nodev,noexec 0 0\n"));
+	len = proc_gen("/proc/filesystems", &proc, out, sizeof(out) - 1u);
+	assert_true(len > 0);
+	out[len] = '\0';
+	assert_non_null(strstr(out, "\tvfat\n"));
+
+	assert_int_equal(call(&proc, LXP_NR_umount2, (long)(uintptr_t)"/mnt", 0, 0), 0);
 }
 
 static int group_setup(void **state)
@@ -714,7 +782,9 @@ static int group_setup(void **state)
 	(void)state;
 	g_saved_net = g_lxp_net_ops;
 	g_saved_display = g_lxp_disp_ops;
-	lxp_providers_publish(g_saved_net, g_saved_display, &g_fake_ops, NULL);
+	g_saved_block = g_lxp_block_ops;
+	lxp_providers_publish(g_saved_net, g_saved_display, &g_fake_ops, &g_fake_block_ops);
+	lxp_dev_autoreg_block();
 	return 0;
 }
 
@@ -722,7 +792,7 @@ static int group_teardown(void **state)
 {
 	(void)state;
 	lxp_fd_runtime_reset();
-	lxp_providers_publish(g_saved_net, g_saved_display, NULL, NULL);
+	lxp_providers_publish(g_saved_net, g_saved_display, NULL, g_saved_block);
 	return 0;
 }
 
@@ -738,6 +808,7 @@ int test_linux_hostfs_run(void)
 		cmocka_unit_test(test_hostfs_access_modes),
 		cmocka_unit_test(test_hostfs_metrics_proc),
 		cmocka_unit_test(test_hostfs_async_wait_is_generation_owned),
+		cmocka_unit_test(test_mount_semantics_read_only_and_proc_reporting),
 	};
 	return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

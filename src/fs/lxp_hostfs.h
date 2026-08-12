@@ -17,7 +17,12 @@
 #include "lxp/lxp_fs_ops.h"
 #include "lxp/lxp_proc.h"
 
-#define LXP_HOSTFS_MOUNT "/data"
+#define LXP_HOSTFS_DEFAULT_MOUNT "/data"
+
+/** Guest-visible attachment state for the single host filesystem provider. */
+const char *lxp_hostfs_mount_path(void);
+const char *lxp_hostfs_mount_source(void);
+int lxp_hostfs_is_read_only(void);
 
 /** True when @p abspath is /data or lies below it. */
 int lxp_hostfs_match(const char *abspath);
@@ -35,14 +40,14 @@ long lxp_hostfs_read(lxp_proc_t *proc, int index, void *buf, size_t len);
 long lxp_hostfs_write(lxp_proc_t *proc, int index, const void *buf, size_t len);
 long lxp_hostfs_seek(lxp_proc_t *proc, int index, int64_t offset, int whence);
 long lxp_hostfs_pread(lxp_proc_t *proc, int index, void *buf, size_t len, uint64_t offset);
-long lxp_hostfs_pwrite(lxp_proc_t *proc, int index, const void *buf, size_t len,
-			uint64_t offset);
+long lxp_hostfs_pwrite(lxp_proc_t *proc, int index, const void *buf, size_t len, uint64_t offset);
 long lxp_hostfs_stat(lxp_proc_t *proc, int index, lxp_fs_stat_t *out);
 long lxp_hostfs_truncate(lxp_proc_t *proc, int index, uint64_t length);
 long lxp_hostfs_sync(lxp_proc_t *proc, int index);
 long lxp_hostfs_sync_all(void);
-long lxp_hostfs_mount(lxp_proc_t *proc, const char *source);
-long lxp_hostfs_unmount(lxp_proc_t *proc);
+long lxp_hostfs_mount(lxp_proc_t *proc, const char *source, const char *target, int read_only);
+long lxp_hostfs_remount(lxp_proc_t *proc, int read_only);
+long lxp_hostfs_unmount(lxp_proc_t *proc, const char *target);
 int lxp_hostfs_is_mounted(void);
 void lxp_hostfs_close(int index);
 
