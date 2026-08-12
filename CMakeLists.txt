@@ -22,6 +22,7 @@ option(LXP_ENABLE_NETFS "9P remote filesystem (needs NET)" OFF)
 option(LXP_ENABLE_NETFS_EXEC "Execute programs off the 9P mount" OFF)
 option(LXP_ENABLE_PTY "Pseudo-terminal support" OFF)
 option(LXP_ENABLE_FS "Writable host filesystem provider" OFF)
+option(LXP_ENABLE_BLOCK "Raw block media (/dev/mmcblk*)" OFF)
 option(LXP_ENABLE_DEV "Device layer (/dev)" OFF)
 option(LXP_ENABLE_DEV_FB "Framebuffer /dev/fb0 (display-ops port required)" OFF)
 option(LXP_ENABLE_DEV_DMA2D "DMA2D 2D-accelerator /dev/dma2d (display-ops dma2d_submit)" OFF)
@@ -41,6 +42,7 @@ endfunction()
 
 lxp_require(LXP_ENABLE_NETFS LXP_ENABLE_NET)
 lxp_require(LXP_ENABLE_NETFS_EXEC LXP_ENABLE_NETFS)
+lxp_require(LXP_ENABLE_BLOCK LXP_ENABLE_DEV)
 lxp_require(LXP_ENABLE_DEV_FB LXP_ENABLE_DEV)
 lxp_require(LXP_ENABLE_DEV_DMA2D LXP_ENABLE_DEV)
 lxp_require(LXP_ENABLE_DEV_INPUT LXP_ENABLE_DEV)
@@ -58,7 +60,7 @@ if(LXP_ALL_SOURCES)
   # Value-based feature gates: the module tests `#if LXP_ENABLE_X`, so emit an
   # explicit 0/1 for each (matches lxp_config.h's defaults and keeps the matrix
   # build -Wundef-clean; -DLXP_ENABLE_X=0 genuinely disables).
-  foreach(feat NET NETFS NETFS_EXEC PTY FS DEV DEV_FB DEV_DMA2D DEV_INPUT
+  foreach(feat NET NETFS NETFS_EXEC PTY FS BLOCK DEV DEV_FB DEV_DMA2D DEV_INPUT
                DEV_INPUT_TESTPAD TOUCH FPU_CONTEXT)
     if(LXP_ENABLE_${feat})
       target_compile_definitions(lxp PUBLIC LXP_ENABLE_${feat}=1)

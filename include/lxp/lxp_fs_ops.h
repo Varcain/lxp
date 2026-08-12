@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-#define LXP_FS_OPS_ABI_VERSION 4u
+#define LXP_FS_OPS_ABI_VERSION 5u
 #define LXP_FS_NAME_MAX 256u
 
 /* Provider open flags. Access mode is explicit instead of encoded in low bits
@@ -69,6 +69,15 @@ typedef struct lxp_fs_open_result {
 	uint8_t type;
 	uint8_t _reserved[7];
 } lxp_fs_open_result_t;
+
+/** Validated block view selected by mount(2). Partition zero is the whole disk. */
+typedef struct lxp_fs_mount_spec {
+	uint64_t first_block;
+	uint64_t block_count;
+	uint32_t logical_block_size;
+	uint8_t partition;
+	uint8_t _reserved[3];
+} lxp_fs_mount_spec_t;
 
 /* Run-scoped provider telemetry. Counters reset in run_begin(). Durations are
  * measured on the host side so they include native queueing and service time,
@@ -120,6 +129,10 @@ typedef struct lxp_fs_ops {
 	/** Abandon an interrupted owner's outstanding request. Completion may still
 	 * finish in the host, but must never be delivered to a reused guest slot. */
 	void (*request_cancel)(uint64_t owner);
+	/** Explicit /data lifecycle. Unmount must return BUSY while handles remain. */
+	int (*mount)(const lxp_fs_mount_spec_t *spec);
+	int (*unmount)(void);
+	int (*is_mounted)(void);
 
 	int (*file_open)(const char *path, unsigned flags, lxp_fs_file_t *out);
 	/** Atomically classify and open one path. @p require_dir implements

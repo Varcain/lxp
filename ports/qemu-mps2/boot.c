@@ -196,7 +196,7 @@ static void coordinator_task(void *arg)
 	const char *const argv[] = {"hello", NULL};
 	int argc = 1;
 #endif
-	int rc = lxp_run(&g_lxp_qemu_engine, NULL, NULL, NULL, &cfg, entry, argc, argv);
+	int rc = lxp_run(&g_lxp_qemu_engine, NULL, NULL, NULL, NULL, &cfg, entry, argc, argv);
 	sh_exit(rc >= 0 ? rc : 100 - rc);
 }
 

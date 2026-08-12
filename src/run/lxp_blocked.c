@@ -172,6 +172,10 @@ static void lxp_blocked_clear_stop(lxp_proc_t *proc)
 static void lxp_blocked_interrupt_wait(lxp_proc_t *proc)
 {
 	lxp_wait_kind_t kind = proc->wait.kind;
+#if LXP_ENABLE_DEV
+	if (kind == LXP_WAIT_DEVICE)
+		lxp_dev_cancel(proc);
+#endif
 #if LXP_ENABLE_NETFS
 	if (kind == LXP_WAIT_NETFS)
 		lxp_netfs_cancel(proc);
@@ -183,15 +187,19 @@ static void lxp_blocked_interrupt_wait(lxp_proc_t *proc)
 	(void)lxp_wait_interrupt(proc, kind);
 }
 
-/* A host-filesystem request may have completed its native side effect before
- * its asynchronous completion becomes visible here. Interrupting a caught
- * signal at that point would discard the result and let libc retry a stateful
- * read/write/seek against an already-advanced native object. Keep the handler
- * pending until the request completes instead. Default/fatal dispositions are
- * deliberately not deferred, so a wedged medium cannot make a task unkillable. */
-static int lxp_blocked_defer_hostfs_signal(const lxp_proc_t *proc, int sig)
+/* A filesystem or raw-block request may have completed its native side effect
+ * before its asynchronous completion becomes visible here. Interrupting a
+ * caught signal at that point would discard the result and let libc retry
+ * against an already-advanced file or mutated medium. Keep the handler pending
+ * until the request completes instead. Default/fatal dispositions are not
+ * deferred, so a wedged medium cannot make a task unkillable. */
+static int lxp_blocked_defer_stateful_signal(const lxp_proc_t *proc, int sig)
 {
-	if (proc->wait.kind != LXP_WAIT_HOSTFS)
+	int stateful = proc->wait.kind == LXP_WAIT_HOSTFS;
+#if LXP_ENABLE_DEV
+	stateful = stateful || lxp_dev_defer_caught_signal(proc);
+#endif
+	if (!stateful)
 		return 0;
 	uintptr_t handler = lxp_sig_handler_get(proc, sig);
 	return handler != LXP_SIG_DFL && handler != LXP_SIG_IGN;
@@ -226,9 +234,9 @@ static int lxp_blocked_handle_stopped(const lxp_os_ops_t *eng, int slot, lxp_pro
 		int caught = lxp_sig_handler_get(proc, LXP_SIGCONT) != LXP_SIG_DFL &&
 			     lxp_sig_handler_get(proc, LXP_SIGCONT) != LXP_SIG_IGN;
 		int blocked = caught && lxp_sig_blocked(proc, LXP_SIGCONT);
-		int defer_hostfs = caught && !blocked && typed_wait &&
-				   proc->wait.kind == LXP_WAIT_HOSTFS;
-		int can_deliver = caught && !blocked && (ready || typed_wait) && !defer_hostfs;
+		int defer_stateful = caught && !blocked && typed_wait &&
+				     lxp_blocked_defer_stateful_signal(proc, LXP_SIGCONT);
+		int can_deliver = caught && !blocked && (ready || typed_wait) && !defer_stateful;
 		if (!caught || can_deliver)
 			proc->pending_sigs &= ~lxp_sig_bit(LXP_SIGCONT);
 		lxp_blocked_clear_stop(proc);
@@ -272,7 +280,7 @@ static int lxp_blocked_handle_signal(const lxp_os_ops_t *eng, int slot, lxp_proc
 		return 1;
 	}
 	if (sig && proc->wait.kind != LXP_WAIT_NONE) {
-		if (lxp_blocked_defer_hostfs_signal(proc, sig))
+		if (lxp_blocked_defer_stateful_signal(proc, sig))
 			return 0;
 		proc->pending_sigs &= ~lxp_sig_bit(sig);
 		if (!sig_swallowed(proc, sig)) {

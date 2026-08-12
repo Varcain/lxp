@@ -41,6 +41,9 @@ long lxp_hostfs_stat(lxp_proc_t *proc, int index, lxp_fs_stat_t *out);
 long lxp_hostfs_truncate(lxp_proc_t *proc, int index, uint64_t length);
 long lxp_hostfs_sync(lxp_proc_t *proc, int index);
 long lxp_hostfs_sync_all(void);
+long lxp_hostfs_mount(lxp_proc_t *proc, const char *source);
+long lxp_hostfs_unmount(lxp_proc_t *proc);
+int lxp_hostfs_is_mounted(void);
 void lxp_hostfs_close(int index);
 
 /**

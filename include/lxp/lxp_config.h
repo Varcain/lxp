@@ -57,6 +57,9 @@
 #ifndef LXP_ENABLE_FS
 #define LXP_ENABLE_FS 0
 #endif
+#ifndef LXP_ENABLE_BLOCK
+#define LXP_ENABLE_BLOCK 0 /* needs DEV + a raw block-media provider */
+#endif
 #ifndef LXP_ENABLE_DEV
 #define LXP_ENABLE_DEV 0
 #endif
@@ -84,6 +87,9 @@
 #endif
 #if LXP_ENABLE_NETFS_EXEC && !LXP_ENABLE_NETFS
 #error "LXP_ENABLE_NETFS_EXEC requires LXP_ENABLE_NETFS"
+#endif
+#if LXP_ENABLE_BLOCK && !LXP_ENABLE_DEV
+#error "LXP_ENABLE_BLOCK requires LXP_ENABLE_DEV"
 #endif
 #if LXP_ENABLE_DEV_FB && !LXP_ENABLE_DEV
 #error "LXP_ENABLE_DEV_FB requires LXP_ENABLE_DEV"

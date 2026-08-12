@@ -25,6 +25,7 @@
 #include "lxp_pool.h"	      /* shared refcounted open-pool primitives */
 #include "lxp_provider.h"
 
+#include <limits.h>
 #include <string.h>
 
 /* fd-slot kind for a device fd (fds[].file_idx = open-pool index). Kept in step
@@ -62,6 +63,21 @@ static int g_lnx_ndev;
 static struct lxp_dev_open g_lnx_devopen[LXP_NDEVOPEN];
 static void (*g_lnx_devtick[LXP_NDEVTICK])(uint64_t now_us);
 static int g_lnx_ndevtick;
+
+static uint32_t dev_mode(const struct lxp_dev *dev)
+{
+	return dev->mode ? dev->mode : (LXP_S_IFCHR | 0666u);
+}
+
+static int dev_present(struct lxp_dev *dev)
+{
+	return !dev->ops->present || dev->ops->present(dev);
+}
+
+static uint64_t dev_size(struct lxp_dev *dev)
+{
+	return dev->ops->size ? dev->ops->size(dev) : dev->size;
+}
 
 /* ---- registration ---------------------------------------------------------- */
 int lxp_dev_register(const struct lxp_dev *dev)
@@ -101,7 +117,7 @@ void lxp_dev_tick_register(void (*fn)(uint64_t now_us))
 int lxp_dev_lookup(const char *abspath)
 {
 	for (int i = 0; i < g_lnx_ndev; i++)
-		if (strcmp(g_lnx_devs[i].path, abspath) == 0)
+		if (dev_present(&g_lnx_devs[i]) && strcmp(g_lnx_devs[i].path, abspath) == 0)
 			return i;
 	return -1;
 }
@@ -115,8 +131,10 @@ const char *lxp_dev_path(int i, uint32_t *mode)
 {
 	if (i < 0 || i >= g_lnx_ndev)
 		return NULL;
+	if (!dev_present(&g_lnx_devs[i]))
+		return NULL;
 	if (mode)
-		*mode = LXP_S_IFCHR | 0666u;
+		*mode = dev_mode(&g_lnx_devs[i]);
 	return g_lnx_devs[i].path;
 }
 
@@ -148,6 +166,10 @@ long lxp_dev_open_new(lxp_proc_t *p, int devidx, int flags)
 	o->dev = (uint8_t)devidx;
 	o->oflags = (uint16_t)flags;
 	struct lxp_dev *d = &g_lnx_devs[devidx];
+	if (!dev_present(d)) {
+		o->used = 0;
+		return -LXP_ENODEV;
+	}
 	if (d->ops->open) {
 		long r = d->ops->open(d, o, flags);
 		if (r < 0) {
@@ -298,37 +320,48 @@ long lxp_dev_mmap(lxp_proc_t *p, int oi, size_t len, uint32_t pgoff)
 	return 0;
 }
 
-/* Positioned I/O: drive the same read/write op at `off` with the fd cursor
- * preserved (pread/pwrite semantics). The fb is inline (never -EAGAIN), so this
- * does not park; a blocking device would use the typed device-wait path instead. */
-long lxp_dev_pread(lxp_proc_t *p, int oi, void *buf, size_t len, uint32_t off)
+/* Positioned I/O drives the same operation with a temporary cursor. Async
+ * devices retain the 64-bit offset in the typed wait record for retry. */
+static long dev_positioned(lxp_proc_t *p, int oi, void *buf, size_t len, uint64_t off,
+			   int write)
 {
 	struct lxp_dev_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
 	struct lxp_dev *d = &g_lnx_devs[o->dev];
-	if (!d->ops->read)
+	if ((write && !d->ops->write) || (!write && !d->ops->read))
 		return -LXP_EINVAL;
-	uint32_t save = o->pos;
+	uint64_t save = o->pos;
 	o->pos = off;
-	long r = d->ops->read(d, o, p, buf, len);
+	long r = write ? d->ops->write(d, o, p, buf, len)
+		       : d->ops->read(d, o, p, buf, len);
 	o->pos = save;
+	if (r == -LXP_EAGAIN) {
+		if (o->oflags & LXP_O_NONBLOCK)
+			return r;
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_DEVICE,
+			.op = write ? LXP_DEVW_PWRITE : LXP_DEVW_PREAD,
+			.data.io.object = oi,
+			.data.io.buffer = (uintptr_t)buf,
+			.data.io.length = len,
+			.data.io.offset = off,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
+		return 0;
+	}
 	return r;
 }
 
-long lxp_dev_pwrite(lxp_proc_t *p, int oi, const void *buf, size_t len, uint32_t off)
+long lxp_dev_pread(lxp_proc_t *p, int oi, void *buf, size_t len, uint64_t off)
 {
-	struct lxp_dev_open *o = open_slot(oi);
-	if (!o)
-		return -LXP_EBADF;
-	struct lxp_dev *d = &g_lnx_devs[o->dev];
-	if (!d->ops->write)
-		return -LXP_EINVAL;
-	uint32_t save = o->pos;
-	o->pos = off;
-	long r = d->ops->write(d, o, p, buf, len);
-	o->pos = save;
-	return r;
+	return dev_positioned(p, oi, buf, len, off, 0);
+}
+
+long lxp_dev_pwrite(lxp_proc_t *p, int oi, const void *buf, size_t len, uint64_t off)
+{
+	return dev_positioned(p, oi, (void *)buf, len, off, 1);
 }
 
 unsigned lxp_dev_poll(int oi)
@@ -342,31 +375,97 @@ unsigned lxp_dev_poll(int oi)
 
 long lxp_dev_lseek(int oi, long off, int whence)
 {
+	uint64_t position = 0;
+	int rc = lxp_dev_llseek(oi, off, whence, &position);
+	if (rc < 0)
+		return rc;
+	if (position > (uint64_t)LONG_MAX)
+		return -LXP_EOVERFLOW;
+	return (long)position;
+}
+
+int lxp_dev_llseek(int oi, int64_t off, int whence, uint64_t *position)
+{
 	struct lxp_dev_open *o = open_slot(oi);
-	if (!o)
+	if (!o || !position)
 		return -LXP_EBADF;
 	struct lxp_dev *d = &g_lnx_devs[o->dev];
-	if (d->size == 0)
+	uint64_t extent = dev_size(d);
+	if (extent == 0)
 		return -LXP_ESPIPE; /* a non-seekable device (no fixed extent) */
-	long base;
+	uint64_t base;
 	switch (whence) {
 	case LXP_SEEK_SET:
 		base = 0;
 		break;
 	case LXP_SEEK_CUR:
-		base = (long)o->pos;
+		base = o->pos;
 		break;
 	case LXP_SEEK_END:
-		base = (long)d->size;
+		base = extent;
 		break;
 	default:
 		return -LXP_EINVAL;
 	}
-	long pos = base + off;
-	if (pos < 0 || pos > (long)d->size)
+	uint64_t pos;
+	if (off < 0) {
+		uint64_t magnitude = (uint64_t)(-(off + 1)) + 1u;
+		if (magnitude > base)
+			return -LXP_EINVAL;
+		pos = base - magnitude;
+	} else {
+		if ((uint64_t)off > UINT64_MAX - base)
+			return -LXP_EOVERFLOW;
+		pos = base + (uint64_t)off;
+	}
+	if (pos > extent)
 		return -LXP_EINVAL;
-	o->pos = (uint32_t)pos;
-	return pos;
+	o->pos = pos;
+	*position = pos;
+	return 0;
+}
+
+long lxp_dev_sync(lxp_proc_t *p, int oi)
+{
+	struct lxp_dev_open *o = open_slot(oi);
+	if (!o)
+		return -LXP_EBADF;
+	struct lxp_dev *d = &g_lnx_devs[o->dev];
+	if (!d->ops->sync)
+		return 0;
+	long r = d->ops->sync(d, o, p);
+	if (r != -LXP_EAGAIN)
+		return r;
+	if (o->oflags & LXP_O_NONBLOCK)
+		return r;
+	lxp_wait_t wait = {.kind = LXP_WAIT_DEVICE,
+			   .op = LXP_DEVW_SYNC,
+			   .data.io.object = oi};
+	if (lxp_wait_begin(p, &wait) != 0)
+		return -LXP_EAGAIN;
+	return 0;
+}
+
+void lxp_dev_cancel(lxp_proc_t *p)
+{
+	if (!p || p->wait.kind != LXP_WAIT_DEVICE)
+		return;
+	struct lxp_dev_open *o = open_slot(p->wait.data.io.object);
+	if (!o)
+		return;
+	struct lxp_dev *d = &g_lnx_devs[o->dev];
+	if (d->ops->cancel)
+		d->ops->cancel(d, o, p);
+}
+
+int lxp_dev_defer_caught_signal(const lxp_proc_t *p)
+{
+	if (!p || p->wait.kind != LXP_WAIT_DEVICE)
+		return 0;
+	struct lxp_dev_open *o = open_slot(p->wait.data.io.object);
+	if (!o)
+		return 0;
+	return (dev_mode(&g_lnx_devs[o->dev]) & LXP_S_IFMT) == LXP_S_IFBLK;
 }
 
 /* ---- stat / getdents helpers ----------------------------------------------- */
@@ -384,11 +483,11 @@ void lxp_dev_fstat(int oi, uint32_t *mode, uint64_t *rdev, uint64_t *size)
 	}
 	struct lxp_dev *d = &g_lnx_devs[o->dev];
 	if (mode)
-		*mode = LXP_S_IFCHR | 0666u;
+		*mode = dev_mode(d);
 	if (rdev)
 		*rdev = ((uint64_t)d->major << 8) | d->minor;
 	if (size)
-		*size = d->size;
+		*size = dev_size(d);
 }
 
 int lxp_dev_stat_path(const char *abspath, uint32_t *mode, uint64_t *rdev)
@@ -398,7 +497,7 @@ int lxp_dev_stat_path(const char *abspath, uint32_t *mode, uint64_t *rdev)
 		return -1;
 	struct lxp_dev *d = &g_lnx_devs[di];
 	if (mode)
-		*mode = LXP_S_IFCHR | 0666u;
+		*mode = dev_mode(d);
 	if (rdev)
 		*rdev = ((uint64_t)d->major << 8) | d->minor;
 	return 0;
@@ -426,7 +525,29 @@ long lxp_dev_retry(lxp_proc_t *p)
 	case LXP_DEVW_IOCTL:
 		return d->ops->ioctl ? d->ops->ioctl(d, o, p, p->wait.data.io.command,
 						     p->wait.data.io.buffer)
-				     : -LXP_ENOTTY;
+					     : -LXP_ENOTTY;
+	case LXP_DEVW_PREAD: {
+		uint64_t save = o->pos;
+		o->pos = p->wait.data.io.offset;
+		long rc = d->ops->read
+				  ? d->ops->read(d, o, p, (void *)p->wait.data.io.buffer,
+						 p->wait.data.io.length)
+				  : -LXP_EINVAL;
+		o->pos = save;
+		return rc;
+	}
+	case LXP_DEVW_PWRITE: {
+		uint64_t save = o->pos;
+		o->pos = p->wait.data.io.offset;
+		long rc = d->ops->write
+				  ? d->ops->write(d, o, p, (const void *)p->wait.data.io.buffer,
+						  p->wait.data.io.length)
+				  : -LXP_EINVAL;
+		o->pos = save;
+		return rc;
+	}
+	case LXP_DEVW_SYNC:
+		return d->ops->sync ? d->ops->sync(d, o, p) : 0;
 	default:
 		return -LXP_EINVAL;
 	}
@@ -457,6 +578,9 @@ void lxp_dev_autoreg_dma2d(void);
 #if LXP_ENABLE_DEV_INPUT
 void lxp_dev_autoreg_input(void);
 #endif
+#if LXP_ENABLE_BLOCK
+void lxp_dev_autoreg_block(void);
+#endif
 
 void lxp_dev_autoreg_all(void)
 {
@@ -468,6 +592,9 @@ void lxp_dev_autoreg_all(void)
 #endif
 #if LXP_ENABLE_DEV_INPUT
 	lxp_dev_autoreg_input();
+#endif
+#if LXP_ENABLE_BLOCK
+	lxp_dev_autoreg_block();
 #endif
 }
 

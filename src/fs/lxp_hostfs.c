@@ -12,6 +12,10 @@
 
 #include "fs/lxp_hostfs.h"
 
+#if LXP_ENABLE_BLOCK
+#include "dev/lxp_dev_block.h"
+#endif
+
 #include "lxp_provider.h"
 
 #include <limits.h>
@@ -393,6 +397,45 @@ long lxp_hostfs_sync_all(void)
 			return rc;
 	}
 	return 0;
+}
+
+int lxp_hostfs_is_mounted(void)
+{
+	return g_lxp_fs_ops && g_lxp_fs_ops->is_mounted && g_lxp_fs_ops->is_mounted() > 0;
+}
+
+long lxp_hostfs_mount(lxp_proc_t *proc, const char *source)
+{
+	if (!g_lxp_fs_ops || !source)
+		return -LXP_ENODEV;
+#if LXP_ENABLE_BLOCK
+	lxp_block_view_info_t view;
+	int resolved = lxp_block_resolve(source, &view);
+	if (resolved < 0)
+		return resolved;
+	lxp_fs_mount_spec_t spec = {
+		.first_block = view.first_block,
+		.block_count = view.block_count,
+		.logical_block_size = view.logical_block_size,
+		.partition = view.partition,
+	};
+	hostfs_select(proc);
+	return hostfs_result(proc, g_lxp_fs_ops->mount(&spec));
+#else
+	(void)proc;
+	return -LXP_ENODEV;
+#endif
+}
+
+long lxp_hostfs_unmount(lxp_proc_t *proc)
+{
+	if (!g_lxp_fs_ops)
+		return -LXP_ENODEV;
+	for (int i = 0; i < LXP_NHOSTFS_OPEN; i++)
+		if (g_hostfs_open[i].used)
+			return -LXP_EBUSY;
+	hostfs_select(proc);
+	return hostfs_result(proc, g_lxp_fs_ops->unmount());
 }
 
 void lxp_hostfs_close(int index)

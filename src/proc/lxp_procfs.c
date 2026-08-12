@@ -15,6 +15,9 @@
 #include "lxp/lxp_proc.h"
 #include "lxp/lxp_stats.h"
 #include "lxp_internal.h"
+#if LXP_ENABLE_BLOCK
+#include "dev/lxp_dev_block.h"
+#endif
 #if LXP_ENABLE_FS
 #include "lxp_provider.h"
 #endif
@@ -114,6 +117,9 @@ int proc_pid_known(const lxp_proc_t *p, int pid)
 const char *const g_proc_files[] = {"version", "uptime", "meminfo", "lxp_resources",
 #if LXP_ENABLE_FS
 				   "lxp_fs",
+#endif
+#if LXP_ENABLE_BLOCK
+				   "partitions",
 #endif
 				   "rt_scope", "cpuinfo", "mounts", "stat", "loadavg", "filesystems",
 					   NULL};
@@ -267,6 +273,12 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		o = p_str(buf, o, cap, " kB\nHostHeapFree:   ");
 		o = p_dec(buf, o, cap, heap.free / 1024u);
 		o = p_str(buf, o, cap, " kB\n");
+	} else if (strcmp(abs, "/proc/partitions") == 0) {
+#if LXP_ENABLE_BLOCK
+		return lxp_block_proc_partitions(buf, cap);
+#else
+		return -1;
+#endif
 	} else if (strcmp(abs, "/proc/lxp_resources") == 0) {
 		struct lxp_resource_stats resources;
 		struct lxp_mem_stats heap;

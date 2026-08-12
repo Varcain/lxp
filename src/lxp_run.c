@@ -2789,6 +2789,7 @@ static int fs_ops_valid(const lxp_fs_ops_t *ops)
 	if (!ops || ops->abi_version != LXP_FS_OPS_ABI_VERSION ||
 	    ops->struct_size != sizeof(*ops) || !ops->run_begin || !ops->run_end ||
 	    !ops->request_owner || !ops->request_cancel ||
+	    !ops->mount || !ops->unmount || !ops->is_mounted ||
 	    !ops->file_open || !ops->object_open || !ops->file_close || !ops->file_read ||
 	    !ops->file_write ||
 	    !ops->file_seek || !ops->file_stat || !ops->file_truncate || !ops->file_sync ||
@@ -2796,6 +2797,20 @@ static int fs_ops_valid(const lxp_fs_ops_t *ops)
 	    !ops->dir_open || !ops->dir_read || !ops->dir_close || !ops->path_stat ||
 	    !ops->path_mkdir || !ops->path_rmdir || !ops->path_unlink || !ops->path_rename ||
 	    !ops->metrics)
+		return 0;
+#else
+	(void)ops;
+#endif
+	return 1;
+}
+
+static int block_ops_valid(const lxp_block_ops_t *ops)
+{
+#if LXP_ENABLE_BLOCK
+	if (!ops || ops->abi_version != LXP_BLOCK_OPS_ABI_VERSION ||
+	    ops->struct_size != sizeof(*ops) || !ops->run_begin || !ops->run_end ||
+	    !ops->request_owner || !ops->request_cancel || !ops->get_info || !ops->open ||
+	    !ops->close || !ops->read || !ops->write || !ops->sync)
 		return 0;
 #else
 	(void)ops;
@@ -2830,6 +2845,7 @@ static int run_config_valid(const lxp_run_config_t *cfg)
  * providers, then bracket the coordinator with optional host setup/teardown. */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const lxp_display_ops_t *disp_ops, const lxp_fs_ops_t *fs_ops,
+	    const lxp_block_ops_t *block_ops,
 	    const lxp_run_config_t *run_config, const char *path, int argc,
 	    const char *const argv[])
 {
@@ -2837,6 +2853,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	int prepare_entered = 0;
 	int net_entered = 0;
 	int fs_entered = 0;
+	int block_entered = 0;
 	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
 	lxp_diag_reset_health();
 	g_diag_native_known = 0;
@@ -2844,11 +2861,12 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	g_diag_lifecycle_epoch = 0;
 	g_diag_native_epoch = 0;
 	if (!os_ops_valid(os_ops) || !net_ops_valid(net_ops) || !display_ops_valid(disp_ops) ||
-	    !fs_ops_valid(fs_ops) || !run_config_valid(run_config) || !path || argc < 1 || !argv)
+	    !fs_ops_valid(fs_ops) || !block_ops_valid(block_ops) || !run_config_valid(run_config) ||
+	    !path || argc < 1 || !argv)
 		return LXP_RUN_ELAUNCH;
 
 	/* Assign even NULL providers so a later sequential run cannot inherit one. */
-	lxp_providers_publish(net_ops, disp_ops, fs_ops);
+	lxp_providers_publish(net_ops, disp_ops, fs_ops, block_ops);
 #if LXP_ENABLE_NET
 	if (net_ops->run_begin() != LXP_OK)
 		goto out;
@@ -2858,6 +2876,11 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	if (fs_ops->run_begin() != LXP_OK)
 		goto out;
 	fs_entered = 1;
+#endif
+#if LXP_ENABLE_BLOCK
+	if (block_ops->run_begin() != LXP_OK)
+		goto out;
+	block_entered = 1;
 #endif
 #if LXP_ENABLE_DEV_INPUT
 	/* Publish this run's geometry including explicit zero-to-default semantics,
@@ -2880,6 +2903,12 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 out:
 	if (prepare_entered && os_ops->teardown)
 		os_ops->teardown();
+#if LXP_ENABLE_BLOCK
+	if (block_entered)
+		block_ops->run_end();
+#else
+	(void)block_entered;
+#endif
 #if LXP_ENABLE_FS
 	if (fs_entered)
 		fs_ops->run_end();

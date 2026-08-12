@@ -8,7 +8,7 @@ Every syscall the lxp personality answers, cross-checked against the ARM EABI re
 Numbers come from `include/lxp/lxp_linux_uapi.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/lxp_run.c` by the coverage guard.
 
-Surface: 140 LXP_NR_* — 97 implemented, 32 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
+Surface: 143 LXP_NR_* — 104 implemented, 28 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
 
 | Number | Name | Disposition | Notes |
 |---:|---|---|---|
@@ -25,8 +25,9 @@ Surface: 140 LXP_NR_* — 97 implemented, 32 benign-stub, 1 refused-eopnotsupp, 
 | 15 | chmod | implemented |  |
 | 19 | lseek | implemented |  |
 | 20 | getpid | implemented |  |
-| 21 | mount | benign-stub | no-op (synthetic /proc + overlay always present) |
+| 21 | mount | implemented | synthetic /proc; provider-backed /data block mount |
 | 33 | access | implemented |  |
+| 34 | nice | implemented | updates the current process niceness within the Linux range |
 | 36 | sync | benign-stub | no backing store to flush |
 | 37 | kill | run-loop-handled | self-signal inline / cross-proc via pending_sig |
 | 38 | rename | implemented |  |
@@ -36,7 +37,7 @@ Surface: 140 LXP_NR_* — 97 implemented, 32 benign-stub, 1 refused-eopnotsupp, 
 | 42 | pipe | implemented |  |
 | 43 | times | implemented | uptime ticks; per-proc breakdown zeroed |
 | 45 | brk | implemented |  |
-| 52 | umount2 | benign-stub | no-op |
+| 52 | umount2 | implemented | provider-backed /data unmount with open-handle exclusion |
 | 54 | ioctl | implemented |  |
 | 55 | fcntl | implemented |  |
 | 57 | setpgid | benign-stub | accepted (inert) |
@@ -51,10 +52,12 @@ Surface: 140 LXP_NR_* — 97 implemented, 32 benign-stub, 1 refused-eopnotsupp, 
 | 88 | reboot | implemented | HALT/POWEROFF/RESTART latch the run |
 | 91 | munmap | implemented | exact arena-backed live extents; zero-copy/device maps are no-op |
 | 94 | fchmod | benign-stub | modes not tracked |
+| 96 | getpriority | implemented | current-process PRIO_PROCESS query |
+| 97 | setpriority | implemented | current-process PRIO_PROCESS update |
 | 104 | setitimer | implemented | ITIMER_REAL -> SIGALRM |
 | 114 | wait4 | implemented | reaps / blocks via the run loop |
 | 116 | sysinfo | implemented | uptime plus live-process and free slot/region capacity |
-| 118 | fsync | benign-stub | writable overlay is RAM |
+| 118 | fsync | implemented | provider-backed files and block devices flush durable state |
 | 119 | sigreturn | run-loop-handled | restores the pre-signal frame |
 | 120 | clone | run-loop-handled | CLONE_VM treated as a co-running thread |
 | 122 | uname | implemented | Linux identity plus current RTOS, RTOS version, oveRTOS revision, and lxp revision |
@@ -62,7 +65,7 @@ Surface: 140 LXP_NR_* — 97 implemented, 32 benign-stub, 1 refused-eopnotsupp, 
 | 140 | _llseek | implemented |  |
 | 141 | getdents | implemented | 32-bit dirent (uClibc readdir) |
 | 146 | writev | implemented |  |
-| 148 | fdatasync | benign-stub | writable overlay is RAM |
+| 148 | fdatasync | implemented | same provider-backed durability path as fsync |
 | 158 | sched_yield | benign-stub | accepted hint; host scheduling owns fairness |
 | 162 | nanosleep | implemented | parks via the run loop |
 | 168 | poll | implemented |  |

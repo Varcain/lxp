@@ -68,6 +68,9 @@ getcwd	implemented
 umask	implemented	stored per-proc, returns previous
 getpid	implemented
 getppid	implemented
+nice	implemented	updates the current process niceness within the Linux range
+getpriority	implemented	current-process PRIO_PROCESS query
+setpriority	implemented	current-process PRIO_PROCESS update
 gettid	implemented	single-threaded: tid == pid
 gettimeofday	implemented
 clock_gettime	implemented	32-bit time_t
@@ -111,14 +114,14 @@ setsockopt	implemented	NET-gated
 getsockopt	implemented	NET-gated
 
 # ---- benign-stub (accepted, inert on purpose) --------------------------------
-mount	benign-stub	no-op (synthetic /proc + overlay always present)
-umount2	benign-stub	no-op
+mount	implemented	synthetic /proc; provider-backed /data block mount
+umount2	implemented	provider-backed /data unmount with open-handle exclusion
 mprotect	benign-stub	no-op (NOMMU: no page protection)
 utimensat	benign-stub	times not tracked
 utimensat_time64	benign-stub	times not tracked
 sync	benign-stub	no backing store to flush
-fsync	benign-stub	writable overlay is RAM
-fdatasync	benign-stub	writable overlay is RAM
+fsync	implemented	provider-backed files and block devices flush durable state
+fdatasync	implemented	same provider-backed durability path as fsync
 sched_yield	benign-stub	accepted hint; host scheduling owns fairness
 prctl	benign-stub	accepted (inert)
 setpgid	benign-stub	accepted (inert)

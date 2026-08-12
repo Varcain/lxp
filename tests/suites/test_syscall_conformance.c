@@ -908,9 +908,14 @@ static void test_conf_deliberate(void **state)
 	 * they are not exercised through lxp_syscall() here — the on-target M5 guest drives the
 	 * real uaddr-keyed wait/wake between co-running threads. */
 
-	/* mount/umount2/mprotect/utimensat: accepted no-ops. */
-	assert_int_equal(SC(&p, LXP_NR_mount, 0, 0, 0, 0, 0, 0), 0);
-	assert_int_equal(SC(&p, LXP_NR_umount2, 0, 0, 0, 0, 0, 0), 0);
+	/* Synthetic proc mount lifecycle remains accepted; /data is provider-backed. */
+	assert_int_equal(SC(&p, LXP_NR_mount, (long)(uintptr_t)lxp_conf_str(fx, "proc"),
+			    (long)(uintptr_t)lxp_conf_str(fx, "/proc"),
+			    (long)(uintptr_t)lxp_conf_str(fx, "proc"), 0, 0, 0),
+			 0);
+	assert_int_equal(SC(&p, LXP_NR_umount2,
+			    (long)(uintptr_t)lxp_conf_str(fx, "/proc"), 0, 0, 0, 0, 0),
+			 0);
 	assert_int_equal(SC(&p, LXP_NR_utimensat, LXP_AT_FDCWD, 0, 0, 0, 0, 0), 0);
 
 	/* privilege drop + identity: inert, all "root". */
@@ -945,7 +950,7 @@ static void test_conf_deliberate(void **state)
 	static const long inert0[] = {
 		LXP_NR_setgid32,    LXP_NR_setreuid32, LXP_NR_setregid32, LXP_NR_setresgid32,
 		LXP_NR_setgroups32, LXP_NR_fchown32,   LXP_NR_fchmod,	  LXP_NR_fsync,
-		LXP_NR_fdatasync,   LXP_NR_getegid32,  LXP_NR_umount2,	  LXP_NR_utimensat_time64,
+		LXP_NR_fdatasync,   LXP_NR_getegid32,  LXP_NR_utimensat_time64,
 	};
 	for (unsigned i = 0; i < sizeof(inert0) / sizeof(inert0[0]); i++)
 		assert_int_equal(SC(&p, inert0[i], 0, 0, 0, 0, 0, 0), 0);

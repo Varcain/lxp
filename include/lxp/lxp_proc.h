@@ -73,12 +73,14 @@ extern "C" {
 #define LXP_S_IFMT 0xf000u
 #define LXP_S_IFREG 0x8000u
 #define LXP_S_IFDIR 0x4000u
+#define LXP_S_IFBLK 0x6000u
 #define LXP_S_IFCHR 0x2000u
 #define LXP_S_IFLNK 0xa000u
 #define LXP_S_IFSOCK 0xc000u
 /* getdents64 d_type values. */
 #define LXP_DT_CHR 2
 #define LXP_DT_DIR 4
+#define LXP_DT_BLK 6
 #define LXP_DT_REG 8
 /* termios ioctls so a console looks like a tty (isatty → interactive shell). */
 #define LXP_TCGETS 0x5401
@@ -462,6 +464,7 @@ typedef struct lxp_wait {
 			int request;
 			uintptr_t buffer;
 			size_t length;
+			uint64_t offset;
 			unsigned long command;
 			uint64_t deadline_us;
 		} io;

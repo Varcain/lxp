@@ -13,12 +13,14 @@
 
 #include "../framework/lxp_test.h"
 #include "lxp/lxp_arena.h"
+#include "lxp/lxp_block_ops.h"
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_disp_ops.h"
 #include "lxp/lxp_disp_ops.h"
 #include "lxp/lxp_port.h" /* LXP_MAP_NC */
 #include "lxp/lxp_syscall.h"
 #include "../../src/dev/lxp_uapi.h" /* struct lxp_dma2d_submit + LXP_DMA2D_* */
+#include "../../src/lxp_provider.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -40,6 +42,7 @@ extern int g_mock_fb_flush_calls;
 /* The DMA2D accelerator class registers /dev/dma2d over the stub's mock dma2d_submit,
  * which records the last (already-validated) op so a suite can assert forwarding. */
 void lxp_dev_autoreg_dma2d(void);
+void lxp_dev_autoreg_block(void);
 extern lxp_dma2d_op_t g_mock_dma2d_op;
 extern int g_mock_dma2d_calls;
 /* Matched by type 'D' + nr 1/2; the handler ignores _IOC_SIZE/dir. */
@@ -867,6 +870,161 @@ static void test_dev_tick_registration_is_idempotent(void **state)
 	assert_int_equal(g_tick_dedup_calls, 1);
 }
 
+/* ---- raw block class ------------------------------------------------------ */
+#define TEST_BLKRRPART 0x125ful
+#define TEST_BLKGETSIZE 0x1260ul
+#define TEST_BLKSSZGET 0x1268ul
+#define TEST_BLKGETSIZE64 0x80041272ul
+
+static uint8_t g_block_mbr[512];
+static uint64_t g_block_last_offset;
+static size_t g_block_last_count;
+static unsigned g_block_write_opens;
+
+static int fake_block_info(lxp_block_info_t *info)
+{
+	memset(info, 0, sizeof(*info));
+	info->block_count = UINT64_C(16777216); /* 8 GiB: exercises high offset words. */
+	info->logical_block_size = 512;
+	info->erase_block_size = 512;
+	info->flags = LXP_BLOCK_F_REMOVABLE | LXP_BLOCK_F_MEDIA_PRESENT;
+	return LXP_OK;
+}
+
+static int fake_block_open(unsigned flags)
+{
+	if (flags & LXP_BLOCK_OPEN_WRITE)
+		g_block_write_opens++;
+	return LXP_OK;
+}
+
+static void fake_block_close(unsigned flags)
+{
+	if ((flags & LXP_BLOCK_OPEN_WRITE) && g_block_write_opens)
+		g_block_write_opens--;
+}
+
+static int fake_block_read(uint64_t offset, void *buf, size_t count, size_t *done)
+{
+	g_block_last_offset = offset;
+	g_block_last_count = count;
+	memset(buf, 0, count);
+	if (offset < sizeof(g_block_mbr)) {
+		size_t n = sizeof(g_block_mbr) - (size_t)offset;
+		if (n > count)
+			n = count;
+		memcpy(buf, g_block_mbr + offset, n);
+	}
+	*done = count;
+	return LXP_OK;
+}
+
+static int fake_block_write(uint64_t offset, const void *buf, size_t count, size_t *done)
+{
+	(void)buf;
+	g_block_last_offset = offset;
+	g_block_last_count = count;
+	*done = count;
+	return LXP_OK;
+}
+
+static int fake_block_sync(void)
+{
+	return LXP_OK;
+}
+
+static const lxp_block_ops_t g_fake_block_ops = {
+	.abi_version = LXP_BLOCK_OPS_ABI_VERSION,
+	.struct_size = sizeof(lxp_block_ops_t),
+	.get_info = fake_block_info,
+	.open = fake_block_open,
+	.close = fake_block_close,
+	.read = fake_block_read,
+	.write = fake_block_write,
+	.sync = fake_block_sync,
+};
+
+static void put_le32(uint8_t *p, uint32_t value)
+{
+	p[0] = (uint8_t)value;
+	p[1] = (uint8_t)(value >> 8);
+	p[2] = (uint8_t)(value >> 16);
+	p[3] = (uint8_t)(value >> 24);
+}
+
+static void test_dev_block_geometry_partitions_and_64bit_io(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	lxp_arena_t arena;
+	setup(&p, &arena);
+	const lxp_net_ops_t *saved_net = g_lxp_net_ops;
+	const lxp_display_ops_t *saved_display = g_lxp_disp_ops;
+	const lxp_fs_ops_t *saved_fs = g_lxp_fs_ops;
+
+	memset(g_block_mbr, 0, sizeof(g_block_mbr));
+	g_block_mbr[510] = 0x55;
+	g_block_mbr[511] = 0xaa;
+	g_block_mbr[446 + 4] = 0x0c; /* FAT32 LBA */
+	put_le32(&g_block_mbr[446 + 8], 2048);
+	put_le32(&g_block_mbr[446 + 12], 4096);
+	g_block_write_opens = 0;
+	lxp_providers_publish(saved_net, saved_display, saved_fs, &g_fake_block_ops);
+	lxp_dev_autoreg_block();
+
+	uint32_t mode = 0;
+	uint64_t rdev = 0;
+	assert_int_equal(lxp_dev_stat_path("/dev/mmcblk0", &mode, &rdev), 0);
+	assert_int_equal(mode & LXP_S_IFMT, LXP_S_IFBLK);
+	assert_int_equal(rdev, (179u << 8));
+	assert_int_equal(lxp_dev_stat_path("/dev/mmcblk0p1", &mode, &rdev), 0);
+	assert_int_equal(rdev, (179u << 8) | 1u);
+	assert_int_equal(lxp_dev_stat_path("/dev/mmcblk0p2", &mode, &rdev), -1);
+	long proc_fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				   (long)(uintptr_t)"/proc/partitions", LXP_O_RDONLY, 0, 0, 0);
+	assert_true(proc_fd >= 3);
+	char partitions[256] = {0};
+	long proc_len = lxp_syscall(&p, LXP_NR_read, proc_fd, (long)(uintptr_t)partitions,
+				    sizeof(partitions) - 1u, 0, 0, 0);
+	assert_true(proc_len > 0);
+	assert_non_null(strstr(partitions, "mmcblk0p1"));
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, proc_fd, 0, 0, 0, 0, 0), 0);
+
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+			      (long)(uintptr_t)"/dev/mmcblk0", LXP_O_RDWR, 0, 0, 0);
+	assert_true(fd >= 3);
+	assert_int_equal(g_block_write_opens, 1);
+	uint32_t sector_size = 0, sectors32 = 0;
+	uint64_t bytes = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_BLKSSZGET,
+				     (long)(uintptr_t)&sector_size, 0, 0, 0), 0);
+	assert_int_equal(sector_size, 512);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_BLKGETSIZE,
+				     (long)(uintptr_t)&sectors32, 0, 0, 0), 0);
+	assert_int_equal(sectors32, 16777216u);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_BLKGETSIZE64,
+				     (long)(uintptr_t)&bytes, 0, 0, 0), 0);
+	assert_int_equal(bytes, UINT64_C(8589934592));
+
+	uint64_t seek_result = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR__llseek, fd, 1, 64,
+				     (long)(uintptr_t)&seek_result, LXP_SEEK_SET, 0), 0);
+	assert_int_equal(seek_result, UINT64_C(4294967360));
+	uint8_t byte = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_pread64, fd, (long)(uintptr_t)&byte, 1, 0,
+				     128, 1), 1);
+	assert_int_equal(g_block_last_offset, UINT64_C(4294967424));
+	assert_int_equal(g_block_last_count, 1);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_fsync, fd, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_BLKRRPART, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(g_block_write_opens, 0);
+	lxp_providers_publish(saved_net, saved_display, saved_fs, NULL);
+	lxp_proc_resources_put(&p);
+	lxp_proc_mm_put(&p);
+	lxp_proc_group_put(&p);
+}
+
 int test_linux_dev_run(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -888,6 +1046,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_dma2d_submit_ok),
 		cmocka_unit_test(test_dev_dma2d_rejects_bad_descriptor),
 		cmocka_unit_test(test_dev_tick_registration_is_idempotent),
+		cmocka_unit_test(test_dev_block_geometry_partitions_and_64bit_io),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

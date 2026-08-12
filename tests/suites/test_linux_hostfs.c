@@ -50,6 +50,19 @@ static int fake_run_begin(void)
 {
 	return LXP_OK;
 }
+static int fake_mount(const lxp_fs_mount_spec_t *spec)
+{
+	(void)spec;
+	return LXP_OK;
+}
+static int fake_unmount(void)
+{
+	return LXP_OK;
+}
+static int fake_is_mounted(void)
+{
+	return 1;
+}
 
 static void fake_run_end(void)
 {
@@ -320,6 +333,9 @@ static const lxp_fs_ops_t g_fake_ops = {
 	.run_end = fake_run_end,
 	.request_owner = fake_request_owner,
 	.request_cancel = fake_request_cancel,
+	.mount = fake_mount,
+	.unmount = fake_unmount,
+	.is_mounted = fake_is_mounted,
 	.file_open = fake_file_open,
 	.object_open = fake_object_open,
 	.file_close = fake_file_close,
@@ -698,7 +714,7 @@ static int group_setup(void **state)
 	(void)state;
 	g_saved_net = g_lxp_net_ops;
 	g_saved_display = g_lxp_disp_ops;
-	lxp_providers_publish(g_saved_net, g_saved_display, &g_fake_ops);
+	lxp_providers_publish(g_saved_net, g_saved_display, &g_fake_ops, NULL);
 	return 0;
 }
 
@@ -706,7 +722,7 @@ static int group_teardown(void **state)
 {
 	(void)state;
 	lxp_fd_runtime_reset();
-	lxp_providers_publish(g_saved_net, g_saved_display, NULL);
+	lxp_providers_publish(g_saved_net, g_saved_display, NULL, NULL);
 	return 0;
 }
 

@@ -39,6 +39,7 @@
 #include "lxp/lxp_pty.h" /* pseudo-terminal routing (FD_PTY) */
 #endif
 
+#include <limits.h>
 #include <string.h>
 
 /* Kept in the syscall core so isolated syscall tests do not need the run loop.
@@ -1207,7 +1208,7 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
  * it mapped (the NOMMU path: MAP_FIXED-file mmap fails, so it mmaps anon + preads). Only
  * regular (seekable) files are supported — console/pipe return ESPIPE.
  */
-static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off)
+static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint64_t off)
 {
 	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
@@ -1248,12 +1249,12 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off
 		data = (const uint8_t *)f->data;
 		size = f->size;
 	}
-	if ((size_t)off >= size)
+	if (off >= size)
 		return 0; /* EOF */
-	size_t n = size - off;
+	size_t n = size - (size_t)off;
 	if (n > len)
 		n = len;
-	if (lxp_copy_to_guest(p, (uintptr_t)buf, data + off, n) != 0)
+	if (lxp_copy_to_guest(p, (uintptr_t)buf, data + (size_t)off, n) != 0)
 		return -LXP_EFAULT;
 	return (long)n;
 }
@@ -1264,7 +1265,7 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint32_t off
  * Device fds route to the driver; the writable overlay writes at the offset; the read-only
  * rootfs and console/pipe are not positioned-writable (ESPIPE).
  */
-static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint32_t off)
+static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint64_t off)
 {
 	lxp_ofd_t *s = fd_slot(p, fd);
 	if (!s)
@@ -1285,21 +1286,24 @@ static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint3
 	}
 #endif
 	if (s->kind == LXP_FD_TMPFS) {
+		if (off > SIZE_MAX)
+			return -LXP_EFBIG;
+		size_t local_off = (size_t)off;
 		lxp_wnode_t *t = wnode_at(s->file_idx);
 		if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 			return -LXP_EBADF;
-		if ((size_t)off + len <
+		if (local_off + len <
 		    len) /* off+len wrapped a 32-bit size_t → tiny reserve, OOB write */
 			return -LXP_EINVAL;
-		if (wfs_reserve(s->file_idx, (size_t)off + len) != 0)
+		if (wfs_reserve(s->file_idx, local_off + len) != 0)
 			return -LXP_EFBIG;
-		if ((size_t)off >
+		if (local_off >
 		    t->size) /* zero the sparse hole (else it leaks stale pool bytes) */
-			memset(t->data + t->size, 0, (size_t)off - t->size);
-		if (lxp_copy_from_guest(p, t->data + off, (uintptr_t)buf, len) != 0)
+			memset(t->data + t->size, 0, local_off - t->size);
+		if (lxp_copy_from_guest(p, t->data + local_off, (uintptr_t)buf, len) != 0)
 			return -LXP_EFAULT;
-		if ((size_t)off + len > t->size)
-			t->size = (size_t)off + len;
+		if (local_off + len > t->size)
+			t->size = local_off + len;
 		return (long)len;
 	}
 	return -LXP_ESPIPE; /* console / pipe / read-only rootfs */
@@ -1742,18 +1746,34 @@ static long sys_lseek(lxp_proc_t *p, int fd, long off, int whence)
 	return -LXP_ESPIPE; /* console/pipe/proc/eventfd/pty/socket not seekable */
 }
 
-/* _llseek(fd, offset_high, offset_low, loff_t *result, whence): the 64-bit-offset
- * seek uClibc uses in large-file mode. Pagers/editors (less/more/vi) seek to size
- * the file (the %-position). Our files are well under 4 GB so offset_high is 0. */
+/* _llseek(fd, offset_high, offset_low, loff_t *result, whence): signed 64-bit
+ * offsets are mandatory for block media above 2 GiB. */
 static long sys_llseek(lxp_proc_t *p, int fd, unsigned long off_hi, unsigned long off_lo,
 		       uint64_t *result, unsigned int whence)
 {
-	(void)off_hi;
-	long pos = sys_lseek(p, fd, (long)off_lo, (int)whence);
-	if (pos < 0)
-		return pos;
+	lxp_ofd_t *slot = fd_slot(p, fd);
+	if (!slot)
+		return -LXP_EBADF;
+	int64_t offset = (int64_t)((uint64_t)(uint32_t)off_lo |
+				   ((uint64_t)(uint32_t)off_hi << 32));
+	uint64_t position;
+#if LXP_ENABLE_DEV
+	if (slot->kind == LXP_FD_DEV) {
+		int rc = lxp_dev_llseek(slot->file_idx, offset, (int)whence, &position);
+		if (rc < 0)
+			return rc;
+	} else
+#endif
+	{
+		if (offset < LONG_MIN || offset > LONG_MAX)
+			return -LXP_EOVERFLOW;
+		long pos = sys_lseek(p, fd, (long)offset, (int)whence);
+		if (pos < 0)
+			return pos;
+		position = (uint64_t)pos;
+	}
 	if (result &&
-	    lxp_copy_to_guest(p, (uintptr_t)result, &(uint64_t){(uint64_t)pos},
+	    lxp_copy_to_guest(p, (uintptr_t)result, &position,
 			      sizeof(*result)) != 0)
 		return -LXP_EFAULT;
 	return 0;
@@ -1798,9 +1818,63 @@ static long sys_sync_fd(lxp_proc_t *p, int fd)
 	if (s->kind == LXP_FD_HOSTFS)
 		return lxp_hostfs_sync(p, s->file_idx);
 #endif
+#if LXP_ENABLE_DEV
+	if (s->kind == LXP_FD_DEV)
+		return lxp_dev_sync(p, s->file_idx);
+#endif
 	/* tmpfs/rootfs have no backing write queue. Other open descriptors retain
 	 * the historical benign behavior expected by small libc utilities. */
 	return 0;
+}
+
+static long sys_mount(lxp_proc_t *p, const char *source, const char *target,
+		      const char *filesystem_type, unsigned long flags)
+{
+	(void)flags;
+	if (!target)
+		return -LXP_EFAULT;
+	char target_path[LXP_PATH_MAX];
+	long rc = resolve_path(p, target, target_path, sizeof(target_path));
+	if (rc < 0)
+		return rc;
+	if (strcmp(target_path, "/proc") == 0) {
+		if (filesystem_type && lxp_guest_strnlen(p, filesystem_type, 16u) < 0)
+			return -LXP_EFAULT;
+		return 0;
+	}
+#if LXP_ENABLE_FS && LXP_ENABLE_BLOCK
+	if (strcmp(target_path, LXP_HOSTFS_MOUNT) == 0) {
+		if (!source)
+			return -LXP_EINVAL;
+		char source_path[LXP_PATH_MAX];
+		rc = resolve_path(p, source, source_path, sizeof(source_path));
+		if (rc < 0)
+			return rc;
+		return lxp_hostfs_mount(p, source_path);
+	}
+#else
+	(void)source;
+#endif
+	return -LXP_ENODEV;
+}
+
+static long sys_umount(lxp_proc_t *p, const char *target, int flags)
+{
+	if (!target)
+		return -LXP_EFAULT;
+	if (flags != 0)
+		return -LXP_EINVAL;
+	char target_path[LXP_PATH_MAX];
+	long rc = resolve_path(p, target, target_path, sizeof(target_path));
+	if (rc < 0)
+		return rc;
+	if (strcmp(target_path, "/proc") == 0)
+		return 0;
+#if LXP_ENABLE_FS
+	if (strcmp(target_path, LXP_HOSTFS_MOUNT) == 0)
+		return lxp_hostfs_unmount(p);
+#endif
+	return -LXP_EINVAL;
 }
 
 /* Fill an ARM kstat64 from a node's inode + mode + size. */
@@ -2290,6 +2364,7 @@ static int dirent_emit(uint8_t *out, size_t count, size_t *filled, long *pos, lx
 	size_t namelen = strlen(name);
 	uint8_t dtype = ((mode & LXP_S_IFMT) == LXP_S_IFDIR)   ? LXP_DT_DIR
 			: ((mode & LXP_S_IFMT) == LXP_S_IFCHR) ? LXP_DT_CHR
+			: ((mode & LXP_S_IFMT) == LXP_S_IFBLK) ? LXP_DT_BLK
 							       : LXP_DT_REG;
 	if (is64) {
 		size_t reclen = (offsetof(struct lxp_dirent64, d_name) + namelen + 1 + 7u) &
@@ -3240,10 +3315,11 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_mprotect: /* NOMMU: RELRO/protection is a no-op */
 		return sys_mprotect((uintptr_t)a0, (size_t)a1, (int)a2);
 	case LXP_NR_pread64: /* (fd, buf, count, [pad a3], off_lo a4, off_hi a5) */
-		return sys_pread(proc, (int)a0, (void *)(uintptr_t)a1, (size_t)a2, (uint32_t)a4);
+		return sys_pread(proc, (int)a0, (void *)(uintptr_t)a1, (size_t)a2,
+				 (uint64_t)(uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32));
 	case LXP_NR_pwrite64: /* (fd, buf, count, [pad a3], off_lo a4, off_hi a5) */
 		return sys_pwrite(proc, (int)a0, (const void *)(uintptr_t)a1, (size_t)a2,
-				  (uint32_t)a4);
+				  (uint64_t)(uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32));
 	case LXP_NR_open: { /* legacy open(path, flags, mode): dirfd = cwd */
 		long f = sys_openat(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a0, (int)a1);
 		if (f >= 0 && ((int)a1 & LXP_O_CLOEXEC))
@@ -3349,9 +3425,11 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_utimensat:	      /* (dirfd, path, times, flags) — times not tracked */
 	case LXP_NR_utimensat_time64: /* time64 variant uClibc-ng issues for touch */
 		return sys_utimensat(proc, (const char *)(uintptr_t)a1);
-	case LXP_NR_mount:   /* synthetic /proc + overlay are always present */
-	case LXP_NR_umount2: /* (rcS does `mount -t proc proc /proc`) */
-		return 0;
+	case LXP_NR_mount:
+		return sys_mount(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a1,
+				 (const char *)(uintptr_t)a2, (unsigned long)a3);
+	case LXP_NR_umount2:
+		return sys_umount(proc, (const char *)(uintptr_t)a0, (int)a1);
 	case LXP_NR_statfs64:  /* (path, sz, buf) */
 	case LXP_NR_fstatfs64: /* (fd, sz, buf) */
 		return sys_statfs(proc, (void *)(uintptr_t)a2);

@@ -59,6 +59,7 @@ target_include_directories(lxp_test_stub PRIVATE
 target_compile_definitions(lxp_test_stub PRIVATE
   LXP_RESOURCE_POOL_COUNT=64
   LXP_ENABLE_DEV=1
+  LXP_ENABLE_BLOCK=1
   LXP_ENABLE_PTY=1
   LXP_ENABLE_NET=1
   LXP_ENABLE_NETFS=1

@@ -8,6 +8,7 @@
 
 static int (*const lxp_embed_entry)(const lxp_os_ops_t *, const lxp_net_ops_t *,
 				    const lxp_display_ops_t *, const lxp_fs_ops_t *,
+				    const lxp_block_ops_t *,
 				    const lxp_run_config_t *, const char *, int,
 				    const char *const[]) = lxp_run;
 

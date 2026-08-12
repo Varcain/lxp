@@ -71,6 +71,13 @@ struct lxp_dev_ops {
 		      unsigned long arg);
 	/** poll(2): POLLIN|POLLOUT bits currently ready; must never block. */
 	unsigned (*poll)(struct lxp_dev *d, struct lxp_dev_open *o);
+	/** Flush durable state. May return -EAGAIN and use the device wait path. */
+	long (*sync)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p);
+	/** Cancel a parked operation for an interrupted generation-qualified owner. */
+	void (*cancel)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p);
+	/** Dynamic node presence and byte extent (optional; defaults to present/d->size). */
+	int (*present)(struct lxp_dev *d);
+	uint64_t (*size)(struct lxp_dev *d);
 	/** mmap(2): fill @p phys with the device buffer address + @p attrs; the core
 	 *  defers the MPU work to the engine seam. NULL => -ENODEV. (Phase P3.) */
 	long (*mmap)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, size_t len,
@@ -83,7 +90,8 @@ struct lxp_dev {
 	const struct lxp_dev_ops *ops; /**< Class operations. */
 	void *drv;		       /**< Class-driver instance state. */
 	uint16_t major, minor;	       /**< Real Linux device numbers (for st_rdev). */
-	uint32_t size;		       /**< Seekable extent (0 => lseek -ESPIPE). */
+	uint32_t mode;		       /**< Node type/permissions; zero means S_IFCHR|0666. */
+	uint64_t size;		       /**< Seekable extent (0 => lseek -ESPIPE). */
 };
 
 /**
@@ -98,7 +106,7 @@ struct lxp_dev_open {
 	uint16_t refs;	 /**< Distinct open-file descriptions; release at 0. */
 	uint8_t dev;	 /**< Registered-device index. */
 	uint16_t oflags; /**< open(2) flags (O_NONBLOCK gates blocking). */
-	uint32_t pos;	 /**< Seek cursor (fb byte offset, ...). */
+	uint64_t pos;	 /**< Seek cursor (block byte offset, fb byte offset, ...). */
 	/* Class-private per-open cursors; extended as device classes land. */
 	union {
 		struct {
@@ -108,6 +116,10 @@ struct lxp_dev_open {
 			uint32_t tail; /* matches the uint32_t g_in_head; a uint16_t wrapped after 65536 events */
 			uint8_t overrun;
 		} input; /**< evdev ring cursor (P4 input). */
+		struct {
+			uint8_t write_lease;
+			uint8_t reread_phase;
+		} block;
 	} u;
 };
 
@@ -120,6 +132,9 @@ struct lxp_dev_open {
 #define LXP_DEVW_WRITE 2u
 #define LXP_DEVW_IOCTL 3u
 #define LXP_DEVW_MMAP 4u /**< P3: coordinator installs the MPU region, resumes r0 = mapped addr. */
+#define LXP_DEVW_PREAD 5u
+#define LXP_DEVW_PWRITE 6u
+#define LXP_DEVW_SYNC 7u
 
 /**
  * @brief Register a character device (class driver or board/app custom).
@@ -169,8 +184,8 @@ long lxp_dev_read(lxp_proc_t *p, int oi, void *buf, size_t len);
 long lxp_dev_write(lxp_proc_t *p, int oi, const void *buf, size_t len);
 /** Positioned read/write at @p off without moving the fd cursor (pread/pwrite;
  *  LVGL's fbdev writes scanlines this way). Does not park (fb is inline). */
-long lxp_dev_pread(lxp_proc_t *p, int oi, void *buf, size_t len, uint32_t off);
-long lxp_dev_pwrite(lxp_proc_t *p, int oi, const void *buf, size_t len, uint32_t off);
+long lxp_dev_pread(lxp_proc_t *p, int oi, void *buf, size_t len, uint64_t off);
+long lxp_dev_pwrite(lxp_proc_t *p, int oi, const void *buf, size_t len, uint64_t off);
 long lxp_dev_ioctl(lxp_proc_t *p, int oi, unsigned long cmd, unsigned long arg);
 /** mmap(2) a device buffer (P3): resolve the physical range via the driver's .mmap
  *  op, then park (DEVW_MMAP) so the coordinator installs the MPU region + resumes
@@ -179,6 +194,11 @@ long lxp_dev_mmap(lxp_proc_t *p, int oi, size_t len, uint32_t pgoff);
 unsigned lxp_dev_poll(int oi);
 /** lseek on open @p oi within the device's @c size; -ESPIPE if not seekable. */
 long lxp_dev_lseek(int oi, long off, int whence);
+int lxp_dev_llseek(int oi, int64_t off, int whence, uint64_t *position);
+long lxp_dev_sync(lxp_proc_t *p, int oi);
+void lxp_dev_cancel(lxp_proc_t *p);
+/** A block request may already have mutated media when its completion arrives. */
+int lxp_dev_defer_caught_signal(const lxp_proc_t *p);
 /** Fill S_IFCHR mode / st_rdev / size for fstat/statx of open @p oi. */
 void lxp_dev_fstat(int oi, uint32_t *mode, uint64_t *rdev, uint64_t *size);
 /** Path-based stat: fill mode/rdev for a device @p abspath; -1 if not a device. */

@@ -59,6 +59,9 @@ set(LXP_BASE_SOURCES
 set(LXP_DEV_SOURCES
     "${LXP_SOURCE_ROOT}/src/dev/lxp_dev.c"
 )
+set(LXP_BLOCK_SOURCES
+    "${LXP_SOURCE_ROOT}/src/dev/lxp_dev_block.c"
+)
 set(LXP_DEV_FB_SOURCES
     "${LXP_SOURCE_ROOT}/src/dev/lxp_dev_fb.c"
 )
@@ -80,6 +83,7 @@ set(LXP_PTY_SOURCES
 
 set(LXP_OPTIONAL_SOURCES
     ${LXP_DEV_SOURCES}
+    ${LXP_BLOCK_SOURCES}
     ${LXP_DEV_FB_SOURCES}
     ${LXP_DEV_DMA2D_SOURCES}
     ${LXP_DEV_INPUT_SOURCES}

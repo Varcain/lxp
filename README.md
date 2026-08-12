@@ -3,9 +3,9 @@
 `lxp` runs real, unmodified Linux userspace — busybox, dropbear, curl, LVGL apps — on an
 ARM Cortex-M with **no MMU**, as a portable library on top of any RTOS or bare metal. It
 presents a Linux/uClinux ABI (a ~130-call syscall core, an FDPIC ELF loader, `/proc`, `/dev`,
-pipes, ptys, signals, `fork`/`exec`/`wait`, and an optional socket bridge + 9P filesystem)
-with **zero dependency on any host OS** — the host fills in a few function-pointer structs
-and calls `lxp_run()`. No `lxp` source includes a host header.
+pipes, ptys, signals, `fork`/`exec`/`wait`, and optional socket, filesystem, and raw-block
+bridges) with **zero dependency on any host OS** — the host fills in a few function-pointer
+structs and calls `lxp_run()`. No `lxp` source includes a host header.
 
 ## Linux without a memory unit
 
@@ -86,12 +86,19 @@ Guest-facing structs use fixed-width types, so the 32-bit-target ABI is byte-ide
 
 A host implements the port interface in `include/lxp/lxp_port.h` — OS ops (program-memory
 placement, task spawn, run-loop event wait/post, monotonic time, trustworthy entropy) plus
-optional network, display, and writable-filesystem providers — and calls:
+optional network, display, writable-filesystem, and raw-block providers — and calls:
 
 ```c
-int rc = lxp_run(&os_ops, &net_ops, &display_ops, &fs_ops, &run_cfg,
+int rc = lxp_run(&os_ops, &net_ops, &display_ops, &fs_ops, &block_ops, &run_cfg,
 		 "/sbin/init", argc, argv);
 ```
+
+The block provider is independent of the filesystem provider. With
+`LXP_ENABLE_BLOCK=1`, it exposes a Linux block class at `/dev/mmcblk0`, bounded
+DOS/MBR primary-partition views at `/dev/mmcblk0p1`…`p4`, geometry and partition-reread
+ioctls, durable sync, true 64-bit positioned I/O, and `/proc/partitions`. The filesystem
+provider's mount lifecycle arbitrates raw writable leases; ports must not allow a mounted
+filesystem and a writable raw user to own the same medium concurrently.
 
 Feature gates and sizing knobs live in `include/lxp/lxp_config.h`, set on the command line or
 via a drop-in `lxp_config_user.h`.

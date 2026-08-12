@@ -13,6 +13,7 @@
 #include "lxp/lxp_disp_ops.h"
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_fs_ops.h"
+#include "lxp/lxp_block_ops.h"
 #include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_program.h"
@@ -127,6 +128,7 @@ typedef struct lxp_run_config {
  * @p net_ops    the handle-based socket port, or NULL when built without NET.
  * @p disp_ops   the framebuffer / touch port, or NULL when built without DEV.
  * @p fs_ops     the writable-filesystem port, or NULL when built without FS.
+ * @p block_ops  the raw block-media port, or NULL when built without BLOCK.
  * @p run_config the rootfs table, console callbacks, and optional display
  *               geometry (required).
  *
@@ -140,6 +142,7 @@ typedef struct lxp_run_config {
  */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const lxp_display_ops_t *disp_ops, const lxp_fs_ops_t *fs_ops,
+	    const lxp_block_ops_t *block_ops,
 	    const lxp_run_config_t *run_config, const char *path, int argc,
 	    const char *const argv[]);
 
