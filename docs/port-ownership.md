@@ -1,0 +1,88 @@
+# Port ownership
+
+LXP is a portable Linux personality with an OS-independent core and optional
+host ports. This document is the ownership contract for integrations. Its
+purpose is to prevent a consumer application from becoming the permanent home
+of generally useful LXP mechanisms, while keeping board and product policy out
+of LXP.
+
+## Repository boundary
+
+LXP owns:
+
+- Linux ABI, process, scheduler, loader, VFS, device, network, and coordinator
+  semantics;
+- the public provider contracts in `include/lxp/`;
+- reusable RTOS ports under `ports/<rtos>/`, including guest task lifecycle,
+  SVC/trap entry, MPU profile installation, cache publication needed by guest
+  executable memory, and RTOS-specific SVC accounting;
+- architecture helpers used by those ports, under an architecture-owned port
+  directory rather than a consumer application;
+- patches required to make a supported RTOS port implement LXP's task,
+  privilege, or MPU contract; and
+- standalone port tests and integration fixtures.
+
+A consuming host owns:
+
+- implementations of LXP's provider tables using the host's stable HAL;
+- board addresses, linker regions, devicetree, clocks, pins, DMA buffers, QSPI
+  and rootfs placement;
+- native filesystem, block, display, touch, entropy, console, and network
+  adapters where the implementation is expressed in the host HAL rather than
+  an RTOS kernel primitive;
+- translating the host build configuration into `LXP_ENABLE_*` and sizing
+  definitions; and
+- product policy: the init path, rootfs choice, enabled providers, priorities,
+  watchdog behavior, diagnostics, and demo workloads.
+
+An application owns only application behavior. Benchmark signal generation,
+fault demonstrations, workload selection, and reporting may remain in an app.
+Rootfs discovery, provider composition, task/MPU mechanics, syscall trapping,
+and generic process lifecycle do not become application-owned merely because
+one app was their first consumer.
+
+## Dependency direction
+
+The core (`src/` and `include/lxp/`) may use only LXP interfaces and the C
+implementation. It must not include oveRTOS, FreeRTOS, NuttX, or Zephyr headers
+or select behavior using their configuration macros. `scripts/check-decoupled.sh`
+enforces this source-level rule.
+
+Code under `ports/` may depend on the RTOS and architecture named by that port.
+It may depend on LXP public and port-private interfaces, but not on an oveRTOS
+application, board description, or oveRTOS HAL. Board resources reach a port
+through explicit configuration or callbacks supplied by the consumer.
+
+The host adapter depends inward on LXP's public provider contracts and outward
+on the host HAL. LXP never calls oveRTOS APIs directly. This keeps a port usable
+by another product built on the same RTOS and makes the POSIX and QEMU ports
+meaningful independent integration tests.
+
+## Production-port migration ledger
+
+The oveRTOS STM32 production integration predates this contract. At LXP
+revision `21272d5`, the FreeRTOS, NuttX, and Zephyr task/trap/MPU seams and one
+required FreeRTOS MPU patch still live in oveRTOS. They are accepted migration
+exceptions, not the desired final layout.
+
+Move one engine at a time. A move is complete only when:
+
+1. the mechanism is built from `ports/<rtos>/` in a standalone LXP-owned test
+   or fixture;
+2. its public inputs contain no oveRTOS board or application type;
+3. oveRTOS supplies only board facts, provider implementations, and policy;
+4. host tests, all three production builds, and the selected hardware test are
+   unchanged or their intentional delta is documented; and
+5. the old consumer copy and its migration exception are removed in the same
+   integration commit.
+
+Temporary forwarding wrappers are allowed only when they have one owner and a
+recorded removal iteration. Parallel implementations of the same seam are not.
+
+## Review test
+
+For any disputed function, ask whether another product using the same RTOS
+would need substantially the same mechanism to run LXP. If yes, it belongs in
+the LXP port. If it names oveRTOS facilities, STM32 board resources, or a demo
+workload, it belongs in the host or application. Mixed functions must be split
+at that boundary rather than assigned wholesale to either repository.

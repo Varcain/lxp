@@ -4,8 +4,9 @@
 ARM Cortex-M with **no MMU**, as a portable library on top of any RTOS or bare metal. It
 presents a Linux/uClinux ABI (a ~130-call syscall core, an FDPIC ELF loader, `/proc`, `/dev`,
 pipes, ptys, signals, `fork`/`exec`/`wait`, and optional socket, filesystem, and raw-block
-bridges) with **zero dependency on any host OS** — the host fills in a few function-pointer
-structs and calls `lxp_run()`. No `lxp` source includes a host header.
+bridges) with **zero dependency on any host OS in its core** — the host fills in a few
+function-pointer structs and calls `lxp_run()`. Host-specific headers and mechanisms are
+confined to optional code under `ports/`; see [Port ownership](docs/port-ownership.md).
 
 ## Linux without a memory unit
 
@@ -108,6 +109,7 @@ via a drop-in `lxp_config_user.h`.
 - **Standalone** (bundled POSIX port): `cmake -S . -B build -DLXP_PORT_POSIX=ON && cmake --build build`
 - **Host unit tests** (cmocka, fetched at configure time): `cmake -S . -B build -DLXP_BUILD_TESTS=ON && ctest --test-dir build -R lxp_unit` — the OS-agnostic sources drive `lxp_syscall()` and the arena directly on x86-64, no emulator.
 - **QEMU end-to-end** (Cortex-M7): `ports/qemu-mps2/` runs static and dynamic (busybox) FDPIC guests on `qemu-system-arm -M mps2-an500` under FreeRTOS, unprivileged behind the MPU — see its README.
+- **Port ownership**: [docs/port-ownership.md](docs/port-ownership.md) defines which integration code belongs in lxp and which remains owned by a consuming host or board.
 
 ## License
 
