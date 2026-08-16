@@ -363,6 +363,18 @@ static int fake_metrics(lxp_fs_metrics_t *out)
 	out->service_us_total = 800;
 	out->service_us_max = 210;
 	out->budget_overruns = 3;
+	out->media_available = 1;
+	out->media_read_commands = 22;
+	out->media_write_commands = 11;
+	out->media_read_blocks = 32;
+	out->media_write_blocks = 16;
+	out->media_multiblock_commands = 4;
+	out->media_completion_wait_us_total = 900;
+	out->media_completion_wait_us_max = 90;
+	out->media_ready_wait_us_total = 700;
+	out->media_ready_wait_us_max = 80;
+	out->media_errors = 2;
+	out->media_recoveries = 1;
 	out->pending = 1;
 	out->queue_depth_max = 1;
 	return LXP_OK;
@@ -757,7 +769,7 @@ static void test_hostfs_metrics_proc(void **state)
 	(void)state;
 	lxp_proc_t proc;
 	lxp_arena_t arena;
-	char out[512];
+	char out[1024];
 	setup(&proc, &arena);
 
 	long len = proc_gen("/proc/lxp_fs", &proc, out, sizeof(out) - 1u);
@@ -771,6 +783,14 @@ static void test_hostfs_metrics_proc(void **state)
 	assert_non_null(strstr(out, "bytes_read 4096\n"));
 	assert_non_null(strstr(out, "service_us_max 210\n"));
 	assert_non_null(strstr(out, "budget_overruns 3\n"));
+	assert_non_null(strstr(out, "media_available 1\n"));
+	assert_non_null(strstr(out, "media_read_commands 22\n"));
+	assert_non_null(strstr(out, "media_write_commands 11\n"));
+	assert_non_null(strstr(out, "media_multiblock_commands 4\n"));
+	assert_non_null(strstr(out, "media_completion_wait_us_max 90\n"));
+	assert_non_null(strstr(out, "media_ready_wait_us_max 80\n"));
+	assert_non_null(strstr(out, "media_errors 2\n"));
+	assert_non_null(strstr(out, "media_recoveries 1\n"));
 }
 
 static void test_hostfs_async_wait_is_generation_owned(void **state)

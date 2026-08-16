@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-#define LXP_FS_OPS_ABI_VERSION 6u
+#define LXP_FS_OPS_ABI_VERSION 7u
 #define LXP_FS_NAME_MAX 256u
 
 /* Provider open flags. Access mode is explicit instead of encoded in low bits
@@ -108,8 +108,23 @@ typedef struct lxp_fs_metrics {
 	uint64_t completion_wait_us_total;
 	uint64_t completion_wait_us_max;
 	uint64_t budget_overruns;
+	/* Optional physical-media telemetry. Providers that cannot expose the
+	 * backing device leave media_available clear and these counters zero. */
+	uint64_t media_read_commands;
+	uint64_t media_write_commands;
+	uint64_t media_read_blocks;
+	uint64_t media_write_blocks;
+	uint64_t media_multiblock_commands;
+	uint64_t media_completion_wait_us_total;
+	uint64_t media_completion_wait_us_max;
+	uint64_t media_ready_wait_us_total;
+	uint64_t media_ready_wait_us_max;
+	uint64_t media_errors;
+	uint64_t media_recoveries;
 	uint32_t pending;
 	uint32_t queue_depth_max;
+	uint32_t media_available;
+	uint32_t _reserved;
 } lxp_fs_metrics_t;
 
 /* All calls execute in privileged host context. A synchronous provider may

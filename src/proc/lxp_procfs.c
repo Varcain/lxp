@@ -362,6 +362,20 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		FS_METRIC_LINE("completion_wait_us_total", metrics.completion_wait_us_total);
 		FS_METRIC_LINE("completion_wait_us_max", metrics.completion_wait_us_max);
 		FS_METRIC_LINE("budget_overruns", metrics.budget_overruns);
+		FS_METRIC_LINE("media_available", metrics.media_available);
+		FS_METRIC_LINE("media_read_commands", metrics.media_read_commands);
+		FS_METRIC_LINE("media_write_commands", metrics.media_write_commands);
+		FS_METRIC_LINE("media_read_blocks", metrics.media_read_blocks);
+		FS_METRIC_LINE("media_write_blocks", metrics.media_write_blocks);
+		FS_METRIC_LINE("media_multiblock_commands", metrics.media_multiblock_commands);
+		FS_METRIC_LINE("media_completion_wait_us_total",
+			       metrics.media_completion_wait_us_total);
+		FS_METRIC_LINE("media_completion_wait_us_max",
+			       metrics.media_completion_wait_us_max);
+		FS_METRIC_LINE("media_ready_wait_us_total", metrics.media_ready_wait_us_total);
+		FS_METRIC_LINE("media_ready_wait_us_max", metrics.media_ready_wait_us_max);
+		FS_METRIC_LINE("media_errors", metrics.media_errors);
+		FS_METRIC_LINE("media_recoveries", metrics.media_recoveries);
 #undef FS_METRIC_LINE
 #endif
 	} else if (strcmp(abs, "/proc/rt_scope") == 0) {
