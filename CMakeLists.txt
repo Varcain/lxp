@@ -29,6 +29,7 @@ option(LXP_ENABLE_DEV_DMA2D "DMA2D 2D-accelerator /dev/dma2d (display-ops dma2d_
 option(LXP_ENABLE_DEV_INPUT "Input event device (/dev/input)" OFF)
 option(LXP_ENABLE_DEV_INPUT_TESTPAD "Synthetic input provider (needs DEV_INPUT)" OFF)
 option(LXP_ENABLE_TOUCH "Physical touch provider (needs DEV_INPUT)" OFF)
+option(LXP_ENABLE_RT_METRICS "Low-overhead native-port timing metrics" OFF)
 option(LXP_ENABLE_FPU_CONTEXT "Preserve VFP state for floating-point guests" OFF)
 option(LXP_PORT_POSIX "Build the bundled POSIX reference port" OFF)
 option(LXP_BUILD_TESTS "Build the host (cmocka) unit-test suite" OFF)
@@ -61,7 +62,7 @@ if(LXP_ALL_SOURCES)
   # explicit 0/1 for each (matches lxp_config.h's defaults and keeps the matrix
   # build -Wundef-clean; -DLXP_ENABLE_X=0 genuinely disables).
   foreach(feat NET NETFS NETFS_EXEC PTY FS BLOCK DEV DEV_FB DEV_DMA2D DEV_INPUT
-               DEV_INPUT_TESTPAD TOUCH FPU_CONTEXT)
+               DEV_INPUT_TESTPAD TOUCH FPU_CONTEXT RT_METRICS)
     if(LXP_ENABLE_${feat})
       target_compile_definitions(lxp PUBLIC LXP_ENABLE_${feat}=1)
     else()

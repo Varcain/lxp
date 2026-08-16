@@ -78,6 +78,12 @@
 #ifndef LXP_ENABLE_TOUCH
 #define LXP_ENABLE_TOUCH 0
 #endif
+#ifndef LXP_ENABLE_RT_METRICS
+#define LXP_ENABLE_RT_METRICS 0
+#endif
+#if LXP_ENABLE_RT_METRICS != 0 && LXP_ENABLE_RT_METRICS != 1
+#error "LXP_ENABLE_RT_METRICS must be 0 or 1"
+#endif
 
 /* Reject partial subsystems at their public boundary. Silently compiling an
  * enabled child against a disabled owner produces either link failures or a
