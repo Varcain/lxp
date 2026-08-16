@@ -1366,7 +1366,7 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 	 * per-process GOT/data, never the shared text — so every dynamic process shares ONE libc.so
 	 * text copy (the cpio bytes) instead of its own ~358K arena copy. Every engine exposes the
 	 * backing span to its unprivileged guest as RO+X: a static or per-task window on FreeRTOS,
-	 * Zephyr's user-RX text/QSPI region, or the NuttX seam's raw MPU region. */
+	 * Zephyr's user-RX text/QSPI region, or the NuttX port's raw MPU region. */
 	if (!(flags & LXP_MAP_ANONYMOUS) && fd >= 0 && !(prot & 0x2 /* PROT_WRITE */)) {
 		lxp_ofd_t *s = fd_slot(p, fd);
 		if (s && s->kind == LXP_FD_FILE) {

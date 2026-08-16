@@ -6,8 +6,8 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Engine-agnostic Linux-personality run loop + svc dispatch + signal delivery,
- * shared by the Zephyr / FreeRTOS / NuttX seams (see lxp_run.h). The
- * NOMMU process model lives here once; each seam supplies the svc trap, the
+ * shared by the Zephyr / FreeRTOS / NuttX ports (see lxp_run.h). The
+ * NOMMU process model lives here once; each port supplies the svc trap, the
  * program memory, and the task spawn through a small vtable.
  *
  * Sequentialised vfork/exec/wait (observationally identical to vfork for the

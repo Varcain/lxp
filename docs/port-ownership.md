@@ -63,8 +63,9 @@ meaningful independent integration tests.
 The oveRTOS STM32 production integration predates this contract. The FreeRTOS
 task/trap/MPU seam and its required kernel patch now live in
 `ports/freertos/`; `ports/qemu-mps2` builds the same implementation as its
-standalone integration fixture. The NuttX and Zephyr seams remain accepted
-migration exceptions in oveRTOS, not the desired final layout.
+standalone integration fixture. NuttX task/trap/scheduler-note/MPU mechanics
+live in `ports/nuttx/` behind an immutable host configuration. The Zephyr seam
+remains the sole accepted migration exception in oveRTOS.
 
 Move one engine at a time. A move is complete only when:
 
