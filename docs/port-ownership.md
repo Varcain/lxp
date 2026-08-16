@@ -60,10 +60,11 @@ meaningful independent integration tests.
 
 ## Production-port migration ledger
 
-The oveRTOS STM32 production integration predates this contract. At LXP
-revision `21272d5`, the FreeRTOS, NuttX, and Zephyr task/trap/MPU seams and one
-required FreeRTOS MPU patch still live in oveRTOS. They are accepted migration
-exceptions, not the desired final layout.
+The oveRTOS STM32 production integration predates this contract. The FreeRTOS
+task/trap/MPU seam and its required kernel patch now live in
+`ports/freertos/`; `ports/qemu-mps2` builds the same implementation as its
+standalone integration fixture. The NuttX and Zephyr seams remain accepted
+migration exceptions in oveRTOS, not the desired final layout.
 
 Move one engine at a time. A move is complete only when:
 

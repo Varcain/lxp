@@ -28,7 +28,7 @@
  * (and then HardFaults at scheduler start). QEMU's mps2-an500 Cortex-M7 = 16. */
 #define configTOTAL_MPU_REGIONS 16
 #define configENABLE_ERRATA_837070_WORKAROUND 0
-/* Our SVC vector is the seam's strong SVC_Handler (engine.c), NOT vPortSVCHandler,
+/* Our SVC vector is LXP's strong SVC_Handler, NOT vPortSVCHandler,
  * so the port's handler-installation self-check must be disabled. */
 #define configCHECK_HANDLER_INSTALLATION 0
 #define configENFORCE_SYSTEM_CALLS_FROM_KERNEL_ONLY 0
@@ -55,7 +55,7 @@
 #define configMAX_SYSCALL_INTERRUPT_PRIORITY (2 << (8 - configPRIO_BITS))
 
 /* Route the FreeRTOS core exceptions to the CMSIS-style vector names in boot.c.
- * NOTE: SVC is NOT routed here — the harness's own SVC_Handler (engine.c) traps
+ * NOTE: SVC is NOT routed here — LXP's shared FreeRTOS SVC_Handler traps
  * program syscalls and forwards FreeRTOS's start-scheduler svc to vPortSVCHandler. */
 #define xPortPendSVHandler PendSV_Handler
 #define xPortSysTickHandler SysTick_Handler
@@ -65,5 +65,6 @@
 #define INCLUDE_vTaskSuspend 1
 #define INCLUDE_xTaskGetCurrentTaskHandle 1
 #define INCLUDE_uxTaskPriorityGet 1
+#define INCLUDE_uxTaskGetStackHighWaterMark 1
 
 #endif /* FREERTOS_CONFIG_H */

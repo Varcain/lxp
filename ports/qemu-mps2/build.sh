@@ -13,6 +13,15 @@ FRT="$HERE/vendor/FreeRTOS-Kernel"
 PORT="$FRT/portable/GCC/ARM_CM4_MPU"
 MPU_WRAP="$FRT/portable/Common/mpu_wrappers.c" # V1 unprivileged API trampolines
 if [ ! -f "$PORT/port.c" ]; then echo "FreeRTOS missing — run: bash fetch-deps.sh"; exit 1; fi
+LXP_FREERTOS_PATCH="$LXP_ROOT/ports/freertos/patches/0001-arm-cm4-mpu-drop-global-user-peripheral-map.patch"
+if git -C "$FRT" apply --reverse --check "$LXP_FREERTOS_PATCH" >/dev/null 2>&1; then
+    : # already applied
+elif git -C "$FRT" apply --check "$LXP_FREERTOS_PATCH"; then
+    git -C "$FRT" apply "$LXP_FREERTOS_PATCH"
+else
+    echo "FreeRTOS tree does not match the LXP MPU patch" >&2
+    exit 1
+fi
 INC="-I$LXP_ROOT/include -I$LXP_ROOT/src -I$HERE -I$HERE/board -I$FRT/include -I$PORT"
 # softfp (not soft): the CM4_MPU port's context switch has VFP save/restore asm
 # (vstmia s16-s31) that the assembler only accepts with an FPU selected. softfp keeps
@@ -25,7 +34,7 @@ MILESTONE="${MILESTONE:-1}"
 FLAGS="$FLAGS -DLXP_MILESTONE=$MILESTONE -DLXP_ENABLE_FPU_CONTEXT=1"
 # Warnings-as-errors for our code. The lxp module gets full strictness incl. -Wundef,
 # matching scripts/gate-build.sh (src/ includes no host headers, so it stays -Wundef-clean).
-# The port TUs (engine.c/boot.c) include vendored FreeRTOS headers that are not -Wundef-clean,
+# The port TUs include vendored FreeRTOS headers that are not -Wundef-clean,
 # so they get -Wextra -Werror without -Wundef. Vendored FreeRTOS keeps the base -Wall.
 LXPFLAGS="$FLAGS -Wextra -Werror -Wundef"
 PORTFLAGS="$FLAGS -Wextra -Werror"
@@ -38,7 +47,7 @@ done
 for f in "$FRT/tasks.c" "$FRT/queue.c" "$FRT/list.c" "$PORT/port.c" "$MPU_WRAP"; do
     $ARMCC $FLAGS $INC -c "$f" -o "build/$(basename "$f").o" || err=1
 done
-for f in engine.c boot.c; do
+for f in "$LXP_ROOT/ports/freertos/lxp_freertos_port.c" engine.c boot.c; do
     $ARMCC $PORTFLAGS $INC -c "$f" -o "build/$(basename "$f").o" || err=1
 done
 if [ "$err" -ne 0 ]; then echo "COMPILE FAILED"; exit 1; fi

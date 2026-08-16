@@ -1,10 +1,9 @@
 # lxp QEMU harness — Arm MPS2-AN500 (Cortex-M7) on FreeRTOS
 
 A standalone, end-to-end test harness that runs the lxp Linux personality under
-`qemu-system-arm -M mps2-an500`, with a vendored FreeRTOS kernel supplying the
-task/context-switch primitives. It is a de-oveRTOS'd distillation of oveRTOS's
-`backends/freertos/freertos_lnx.c`: each guest process is a FreeRTOS task whose
-Linux syscalls trap to `SVC_Handler` → `lxp_dispatch()`.
+`qemu-system-arm -M mps2-an500`. It builds the same production
+`ports/freertos/lxp_freertos_port.c` used by consumers: each guest process is a
+restricted FreeRTOS task whose Linux syscalls trap through `SVC_Handler`.
 
 The harness lives entirely under `ports/` and pulls in **no** `src/`/`include/`
 dependency on any OS, so `scripts/check-decoupled.sh` still passes.
@@ -14,10 +13,11 @@ dependency on any OS, so `scripts/check-decoupled.sh` still passes.
 | file | role |
 |------|------|
 | `fetch-deps.sh` | clones FreeRTOS-Kernel into `vendor/` (gitignored — never committed) |
-| `engine.c` | fills `lxp_os_ops_t` on top of FreeRTOS (SVC trap, fault containment, spawn/resume, region placement) |
+| `engine.c` | supplies QEMU storage, memory policy, time, entropy and statistics through `g_lxp_freertos_port_config` |
+| `../freertos/lxp_freertos_port.c` | shared production task, SVC, fault-containment, park/resume and MPU implementation |
 | `boot.c` | reset/vectors, semihosting console + exit, tick clock, coordinator task that calls `lxp_run()` |
 | `board/FreeRTOSConfig.h`, `board/mps2_an500.ld` | board config + link map |
-| `build.sh` | cross-compiles the module + FreeRTOS + engine/boot into `firmware.elf` (bakes in `GUEST_ENTRY`) |
+| `build.sh` | applies the LXP kernel patch and cross-compiles the module, shared port, FreeRTOS and harness into `firmware.elf` |
 | `run.sh` | selects a milestone (`M=1`/`M=2`), (re)generates the embedded cpio, builds, runs QEMU, asserts the marker |
 | `guest/lxpsys.h` | shared FDPIC syscall shims (inline `svc`, no libc, no GOT dependency) |
 | `guest/hello.c` | the M1 guest (static FDPIC: `write` + `exit_group`) |
@@ -82,7 +82,8 @@ rootfs (~11 MiB) instead of the minimal fixture.
 
 - **Thumb entry bit.** Cortex-M is Thumb-only. The guest entry PC handed to
   `prog_tramp`'s `bx` must have bit 0 set, else the core switches to ARM state →
-  `INVSTATE` UsageFault. `engine.c` forces it (`c.pc | 1u`).
+  `INVSTATE` UsageFault. The loader's launch contract supplies the tagged entry,
+  and the shared port preserves it through park/resume.
 - **cpio alignment.** The embedded cpio blob is XIP'd in place, so the FDPIC ELF's
   Thumb text and its word literal pools must be word-aligned. An unaligned blob
   lands `_start` on an odd byte → misaligned Thumb → `INVSTATE`/`NOCP`. `run.sh`

@@ -5,7 +5,7 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Bare-metal bring-up for the standalone FreeRTOS-based QEMU harness (MPS2-AN500,
- * Cortex-M7): the vector table (PendSV/SysTick → FreeRTOS, SVC/faults → engine.c),
+ * Cortex-M7): the vector table (PendSV/SysTick → FreeRTOS, SVC/faults → the shared port),
  * reset, a SysTick-tick monotonic clock, the FreeRTOS static-allocation + hook
  * callbacks, an Arm-semihosting console + clean exit, and main() — which parses the
  * embedded rootfs cpio and runs the guest via lxp_run() from a coordinator task.
@@ -18,6 +18,7 @@
 
 #include "lxp/lxp_run.h"
 #include "lxp/lxp_bootstrap.h"
+#include "lxp/ports/freertos.h"
 
 /* Which milestone this firmware runs (set by build.sh -DLXP_MILESTONE). M1/M2 embed a
  * small cpio in flash; M3 XIPs a big busybox cpio from PSRAM (QEMU `-device loader`). */
@@ -35,8 +36,6 @@
 #define LXP_PSRAM_ROOTFS ((const uint8_t *)0x60000000u)
 #define LXP_PSRAM_ROOTFS_MAX (12u * 1024u * 1024u)
 #endif
-
-extern const lxp_os_ops_t g_lxp_qemu_engine;
 
 /* ---- Arm semihosting (console + exit) -------------------------------------- */
 static long semihost(long op, void *arg)
@@ -74,6 +73,7 @@ static volatile uint64_t g_us;
 void vApplicationTickHook(void)
 {
 	g_us += 1000000u / configTICK_RATE_HZ;
+	lxp_freertos_tick();
 }
 uint64_t lxp_qemu_now_us(void)
 {
@@ -196,7 +196,7 @@ static void coordinator_task(void *arg)
 	const char *const argv[] = {"hello", NULL};
 	int argc = 1;
 #endif
-	int rc = lxp_run(&g_lxp_qemu_engine, NULL, NULL, NULL, NULL, &cfg, entry, argc, argv);
+	int rc = lxp_run(&g_lxp_host_engine, NULL, NULL, NULL, NULL, &cfg, entry, argc, argv);
 	sh_exit(rc >= 0 ? rc : 100 - rc);
 }
 
@@ -294,11 +294,11 @@ __attribute__((section(".isr_vector"), used)) void (*const g_vectors[])(void) = 
 	Reset_Handler,
 	NMI_Handler,
 	HardFault_Handler,
-	MemManage_Handler, /* engine.c */
-	BusFault_Handler,  /* engine.c */
-	UsageFault_Handler, /* engine.c */
+	MemManage_Handler, /* ports/freertos */
+	BusFault_Handler,  /* ports/freertos */
+	UsageFault_Handler, /* ports/freertos */
 	0, 0, 0, 0,
-	SVC_Handler,       /* engine.c (traps program syscalls) */
+	SVC_Handler,       /* ports/freertos (traps program syscalls) */
 	DebugMon_Handler,
 	0,
 	PendSV_Handler,    /* FreeRTOS (xPortPendSVHandler) */
