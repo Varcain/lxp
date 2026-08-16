@@ -1,0 +1,94 @@
+/*
+ * Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
+ *
+ * Reusable host composition and immutable rootfs bootstrap.
+ */
+
+#ifndef LXP_HOST_H
+#define LXP_HOST_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "lxp/lxp_run.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** Inputs used once to construct an LXP host from a newc CPIO image.
+ *
+ * The caller owns every referenced provider and storage object for at least as
+ * long as the resulting @ref lxp_host_t. LXP parses the archive without
+ * allocating: @p rootfs_storage receives the immutable file table and
+ * @p rootfs_name_storage receives its normalized absolute pathnames.
+ */
+typedef struct lxp_host_config {
+	const lxp_os_ops_t *os_ops;
+	const lxp_net_ops_t *net_ops;
+	const lxp_display_ops_t *display_ops;
+	const lxp_fs_ops_t *fs_ops;
+	const lxp_block_ops_t *block_ops;
+	const void *rootfs_image;
+	size_t rootfs_image_size;
+	lxp_file_t *rootfs_storage;
+	int rootfs_capacity;
+	char *rootfs_name_storage;
+	size_t rootfs_name_capacity;
+} lxp_host_config_t;
+
+/** Per-launch policy layered over an initialized host's immutable rootfs and
+ * provider composition. Zero initialization selects every optional default. */
+typedef struct lxp_launch_config {
+	lxp_write_fn write_fn;
+	lxp_read_fn read_fn;
+	void *io_ctx;
+	void (*on_enosys)(long nr);
+	int (*console_poll)(void *ctx);
+	const char *const *env;
+	void (*on_guest_exit)(const lxp_guest_exit_info_t *info);
+	uint16_t display_width;
+	uint16_t display_height;
+	lxp_rt_scope_read_fn rt_scope_read;
+	void *rt_scope_ctx;
+} lxp_launch_config_t;
+
+/** Immutable, zero-heap host instance. Treat fields as read-only after a
+ * successful @ref lxp_host_init_cpio call. Sequential launches may reuse one
+ * instance; concurrent @ref lxp_host_run calls are not supported. */
+typedef struct lxp_host {
+	const lxp_os_ops_t *os_ops;
+	const lxp_net_ops_t *net_ops;
+	const lxp_display_ops_t *display_ops;
+	const lxp_fs_ops_t *fs_ops;
+	const lxp_block_ops_t *block_ops;
+	const lxp_file_t *rootfs;
+	int rootfs_count;
+	const void *rootfs_image;
+	size_t rootfs_image_size;
+	uint32_t initialized;
+} lxp_host_t;
+
+/**
+ * Publish the rootfs memory window to the OS port, then parse a newc CPIO image
+ * into caller-owned storage. The port hook runs before the first archive read,
+ * which is required by hosts that must install a safe QSPI/cache mapping.
+ *
+ * @return @c LXP_OK, @c LXP_ERR_INVALID_PARAM for an invalid contract, or
+ * @c LXP_ERR_INVAL for a malformed archive or insufficient table/name storage.
+ */
+int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config);
+
+/** Run one Linux init program using the host's providers and rootfs. */
+int lxp_host_run(const lxp_host_t *host, const lxp_launch_config_t *launch_config, const char *path,
+		 int argc, const char *const argv[]);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* LXP_HOST_H */

@@ -97,6 +97,22 @@ add_test(NAME lxp_unit_header_contract
   COMMAND sh "${LXP_ROOT}/scripts/check-header-contract.sh"
           "${CMAKE_C_COMPILER}")
 
+# ---- immutable host/bootstrap facade ------------------------------------------
+# A focused lxp_run substitute captures composition without starting a guest;
+# lxp_coord_test below continues to exercise the real coordinator entry.
+add_executable(lxp_host_test
+  "${LXP_ROOT}/src/lxp_bootstrap.c"
+  "${LXP_ROOT}/src/lxp_host.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_host.c"
+)
+target_include_directories(lxp_host_test PRIVATE
+  "${LXP_ROOT}/include"
+  "${cmocka_SOURCE_DIR}/include"
+)
+target_compile_options(lxp_host_test PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(lxp_host_test PRIVATE cmocka-static)
+add_test(NAME lxp_unit_host COMMAND lxp_host_test)
+
 # ---- coordinator (src/lxp_run.c) unit tests -------------------------------------
 # The coordinator is deliberately absent from lxp_test_stub above: its 32-bit-target
 # pointer casts warn on a 64-bit host, and the OS-service symbols it defines would clash

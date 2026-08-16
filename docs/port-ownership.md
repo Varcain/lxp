@@ -18,6 +18,9 @@ LXP owns:
   executable memory, and RTOS-specific SVC accounting;
 - architecture helpers used by those ports, under `include/lxp/arch/` rather
   than a consumer application;
+- reusable host composition under `include/lxp/lxp_host.h`: early rootfs-window
+  publication, zero-heap CPIO ingestion, immutable provider/rootfs capture, and
+  construction of complete per-run contracts;
 - patches required to make a supported RTOS port implement LXP's task,
   privilege, or MPU contract; and
 - standalone port tests and integration fixtures.
@@ -40,6 +43,10 @@ fault demonstrations, workload selection, and reporting may remain in an app.
 Rootfs discovery, provider composition, task/MPU mechanics, syscall trapping,
 and generic process lifecycle do not become application-owned merely because
 one app was their first consumer.
+
+The consumer still chooses the rootfs image, fixed table/name storage capacity,
+enabled providers, init path, and launch callbacks. The host facade sequences
+those choices; it does not turn product policy into LXP defaults.
 
 ## Dependency direction
 

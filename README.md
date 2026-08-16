@@ -87,12 +87,20 @@ Guest-facing structs use fixed-width types, so the 32-bit-target ABI is byte-ide
 
 A host implements the port interface in `include/lxp/lxp_port.h` — OS ops (program-memory
 placement, task spawn, run-loop event wait/post, monotonic time, trustworthy entropy) plus
-optional network, display, writable-filesystem, and raw-block providers — and calls:
+optional network, display, writable-filesystem, and raw-block providers. The low-level entry
+remains available for integrations that already own a parsed rootfs:
 
 ```c
 int rc = lxp_run(&os_ops, &net_ops, &display_ops, &fs_ops, &block_ops, &run_cfg,
 		 "/sbin/init", argc, argv);
 ```
+
+For CPIO-backed systems, prefer the zero-heap host facade in `include/lxp/lxp_host.h`.
+`lxp_host_init_cpio()` publishes an external-memory window before its first read, parses the
+archive once into caller-owned fixed storage, and captures the provider bundle.
+`lxp_host_run()` then accepts only per-launch console/diagnostic/display policy and supplies
+the immutable provider and rootfs contract itself. One host may be reused for sequential
+launches; the global NOMMU coordinator deliberately does not support concurrent runs.
 
 The block provider is independent of the filesystem provider. With
 `LXP_ENABLE_BLOCK=1`, it exposes a Linux block class at `/dev/mmcblk0`, bounded

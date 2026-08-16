@@ -30,6 +30,7 @@ set(LXP_RUNTIME_SOURCES
 )
 
 set(LXP_COORDINATOR_SOURCES
+    "${LXP_SOURCE_ROOT}/src/lxp_host.c"
     "${LXP_SOURCE_ROOT}/src/lxp_run.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_blocked.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_exec.c"
