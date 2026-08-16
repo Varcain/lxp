@@ -16,8 +16,8 @@ LXP owns:
 - reusable RTOS ports under `ports/<rtos>/`, including guest task lifecycle,
   SVC/trap entry, MPU profile installation, cache publication needed by guest
   executable memory, and RTOS-specific SVC accounting;
-- architecture helpers used by those ports, under an architecture-owned port
-  directory rather than a consumer application;
+- architecture helpers used by those ports, under `include/lxp/arch/` rather
+  than a consumer application;
 - patches required to make a supported RTOS port implement LXP's task,
   privilege, or MPU contract; and
 - standalone port tests and integration fixtures.

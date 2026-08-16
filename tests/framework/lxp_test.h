@@ -63,6 +63,7 @@ static inline int lxp_test_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_
 
 /* Suite entry points — one per tests/suites/test_<name>.c. */
 int test_arena_run(void);
+int test_cortex_m_run(void);
 int test_loader_run(void);
 int test_loader_fdpic_run(void);
 int test_fs_run(void);

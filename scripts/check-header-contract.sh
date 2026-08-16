@@ -9,7 +9,7 @@ set -eu
 cd "$(dirname "$0")/.."
 cc_bin=${1:-${CC:-cc}}
 
-for header in include/lxp/*.h; do
+for header in $(find include/lxp -type f -name '*.h' | sort); do
 	name=${header#include/}
 	"$cc_bin" -std=c11 -Iinclude -fsyntax-only -x c -include "$name" /dev/null
 	"$cc_bin" -std=c++17 -Iinclude -fsyntax-only -x c++ -include "$name" /dev/null
