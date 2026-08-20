@@ -19,7 +19,7 @@
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_port.h"
 
-#define LXP_NUTTX_PORT_CONFIG_ABI_VERSION 1u
+#define LXP_NUTTX_PORT_CONFIG_ABI_VERSION 2u
 
 typedef int32_t (*lxp_nuttx_slot_lookup_t)(uintptr_t identity);
 
@@ -84,10 +84,6 @@ typedef struct lxp_nuttx_port_config {
 	void (*runtime_stop)(int32_t pid);
 	void (*runtime_switch)(int32_t next_pid);
 	uint64_t (*runtime_us)(int32_t pid);
-
-	/* Optional low-overhead observer. The cycle endpoint is sampled before
-	 * observer bookkeeping so telemetry is excluded from the charged SVC. */
-	void (*svc_metrics_record)(uint32_t syscall_nr, uint32_t cycles);
 } lxp_nuttx_port_config_t;
 
 /** Supplied exactly once by the embedding system. */

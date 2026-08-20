@@ -35,6 +35,7 @@
 #include "lxp/arch/cortex_m_mpu.h"
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_run.h"
+#include "lxp/lxp_rt_metrics.h"
 #include "lxp/lxp_seam.h"
 #include "lxp/ports/zephyr.h"
 
@@ -403,8 +404,7 @@ lxp_zephyr_kernel_oops_c(const struct arch_esf *esf, _callee_saved_t *callee, ui
 #endif
 #if LXP_ENABLE_RT_METRICS
 				uint32_t svc_cycles = k_cycle_get_32() - svc_start_cycles;
-				if (PORT_CONFIG.svc_metrics_record)
-					PORT_CONFIG.svc_metrics_record(syscall, svc_cycles);
+				lxp_rt_svc_metrics_record(syscall, svc_cycles);
 #endif
 				return;
 			}

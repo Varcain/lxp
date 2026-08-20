@@ -18,7 +18,7 @@
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_port.h"
 
-#define LXP_FREERTOS_PORT_CONFIG_ABI_VERSION 1u
+#define LXP_FREERTOS_PORT_CONFIG_ABI_VERSION 2u
 #define LXP_FREERTOS_ROOTFS_REGION_MAX 2u
 
 typedef int32_t (*lxp_freertos_slot_lookup_t)(uintptr_t identity);
@@ -75,10 +75,9 @@ typedef struct lxp_freertos_port_config {
 					const struct lxp_cortex_m_cache_geometry *geometry);
 	void (*host_fatal)(uint32_t cfsr, uint32_t hfsr, uint32_t pc);
 
-	/* Optional low-overhead observer. Reading the counter happens in the trap;
-	 * observer bookkeeping is deliberately excluded from the charged sample. */
+	/* Optional low-overhead cycle source. LXP owns the accumulator; reading the
+	 * endpoint before recording excludes telemetry bookkeeping from the sample. */
 	volatile const uint32_t *svc_cycle_counter;
-	void (*svc_metrics_record)(uint32_t syscall_nr, uint32_t cycles);
 } lxp_freertos_port_config_t;
 
 /** Supplied exactly once by the embedding system. */

@@ -66,6 +66,7 @@ int test_arena_run(void);
 int test_cortex_m_run(void);
 int test_loader_run(void);
 int test_loader_fdpic_run(void);
+int test_rt_metrics_run(void);
 int test_fs_run(void);
 int test_overflow_run(void);
 int test_signal_run(void);

@@ -34,6 +34,7 @@
 #include "lxp/arch/cortex_m_cache.h"
 #include "lxp/arch/cortex_m_mpu.h"
 #include "lxp/lxp_run.h"
+#include "lxp/lxp_rt_metrics.h"
 #include "lxp/lxp_seam.h"
 #include "lxp/ports/freertos.h"
 
@@ -181,8 +182,10 @@ static struct lnx_capture g_cap __attribute__((used)); /* referenced from SVC_Ha
  * never reaching the port's raise-privilege path. */
 int lxp_freertos_svc_c(struct lnx_capture *g)
 {
+#if LXP_ENABLE_RT_METRICS
 	uint32_t svc_start_cycles = PORT_CONFIG.svc_cycle_counter ? *PORT_CONFIG.svc_cycle_counter
 								  : 0u;
+#endif
 	int sidx = current_slot();
 	if (sidx < 0)
 		return 0; /* not a program task → forward to FreeRTOS */
@@ -260,12 +263,14 @@ int lxp_freertos_svc_c(struct lnx_capture *g)
 		__asm__ volatile("vldmia %0, {s16-s31}" : : "r"(high) : "memory");
 	}
 #endif
-	if (PORT_CONFIG.svc_cycle_counter && PORT_CONFIG.svc_metrics_record) {
+#if LXP_ENABLE_RT_METRICS
+	if (PORT_CONFIG.svc_cycle_counter) {
 		/* Read before updating statistics so observer bookkeeping is excluded.
 		 * Unsigned subtraction remains correct across counter wrap. */
 		uint32_t svc_cycles = *PORT_CONFIG.svc_cycle_counter - svc_start_cycles;
-		PORT_CONFIG.svc_metrics_record(f.r[7], svc_cycles);
+		lxp_rt_svc_metrics_record(f.r[7], svc_cycles);
 	}
+#endif
 	return 1;
 }
 

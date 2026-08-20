@@ -63,6 +63,7 @@
 #include "lxp/arch/cortex_m_mpu.h"
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_run.h"
+#include "lxp/lxp_rt_metrics.h"
 #include "lxp/lxp_seam.h"
 #include "lxp/ports/nuttx.h"
 
@@ -241,9 +242,10 @@ static int lxp_svc_handler(int irq, void *context, void *arg)
 	if (sidx < 0)
 		return arm_svcall(irq, context, arg);
 
+#if LXP_ENABLE_RT_METRICS
 	uint32_t svc_syscall = regs[REG_R7];
-	uint32_t svc_start_cycles = PORT_CONFIG.svc_metrics_record ? (uint32_t)up_perf_gettime()
-								   : 0u;
+	uint32_t svc_start_cycles = (uint32_t)up_perf_gettime();
+#endif
 
 	/* arm_doirq() skips re-saving the interrupted context for an SVCall whose
 	 * regs[REG_R0] == SYS_restore_context (== 1) — but a Linux syscall's r0 can
@@ -331,10 +333,10 @@ static int lxp_svc_handler(int irq, void *context, void *arg)
 	/* Include nested IRQ time: an RT release can preempt this handler, but
 	 * Cortex-M cannot dispatch its woken thread until the outer SVC returns.
 	 * Reading the endpoint before recording excludes telemetry bookkeeping. */
-	if (PORT_CONFIG.svc_metrics_record) {
-		uint32_t svc_cycles = (uint32_t)up_perf_gettime() - svc_start_cycles;
-		PORT_CONFIG.svc_metrics_record(svc_syscall, svc_cycles);
-	}
+#if LXP_ENABLE_RT_METRICS
+	uint32_t svc_cycles = (uint32_t)up_perf_gettime() - svc_start_cycles;
+	lxp_rt_svc_metrics_record(svc_syscall, svc_cycles);
+#endif
 	return 0;
 }
 

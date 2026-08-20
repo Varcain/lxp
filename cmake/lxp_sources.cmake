@@ -49,6 +49,7 @@ set(LXP_POST_COORDINATOR_SOURCES
 )
 set(LXP_UTILITY_SOURCES
     "${LXP_SOURCE_ROOT}/src/lxp_latency.c"
+    "${LXP_SOURCE_ROOT}/src/lxp_rt_metrics.c"
     "${LXP_SOURCE_ROOT}/src/lxp_arena.c"
     "${LXP_SOURCE_ROOT}/src/lxp_loader.c"
 )

@@ -37,6 +37,7 @@ add_executable(lxp_test_stub
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_cortex_m.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_loader.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_loader_fdpic.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_rt_metrics.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_fs.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_overflow.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_signal.c"
@@ -70,6 +71,7 @@ target_compile_definitions(lxp_test_stub PRIVATE
   LXP_ENABLE_DEV_DMA2D=1
   LXP_ENABLE_DEV_INPUT=1
   LXP_ENABLE_FPU_CONTEXT=1
+  LXP_ENABLE_RT_METRICS=1
 )
 
 target_link_libraries(lxp_test_stub PRIVATE cmocka-static pthread rt m)
