@@ -41,6 +41,8 @@
 #define TRAMP_STACK_WORDS 192u		  /* tramp prologue; the program uses its own stack */
 #define TRAMP_STORAGE_WORDS 256u	  /* 768-byte stack + 256-byte resume handoff */
 #define SLOT_PRIO (tskIDLE_PRIORITY + 1u) /* below the run-loop task (its creator) */
+#define GUEST_SCHED_PRIO (SLOT_PRIO + 1u) /* no higher than coordinator; above every guest */
+#define GUEST_SCHED_STACK_WORDS 192u
 #define PORT_CONFIG g_lxp_freertos_port_config
 #define dyn_pools ((uint8_t (*)[LXP_DYN_POOL_SIZE])(void *)PORT_CONFIG.dynamic_pools)
 #define prog_regions ((uint8_t (*)[LXP_PROG_REGION_SIZE])(void *)PORT_CONFIG.program_regions)
@@ -59,6 +61,7 @@ struct freertos_lxp_slot {
 	uint32_t generation;
 	struct freertos_prepared_profile profile;
 	struct resume_desc *park_desc;
+	uint8_t sched_blocked;
 };
 static struct freertos_lxp_slot g_slots[LXP_NSLOT];
 /* FreeRTOS owns the opaque task control-block storage; this port owns g_slots. */
@@ -66,8 +69,20 @@ static StaticTask_t g_tcb[LXP_NSLOT];
 static uint32_t g_tick_budget_ticks;
 static TaskHandle_t g_tick_budget_owner;
 static uint8_t g_tick_subscribed;
+static int g_selected_slot = -1;
+static TaskHandle_t g_rotate_owner;
+static uint32_t g_rotate_generation;
+static uint8_t g_rotate_pending;
+static StaticSemaphore_t g_sched_ev_buf;
+static SemaphoreHandle_t g_sched_ev;
+static StaticTask_t g_sched_tcb;
+static StackType_t g_sched_stack[GUEST_SCHED_STACK_WORDS];
+static TaskHandle_t g_sched_task;
 static void freertos_park_entry(void *token);
 static int freertos_validate_active_profile(int sidx);
+
+_Static_assert(GUEST_SCHED_PRIO < configMAX_PRIORITIES,
+	       "FreeRTOS needs a native priority between Linux guests and their coordinator");
 
 static lxp_slot_ref_t task_slot_ref(int slot)
 {
@@ -114,20 +129,100 @@ static int current_slot(void)
 	return -1;
 }
 
-/* Guest-only round robin for builds which deliberately leave FreeRTOS's global
- * 1 ms equal-priority slicing disabled. SysTick calls this after the scheduler
- * tick. Once one guest consumes its configured budget while a peer is ready,
- * PendSV rotates the ready list at SLOT_PRIO. Higher-priority host work is
- * unaffected and may preempt at any point in the budget. */
+/* Guest-only proportional scheduling. FreeRTOS advances an equal-priority
+ * ready-list cursor every time it selects that priority, even when global time
+ * slicing is off. A frequent higher-priority host wakeup would therefore
+ * rotate guests independently of their LXP quantum. Keep exactly one guest
+ * native-runnable and defer weighted rotation from SysTick to a small
+ * privileged task. All guests remain in SLOT_PRIO; this gate cannot raise a
+ * Linux process above host service or real-time work. */
 static void freertos_tick_budget_reset(void)
 {
 	g_tick_budget_ticks = 0;
 	g_tick_budget_owner = NULL;
 }
 
+static int freertos_sched_slot_runnable(int sidx)
+{
+	return sidx >= 0 && sidx < LXP_NSLOT && g_slots[sidx].tid &&
+	       lxp_slot_ref_is_runnable(task_slot_ref(sidx));
+}
+
+static void freertos_sched_cancel_rotation_locked(void)
+{
+	g_rotate_owner = NULL;
+	g_rotate_generation = 0;
+	g_rotate_pending = 0u;
+}
+
+/* Called with the FreeRTOS critical section held. The ignored slot can still
+ * be core-runnable while its synchronous park/abort callback is committing. */
+static int freertos_sched_find_next_locked(int after, int ignore)
+{
+	for (int n = 1; n <= LXP_NSLOT; n++) {
+		int sidx = (after + n + LXP_NSLOT) % LXP_NSLOT;
+		if (sidx != ignore && freertos_sched_slot_runnable(sidx) &&
+		    g_slots[sidx].sched_blocked)
+			return sidx;
+	}
+	return -1;
+}
+
+static void freertos_sched_activate_locked(int sidx)
+{
+	if (sidx < 0)
+		return;
+	g_slots[sidx].sched_blocked = 0u;
+	g_selected_slot = sidx;
+	freertos_tick_budget_reset();
+	vTaskResume(g_slots[sidx].tid);
+}
+
+/* Register a newly core-runnable task. Fresh tasks are already ready after
+ * xTaskCreateRestrictedStatic; persistent tasks remain suspended from park. */
+static void freertos_sched_register_ready(int sidx, int native_suspended)
+{
+	taskENTER_CRITICAL();
+	if (!freertos_sched_slot_runnable(g_selected_slot) ||
+	    g_slots[g_selected_slot].sched_blocked) {
+		g_selected_slot = sidx;
+		g_slots[sidx].sched_blocked = 0u;
+		freertos_tick_budget_reset();
+		if (native_suspended)
+			vTaskResume(g_slots[sidx].tid);
+	} else if (g_selected_slot != sidx) {
+		g_slots[sidx].sched_blocked = 1u;
+		if (!native_suspended)
+			vTaskSuspend(g_slots[sidx].tid);
+	}
+	taskEXIT_CRITICAL();
+}
+
+static void freertos_sched_task_entry(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		(void)xSemaphoreTake(g_sched_ev, portMAX_DELAY);
+		taskENTER_CRITICAL();
+		TaskHandle_t owner = g_rotate_owner;
+		uint32_t generation = g_rotate_generation;
+		int current = g_selected_slot;
+		freertos_sched_cancel_rotation_locked();
+		if (freertos_sched_slot_runnable(current) && g_slots[current].tid == owner &&
+		    g_slots[current].generation == generation) {
+			int next = freertos_sched_find_next_locked(current, -1);
+			if (next >= 0) {
+				g_slots[current].sched_blocked = 1u;
+				vTaskSuspend(g_slots[current].tid);
+				freertos_sched_activate_locked(next);
+			}
+		}
+		taskEXIT_CRITICAL();
+	}
+}
+
 static void lxp_freertos_tick(void)
 {
-#if (configUSE_TIME_SLICING == 0)
 	int current = current_slot();
 	if (!lxp_trap_active() || current < 0) {
 		freertos_tick_budget_reset();
@@ -149,12 +244,17 @@ static void lxp_freertos_tick(void)
 		return;
 	g_tick_budget_ticks = 0;
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		if (s != current && g_slots[s].tid && lxp_slot_ref_is_runnable(task_slot_ref(s))) {
-			portYIELD_FROM_ISR(pdTRUE);
+		if (s != current && freertos_sched_slot_runnable(s) && g_slots[s].sched_blocked &&
+		    !g_rotate_pending && g_sched_task) {
+			BaseType_t woken = pdFALSE;
+			g_rotate_owner = g_slots[current].tid;
+			g_rotate_generation = g_slots[current].generation;
+			g_rotate_pending = 1u;
+			xSemaphoreGiveFromISR(g_sched_ev, &woken);
+			portYIELD_FROM_ISR(woken);
 			return;
 		}
 	}
-#endif
 }
 
 /* ---- the SVC trap ---------------------------------------------------------- */
@@ -801,6 +901,7 @@ static int freertos_spawn_common(int sidx, uint32_t generation, int ridx, struct
 		g_slots[sidx].profile.valid = 0;
 		return -1;
 	}
+	freertos_sched_register_ready(sidx, 0);
 	return 0;
 }
 
@@ -879,7 +980,7 @@ static int freertos_spawn_resume(int sidx, uint32_t generation, int ridx,
 		diag->last_ridx = (uint32_t)ridx;
 		diag->last_kind = 3u;
 		g_slots[sidx].profile.live_validated = 0u;
-		vTaskResume(g_slots[sidx].tid);
+		freertos_sched_register_ready(sidx, 1);
 		return 0;
 	}
 	if (mode != LXP_SPAWN_RESUME_START || g_slots[sidx].tid)
@@ -1014,6 +1115,8 @@ static int freertos_abort_slot(int sidx, uint32_t generation)
 		return -1;
 	if (g_slots[sidx].tid && g_slots[sidx].generation != generation)
 		return -1;
+	taskENTER_CRITICAL();
+	int was_selected = g_selected_slot == sidx;
 	if (g_slots[sidx].tid) {
 		slot_sample_stack(
 			sidx); /* capture the HWM before the task (and its mark) is gone */
@@ -1023,6 +1126,14 @@ static int freertos_abort_slot(int sidx, uint32_t generation)
 	g_slots[sidx].park_desc = NULL;
 	g_slots[sidx].generation = 0;
 	g_slots[sidx].profile.valid = 0;
+	g_slots[sidx].sched_blocked = 0u;
+	if (was_selected) {
+		g_selected_slot = -1;
+		freertos_sched_cancel_rotation_locked();
+		freertos_tick_budget_reset();
+		freertos_sched_activate_locked(freertos_sched_find_next_locked(sidx, sidx));
+	}
+	taskEXIT_CRITICAL();
 	return 0;
 }
 
@@ -1031,7 +1142,18 @@ static int freertos_park_slot(int sidx, uint32_t generation)
 	if (sidx < 0 || sidx >= LXP_NSLOT || !lxp_slot_ref_is_runnable(task_slot_ref(sidx)) ||
 	    !g_slots[sidx].tid || g_slots[sidx].generation != generation)
 		return -1;
-	vTaskSuspend(g_slots[sidx].tid);
+	taskENTER_CRITICAL();
+	int was_selected = g_selected_slot == sidx;
+	if (!g_slots[sidx].sched_blocked)
+		vTaskSuspend(g_slots[sidx].tid);
+	g_slots[sidx].sched_blocked = 0u; /* now suspended by lifecycle ownership */
+	if (was_selected) {
+		g_selected_slot = -1;
+		freertos_sched_cancel_rotation_locked();
+		freertos_tick_budget_reset();
+		freertos_sched_activate_locked(freertos_sched_find_next_locked(sidx, sidx));
+	}
+	taskEXIT_CRITICAL();
 	return 0;
 }
 
@@ -1137,9 +1259,8 @@ static int freertos_prepare(void)
 	    PORT_CONFIG.dynamic_pool_stride != LXP_DYN_POOL_SIZE ||
 	    PORT_CONFIG.dynamic_pool_count < LXP_NREG || !PORT_CONFIG.exec_captures ||
 	    PORT_CONFIG.exec_capture_count < LXP_NSLOT || !PORT_CONFIG.tick_subscribe ||
-	    !PORT_CONFIG.tick_unsubscribe || !PORT_CONFIG.time_us ||
-	    !PORT_CONFIG.time_ns || !PORT_CONFIG.random_fill ||
-	    !PORT_CONFIG.validate_memory_contract ||
+	    !PORT_CONFIG.tick_unsubscribe || !PORT_CONFIG.time_us || !PORT_CONFIG.time_ns ||
+	    !PORT_CONFIG.random_fill || !PORT_CONFIG.validate_memory_contract ||
 	    PORT_CONFIG.rootfs_region_count > LXP_FREERTOS_ROOTFS_REGION_MAX ||
 	    2u + PORT_CONFIG.rootfs_region_count >= portNUM_CONFIGURABLE_REGIONS)
 		return -1;
@@ -1163,17 +1284,36 @@ static int freertos_prepare(void)
 		return -1;
 	if (!g_ev)
 		g_ev = xSemaphoreCreateBinaryStatic(&g_ev_buf);
-	if (!g_ev || (PORT_CONFIG.host_prepare && PORT_CONFIG.host_prepare() != 0))
+	if (!g_sched_ev)
+		g_sched_ev = xSemaphoreCreateBinaryStatic(&g_sched_ev_buf);
+	if (!g_ev || !g_sched_ev || uxTaskPriorityGet(NULL) < GUEST_SCHED_PRIO ||
+	    (PORT_CONFIG.host_prepare && PORT_CONFIG.host_prepare() != 0))
 		return -1;
+	(void)xSemaphoreTake(g_sched_ev, 0);
+	g_selected_slot = -1;
+	freertos_sched_cancel_rotation_locked();
 	freertos_tick_budget_reset();
-	if (PORT_CONFIG.tick_subscribe(lxp_freertos_tick) != LXP_OK)
+	g_sched_task = xTaskCreateStatic(freertos_sched_task_entry, "lxp-sched",
+					 GUEST_SCHED_STACK_WORDS, NULL,
+					 GUEST_SCHED_PRIO | portPRIVILEGE_BIT, g_sched_stack,
+					 &g_sched_tcb);
+	if (!g_sched_task)
 		return -1;
+	if (PORT_CONFIG.tick_subscribe(lxp_freertos_tick) != LXP_OK)
+		goto fail_sched_task;
 	g_tick_subscribed = 1u;
-	for (int s = 0; s < LXP_NSLOT; s++)
+	for (int s = 0; s < LXP_NSLOT; s++) {
 		g_slots[s].profile.valid = 0;
+		g_slots[s].sched_blocked = 0u;
+	}
 	/* SHCSR @ 0xE000ED24: BUSFAULTENA = bit 17, USGFAULTENA = bit 18. */
 	*(volatile uint32_t *)0xE000ED24u |= (1u << 17) | (1u << 18);
 	return 0;
+
+fail_sched_task:
+	vTaskDelete(g_sched_task);
+	g_sched_task = NULL;
+	return -1;
 }
 
 static void freertos_teardown(void)
@@ -1182,6 +1322,12 @@ static void freertos_teardown(void)
 		PORT_CONFIG.tick_unsubscribe(lxp_freertos_tick);
 		g_tick_subscribed = 0u;
 	}
+	if (g_sched_task) {
+		vTaskDelete(g_sched_task);
+		g_sched_task = NULL;
+	}
+	g_selected_slot = -1;
+	freertos_sched_cancel_rotation_locked();
 	freertos_tick_budget_reset();
 }
 

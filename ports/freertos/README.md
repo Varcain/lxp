@@ -9,7 +9,7 @@ to reproduce:
 - guest MemManage, BusFault and UsageFault containment;
 - generation-keyed MPU profile compilation, TCB readback and live validation;
 - coordinator MPU overlays and bounded copied-executable publication;
-- guest-only weighted time slicing, event wakeup and bootstrap-stack auditing.
+- guest-only weighted scheduling, event wakeup and bootstrap-stack auditing.
 
 The embedding system supplies exactly one `g_lxp_freertos_port_config` declared
 by `include/lxp/ports/freertos.h`. That object provides storage placement,
@@ -26,6 +26,23 @@ mapping, returns that MPU descriptor to restricted tasks, and restores the
 additional descriptor in both context-switch paths. Any build selecting this
 port must apply `patches/0001-arm-cm4-mpu-drop-global-user-peripheral-map.patch`
 to FreeRTOS-Kernel V11.1.0 before compilation.
+
+FreeRTOS advances an equal-priority ready-list cursor whenever it selects that
+priority, even with `configUSE_TIME_SLICING=0`. The port therefore keeps only
+one core-runnable Linux guest native-runnable at a time. SysTick accounts that
+guest's nice-weighted quantum and wakes a statically allocated privileged
+selector task, which suspends it and resumes the next guest in thread context.
+The selector runs one native level above the guest class and no higher than the
+coordinator; `prepare()` rejects an embedding whose coordinator cannot provide
+that separation. Higher-priority host work stays immediately preemptive, and
+unrelated FreeRTOS tasks never participate in the Linux guest rotation.
+
+The selector, its 192-word stack, and its binary wake semaphore are owned by
+this port. They are created for a run after host preparation, while the tick
+callback is still unpublished, and destroyed after callback withdrawal during
+teardown. Park, resume, abort, and slot-generation reuse all update the native
+gate synchronously, so a delayed tick notification cannot rotate a replacement
+task or resume a lifecycle-parked guest.
 
 `ports/qemu-mps2` is the standalone integration fixture. Its `engine.c` now
 contains only a host configuration object; it builds this same production port
