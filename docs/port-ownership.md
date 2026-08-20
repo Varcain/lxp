@@ -68,6 +68,16 @@ Every opened or accepted provider socket must successfully enter nonblocking
 mode before LXP publishes it, because a blocking call would stall the privileged
 coordinator rather than only the calling guest.
 
+Display and input follow the same split. LXP owns Linux framebuffer and evdev
+semantics, dirty-rectangle coalescing, presentation cadence, touch-event state,
+DMA2D descriptor validation, and the run-scoped device-open/tick lifecycle. The
+host owns the physical framebuffer, cache publication required by scanout,
+panel update, DMA2D registers/completion/coherency, and touch-controller bus
+instance. Hardware initialization is reached through the provider contract,
+not a demo application: an unavailable DMA2D initializer means `/dev/dma2d` is
+not registered, and every successfully initialized touch provider is released
+before its run-scoped provider table is withdrawn.
+
 ## Dependency direction
 
 The core (`src/` and `include/lxp/`) may use only LXP interfaces and the C

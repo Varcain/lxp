@@ -2766,16 +2766,15 @@ static int display_ops_valid(const lxp_display_ops_t *ops)
 		return 0;
 #endif
 #if LXP_ENABLE_DEV_FB
-	if (!ops->fb_init || !ops->fb_get_info || !ops->fb_get_buffer || !ops->fb_flush ||
-	    !ops->fb_present)
+	if (!ops->fb_init || !ops->fb_get_info || !ops->fb_get_buffer || !ops->fb_present)
 		return 0;
 #endif
 #if LXP_ENABLE_DEV_DMA2D
-	if (!ops->dma2d_submit)
+	if (!ops->dma2d_init || !ops->dma2d_submit)
 		return 0;
 #endif
 #if LXP_ENABLE_TOUCH
-	if (!ops->touch_init || !ops->touch_read)
+	if (!ops->touch_init || !ops->touch_read || !ops->touch_deinit)
 		return 0;
 #endif
 	(void)ops;
@@ -2851,6 +2850,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	int net_entered = 0;
 	int fs_entered = 0;
 	int block_entered = 0;
+	int dev_entered = 0;
 	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
 	lxp_diag_reset_health();
 	g_diag_native_known = 0;
@@ -2864,6 +2864,10 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 
 	/* Assign even NULL providers so a later sequential run cannot inherit one. */
 	lxp_providers_publish(net_ops, disp_ops, fs_ops, block_ops);
+#if LXP_ENABLE_DEV
+	lxp_dev_run_begin();
+	dev_entered = 1;
+#endif
 #if LXP_ENABLE_NET
 	if (net_ops->run_begin(lxp_socket_ready, os_ops) != LXP_OK)
 		goto out;
@@ -2898,6 +2902,12 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	rc = lxp_run_common(os_ops, run_config, path, argc, argv);
 
 out:
+#if LXP_ENABLE_DEV
+	if (dev_entered)
+		lxp_dev_run_end();
+#else
+	(void)dev_entered;
+#endif
 	if (prepare_entered && os_ops->teardown)
 		os_ops->teardown();
 #if LXP_ENABLE_BLOCK

@@ -42,6 +42,13 @@ void lxp_disp_set_geometry(int width, int height)
 #define LXP_IN_RING 64
 static struct lxp_input_event g_in_ring[LXP_IN_RING];
 static uint32_t g_in_head; /* total events ever produced (slot = head % RING) */
+static uint64_t g_touch_last_us;
+static int g_touch_last_pressed;
+static int g_touch_ready;
+#if LXP_ENABLE_DEV_INPUT_TESTPAD
+static uint64_t g_testpad_t0;
+static uint64_t g_testpad_last_us;
+#endif
 
 static void ring_push(uint16_t type, uint16_t code, int32_t value)
 {
@@ -233,13 +240,12 @@ static void testpad_tick(uint64_t now_us)
 {
 	/* A slow diagonal drag across the panel, then release, looping — deterministic
 	 * input with no host channel (proves the evdev path + drives LVGL's pointer). */
-	static uint64_t t0, last_us;
-	if (t0 == 0)
-		t0 = now_us;
-	if (now_us - last_us < 100000u)
+	if (g_testpad_t0 == 0)
+		g_testpad_t0 = now_us;
+	if (now_us - g_testpad_last_us < 100000u)
 		return; /* one report per 100 ms step */
-	last_us = now_us;
-	uint64_t phase = ((now_us - t0) / 100000u) % 12u; /* 100 ms steps, 1.2 s cycle */
+	g_testpad_last_us = now_us;
+	uint64_t phase = ((now_us - g_testpad_t0) / 100000u) % 12u; /* 100 ms steps, 1.2 s cycle */
 	int x = (int)(phase * g_disp_w / 12u);
 	int y = (int)(phase * g_disp_h / 12u);
 	lxp_input_report_touch(x, y, phase != 11);
@@ -250,22 +256,29 @@ static void testpad_tick(uint64_t now_us)
 /* Poll the FT5336 controller over i2c (~60 Hz) and report the primary touch. */
 static void ft5336_tick(uint64_t now_us)
 {
-	static uint64_t last_us;
-	static int last_pressed;
-	if (now_us - last_us < 16000u)
+	if (now_us - g_touch_last_us < 16000u)
 		return;
-	last_us = now_us;
+	g_touch_last_us = now_us;
 	int x, y, pressed;
 	if (g_lxp_disp_ops->touch_read(&x, &y, &pressed) == 0) {
-		if (pressed || last_pressed)
+		if (pressed || g_touch_last_pressed)
 			lxp_input_report_touch(x, y, pressed);
-		last_pressed = pressed;
+		g_touch_last_pressed = pressed;
 	}
 }
 #endif
 
 void lxp_dev_autoreg_input(void)
 {
+	memset(g_in_ring, 0, sizeof(g_in_ring));
+	g_in_head = 0;
+	g_touch_last_us = 0;
+	g_touch_last_pressed = 0;
+	g_touch_ready = 0;
+#if LXP_ENABLE_DEV_INPUT_TESTPAD
+	g_testpad_t0 = 0;
+	g_testpad_last_us = 0;
+#endif
 	struct lxp_dev dev = {
 		.path = "/dev/input/event0",
 		.ops = &in_ops,
@@ -278,18 +291,26 @@ void lxp_dev_autoreg_input(void)
 	/* Prefer a real touch panel (FT5336) when present; the synthetic testpad is the
 	 * fallback for QEMU (no touch HW) or if the FT5336 does not probe. Registering
 	 * both would let two sources drive one /dev/input/event0 — garbage. */
-	int touch_ready = 0;
-	(void)touch_ready;
 #if LXP_ENABLE_TOUCH
 	if (g_lxp_disp_ops->touch_init() == 0) {
 		lxp_dev_tick_register(ft5336_tick); /* real HW touch panel */
-		touch_ready = 1;
+		g_touch_ready = 1;
 	}
 #endif
 #if LXP_ENABLE_DEV_INPUT_TESTPAD
-	if (!touch_ready)
+	if (!g_touch_ready)
 		lxp_dev_tick_register(testpad_tick); /* QEMU synthetic gestures */
 #endif
+}
+
+void lxp_dev_input_run_end(void)
+{
+#if LXP_ENABLE_TOUCH
+	if (g_touch_ready && g_lxp_disp_ops && g_lxp_disp_ops->touch_deinit)
+		g_lxp_disp_ops->touch_deinit();
+#endif
+	g_touch_ready = 0;
+	g_touch_last_pressed = 0;
 }
 
 #endif /* LXP_ENABLE_DEV_INPUT */

@@ -159,7 +159,8 @@ static const struct lxp_dev_ops dma2d_ops = {
 
 void lxp_dev_autoreg_dma2d(void)
 {
-	if (!g_lxp_disp_ops || !g_lxp_disp_ops->dma2d_submit)
+	if (!g_lxp_disp_ops || !g_lxp_disp_ops->dma2d_init ||
+	    !g_lxp_disp_ops->dma2d_submit || g_lxp_disp_ops->dma2d_init() != 0)
 		return; /* board has no DMA2D accelerator */
 	struct lxp_dev dev = {
 		.path = "/dev/dma2d",

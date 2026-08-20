@@ -64,6 +64,10 @@ static struct lxp_dev_open g_lnx_devopen[LXP_NDEVOPEN];
 static void (*g_lnx_devtick[LXP_NDEVTICK])(uint64_t now_us);
 static int g_lnx_ndevtick;
 
+#if LXP_ENABLE_DEV_INPUT
+void lxp_dev_input_run_end(void);
+#endif
+
 static uint32_t dev_mode(const struct lxp_dev *dev)
 {
 	return dev->mode ? dev->mode : (LXP_S_IFCHR | 0666u);
@@ -557,6 +561,29 @@ void lxp_dev_tick(uint64_t now_us)
 {
 	for (int i = 0; i < g_lnx_ndevtick; i++)
 		g_lnx_devtick[i](now_us);
+}
+
+void lxp_dev_run_begin(void)
+{
+	/* Static registrations deliberately survive sequential runs. Open instances
+	 * and provider-driven ticks do not: they refer to the active provider table. */
+	memset(g_lnx_devopen, 0, sizeof(g_lnx_devopen));
+	memset(g_lnx_devtick, 0, sizeof(g_lnx_devtick));
+	g_lnx_ndevtick = 0;
+}
+
+void lxp_dev_run_end(void)
+{
+	/* Normal process teardown has already closed these. Keep this bounded sweep
+	 * as the provider-lifecycle backstop for launch/fault paths. */
+	for (int i = 0; i < LXP_NDEVOPEN; i++)
+		while (g_lnx_devopen[i].used)
+			lxp_dev_close(i);
+#if LXP_ENABLE_DEV_INPUT
+	lxp_dev_input_run_end();
+#endif
+	memset(g_lnx_devtick, 0, sizeof(g_lnx_devtick));
+	g_lnx_ndevtick = 0;
 }
 
 /* ---- Kconfig-auto class registration --------------------------------------- */

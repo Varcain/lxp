@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define LXP_DISPLAY_OPS_ABI_VERSION 1u
+#define LXP_DISPLAY_OPS_ABI_VERSION 2u
 
 typedef struct lxp_fb_info {
 	uint16_t width, height, stride_bytes;
@@ -56,13 +56,16 @@ typedef struct lxp_display_ops {
 	int (*fb_init)(void);
 	int (*fb_get_info)(lxp_fb_info_t *info);
 	void *(*fb_get_buffer)(void);
-	void (*fb_flush)(int x, int y, int w, int h);
-	void (*fb_present)(void);
+	/** Present one LXP-coalesced dirty rectangle. The provider owns any cache
+	 * publication and physical scanout/update required by the panel. */
+	void (*fb_present)(int x, int y, int w, int h);
 	/* Optional 2D-accelerator submit (/dev/dma2d); NULL if the board has no
 	 * DMA2D, in which case the guest falls back to software rendering. */
+	int (*dma2d_init)(void);
 	int (*dma2d_submit)(const lxp_dma2d_op_t *op);
 	int (*touch_init)(void);
 	int (*touch_read)(int *x, int *y, int *pressed);
+	void (*touch_deinit)(void);
 } lxp_display_ops_t;
 
 /* Set the display geometry used to clamp / report touch coordinates.

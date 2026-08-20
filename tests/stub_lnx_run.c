@@ -155,24 +155,26 @@ static void *mock_fb_get_buffer(void)
 {
 	return g_mock_fb;
 }
-/* Recorded args of the last fb_flush, so a suite can assert the driver's dirty-rect math. */
-int g_mock_fb_flush_x, g_mock_fb_flush_y, g_mock_fb_flush_w, g_mock_fb_flush_h;
-int g_mock_fb_flush_calls;
-static void mock_fb_flush(int x, int y, int w, int h)
+/* Recorded args of the last coalesced present, so a suite can assert the
+ * driver's dirty-rectangle math. */
+int g_mock_fb_present_x, g_mock_fb_present_y, g_mock_fb_present_w, g_mock_fb_present_h;
+int g_mock_fb_present_calls;
+static void mock_fb_present(int x, int y, int w, int h)
 {
-	g_mock_fb_flush_x = x;
-	g_mock_fb_flush_y = y;
-	g_mock_fb_flush_w = w;
-	g_mock_fb_flush_h = h;
-	g_mock_fb_flush_calls++;
-}
-static void mock_fb_present(void)
-{
+	g_mock_fb_present_x = x;
+	g_mock_fb_present_y = y;
+	g_mock_fb_present_w = w;
+	g_mock_fb_present_h = h;
+	g_mock_fb_present_calls++;
 }
 /* Recorded last dma2d_submit, so a suite can assert /dev/dma2d validated + forwarded a
  * descriptor (bad descriptors are rejected by the device before reaching here). */
 lxp_dma2d_op_t g_mock_dma2d_op;
 int g_mock_dma2d_calls;
+static int mock_dma2d_init(void)
+{
+	return 0;
+}
 static int mock_dma2d_submit(const lxp_dma2d_op_t *op)
 {
 	g_mock_dma2d_op = *op;
@@ -185,8 +187,8 @@ static const lxp_display_ops_t g_mock_disp = {
 	.fb_init = mock_fb_init,
 	.fb_get_info = mock_fb_get_info,
 	.fb_get_buffer = mock_fb_get_buffer,
-	.fb_flush = mock_fb_flush,
 	.fb_present = mock_fb_present,
+	.dma2d_init = mock_dma2d_init,
 	.dma2d_submit = mock_dma2d_submit,
 };
 const lxp_display_ops_t *lxp_test_display_ops(void)

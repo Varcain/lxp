@@ -16,7 +16,6 @@
 #include "lxp/lxp_block_ops.h"
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_disp_ops.h"
-#include "lxp/lxp_disp_ops.h"
 #include "lxp/lxp_port.h" /* LXP_MAP_NC */
 #include "lxp/lxp_syscall.h"
 #include "../../src/dev/lxp_uapi.h" /* struct lxp_dma2d_submit + LXP_DMA2D_* */
@@ -34,10 +33,10 @@ int lxp_guest_access_ok(const lxp_proc_t *p, const void *ptr, size_t len, int wr
 void lxp_dev_autoreg_input(void);
 
 /* The framebuffer class registers /dev/fb0 over the stub's mock display. The stub records the
- * last fb_flush(x,y,w,h) so a suite can assert the driver's dirty-rectangle math. */
+ * last coalesced present rectangle so a suite can assert the dirty-region math. */
 void lxp_dev_autoreg_fb(void);
-extern int g_mock_fb_flush_x, g_mock_fb_flush_y, g_mock_fb_flush_w, g_mock_fb_flush_h;
-extern int g_mock_fb_flush_calls;
+extern int g_mock_fb_present_x, g_mock_fb_present_y, g_mock_fb_present_w, g_mock_fb_present_h;
+extern int g_mock_fb_present_calls;
 
 /* The DMA2D accelerator class registers /dev/dma2d over the stub's mock dma2d_submit,
  * which records the last (already-validated) op so a suite can assert forwarding. */
@@ -485,10 +484,10 @@ static void test_dev_accmode_enforced(void **state)
 	lxp_syscall(&p, LXP_NR_close, rwfd, 0, 0, 0, 0, 0);
 }
 
-/* fb_write's flush must cover every row the write touched. A write that starts mid-row and
+/* fb_write's present must cover every row the write touched. A write that starts mid-row and
  * crosses a row boundary spans two rows; before the fix the height was ceil(n/stride), which
- * dropped the second row (a stale scanline on a port whose fb_flush uploads only the rect). */
-static void test_dev_fb_flush_spans_crossed_rows(void **state)
+ * dropped the second row (a stale scanline on a port that uploads only the dirty rect). */
+static void test_dev_fb_present_spans_crossed_rows(void **state)
 {
 	(void)state;
 	lxp_arena_t arena;
@@ -502,14 +501,16 @@ static void test_dev_fb_flush_spans_crossed_rows(void **state)
 
 	static uint8_t px[64];
 	memset(px, 0xa5, sizeof(px));
-	g_mock_fb_flush_calls = 0;
+	g_mock_fb_present_calls = 0;
 	/* pwrite64(fd, buf, count=50, [pad a3], off_lo=100, off_hi=0): bytes [100,150) with
 	 * stride 128 touch row 0 ([0,128)) and row 1 ([128,256)). */
 	long w = lxp_syscall(&p, LXP_NR_pwrite64, fd, (long)(uintptr_t)px, 50, 0, 100, 0);
 	assert_int_equal(w, 50);
-	assert_int_equal(g_mock_fb_flush_calls, 1);
-	assert_int_equal(g_mock_fb_flush_y, 0); /* first touched row */
-	assert_int_equal(g_mock_fb_flush_h, 2); /* rows 0 and 1 (pre-fix: only 1) */
+	assert_int_equal(g_mock_fb_present_calls, 0); /* coalesced until the display tick */
+	lxp_dev_tick(33000);
+	assert_int_equal(g_mock_fb_present_calls, 1);
+	assert_int_equal(g_mock_fb_present_y, 0); /* first touched row */
+	assert_int_equal(g_mock_fb_present_h, 2); /* rows 0 and 1 (pre-fix: only 1) */
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
@@ -542,7 +543,7 @@ static void test_dev_fb_dma2d_blit(void **state)
 	long a = (long)(uintptr_t)&b;
 
 	g_mock_dma2d_calls = 0;
-	g_mock_fb_flush_calls = 0;
+	g_mock_fb_present_calls = 0;
 	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_FBIO_DMA2D_BLIT, a, 0, 0, 0), 0);
 	assert_int_equal(g_mock_dma2d_calls, 1);
 	assert_int_equal(g_mock_dma2d_op.mode, LXP_DMA2D_M2M);
@@ -551,8 +552,10 @@ static void test_dev_fb_dma2d_blit(void **state)
 	assert_int_equal((uint32_t)g_mock_dma2d_op.fg_addr, (uint32_t)(uintptr_t)src);
 	assert_int_equal(g_mock_dma2d_op.fg_offset, 0);	       /* 32/2 - 16 */
 	assert_int_equal(g_mock_dma2d_op.out_offset, 64 - 16); /* fb stride 128/2 - 16 */
-	assert_int_equal(g_mock_fb_flush_calls, 1);
-	assert_int_equal(g_mock_fb_flush_w, 16);
+	assert_int_equal(g_mock_fb_present_calls, 0);
+	lxp_dev_tick(33000);
+	assert_int_equal(g_mock_fb_present_calls, 1);
+	assert_int_equal(g_mock_fb_present_w, 16);
 
 	/* Rejections — none reach DMA2D. */
 	g_mock_dma2d_calls = 0;
@@ -870,6 +873,19 @@ static void test_dev_tick_registration_is_idempotent(void **state)
 	assert_int_equal(g_tick_dedup_calls, 1);
 }
 
+static void test_dev_run_lifecycle_clears_ticks_not_static_nodes(void **state)
+{
+	(void)state;
+	assert_true(lxp_dev_lookup("/dev/mock") >= 0);
+	g_tick_dedup_calls = 0;
+	lxp_dev_tick_register(dedup_tick);
+	lxp_dev_run_end();
+	lxp_dev_run_begin();
+	lxp_dev_tick(456);
+	assert_int_equal(g_tick_dedup_calls, 0);
+	assert_true(lxp_dev_lookup("/dev/mock") >= 0);
+}
+
 /* ---- raw block class ------------------------------------------------------ */
 #define TEST_BLKRRPART 0x125ful
 #define TEST_BLKGETSIZE 0x1260ul
@@ -1064,7 +1080,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_input_syn_dropped_on_overrun),
 		cmocka_unit_test(test_dev_input_write_injects_touch),
 		cmocka_unit_test(test_dev_accmode_enforced),
-		cmocka_unit_test(test_dev_fb_flush_spans_crossed_rows),
+		cmocka_unit_test(test_dev_fb_present_spans_crossed_rows),
 		cmocka_unit_test(test_dev_fb_dma2d_blit),
 		cmocka_unit_test(test_dev_mmap),
 		cmocka_unit_test(test_dev_stat_lseek_poll),
@@ -1075,6 +1091,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_dma2d_rejects_bad_descriptor),
 		cmocka_unit_test(test_dev_tick_registration_is_idempotent),
 		cmocka_unit_test(test_dev_block_geometry_partitions_and_64bit_io),
+		cmocka_unit_test(test_dev_run_lifecycle_clears_ticks_not_static_nodes),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -211,9 +211,15 @@ const char *lxp_dev_path(int i, uint32_t *mode);
  *  @ ~60 Hz); a class driver calls this from its autoreg. */
 void lxp_dev_tick_register(void (*fn)(uint64_t now_us));
 
+/** Start/end the run-scoped device-open, tick, and provider lifecycle. Static
+ * device registrations survive so host devices registered before @c lxp_run
+ * remain available to later sequential runs. */
+void lxp_dev_run_begin(void);
+void lxp_dev_run_end(void);
+
 /** Retry a parked device op for the coordinator; result or -EAGAIN (still blocked). */
 long lxp_dev_retry(lxp_proc_t *p);
-/** Coordinator-thread periodic work (fb flush, touch poll). @p now_us is monotonic. */
+/** Coordinator-thread periodic work (fb present, touch poll). @p now_us is monotonic. */
 void lxp_dev_tick(uint64_t now_us);
 /** Register the Kconfig-enabled class drivers (run once on the coordinator thread). */
 void lxp_dev_autoreg_all(void);

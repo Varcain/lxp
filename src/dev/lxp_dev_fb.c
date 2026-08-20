@@ -28,6 +28,31 @@
 #include <string.h>
 
 static lxp_fb_info_t g_fbinfo;
+static uint64_t g_fb_last_present_us;
+static int g_fb_dirty;
+static int g_fb_dirty_x0, g_fb_dirty_y0, g_fb_dirty_x1, g_fb_dirty_y1;
+
+static void fb_mark_dirty(int x, int y, int w, int h)
+{
+	if (w <= 0 || h <= 0)
+		return;
+	if (!g_fb_dirty) {
+		g_fb_dirty_x0 = x;
+		g_fb_dirty_y0 = y;
+		g_fb_dirty_x1 = x + w;
+		g_fb_dirty_y1 = y + h;
+		g_fb_dirty = 1;
+		return;
+	}
+	if (x < g_fb_dirty_x0)
+		g_fb_dirty_x0 = x;
+	if (y < g_fb_dirty_y0)
+		g_fb_dirty_y0 = y;
+	if (x + w > g_fb_dirty_x1)
+		g_fb_dirty_x1 = x + w;
+	if (y + h > g_fb_dirty_y1)
+		g_fb_dirty_y1 = y + h;
+}
 
 /* Copy `len` bytes with 16-bit stores when both ends are halfword-aligned (fb
  * writes always are: RGB565 pixels at even byte offsets), else byte-by-byte. */
@@ -78,7 +103,7 @@ static long fb_write(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 	uint32_t stride = g_fbinfo.stride_bytes;
 	int y0 = (int)(o->pos / stride);
 	int rows = (int)((o->pos % stride + n + stride - 1) / stride);
-	g_lxp_disp_ops->fb_flush(0, y0, g_fbinfo.width, rows);
+	fb_mark_dirty(0, y0, g_fbinfo.width, rows);
 	o->pos += (uint32_t)n;
 	return (long)n;
 }
@@ -175,7 +200,7 @@ static long fb_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 		op.fg_cf = LXP_DMA2D_CF_RGB565;
 		if (g_lxp_disp_ops->dma2d_submit(&op) != 0)
 			return -LXP_EIO; /* guest falls back to the pwrite path */
-		g_lxp_disp_ops->fb_flush((int)b.x, (int)b.y, (int)b.w, (int)b.h);
+		fb_mark_dirty((int)b.x, (int)b.y, (int)b.w, (int)b.h);
 		return 0;
 	}
 	default:
@@ -220,15 +245,22 @@ static const struct lxp_dev_ops fb_ops = {
  * write burst into one push). Runs on the coordinator thread. */
 static void fb_tick(uint64_t now_us)
 {
-	static uint64_t last_us;
-	if (now_us - last_us < 33000ull)
+	if (!g_fb_dirty || now_us - g_fb_last_present_us < 33000ull)
 		return;
-	last_us = now_us;
-	g_lxp_disp_ops->fb_present();
+	g_fb_last_present_us = now_us;
+	int x = g_fb_dirty_x0;
+	int y = g_fb_dirty_y0;
+	int w = g_fb_dirty_x1 - x;
+	int h = g_fb_dirty_y1 - y;
+	g_fb_dirty = 0;
+	g_lxp_disp_ops->fb_present(x, y, w, h);
 }
 
 void lxp_dev_autoreg_fb(void)
 {
+	memset(&g_fbinfo, 0, sizeof(g_fbinfo));
+	g_fb_last_present_us = 0;
+	g_fb_dirty = 0;
 	if (g_lxp_disp_ops->fb_init() != 0)
 		return; /* no display on this board (e.g. an521) → /dev/fb0 absent */
 	if (g_lxp_disp_ops->fb_get_info(&g_fbinfo) != 0)
