@@ -102,6 +102,12 @@ archive once into caller-owned fixed storage, and captures the provider bundle.
 the immutable provider and rootfs contract itself. One host may be reused for sequential
 launches; the global NOMMU coordinator deliberately does not support concurrent runs.
 
+Serialized asynchronous providers can use the zero-heap gate in
+`include/lxp/lxp_async_gate.h`. It correlates completion with both a
+generation-qualified guest owner and a provider operation tag. Cancellation
+and worker completion use one atomic transition, so an interrupted request
+cannot publish a completion after its slot identity has been reused.
+
 The block provider is independent of the filesystem provider. With
 `LXP_ENABLE_BLOCK=1`, it exposes a Linux block class at `/dev/mmcblk0`, bounded
 DOS/MBR primary-partition views at `/dev/mmcblk0p1`…`p4`, geometry and partition-reread

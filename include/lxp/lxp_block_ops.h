@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define LXP_BLOCK_OPS_ABI_VERSION 1u
+#define LXP_BLOCK_OPS_ABI_VERSION 2u
 
 #define LXP_BLOCK_F_REMOVABLE 0x01u
 #define LXP_BLOCK_F_READ_ONLY 0x02u
@@ -49,6 +49,10 @@ typedef struct lxp_block_ops {
 	void (*request_cancel)(uint64_t owner);
 
 	int (*get_info)(lxp_block_info_t *out);
+	/** Acquire/release the provider's aggregate raw-media lease. LXP calls
+	 * open(0) only for the first Linux reader and close(0) after the last one;
+	 * a writable open is exclusive and has one matching close. The provider
+	 * remains responsible for arbitration with native filesystem/raw callers. */
 	int (*open)(unsigned flags);
 	void (*close)(unsigned flags);
 	int (*read)(uint64_t offset, void *buf, size_t count, size_t *bytes_read);

@@ -97,6 +97,19 @@ add_test(NAME lxp_unit_header_contract
   COMMAND sh "${LXP_ROOT}/scripts/check-header-contract.sh"
           "${CMAKE_C_COMPILER}")
 
+# ---- asynchronous provider completion gate ----------------------------------
+add_executable(lxp_async_gate_test
+  "${LXP_ROOT}/src/lxp_async_gate.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_async_gate.c"
+)
+target_include_directories(lxp_async_gate_test PRIVATE
+  "${LXP_ROOT}/include"
+  "${cmocka_SOURCE_DIR}/include"
+)
+target_compile_options(lxp_async_gate_test PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(lxp_async_gate_test PRIVATE cmocka-static)
+add_test(NAME lxp_unit_async_gate COMMAND lxp_async_gate_test)
+
 # ---- immutable host/bootstrap facade ------------------------------------------
 # A focused lxp_run substitute captures composition without starting a guest;
 # lxp_coord_test below continues to exercise the real coordinator entry.

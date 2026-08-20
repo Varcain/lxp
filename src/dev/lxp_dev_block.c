@@ -57,6 +57,8 @@ static struct lxp_block_view g_views[LXP_BLOCK_NODE_COUNT] = {
 static uint8_t g_mbr[LXP_MBR_SIZE];
 static struct lxp_dev_open *g_reread_open;
 static uint32_t g_run_generation = 1u;
+static uint8_t g_provider_readers;
+static uint8_t g_provider_writer;
 
 static uint32_t get_le32(const uint8_t *p)
 {
@@ -172,14 +174,26 @@ static long block_open(struct lxp_dev *dev, struct lxp_dev_open *open, int flags
 	struct lxp_block_view *view = dev->drv;
 	if (!view || !view->present || !g_lxp_block_ops)
 		return -LXP_ENODEV;
+	if (view->open_count == UINT8_MAX)
+		return -LXP_EMFILE;
 	unsigned provider_flags =
 		(flags & LXP_O_ACCMODE) == LXP_O_RDONLY ? 0u : LXP_BLOCK_OPEN_WRITE;
-	int rc = g_lxp_block_ops->open(provider_flags);
-	if (rc != LXP_OK)
-		return block_error(rc);
-	if (view->open_count == UINT8_MAX) {
-		g_lxp_block_ops->close(provider_flags);
-		return -LXP_EMFILE;
+	if (provider_flags != 0u) {
+		if (g_provider_writer || g_provider_readers)
+			return -LXP_EBUSY;
+		int rc = g_lxp_block_ops->open(provider_flags);
+		if (rc != LXP_OK)
+			return block_error(rc);
+		g_provider_writer = 1u;
+	} else {
+		if (g_provider_writer || g_provider_readers == UINT8_MAX)
+			return -LXP_EBUSY;
+		if (g_provider_readers == 0u) {
+			int rc = g_lxp_block_ops->open(0u);
+			if (rc != LXP_OK)
+				return block_error(rc);
+		}
+		g_provider_readers++;
 	}
 	view->open_count++;
 	open->u.block.write_lease = provider_flags != 0u;
@@ -193,8 +207,16 @@ static long block_release(struct lxp_dev *dev, struct lxp_dev_open *open)
 		g_reread_open = NULL;
 	if (view && view->open_count)
 		view->open_count--;
-	if (g_lxp_block_ops)
-		g_lxp_block_ops->close(open->u.block.write_lease ? LXP_BLOCK_OPEN_WRITE : 0u);
+	if (!g_lxp_block_ops)
+		return 0;
+	if (open->u.block.write_lease) {
+		if (g_provider_writer) {
+			g_provider_writer = 0u;
+			g_lxp_block_ops->close(LXP_BLOCK_OPEN_WRITE);
+		}
+	} else if (g_provider_readers && --g_provider_readers == 0u) {
+		g_lxp_block_ops->close(0u);
+	}
 	return 0;
 }
 
@@ -426,6 +448,8 @@ void lxp_dev_autoreg_block(void)
 	memset(&info, 0, sizeof(info));
 	memset(g_mbr, 0, sizeof(g_mbr));
 	g_reread_open = NULL;
+	g_provider_readers = 0u;
+	g_provider_writer = 0u;
 	if (++g_run_generation == 0u)
 		g_run_generation = 1u;
 	for (size_t i = 0; i < LXP_BLOCK_NODE_COUNT; i++) {

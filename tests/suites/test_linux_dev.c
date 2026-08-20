@@ -880,6 +880,8 @@ static uint8_t g_block_mbr[512];
 static uint64_t g_block_last_offset;
 static size_t g_block_last_count;
 static unsigned g_block_write_opens;
+static unsigned g_block_read_open_calls;
+static unsigned g_block_read_close_calls;
 
 static int fake_block_info(lxp_block_info_t *info)
 {
@@ -895,6 +897,8 @@ static int fake_block_open(unsigned flags)
 {
 	if (flags & LXP_BLOCK_OPEN_WRITE)
 		g_block_write_opens++;
+	else
+		g_block_read_open_calls++;
 	return LXP_OK;
 }
 
@@ -902,6 +906,8 @@ static void fake_block_close(unsigned flags)
 {
 	if ((flags & LXP_BLOCK_OPEN_WRITE) && g_block_write_opens)
 		g_block_write_opens--;
+	else if ((flags & LXP_BLOCK_OPEN_WRITE) == 0u)
+		g_block_read_close_calls++;
 }
 
 static int fake_block_read(uint64_t offset, void *buf, size_t count, size_t *done)
@@ -969,8 +975,27 @@ static void test_dev_block_geometry_partitions_and_64bit_io(void **state)
 	put_le32(&g_block_mbr[446 + 8], 2048);
 	put_le32(&g_block_mbr[446 + 12], 4096);
 	g_block_write_opens = 0;
+	g_block_read_open_calls = 0;
+	g_block_read_close_calls = 0;
 	lxp_providers_publish(saved_net, saved_display, saved_fs, &g_fake_block_ops);
 	lxp_dev_autoreg_block();
+
+	/* Linux owns per-open accounting. The provider sees one aggregate read
+	 * lease, while a writer remains exclusive across all partition views. */
+	long reader0 = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				   (long)(uintptr_t)"/dev/mmcblk0", LXP_O_RDONLY, 0, 0, 0);
+	long reader1 = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				   (long)(uintptr_t)"/dev/mmcblk0p1", LXP_O_RDONLY, 0, 0, 0);
+	assert_true(reader0 >= 3);
+	assert_true(reader1 >= 3);
+	assert_int_equal(g_block_read_open_calls, 1u);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				     (long)(uintptr_t)"/dev/mmcblk0", LXP_O_RDWR, 0, 0, 0),
+			 -LXP_EBUSY);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, reader0, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(g_block_read_close_calls, 0u);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, reader1, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(g_block_read_close_calls, 1u);
 
 	uint32_t mode = 0;
 	uint64_t rdev = 0;
@@ -994,6 +1019,9 @@ static void test_dev_block_geometry_partitions_and_64bit_io(void **state)
 			      (long)(uintptr_t)"/dev/mmcblk0", LXP_O_RDWR, 0, 0, 0);
 	assert_true(fd >= 3);
 	assert_int_equal(g_block_write_opens, 1);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
+				     (long)(uintptr_t)"/dev/mmcblk0", LXP_O_RDONLY, 0, 0, 0),
+			 -LXP_EBUSY);
 	uint32_t sector_size = 0, sectors32 = 0;
 	uint64_t bytes = 0;
 	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, TEST_BLKSSZGET,

@@ -21,6 +21,10 @@ LXP owns:
 - reusable host composition under `include/lxp/lxp_host.h`: early rootfs-window
   publication, zero-heap CPIO ingestion, immutable provider/rootfs capture, and
   construction of complete per-run contracts;
+- generation-qualified asynchronous provider correlation under
+  `include/lxp/lxp_async_gate.h`, including cancellation/completion races;
+- Linux block-device reader/writer aggregation: providers acquire one native
+  lease for the first reader through the last reader, or one exclusive writer;
 - patches required to make a supported RTOS port implement LXP's task,
   privilege, or MPU contract; and
 - standalone port tests and integration fixtures.
@@ -47,6 +51,10 @@ one app was their first consumer.
 The consumer still chooses the rootfs image, fixed table/name storage capacity,
 enabled providers, init path, and launch callbacks. The host facade sequences
 those choices; it does not turn product policy into LXP defaults.
+
+Native-media arbitration does not move into LXP. It must also cover RTOS-native
+filesystem and raw-block callers, so the host storage layer owns physical-card
+generation leases, DMA-safe staging, worker priority, and budget admission.
 
 ## Dependency direction
 
