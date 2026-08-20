@@ -48,6 +48,7 @@ void lxp_test_diag_checkpoint(void);
 void lxp_test_trap_publish(int active);
 void lxp_test_deferred_state_store(int slot, uint8_t state);
 int lxp_test_os_ops_valid(const lxp_os_ops_t *ops);
+int lxp_test_net_ops_valid(const lxp_net_ops_t *ops);
 int lxp_test_run_config_valid(const lxp_run_config_t *cfg);
 void lxp_test_futex(struct lxp_frame *frame, lxp_proc_t *proc, int is_time64);
 void lxp_test_dispatch(struct lxp_frame *frame, lxp_proc_t *proc);

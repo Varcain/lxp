@@ -170,7 +170,12 @@ long lxp_sock_new(int domain, int type, int protocol)
 	/* Drive blocking via the coordinator's park/retry: keep the backing socket
 	 * non-blocking so every op returns at once (a 0 timeout is NOT uniformly
 	 * non-blocking — some backends map it to SO_RCVTIMEO = block-forever). */
-	g_lxp_net_ops->sock_set_nonblock(o->sock, 1);
+	r = g_lxp_net_ops->sock_set_nonblock(o->sock, 1);
+	if (r != LXP_OK) {
+		g_lxp_net_ops->sock_close(o->sock);
+		memset(o, 0, sizeof(*o));
+		return net_errno_to_lnx(r);
+	}
 	o->used = 1;
 	o->refs = 1;
 	o->type = (uint8_t)ot;
@@ -319,10 +324,14 @@ static long do_accept(lxp_proc_t *p, struct sock_open *lo, void *uaddr, void *ua
 		return -LXP_EAGAIN; /* no pending connection (non-blocking listen socket) */
 	if (r != LXP_OK)
 		return net_errno_to_lnx(r);
+	r = g_lxp_net_ops->sock_set_nonblock(co->sock, 1);
+	if (r != LXP_OK) {
+		g_lxp_net_ops->sock_close(co->sock);
+		memset(co, 0, sizeof(*co));
+		return net_errno_to_lnx(r);
+	}
 	co->used = 1;
 	co->refs = 1;
-	g_lxp_net_ops->sock_set_nonblock(co->sock,
-					 1); /* every op returns at once; the coordinator parks */
 	if (flags & LXP_SOCK_NONBLOCK)
 		co->oflags |= LXP_O_NONBLOCK;
 	if (uaddr) {
@@ -722,8 +731,7 @@ long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg)
 	}
 	case LXP_SIOCSIFFLAGS:
 		result = g_lxp_net_ops->netif_set_up(
-				 nif, (request.ifr_ifru.ifru_flags & LXP_IFF_UP) ? 1 : 0) ==
-				 LXP_OK
+				 nif, (request.ifr_ifru.ifru_flags & LXP_IFF_UP) ? 1 : 0) == LXP_OK
 				 ? 0
 				 : -LXP_EINVAL;
 		break;

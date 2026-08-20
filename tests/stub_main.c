@@ -40,7 +40,7 @@ int main(void)
 #if LXP_ENABLE_DEV_FB
 	display_ops = lxp_test_display_ops();
 #endif
-	if (net_ops->run_begin() != LXP_OK) {
+	if (net_ops->run_begin(NULL, NULL) != LXP_OK) {
 		fprintf(stderr, "failed to acquire POSIX network provider\n");
 		return 1;
 	}

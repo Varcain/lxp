@@ -414,15 +414,14 @@ void lxp_console_kick(void)
 }
 
 #if LXP_ENABLE_NET
-/* Wake the coordinator so it retries parked socket I/O at once — the network RX task calls
- * this after delivering a batch of frames to the stack, so a parked recv/connect/accept
- * resumes the instant its data/ACK lands instead of on the next ≤5 ms retry tick. Mirrors
- * lxp_dev_kick; only ever called with LXP_ENABLE_NET set, so this
- * run loop is always linked and no weak no-op is needed. */
-void lxp_sock_kick(void)
+/* A run-scoped provider callback rather than a public core symbol: the network
+ * adapter reports a possible readiness change and LXP chooses how to wake its
+ * coordinator. The context is the immutable engine table for this run. */
+static void lxp_socket_ready(const void *context)
 {
-	if (g_eng && g_eng->event_post)
-		g_eng->event_post();
+	const lxp_os_ops_t *eng = context;
+	if (eng && eng->event_post)
+		eng->event_post();
 }
 #endif
 
@@ -2658,8 +2657,8 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, 
 		 * starving a fg command while a CPU-bound background job runs. The timeout is the
 		 * NEAREST sleeper deadline (so nanosleep wakes on time, not quantized to the old
 		 * fixed 50ms), clamped to a short poll for wait classes without an event source.
-		 * Socket waits use lxp_sock_kick when the port advertises it; portable ports keep
-		 * the 5ms fallback. */
+		 * Socket waits use the run-scoped readiness callback when the port advertises it;
+		 * portable ports keep the 5ms fallback. */
 		int socket_ready_events = 0;
 #if LXP_ENABLE_NET
 		socket_ready_events = g_lxp_net_ops && (g_lxp_net_ops->capabilities &
@@ -2751,7 +2750,7 @@ static int net_ops_valid(const lxp_net_ops_t *ops)
 	    !ops->sock_poll || !ops->sock_shutdown || !ops->sock_getsockname ||
 	    !ops->sock_getpeername || !ops->sock_get_error || !ops->netif_get_addr ||
 	    !ops->netif_get_hwaddr || !ops->netif_get_flags || !ops->netif_set_addr ||
-	    !ops->netif_set_up)
+	    !ops->netif_set_up || (ops->capabilities & ~LXP_NET_CAP_SOCKET_READY_EVENT))
 		return 0;
 #else
 	(void)ops;
@@ -2866,7 +2865,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	/* Assign even NULL providers so a later sequential run cannot inherit one. */
 	lxp_providers_publish(net_ops, disp_ops, fs_ops, block_ops);
 #if LXP_ENABLE_NET
-	if (net_ops->run_begin() != LXP_OK)
+	if (net_ops->run_begin(lxp_socket_ready, os_ops) != LXP_OK)
 		goto out;
 	net_entered = 1;
 #endif
@@ -3001,6 +3000,11 @@ void lxp_test_deferred_state_store(int slot, uint8_t state)
 int lxp_test_os_ops_valid(const lxp_os_ops_t *ops)
 {
 	return os_ops_valid(ops);
+}
+
+int lxp_test_net_ops_valid(const lxp_net_ops_t *ops)
+{
+	return net_ops_valid(ops);
 }
 
 int lxp_test_run_config_valid(const lxp_run_config_t *cfg)

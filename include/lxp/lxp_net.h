@@ -194,13 +194,6 @@ int lxp_sock_ifsnapshot(uint8_t ip[4], uint8_t gw[4], uint8_t nm[4], uint8_t mac
 /** Retry a parked socket op for the coordinator; result or -EAGAIN (still blocked). */
 long lxp_sock_retry(lxp_proc_t *p);
 
-/* Wake the coordinator so it retries parked socket I/O at once — the network RX path calls
- * this after delivering a batch of frames to the stack (data/ACK may have arrived for a
- * parked recv/connect/accept). Without it a parked op waits up to the ≤5 ms retry tick,
- * bounding RTT; with it the coordinator retries the instant the frames land. Defined by the
- * run loop (src/lxp_run.c), which posts its coordinator event. */
-void lxp_sock_kick(void);
-
 /* Re-scan a parked poll(2)/select's fd set for readiness (called from lxp_sock_retry
  * for LXP_SOCKW_POLL). Implemented in the syscall TU, which owns the fd table + the
  * per-kind readiness probes. Returns the ready count (>0), 0 at the deadline, or -EAGAIN. */

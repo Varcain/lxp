@@ -61,13 +61,14 @@ typedef struct {
 #define LXP_NETIF_FLAG_MULTICAST 0x10u
 
 /*
- * The host calls lxp_sock_kick() whenever network activity may change socket
- * readiness. This lets the coordinator sleep on its event instead of polling
- * parked recv/connect/accept/poll operations every 5 ms.
+ * A provider advertising this capability invokes the run-scoped readiness
+ * callback whenever network activity may change socket readiness. This lets
+ * the coordinator sleep on its event instead of polling parked
+ * recv/connect/accept/poll operations every 5 ms.
  */
 #define LXP_NET_CAP_SOCKET_READY_EVENT 0x01u
 
-#define LXP_NET_OPS_ABI_VERSION 2u
+#define LXP_NET_OPS_ABI_VERSION 3u
 
 /* Max concurrent socket opens the personality pools (listener + clients). Shared
  * so the host adapter can size its storage pool to match. */
@@ -75,16 +76,22 @@ typedef struct {
 #define LXP_NSOCK 24
 #endif
 
-/* Handle-based network port. All calls run on the serialized coordinator
- * thread, so a provider does not need internal locking. */
+typedef void (*lxp_net_ready_fn)(const void *context);
+
+/* Handle-based network port. All socket calls run on the serialized
+ * coordinator thread, so a provider does not need internal locking. A
+ * readiness callback may run in the provider's native network context. */
 typedef struct lxp_net_ops {
 	uint32_t abi_version; /**< Must be LXP_NET_OPS_ABI_VERSION. */
 	uint32_t struct_size; /**< Must be sizeof(lxp_net_ops_t). */
 
-	/** Acquire/release the provider's run-scoped socket storage. run_begin()
-	 * must leave prior state unchanged on failure; run_end() closes any
-	 * provider handles still owned after core teardown. */
-	int (*run_begin)(void);
+	/** Acquire/release the provider's run-scoped socket storage. A provider
+	 * advertising LXP_NET_CAP_SOCKET_READY_EVENT retains ready/context only
+	 * between a successful run_begin() and the matching run_end(), and stops
+	 * invoking ready before run_end() returns. Other providers may ignore them.
+	 * run_begin() must leave prior state unchanged on failure; run_end() closes
+	 * any provider handles still owned after core teardown. */
+	int (*run_begin)(lxp_net_ready_fn ready, const void *context);
 	void (*run_end)(void);
 
 	int (*sock_open)(lxp_af_t af, lxp_sock_type_t type, int proto, lxp_socket_t *out);
@@ -99,6 +106,8 @@ typedef struct lxp_net_ops {
 			   const lxp_sockaddr_t *dst);
 	int (*sock_recvfrom)(lxp_socket_t s, void *b, size_t n, size_t *got, lxp_sockaddr_t *src,
 			     uint64_t timeout_ns);
+	/* Every socket handed to LXP must accept nonblocking mode. LXP publishes
+	 * neither a newly opened nor accepted socket until this call succeeds. */
 	int (*sock_set_nonblock)(lxp_socket_t s, int nb);
 	int (*sock_poll)(lxp_socket_t s, unsigned events, unsigned *revents, uint64_t timeout_ns);
 	int (*sock_shutdown)(lxp_socket_t s, int how);

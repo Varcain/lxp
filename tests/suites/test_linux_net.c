@@ -17,6 +17,7 @@
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_net.h"
 #include "lxp/lxp_syscall.h"
+#include "lxp_provider.h"
 /* The POSIX reference port (ports/posix/lxp_port_posix.c) provides the synthetic
  * netif the SIOC* ioctl test binds via lxp_sock_set_netif(). */
 lxp_netif_t lxp_posix_netif(void);
@@ -30,6 +31,45 @@ lxp_netif_t lxp_posix_netif(void);
 #include <unistd.h>
 
 static uint8_t g_pool[8192] __attribute__((aligned(16)));
+static const lxp_net_ops_t *g_probe_net_ops;
+static unsigned g_probe_nonblock_failures;
+static unsigned g_probe_closes;
+
+static int probe_set_nonblock(lxp_socket_t socket, int nonblock)
+{
+	if (g_probe_nonblock_failures > 0) {
+		g_probe_nonblock_failures--;
+		return LXP_ERR_NOT_SUPPORTED;
+	}
+	return g_probe_net_ops->sock_set_nonblock(socket, nonblock);
+}
+
+static void probe_close(lxp_socket_t socket)
+{
+	g_probe_closes++;
+	g_probe_net_ops->sock_close(socket);
+}
+
+static void publish_net(const lxp_net_ops_t *net_ops)
+{
+	lxp_providers_publish(net_ops,
+#if LXP_ENABLE_DEV
+			      g_lxp_disp_ops,
+#else
+			      NULL,
+#endif
+#if LXP_ENABLE_FS
+			      g_lxp_fs_ops,
+#else
+			      NULL,
+#endif
+#if LXP_ENABLE_BLOCK
+			      g_lxp_block_ops
+#else
+			      NULL
+#endif
+	);
+}
 
 static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 {
@@ -126,6 +166,39 @@ static void test_net_socket_open_stat(void **state)
 			 -LXP_EAFNOSUPPORT);
 }
 
+/* LXP's park/retry model is safe only while every native socket is
+ * nonblocking. A provider failure must close the native handle and leave both
+ * the socket and fd pools reusable rather than publishing a blocking socket. */
+static void test_net_open_rejects_blocking_provider(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+
+	g_probe_net_ops = g_lxp_net_ops;
+	lxp_net_ops_t probe = *g_probe_net_ops;
+	probe.sock_set_nonblock = probe_set_nonblock;
+	probe.sock_close = probe_close;
+	g_probe_nonblock_failures = LXP_NSOCK + 1u;
+	g_probe_closes = 0;
+	publish_net(&probe);
+
+	for (unsigned i = 0; i < LXP_NSOCK + 1u; i++)
+		assert_int_equal(lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0,
+					     0, 0),
+				 -LXP_EOPNOTSUPP);
+	assert_int_equal(g_probe_closes, LXP_NSOCK + 1u);
+
+	/* More failures than the pool depth followed by a successful open prove
+	 * that neither side leaked a slot. */
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
+	assert_true(fd >= 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(g_probe_closes, LXP_NSOCK + 2u);
+	publish_net(g_probe_net_ops);
+}
+
 static void test_net_connect_errors(void **state)
 {
 	(void)state;
@@ -173,8 +246,7 @@ static void test_net_bind_address_not_available(void **state)
 	a.sin_family = LXP_AF_INET;
 	a.sin_port = 0;
 	a.sin_addr = htonl(0xc0000201u);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_bind, fd, (long)(uintptr_t)&a, sizeof(a), 0, 0,
-				     0),
+	assert_int_equal(lxp_syscall(&p, LXP_NR_bind, fd, (long)(uintptr_t)&a, sizeof(a), 0, 0, 0),
 			 -LXP_EADDRNOTAVAIL);
 
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
@@ -486,6 +558,62 @@ static void test_net_server_accept(void **state)
 	lxp_syscall(&p, LXP_NR_close, ls, 0, 0, 0, 0, 0);
 }
 
+/* Accepted handles have the same invariant as socket(2) handles. Exercise
+ * more failures than the pool depth, then accept successfully to prove that a
+ * failed nonblocking transition closes and unpublishes each native child. */
+static void test_net_accept_rejects_blocking_provider(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+
+	long ls = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
+	assert_true(ls >= 3);
+	lxp_sockaddr_in a;
+	guest_addr(&a, 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_bind, ls, (long)(uintptr_t)&a, sizeof(a), 0, 0, 0),
+			 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_listen, ls, 8, 0, 0, 0, 0), 0);
+	lxp_sockaddr_in bound;
+	uint32_t blen = sizeof(bound);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getsockname, ls, (long)(uintptr_t)&bound,
+				     (long)(uintptr_t)&blen, 0, 0, 0),
+			 0);
+
+	g_probe_net_ops = g_lxp_net_ops;
+	lxp_net_ops_t probe = *g_probe_net_ops;
+	probe.sock_set_nonblock = probe_set_nonblock;
+	probe.sock_close = probe_close;
+	g_probe_nonblock_failures = LXP_NSOCK + 1u;
+	g_probe_closes = 0;
+	publish_net(&probe);
+
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	sa.sin_port = bound.sin_port;
+	for (unsigned i = 0; i < LXP_NSOCK + 1u; i++) {
+		int host = socket(AF_INET, SOCK_STREAM, 0);
+		assert_true(host >= 0);
+		assert_int_equal(connect(host, (struct sockaddr *)&sa, sizeof(sa)), 0);
+		assert_int_equal(call_pump(&p, LXP_NR_accept, ls, 0, 0, 0, 0, 0), -LXP_EOPNOTSUPP);
+		close(host);
+	}
+	assert_int_equal(g_probe_closes, LXP_NSOCK + 1u);
+	publish_net(g_probe_net_ops);
+
+	int host = socket(AF_INET, SOCK_STREAM, 0);
+	assert_true(host >= 0);
+	assert_int_equal(connect(host, (struct sockaddr *)&sa, sizeof(sa)), 0);
+	long accepted = call_pump(&p, LXP_NR_accept, ls, 0, 0, 0, 0, 0);
+	assert_true(accepted >= 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, accepted, 0, 0, 0, 0, 0), 0);
+	close(host);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, ls, 0, 0, 0, 0, 0), 0);
+}
+
 /* sendmsg gathers a multi-segment iovec into the stream; recvmsg scatters a read into
  * the first segment. Ancillary data is never produced (msg_controllen/msg_flags cleared). */
 static void test_net_sendmsg_recvmsg(void **state)
@@ -594,6 +722,7 @@ int test_linux_net_run(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_net_socket_open_stat),
+		cmocka_unit_test(test_net_open_rejects_blocking_provider),
 		cmocka_unit_test(test_net_connect_errors),
 		cmocka_unit_test(test_net_bind_address_not_available),
 		cmocka_unit_test(test_net_loopback_roundtrip),
@@ -605,6 +734,7 @@ int test_linux_net_run(void)
 		cmocka_unit_test(test_net_ifconfig),
 		cmocka_unit_test(test_net_raw_socket),
 		cmocka_unit_test(test_net_server_accept),
+		cmocka_unit_test(test_net_accept_rejects_blocking_provider),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

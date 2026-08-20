@@ -73,8 +73,10 @@ static void pool_reset(void)
 	}
 }
 
-static int p_run_begin(void)
+static int p_run_begin(lxp_net_ready_fn ready, const void *context)
 {
+	(void)ready;
+	(void)context;
 	if (g_run_active)
 		return LXP_ERR_WOULD_BLOCK;
 	pool_reset();

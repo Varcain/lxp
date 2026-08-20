@@ -115,6 +115,15 @@ ioctls, durable sync, true 64-bit positioned I/O, and `/proc/partitions`. The fi
 provider's mount lifecycle arbitrates raw writable leases; ports must not allow a mounted
 filesystem and a writable raw user to own the same medium concurrently.
 
+The network provider also has a run-scoped lifecycle. LXP owns guest handles,
+park/retry state, deadlines, and coordinator wakeup; the host owns native socket
+storage and stack callbacks. A provider advertising
+`LXP_NET_CAP_SOCKET_READY_EVENT` receives an explicit callback in
+`run_begin()` and invokes it when readiness may have changed. All native sockets
+must accept nonblocking mode before they are exposed to the guest, keeping every
+provider call bounded while LXP implements blocking semantics by parking only
+that guest.
+
 Feature gates and sizing knobs live in `include/lxp/lxp_config.h`, set on the command line or
 via a drop-in `lxp_config_user.h`.
 

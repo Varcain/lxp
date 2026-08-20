@@ -58,6 +58,7 @@
 #define lxp_trap_publish lxp_test_trap_publish
 #define deferred_state_store lxp_test_deferred_state_store
 #define os_ops_valid lxp_test_os_ops_valid
+#define net_ops_valid lxp_test_net_ops_valid
 #define run_config_valid lxp_test_run_config_valid
 #define lxp_futex lxp_test_futex
 #define lxp_dispatch lxp_test_dispatch
@@ -132,6 +133,9 @@ static struct {
 	int net_begin_calls;
 	int net_begin_result;
 	int net_end_calls;
+	lxp_net_ready_fn net_ready;
+	const void *net_ready_context;
+	int net_ready_fire_in_prepare;
 } g_mock;
 
 static uint8_t g_mock_regions[LXP_NREG][256] __attribute__((aligned(256)));
@@ -338,20 +342,28 @@ static int mock_publish_executable(lxp_region_ref_t address_space, uintptr_t bas
 static int mock_prepare(void)
 {
 	g_mock.prepare_calls++;
+	if (g_mock.net_ready_fire_in_prepare && g_mock.net_ready)
+		g_mock.net_ready(g_mock.net_ready_context);
 	return g_mock.prepare_result;
 }
 static void mock_teardown(void)
 {
 	g_mock.teardown_calls++;
 }
-static int mock_net_begin(void)
+static int mock_net_begin(lxp_net_ready_fn ready, const void *context)
 {
 	g_mock.net_begin_calls++;
-	return g_mock.net_begin_result;
+	if (g_mock.net_begin_result != LXP_OK)
+		return g_mock.net_begin_result;
+	g_mock.net_ready = ready;
+	g_mock.net_ready_context = context;
+	return LXP_OK;
 }
 static void mock_net_end(void)
 {
 	g_mock.net_end_calls++;
+	g_mock.net_ready = NULL;
+	g_mock.net_ready_context = NULL;
 }
 
 /* The coordinator suite enables the writable-filesystem path so its blocked
@@ -1892,6 +1904,20 @@ static void test_port_abi_and_required_ops_are_validated(void **state)
 {
 	(void)state;
 	assert_true(os_ops_valid(&g_mock_eng));
+	assert_true(net_ops_valid(g_test_net_ops));
+
+	lxp_net_ops_t net_ops = *g_test_net_ops;
+	net_ops.abi_version++;
+	assert_false(net_ops_valid(&net_ops));
+	net_ops = *g_test_net_ops;
+	net_ops.struct_size--;
+	assert_false(net_ops_valid(&net_ops));
+	net_ops = *g_test_net_ops;
+	net_ops.run_begin = NULL;
+	assert_false(net_ops_valid(&net_ops));
+	net_ops = *g_test_net_ops;
+	net_ops.capabilities = LXP_NET_CAP_SOCKET_READY_EVENT << 1;
+	assert_false(net_ops_valid(&net_ops));
 
 	lxp_os_ops_t ops = g_mock_eng;
 	ops.abi_version++;
@@ -1967,20 +1993,24 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	net_ops.run_end = mock_net_end;
 	lxp_net_ops_t invalid_net_ops = net_ops;
 	invalid_net_ops.run_end = NULL;
-	assert_int_equal(lxp_run(&g_mock_eng, &invalid_net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
-				 1, argv),
+	assert_int_equal(lxp_run(&g_mock_eng, &invalid_net_ops, NULL, &g_mock_fs_ops, NULL, &cfg,
+				 "/init", 1, argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.net_begin_calls, 0);
 	assert_int_equal(g_mock.prepare_calls, 0);
 
 	g_mock.prepare_result = -LXP_EIO;
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init", 1,
-				 argv),
+	g_mock.net_ready_fire_in_prepare = 1;
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
+				 1, argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.net_begin_calls, 1);
 	assert_int_equal(g_mock.net_end_calls, 1);
 	assert_int_equal(g_mock.prepare_calls, 1);
 	assert_int_equal(g_mock.teardown_calls, 1);
+	assert_int_equal(g_mock.event_posts, 1);
+	assert_null(g_mock.net_ready);
+	assert_null(g_mock.net_ready_context);
 	assert_null(g_eng);
 	assert_null(g_cfg);
 	assert_null(g_lxp_rootfs_lo);
@@ -1990,8 +2020,8 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	/* A rejected provider acquisition never starts host preparation or releases
 	 * an already-active provider state through run_end(). */
 	g_mock.net_begin_result = LXP_ERR_WOULD_BLOCK;
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init", 1,
-				 argv),
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
+				 1, argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.net_begin_calls, 2);
 	assert_int_equal(g_mock.net_end_calls, 1);
@@ -2070,8 +2100,8 @@ static void test_coordinator_socket_wait_uses_readiness_events(void **state)
 
 	/* Legacy/portable ports retain the bounded polling fallback. */
 	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_SOCKET, 0), 5);
-	/* An event-driven net port can sleep until lxp_sock_kick() (or the normal
-	 * 50 ms maintenance wakeup) without quantizing socket readiness to 5 ms. */
+	/* An event-driven net port can sleep until its run-scoped callback (or the
+	 * normal 50 ms maintenance wakeup) without quantizing readiness to 5 ms. */
 	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_SOCKET, 1), 50);
 	/* A different polling wait class still requires the short timeout. */
 	assert_int_equal(

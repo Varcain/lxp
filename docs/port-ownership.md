@@ -25,6 +25,8 @@ LXP owns:
   `include/lxp/lxp_async_gate.h`, including cancellation/completion races;
 - Linux block-device reader/writer aggregation: providers acquire one native
   lease for the first reader through the last reader, or one exclusive writer;
+- guest socket lifecycle, nonblocking publication, parked retry state, and the
+  coordinator wakeup selected by a run-scoped provider readiness callback;
 - patches required to make a supported RTOS port implement LXP's task,
   privilege, or MPU contract; and
 - standalone port tests and integration fixtures.
@@ -55,6 +57,16 @@ those choices; it does not turn product policy into LXP defaults.
 Native-media arbitration does not move into LXP. It must also cover RTOS-native
 filesystem and raw-block callers, so the host storage layer owns physical-card
 generation leases, DMA-safe staging, worker priority, and budget admission.
+
+Native socket storage and stack notification policy likewise remain host-owned.
+The network provider may subscribe to an RTOS or driver readiness source only
+while it owns native sockets. If it advertises readiness events, it translates
+that source into the callback supplied to `run_begin()`; it does not call a
+global LXP wake function. LXP owns what the callback means: post the current
+coordinator event and retry generation-qualified parked socket operations.
+Every opened or accepted provider socket must successfully enter nonblocking
+mode before LXP publishes it, because a blocking call would stall the privileged
+coordinator rather than only the calling guest.
 
 ## Dependency direction
 
