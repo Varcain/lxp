@@ -629,14 +629,16 @@ static const lxp_os_ops_t g_mock_eng = {
 	.system_version = mock_system_version,
 };
 
-static void mock_on_guest_exit(const lxp_guest_exit_info_t *info)
+static void mock_on_guest_exit(void *ctx, const lxp_guest_exit_info_t *info)
 {
+	assert_ptr_equal(ctx, &g_mock);
 	g_mock.exit_notify_calls++;
 	g_mock.exit_info = *info;
 }
 
 static const lxp_run_config_t g_mock_cfg = {
 	.on_guest_exit = mock_on_guest_exit,
+	.guest_exit_ctx = &g_mock,
 };
 
 static int reset_state(void **state)

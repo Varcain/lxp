@@ -54,13 +54,14 @@ typedef struct lxp_launch_config {
 	void (*on_enosys)(long nr);
 	int (*console_poll)(void *ctx);
 	const char *const *env;
-	void (*on_guest_exit)(const lxp_guest_exit_info_t *info);
+	lxp_guest_exit_fn on_guest_exit;
 	uint16_t display_width;
 	uint16_t display_height;
 	lxp_rt_scope_read_fn rt_scope_read;
 	void *rt_scope_ctx;
 	lxp_console_subscribe_fn console_subscribe;
 	lxp_console_unsubscribe_fn console_unsubscribe;
+	void *guest_exit_ctx;
 } lxp_launch_config_t;
 
 /** Immutable, zero-heap host instance. Treat fields as read-only after a

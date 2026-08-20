@@ -39,6 +39,10 @@ typedef struct lxp_guest_exit_info {
 	uintptr_t address; /**< Port-defined fault address, or 0 when unavailable. */
 } lxp_guest_exit_info_t;
 
+/** Run-scoped process-exit notification. @p ctx is copied from the launch
+ * configuration and remains owned by the caller. */
+typedef void (*lxp_guest_exit_fn)(void *ctx, const lxp_guest_exit_info_t *info);
+
 /** Host-owned formatter for the optional real-time diagnostic proc node.
  * The callback must not block or mutate the measured interval. It returns the
  * number of bytes placed in @p buf, or a negative value when unavailable. */
@@ -100,7 +104,7 @@ typedef struct lxp_run_config {
 	/** Optional process-exit diagnostic. Called once per terminated guest from the
 	 * privileged coordinator task, after all fault/exit metadata is stable and
 	 * before the slot is reused. It must return within a host-defined finite bound. */
-	void (*on_guest_exit)(const lxp_guest_exit_info_t *info);
+	lxp_guest_exit_fn on_guest_exit;
 	/** Touch/input coordinate extent for this run. Zero selects the module default
 	 * (480x272) independently for each dimension. These fields configure no static
 	 * storage; process counts and pool sizes remain compile-time properties. */
@@ -121,6 +125,7 @@ typedef struct lxp_run_config {
 	/** Optional run-scoped 9P mount. LXP copies it before initiating the
 	 * connection; NULL disables netfs for this run. */
 	const lxp_netfs_config_t *netfs_config;
+	void *guest_exit_ctx; /**< Opaque, passed to @p on_guest_exit. */
 } lxp_run_config_t;
 
 /** @ref lxp_run outcomes (negative; a non-negative result is the init

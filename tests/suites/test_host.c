@@ -234,8 +234,9 @@ static void mock_enosys(long nr)
 	(void)nr;
 }
 
-static void mock_exit(const lxp_guest_exit_info_t *info)
+static void mock_exit(void *ctx, const lxp_guest_exit_info_t *info)
 {
+	(void)ctx;
 	(void)info;
 }
 
@@ -303,6 +304,7 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 		.console_poll = mock_poll,
 		.env = env,
 		.on_guest_exit = mock_exit,
+		.guest_exit_ctx = &io_cookie,
 		.display_width = 800,
 		.display_height = 480,
 		.rt_scope_read = mock_rt_scope,
@@ -328,6 +330,7 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	assert_ptr_equal(g_capture.run_config.console_poll, mock_poll);
 	assert_ptr_equal(g_capture.run_config.env, env);
 	assert_ptr_equal(g_capture.run_config.on_guest_exit, mock_exit);
+	assert_ptr_equal(g_capture.run_config.guest_exit_ctx, &io_cookie);
 	assert_int_equal(g_capture.run_config.display_width, 800);
 	assert_int_equal(g_capture.run_config.display_height, 480);
 	assert_ptr_equal(g_capture.run_config.rt_scope_read, mock_rt_scope);

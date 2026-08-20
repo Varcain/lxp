@@ -1854,7 +1854,7 @@ void notify_guest_exit(int slot, const lxp_proc_t *proc)
 		.detail = proc->exit_detail,
 		.address = proc->exit_address,
 	};
-	g_cfg->on_guest_exit(&info);
+	g_cfg->on_guest_exit(g_cfg->guest_exit_ctx, &info);
 }
 
 /* A parent's live children and queued zombies share one bounded accounting

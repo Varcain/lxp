@@ -123,6 +123,7 @@ int lxp_host_run(const lxp_host_t *host, const lxp_launch_config_t *launch_confi
 		config.console_poll = launch_config->console_poll;
 		config.env = launch_config->env;
 		config.on_guest_exit = launch_config->on_guest_exit;
+		config.guest_exit_ctx = launch_config->guest_exit_ctx;
 		config.display_width = launch_config->display_width;
 		config.display_height = launch_config->display_height;
 		config.rt_scope_read = launch_config->rt_scope_read;
