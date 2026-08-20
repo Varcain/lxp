@@ -18,6 +18,8 @@
 #include "lxp/ports/freertos.h"
 
 extern uint64_t lxp_qemu_now_us(void);
+extern int lxp_qemu_tick_subscribe(lxp_freertos_tick_fn callback);
+extern void lxp_qemu_tick_unsubscribe(lxp_freertos_tick_fn callback);
 
 /* Program images remain in emulated SRAM; large dynamic FDPIC arenas occupy
  * the upper 4 MiB of PSRAM, above the two rootfs XIP windows. */
@@ -115,6 +117,8 @@ const lxp_freertos_port_config_t g_lxp_freertos_port_config = {
 			.normal_attrs = LXP_CPU_MEM_ATTR_NORMAL_NC_NSH,
 		},
 	.guest_quantum_ms = 10u,
+	.tick_subscribe = lxp_qemu_tick_subscribe,
+	.tick_unsubscribe = lxp_qemu_tick_unsubscribe,
 	.time_us = qemu_time_us,
 	.time_ns = qemu_time_ns,
 	.mem_stats = qemu_mem_stats,

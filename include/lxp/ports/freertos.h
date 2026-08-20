@@ -18,10 +18,11 @@
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_port.h"
 
-#define LXP_FREERTOS_PORT_CONFIG_ABI_VERSION 2u
+#define LXP_FREERTOS_PORT_CONFIG_ABI_VERSION 3u
 #define LXP_FREERTOS_ROOTFS_REGION_MAX 2u
 
 typedef int32_t (*lxp_freertos_slot_lookup_t)(uintptr_t identity);
+typedef void (*lxp_freertos_tick_fn)(void);
 
 typedef struct lxp_freertos_rootfs_region {
 	uintptr_t base;
@@ -62,6 +63,14 @@ typedef struct lxp_freertos_port_config {
 	/* Board/HAL and host-policy providers. Callbacks execute in the context
 	 * documented by lxp_os_ops_t unless noted otherwise. */
 	int (*host_prepare)(void);
+	/* Publish exactly one callback into the embedding system's FreeRTOS tick
+	 * hook for this run, then withdraw that same callback during teardown.
+	 * subscribe/unsubscribe execute in coordinator task context and must
+	 * synchronize against SysTick before returning. The subscribed callback
+	 * executes in SysTick ISR context and must not be called after unsubscribe
+	 * returns. Both operations are required. */
+	int (*tick_subscribe)(lxp_freertos_tick_fn callback);
+	void (*tick_unsubscribe)(lxp_freertos_tick_fn callback);
 	int (*time_us)(uint64_t *out);
 	int (*time_ns)(uint64_t *out);
 	int (*thread_list)(struct lxp_thread_info *out, size_t max_count, size_t *actual_count,
@@ -85,8 +94,5 @@ extern const lxp_freertos_port_config_t g_lxp_freertos_port_config;
 
 /** Engine table owned by this port and consumed by the host composition. */
 extern const lxp_os_ops_t g_lxp_host_engine;
-
-/** Called once per FreeRTOS tick to apply guest-only weighted slicing. */
-void lxp_freertos_tick(void);
 
 #endif /* LXP_PORTS_FREERTOS_H */

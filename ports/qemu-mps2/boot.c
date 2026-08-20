@@ -70,10 +70,34 @@ static void sh_exit(int code)
 
 /* ---- monotonic microsecond clock (FreeRTOS tick hook) ---------------------- */
 static volatile uint64_t g_us;
+static lxp_freertos_tick_fn g_tick_callback;
+
+int lxp_qemu_tick_subscribe(lxp_freertos_tick_fn callback)
+{
+	if (!callback)
+		return -1;
+	taskENTER_CRITICAL();
+	int result = g_tick_callback && g_tick_callback != callback ? -1 : 0;
+	if (result == 0)
+		g_tick_callback = callback;
+	taskEXIT_CRITICAL();
+	return result;
+}
+
+void lxp_qemu_tick_unsubscribe(lxp_freertos_tick_fn callback)
+{
+	taskENTER_CRITICAL();
+	if (g_tick_callback == callback)
+		g_tick_callback = NULL;
+	taskEXIT_CRITICAL();
+}
+
 void vApplicationTickHook(void)
 {
 	g_us += 1000000u / configTICK_RATE_HZ;
-	lxp_freertos_tick();
+	lxp_freertos_tick_fn callback = g_tick_callback;
+	if (callback)
+		callback();
 }
 uint64_t lxp_qemu_now_us(void)
 {

@@ -63,6 +63,9 @@ struct freertos_lxp_slot {
 static struct freertos_lxp_slot g_slots[LXP_NSLOT];
 /* FreeRTOS owns the opaque task control-block storage; this port owns g_slots. */
 static StaticTask_t g_tcb[LXP_NSLOT];
+static uint32_t g_tick_budget_ticks;
+static TaskHandle_t g_tick_budget_owner;
+static uint8_t g_tick_subscribed;
 static void freertos_park_entry(void *token);
 static int freertos_validate_active_profile(int sidx);
 
@@ -116,20 +119,23 @@ static int current_slot(void)
  * tick. Once one guest consumes its configured budget while a peer is ready,
  * PendSV rotates the ready list at SLOT_PRIO. Higher-priority host work is
  * unaffected and may preempt at any point in the budget. */
-void lxp_freertos_tick(void)
+static void freertos_tick_budget_reset(void)
+{
+	g_tick_budget_ticks = 0;
+	g_tick_budget_owner = NULL;
+}
+
+static void lxp_freertos_tick(void)
 {
 #if (configUSE_TIME_SLICING == 0)
-	static uint32_t budget_ticks;
-	static TaskHandle_t budget_owner;
 	int current = current_slot();
 	if (!lxp_trap_active() || current < 0) {
-		budget_ticks = 0;
-		budget_owner = NULL;
+		freertos_tick_budget_reset();
 		return;
 	}
-	if (budget_owner != g_slots[current].tid) {
-		budget_owner = g_slots[current].tid;
-		budget_ticks = 0;
+	if (g_tick_budget_owner != g_slots[current].tid) {
+		g_tick_budget_owner = g_slots[current].tid;
+		g_tick_budget_ticks = 0;
 	}
 	uint32_t quantum_ms = PORT_CONFIG.guest_quantum_ms ? PORT_CONFIG.guest_quantum_ms : 10u;
 	uint32_t base_ticks = (quantum_ms * (uint32_t)configTICK_RATE_HZ + 999u) / 1000u;
@@ -139,9 +145,9 @@ void lxp_freertos_tick(void)
 	uint32_t quantum_ticks = (base_ticks * weight + 19u) / 20u;
 	if (quantum_ticks == 0)
 		quantum_ticks = 1;
-	if (++budget_ticks < quantum_ticks)
+	if (++g_tick_budget_ticks < quantum_ticks)
 		return;
-	budget_ticks = 0;
+	g_tick_budget_ticks = 0;
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		if (s != current && g_slots[s].tid && lxp_slot_ref_is_runnable(task_slot_ref(s))) {
 			portYIELD_FROM_ISR(pdTRUE);
@@ -1130,7 +1136,8 @@ static int freertos_prepare(void)
 	    PORT_CONFIG.program_region_count < LXP_NREG || !PORT_CONFIG.dynamic_pools ||
 	    PORT_CONFIG.dynamic_pool_stride != LXP_DYN_POOL_SIZE ||
 	    PORT_CONFIG.dynamic_pool_count < LXP_NREG || !PORT_CONFIG.exec_captures ||
-	    PORT_CONFIG.exec_capture_count < LXP_NSLOT || !PORT_CONFIG.time_us ||
+	    PORT_CONFIG.exec_capture_count < LXP_NSLOT || !PORT_CONFIG.tick_subscribe ||
+	    !PORT_CONFIG.tick_unsubscribe || !PORT_CONFIG.time_us ||
 	    !PORT_CONFIG.time_ns || !PORT_CONFIG.random_fill ||
 	    !PORT_CONFIG.validate_memory_contract ||
 	    PORT_CONFIG.rootfs_region_count > LXP_FREERTOS_ROOTFS_REGION_MAX ||
@@ -1158,11 +1165,24 @@ static int freertos_prepare(void)
 		g_ev = xSemaphoreCreateBinaryStatic(&g_ev_buf);
 	if (!g_ev || (PORT_CONFIG.host_prepare && PORT_CONFIG.host_prepare() != 0))
 		return -1;
+	freertos_tick_budget_reset();
+	if (PORT_CONFIG.tick_subscribe(lxp_freertos_tick) != LXP_OK)
+		return -1;
+	g_tick_subscribed = 1u;
 	for (int s = 0; s < LXP_NSLOT; s++)
 		g_slots[s].profile.valid = 0;
 	/* SHCSR @ 0xE000ED24: BUSFAULTENA = bit 17, USGFAULTENA = bit 18. */
 	*(volatile uint32_t *)0xE000ED24u |= (1u << 17) | (1u << 18);
 	return 0;
+}
+
+static void freertos_teardown(void)
+{
+	if (g_tick_subscribed) {
+		PORT_CONFIG.tick_unsubscribe(lxp_freertos_tick);
+		g_tick_subscribed = 0u;
+	}
+	freertos_tick_budget_reset();
 }
 
 static int freertos_validate_memory_contract(const lxp_cpu_memory_contract_t *declared)
@@ -1177,6 +1197,7 @@ const lxp_os_ops_t g_lxp_host_engine = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
 	.prepare = freertos_prepare,
+	.teardown = freertos_teardown,
 	.region = freertos_region,
 	.dyn_pool = freertos_dyn_pool,
 	.exec_capture = freertos_exec_capture,
