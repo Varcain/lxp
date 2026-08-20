@@ -88,7 +88,7 @@ typedef struct lxp_cpu_memory_contract {
 	uint32_t icache_size;
 } lxp_cpu_memory_contract_t;
 
-#define LXP_OS_OPS_ABI_VERSION 10u
+#define LXP_OS_OPS_ABI_VERSION 11u
 
 /* Opaque host critical-section state. Ports which use irq-save primitives
  * return the native key through this value; ports with internally nested
@@ -257,6 +257,12 @@ typedef struct lxp_os_ops {
 	 * fails the run closed. The declaration must remain valid for the run. */
 	const lxp_cpu_memory_contract_t *cpu_memory_contract;
 	int (*validate_memory_contract)(const lxp_cpu_memory_contract_t *declared);
+
+	/* Optional aggregate native stack high-water mark across guest tasks.
+	 * Both values are bytes. Return LXP_OK only when used <= size and the
+	 * measurement is meaningful; a NULL callback makes it unavailable. This
+	 * keeps engine-specific task introspection behind the port contract. */
+	int (*guest_stack_usage)(size_t *used, size_t *size);
 } lxp_os_ops_t;
 
 #ifdef __cplusplus

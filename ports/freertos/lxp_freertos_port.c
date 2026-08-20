@@ -983,14 +983,18 @@ static void slot_sample_stack(int sidx)
 		g_slot_stack_used_max = used;
 }
 
-/* Bytes used at the high-water mark by the deepest guest-slot tramp stack this run (0 if none ran).
- * The app prints it in the teardown stack audit; declared there via a matching extern. */
-size_t lxp_freertos_slot_stack_high_water_mark(void)
+/* Bytes used at the high-water mark by the deepest guest-slot trampoline task
+ * since port initialization. Exposed only through the generic port contract. */
+static int freertos_guest_stack_usage(size_t *used, size_t *size)
 {
+	if (!used || !size)
+		return LXP_ERR_INVALID_PARAM;
 	for (int i = 0; i < LXP_NSLOT; i++)
 		if (g_slots[i].tid)
 			slot_sample_stack(i);
-	return g_slot_stack_used_max;
+	*used = g_slot_stack_used_max;
+	*size = (size_t)TRAMP_STACK_WORDS * sizeof(StackType_t);
+	return LXP_OK;
 }
 
 static int freertos_abort_slot(int sidx, uint32_t generation)
@@ -1191,6 +1195,7 @@ const lxp_os_ops_t g_lxp_host_engine = {
 	.publish_executable = freertos_publish_executable,
 	.cpu_memory_contract = &PORT_CONFIG.cpu_memory_contract,
 	.validate_memory_contract = freertos_validate_memory_contract,
+	.guest_stack_usage = freertos_guest_stack_usage,
 	.cache_clean = freertos_cache_clean,
 	.cache_invalidate = freertos_cache_invalidate,
 	.coord_map =

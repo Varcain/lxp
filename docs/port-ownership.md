@@ -21,6 +21,10 @@ LXP owns:
 - reusable host composition under `include/lxp/lxp_host.h`: early rootfs-window
   publication, zero-heap CPIO ingestion, immutable provider/rootfs/network
   topology capture, and construction of complete per-run contracts;
+- the versioned, quiescent host observation in `include/lxp/lxp_observe.h`,
+  which copies run health, world-validation results, object-size accounting,
+  optional latency rows, and normalized native guest-stack usage without
+  exposing process-global registries or an RTOS-specific accessor;
 - generation-qualified asynchronous provider correlation under
   `include/lxp/lxp_async_gate.h`, including cancellation/completion races;
 - Linux block-device reader/writer aggregation: providers acquire one native
@@ -48,8 +52,8 @@ A consuming host owns:
 - translating the host build configuration into `LXP_ENABLE_*` and sizing
   definitions; and
 - product policy: the init path, rootfs choice, enabled providers, priorities,
-  interface addressing, netfs endpoint, watchdog behavior, diagnostics, and
-  demo workloads.
+  interface addressing, netfs endpoint, watchdog behavior, diagnostic
+  presentation/thresholds, and demo workloads.
 
 An application owns only application behavior. Benchmark signal generation,
 fault demonstrations, workload selection, and reporting may remain in an app.
@@ -82,6 +86,16 @@ coordinator event and retry generation-qualified parked socket operations.
 Every opened or accepted provider socket must successfully enter nonblocking
 mode before LXP publishes it, because a blocking call would stall the privileged
 coordinator rather than only the calling guest.
+
+Observability follows the same boundary. LXP owns the meaning, capacity, and
+lifetime of coordinator diagnostics and latency counters. A caller takes one
+`lxp_host_observation_t` only while the host is quiescent; an active run returns
+`LXP_ERR_BUSY` rather than a cross-registry partial view. A port may publish an
+aggregate guest-task stack high-water mark through the optional
+`lxp_os_ops_t::guest_stack_usage` callback. LXP normalizes that result into the
+host observation, so consumers do not include an RTOS port header. The host or
+application still decides when to sample, how to render the copy, whether to
+enforce a threshold, and how a watchdog reacts to the separate live heartbeat.
 
 Console input follows the same callback-lifetime rule. The host owns the UART,
 RX FIFO, newline transport policy, and any non-consuming lookahead required by

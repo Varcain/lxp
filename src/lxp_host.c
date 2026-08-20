@@ -6,6 +6,7 @@
  */
 
 #include "lxp/lxp_host.h"
+#include "lxp/lxp_observe.h"
 
 #include <string.h>
 
@@ -132,4 +133,70 @@ int lxp_host_run(const lxp_host_t *host, const lxp_launch_config_t *launch_confi
 
 	return lxp_run(host->os_ops, host->net_ops, host->display_ops, host->fs_ops,
 		       host->block_ops, &config, path, argc, argv);
+}
+
+int lxp_host_observe(const lxp_host_t *host, lxp_host_observation_t *out)
+{
+	if (!out)
+		return LXP_ERR_INVALID_PARAM;
+	memset(out, 0, sizeof(*out));
+	if (!host || host->initialized != LXP_HOST_INITIALIZED)
+		return LXP_ERR_INVALID_PARAM;
+
+	out->abi_version = LXP_HOST_OBSERVATION_ABI_VERSION;
+	out->struct_size = sizeof(*out);
+	lxp_run_health(&out->run_health);
+	if (out->run_health.active) {
+		memset(out, 0, sizeof(*out));
+		return LXP_ERR_BUSY;
+	}
+	lxp_diag_size_report(&out->sizes);
+	lxp_diag_health(&out->diagnostics);
+
+	if (host->os_ops->guest_stack_usage) {
+		size_t used = 0u;
+		size_t size = 0u;
+		if (host->os_ops->guest_stack_usage(&used, &size) == LXP_OK && size != 0u &&
+		    used <= size) {
+			out->guest_stack.used = used;
+			out->guest_stack.size = size;
+			out->guest_stack.available = 1u;
+		}
+	}
+
+#if LXP_ENABLE_LATENCY
+	for (int service = 1; service < LXP_LAT_CLASSES; service++) {
+		const lxp_lat_stat_t *stat = lxp_lat_service_get(service);
+		lxp_latency_observation_t *row =
+			&out->latency_services[out->latency_service_count++];
+		row->id = (uint32_t)service;
+		if (stat)
+			row->stat = *stat;
+	}
+	for (int slot = 0; slot < LXP_NSLOT; slot++) {
+		const lxp_lat_stat_t *stat = lxp_lat_wake_get(slot);
+		lxp_latency_observation_t *row =
+			&out->latency_wakes[out->latency_wake_count++];
+		row->id = (uint32_t)slot;
+		if (stat)
+			row->stat = *stat;
+	}
+#endif
+	return LXP_OK;
+}
+
+const char *lxp_host_observation_service_name(const lxp_host_observation_t *observation,
+					      unsigned row)
+{
+#if LXP_ENABLE_LATENCY
+	if (!observation || observation->abi_version != LXP_HOST_OBSERVATION_ABI_VERSION ||
+	    observation->struct_size != sizeof(*observation) ||
+	    row >= observation->latency_service_count)
+		return "?";
+	return lxp_lat_class_name((int)observation->latency_services[row].id);
+#else
+	(void)observation;
+	(void)row;
+	return "?";
+#endif
 }

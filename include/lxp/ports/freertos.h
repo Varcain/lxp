@@ -90,7 +90,4 @@ extern const lxp_os_ops_t g_lxp_host_engine;
 /** Called once per FreeRTOS tick to apply guest-only weighted slicing. */
 void lxp_freertos_tick(void);
 
-/** Deepest native bootstrap-stack use observed across all guest slots. */
-size_t lxp_freertos_slot_stack_high_water_mark(void);
-
 #endif /* LXP_PORTS_FREERTOS_H */

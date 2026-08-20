@@ -15,6 +15,7 @@
 #include <cmocka.h>
 
 #include "lxp/lxp_host.h"
+#include "lxp/lxp_observe.h"
 #include "lxp/lxp_proc.h"
 
 static struct {
@@ -37,6 +38,51 @@ static struct {
 	const char *const *argv;
 } g_capture;
 
+static lxp_run_health_t g_mock_run_health;
+static lxp_diag_size_report_t g_mock_sizes;
+static lxp_diag_health_t g_mock_diagnostics;
+static lxp_lat_stat_t g_mock_services[LXP_LAT_CLASSES];
+static lxp_lat_stat_t g_mock_wakes[LXP_NSLOT];
+
+void lxp_run_health(lxp_run_health_t *out)
+{
+	if (out)
+		*out = g_mock_run_health;
+}
+
+void lxp_diag_size_report(lxp_diag_size_report_t *out)
+{
+	if (out)
+		*out = g_mock_sizes;
+}
+
+void lxp_diag_health(lxp_diag_health_t *out)
+{
+	if (out)
+		*out = g_mock_diagnostics;
+}
+
+const lxp_lat_stat_t *lxp_lat_service_get(int cls)
+{
+	return cls >= 0 && cls < LXP_LAT_CLASSES ? &g_mock_services[cls] : NULL;
+}
+
+const lxp_lat_stat_t *lxp_lat_wake_get(int slot)
+{
+	return slot >= 0 && slot < LXP_NSLOT ? &g_mock_wakes[slot] : NULL;
+}
+
+const char *lxp_lat_class_name(int cls)
+{
+	static const char *const names[LXP_LAT_CLASSES] = {
+		"none",
+#define LXP_LAT_X(name) #name,
+		LXP_LAT_CLASS_LIST(LXP_LAT_X)
+#undef LXP_LAT_X
+	};
+	return cls >= 0 && cls < LXP_LAT_CLASSES ? names[cls] : "?";
+}
+
 static void mock_rootfs_window(const void *base, size_t size)
 {
 	g_capture.rootfs_window_calls++;
@@ -44,10 +90,20 @@ static void mock_rootfs_window(const void *base, size_t size)
 	g_capture.rootfs_window_size = size;
 }
 
+static int mock_guest_stack_usage(size_t *used, size_t *size)
+{
+	assert_non_null(used);
+	assert_non_null(size);
+	*used = 144u;
+	*size = 768u;
+	return LXP_OK;
+}
+
 static const lxp_os_ops_t g_os_ops = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
 	.rootfs_window = mock_rootfs_window,
+	.guest_stack_usage = mock_guest_stack_usage,
 };
 static const lxp_net_ops_t g_net_ops;
 static const lxp_display_ops_t g_display_ops;
@@ -372,6 +428,97 @@ static void test_host_rejects_invalid_topology_before_rootfs_access(void **state
 	assert_int_equal(g_capture.rootfs_window_calls, 0);
 }
 
+static void test_host_copies_one_coherent_observation(void **state)
+{
+	(void)state;
+	uint8_t image[512] = {0};
+	lxp_file_t rootfs[4];
+	char names[64];
+	lxp_host_t host;
+	lxp_host_observation_t observation;
+	const lxp_host_config_t config = {
+		.os_ops = &g_os_ops,
+		.rootfs_image = image,
+		.rootfs_image_size = make_rootfs(image),
+		.rootfs_storage = rootfs,
+		.rootfs_capacity = 4,
+		.rootfs_name_storage = names,
+		.rootfs_name_capacity = sizeof(names),
+	};
+
+	memset(&g_mock_run_health, 0, sizeof(g_mock_run_health));
+	memset(&g_mock_sizes, 0, sizeof(g_mock_sizes));
+	memset(&g_mock_diagnostics, 0, sizeof(g_mock_diagnostics));
+	memset(g_mock_services, 0, sizeof(g_mock_services));
+	memset(g_mock_wakes, 0, sizeof(g_mock_wakes));
+	g_mock_run_health.coord_iters = 1234u;
+	g_mock_sizes.slots = LXP_NSLOT;
+	g_mock_sizes.regions = LXP_NREG;
+	g_mock_diagnostics.checks = 91u;
+	g_mock_services[LXP_EV_FORK].count = 7u;
+	g_mock_services[LXP_EV_FORK].max_ns = 8100u;
+	g_mock_wakes[2].count = 3u;
+	g_mock_wakes[2].buckets[4] = 3u;
+
+	assert_int_equal(lxp_host_init_cpio(&host, &config), LXP_OK);
+	assert_int_equal(lxp_host_observe(&host, &observation), LXP_OK);
+	assert_int_equal(observation.abi_version, LXP_HOST_OBSERVATION_ABI_VERSION);
+	assert_int_equal(observation.struct_size, sizeof(observation));
+	assert_int_equal(observation.run_health.coord_iters, 1234u);
+	assert_int_equal(observation.sizes.slots, LXP_NSLOT);
+	assert_int_equal(observation.diagnostics.checks, 91u);
+	assert_int_equal(observation.guest_stack.available, 1u);
+	assert_int_equal(observation.guest_stack.used, 144u);
+	assert_int_equal(observation.guest_stack.size, 768u);
+	assert_int_equal(observation.latency_service_count, LXP_LAT_CLASSES - 1);
+	assert_int_equal(observation.latency_wake_count, LXP_NSLOT);
+	assert_int_equal(observation.latency_services[LXP_EV_FORK - 1].id, LXP_EV_FORK);
+	assert_int_equal(observation.latency_services[LXP_EV_FORK - 1].stat.count, 7u);
+	assert_int_equal(observation.latency_services[LXP_EV_FORK - 1].stat.max_ns, 8100u);
+	assert_string_equal(lxp_host_observation_service_name(
+				&observation, LXP_EV_FORK - 1),
+			    "FORK");
+	assert_int_equal(observation.latency_wakes[2].id, 2u);
+	assert_int_equal(observation.latency_wakes[2].stat.buckets[4], 3u);
+
+	/* The record is a copy: later registry mutation cannot rewrite it. */
+	g_mock_services[LXP_EV_FORK].count = 99u;
+	assert_int_equal(observation.latency_services[LXP_EV_FORK - 1].stat.count, 7u);
+}
+
+static void test_host_observation_fails_closed(void **state)
+{
+	(void)state;
+	lxp_host_t host = {0};
+	lxp_host_observation_t observation;
+	memset(&observation, 0xa5, sizeof(observation));
+	assert_int_equal(lxp_host_observe(NULL, &observation), LXP_ERR_INVALID_PARAM);
+	assert_int_equal(observation.abi_version, 0u);
+	assert_int_equal(lxp_host_observe(&host, &observation), LXP_ERR_INVALID_PARAM);
+	assert_int_equal(observation.struct_size, 0u);
+	assert_int_equal(lxp_host_observe(&host, NULL), LXP_ERR_INVALID_PARAM);
+	assert_string_equal(lxp_host_observation_service_name(&observation, 0u), "?");
+
+	/* An active coordinator would make the multi-registry copy inconsistent. */
+	uint8_t image[512] = {0};
+	lxp_file_t rootfs[4];
+	char names[64];
+	const lxp_host_config_t config = {
+		.os_ops = &g_os_ops,
+		.rootfs_image = image,
+		.rootfs_image_size = make_rootfs(image),
+		.rootfs_storage = rootfs,
+		.rootfs_capacity = 4,
+		.rootfs_name_storage = names,
+		.rootfs_name_capacity = sizeof(names),
+	};
+	assert_int_equal(lxp_host_init_cpio(&host, &config), LXP_OK);
+	g_mock_run_health.active = 1;
+	assert_int_equal(lxp_host_observe(&host, &observation), LXP_ERR_BUSY);
+	assert_int_equal(observation.abi_version, 0u);
+	g_mock_run_health.active = 0;
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -379,6 +526,8 @@ int main(void)
 		cmocka_unit_test(test_failed_reinit_clears_previous_host),
 		cmocka_unit_test(test_host_rejects_invalid_contract_before_rootfs_access),
 		cmocka_unit_test(test_host_rejects_invalid_topology_before_rootfs_access),
+		cmocka_unit_test(test_host_copies_one_coherent_observation),
+		cmocka_unit_test(test_host_observation_fails_closed),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
