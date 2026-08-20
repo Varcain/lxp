@@ -18,8 +18,7 @@
 #include "lxp/lxp_net.h"
 #include "lxp/lxp_syscall.h"
 #include "lxp_provider.h"
-/* The POSIX reference port (ports/posix/lxp_port_posix.c) provides the synthetic
- * netif the SIOC* ioctl test binds via lxp_sock_set_netif(). */
+/* The POSIX reference port provides the synthetic netif bound for one run. */
 lxp_netif_t lxp_posix_netif(void);
 
 #include <arpa/inet.h>
@@ -431,7 +430,7 @@ static void test_net_ifconfig(void **state)
 	lxp_proc_t p;
 	setup(&p, &arena);
 
-	lxp_sock_set_netif(lxp_posix_netif());
+	lxp_sock_run_begin(lxp_posix_netif());
 
 	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_DGRAM, 0, 0, 0, 0);
 	assert_true(fd >= 3);
@@ -471,7 +470,8 @@ static void test_net_ifconfig(void **state)
 			 0);
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
-	lxp_sock_set_netif(NULL);
+	lxp_sock_run_end();
+	assert_int_equal(lxp_sock_ifsnapshot(NULL, NULL, NULL, NULL, NULL), -1);
 }
 
 /* socket(AF_INET, SOCK_RAW, IPPROTO_ICMP): busybox ping's socket. The bridge must route

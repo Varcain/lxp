@@ -43,8 +43,6 @@
 #define NETFS_NOPEN 16		      /* max concurrent guest opens (pooled). */
 #define NETFS_NREQ 8		      /* max in-flight+queued requests (parked procs). */
 #define NETFS_NCLUNK 24		      /* pending background-clunk fid queue. */
-#define NETFS_MP_MAX 64		      /* mount-point string cap. */
-#define NETFS_NAME_MAX 96	      /* one path-component / attach-string cap. */
 #define NETFS_RECONNECT_US 2000000ull /* backoff between reconnect attempts. */
 #define NETFS_MAXWELEM 16	      /* 9P Twalk max name components per message. */
 
@@ -82,12 +80,12 @@ enum {
 /* ---- mount config + connection state --------------------------------------- */
 
 static struct {
-	char mp[NETFS_MP_MAX]; /* mount point, e.g. "/mnt/pi" */
+	char mp[LXP_NETFS_MOUNTPOINT_CAP]; /* mount point, e.g. "/mnt/pi" */
 	size_t mplen;
 	uint8_t ip[4];
 	uint16_t port;
-	char aname[NETFS_NAME_MAX];
-	char uname[32];
+	char aname[LXP_NETFS_ANAME_CAP];
+	char uname[LXP_NETFS_UNAME_CAP];
 	int configured;
 } g_mnt;
 
@@ -1150,49 +1148,42 @@ static struct netfs_req *req_new(lxp_proc_t *p, uint8_t op)
 }
 
 /* ---- mount config + init --------------------------------------------------- */
-void lxp_netfs_mount_config(const char *mp, const uint8_t ip[4], uint16_t port, const char *aname,
-			    const char *uname)
+int lxp_netfs_init(const lxp_netfs_config_t *config)
 {
+	/* A run always starts from an empty transport and topology, including when
+	 * its predecessor used netfs and this run does not. */
+	lxp_netfs_shutdown();
+	if (!config)
+		return LXP_OK;
+	if (!lxp_netfs_config_valid(config))
+		return LXP_ERR_INVALID_PARAM;
+
 	memset(&g_mnt, 0, sizeof(g_mnt));
-	if (mp) {
-		size_t n = strlen(mp);
-		if (n >= sizeof(g_mnt.mp))
-			n = sizeof(g_mnt.mp) - 1;
-		memcpy(g_mnt.mp, mp, n);
-		g_mnt.mplen = n;
-	}
-	if (ip)
-		memcpy(g_mnt.ip, ip, 4);
-	g_mnt.port = port;
-	if (aname) {
-		size_t n = strlen(aname);
-		if (n >= sizeof(g_mnt.aname))
-			n = sizeof(g_mnt.aname) - 1;
-		memcpy(g_mnt.aname, aname, n);
+	g_mnt.mplen = strlen(config->mountpoint);
+	memcpy(g_mnt.mp, config->mountpoint, g_mnt.mplen + 1u);
+	memcpy(g_mnt.ip, config->server_ip, sizeof(g_mnt.ip));
+	g_mnt.port = config->port;
+	if (config->aname) {
+		size_t n = strlen(config->aname);
+		memcpy(g_mnt.aname, config->aname, n + 1u);
 	}
 	{
-		const char *u = (uname && uname[0]) ? uname : "root";
+		const char *u = (config->uname && config->uname[0]) ? config->uname : "root";
 		size_t n = strlen(u);
-		if (n >= sizeof(g_mnt.uname))
-			n = sizeof(g_mnt.uname) - 1;
-		memcpy(g_mnt.uname, u, n);
+		memcpy(g_mnt.uname, u, n + 1u);
 	}
 	g_mnt.configured = 1;
-}
-
-void lxp_netfs_init(void)
-{
 	uint64_t now = 0;
 	lxp_time_us(&now);
 	g_reconnect_at_us = 0;
 	conn_advance(now); /* initiate only; connect and handshake never block the coordinator */
+	return LXP_OK;
 }
 
 void lxp_netfs_shutdown(void)
 {
 	/* Do not turn outstanding requests into DONE requests as conn_drop() does:
-	 * every owner has already been stopped, so nobody remains to consume them.
-	 * Keep g_mnt: it is boot configuration, not per-run state. */
+	 * every owner has already been stopped, so nobody remains to consume them. */
 	if (g_sk && g_lxp_net_ops && g_lxp_net_ops->sock_close)
 		g_lxp_net_ops->sock_close(g_sk);
 	g_sk = NULL;
@@ -1208,6 +1199,7 @@ void lxp_netfs_shutdown(void)
 	memset(g_open, 0, sizeof(g_open));
 	memset(g_req, 0, sizeof(g_req));
 	memset(g_clunk_fid, 0, sizeof(g_clunk_fid));
+	memset(&g_mnt, 0, sizeof(g_mnt));
 #if LXP_ENABLE_NETFS_EXEC
 	g_exec_buf = NULL;
 	g_exec_cap = g_exec_size = 0;

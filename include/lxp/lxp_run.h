@@ -15,6 +15,7 @@
 #include "lxp/lxp_fs_ops.h"
 #include "lxp/lxp_block_ops.h"
 #include "lxp/lxp_net_ops.h"
+#include "lxp/lxp_netfs_config.h"
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_program.h"
 
@@ -114,6 +115,12 @@ typedef struct lxp_run_config {
 	 * console_unsubscribe returns. Both callbacks must be set or both NULL. */
 	lxp_console_subscribe_fn console_subscribe;
 	lxp_console_unsubscribe_fn console_unsubscribe;
+	/** Run-scoped interface used by eth0 ioctls and /proc/net. NULL leaves
+	 * interface reporting unavailable without changing socket availability. */
+	lxp_netif_t netif;
+	/** Optional run-scoped 9P mount. LXP copies it before initiating the
+	 * connection; NULL disables netfs for this run. */
+	const lxp_netfs_config_t *netfs_config;
 } lxp_run_config_t;
 
 /** @ref lxp_run outcomes (negative; a non-negative result is the init

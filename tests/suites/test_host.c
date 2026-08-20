@@ -28,6 +28,10 @@ static struct {
 	const lxp_fs_ops_t *fs_ops;
 	const lxp_block_ops_t *block_ops;
 	lxp_run_config_t run_config;
+	lxp_netfs_config_t netfs_config;
+	char netfs_mountpoint[LXP_NETFS_MOUNTPOINT_CAP];
+	char netfs_aname[LXP_NETFS_ANAME_CAP];
+	char netfs_uname[LXP_NETFS_UNAME_CAP];
 	const char *path;
 	int argc;
 	const char *const *argv;
@@ -64,6 +68,16 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	g_capture.fs_ops = fs_ops;
 	g_capture.block_ops = block_ops;
 	g_capture.run_config = *run_config;
+	if (run_config->netfs_config) {
+		g_capture.netfs_config = *run_config->netfs_config;
+		strcpy(g_capture.netfs_mountpoint, run_config->netfs_config->mountpoint);
+		strcpy(g_capture.netfs_aname, run_config->netfs_config->aname);
+		strcpy(g_capture.netfs_uname, run_config->netfs_config->uname);
+		g_capture.netfs_config.mountpoint = g_capture.netfs_mountpoint;
+		g_capture.netfs_config.aname = g_capture.netfs_aname;
+		g_capture.netfs_config.uname = g_capture.netfs_uname;
+		g_capture.run_config.netfs_config = &g_capture.netfs_config;
+	}
 	g_capture.path = path;
 	g_capture.argc = argc;
 	g_capture.argv = argv;
@@ -177,6 +191,17 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	char names[64];
 	lxp_host_t host;
 	const size_t image_size = make_rootfs(image);
+	int netif_cookie;
+	char mountpoint[] = "/mnt/pi";
+	char aname[] = "/srv";
+	char uname[] = "guest";
+	const lxp_netfs_config_t netfs = {
+		.mountpoint = mountpoint,
+		.server_ip = {172, 1, 1, 1},
+		.port = 564,
+		.aname = aname,
+		.uname = uname,
+	};
 	const lxp_host_config_t config = {
 		.os_ops = &g_os_ops,
 		.net_ops = &g_net_ops,
@@ -189,6 +214,8 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 		.rootfs_capacity = 4,
 		.rootfs_name_storage = names,
 		.rootfs_name_capacity = sizeof(names),
+		.netif = (lxp_netif_t)&netif_cookie,
+		.netfs_config = &netfs,
 	};
 
 	memset(&g_capture, 0, sizeof(g_capture));
@@ -203,6 +230,11 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 			    "\x7f"
 			    "ELF",
 			    4);
+	/* Topology belongs to the initialized host, not the caller's temporary
+	 * config strings. */
+	mountpoint[1] = 'X';
+	aname[1] = 'X';
+	uname[0] = 'X';
 
 	int io_cookie = 1;
 	const char *const env[] = {"PATH=/bin", NULL};
@@ -246,6 +278,14 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	assert_ptr_equal(g_capture.run_config.rt_scope_ctx, &host);
 	assert_ptr_equal(g_capture.run_config.console_subscribe, mock_console_subscribe);
 	assert_ptr_equal(g_capture.run_config.console_unsubscribe, mock_console_unsubscribe);
+	assert_ptr_equal(g_capture.run_config.netif, &netif_cookie);
+	assert_non_null(g_capture.run_config.netfs_config);
+	assert_string_equal(g_capture.run_config.netfs_config->mountpoint, "/mnt/pi");
+	assert_memory_equal(g_capture.run_config.netfs_config->server_ip,
+			    ((const uint8_t[]){172, 1, 1, 1}), 4);
+	assert_int_equal(g_capture.run_config.netfs_config->port, 564);
+	assert_string_equal(g_capture.run_config.netfs_config->aname, "/srv");
+	assert_string_equal(g_capture.run_config.netfs_config->uname, "guest");
 	assert_string_equal(g_capture.path, "/bin/init");
 	assert_int_equal(g_capture.argc, 1);
 	assert_ptr_equal(g_capture.argv, argv);
@@ -297,12 +337,48 @@ static void test_host_rejects_invalid_contract_before_rootfs_access(void **state
 	assert_int_equal(g_capture.rootfs_window_calls, 0);
 }
 
+static void test_host_rejects_invalid_topology_before_rootfs_access(void **state)
+{
+	(void)state;
+	uint8_t image[512] = {0};
+	lxp_file_t rootfs[4];
+	char names[64];
+	lxp_host_t host;
+	const lxp_netfs_config_t invalid_netfs = {
+		.mountpoint = "relative",
+		.server_ip = {127, 0, 0, 1},
+		.port = 564,
+	};
+	lxp_host_config_t config = {
+		.os_ops = &g_os_ops,
+		.net_ops = &g_net_ops,
+		.rootfs_image = image,
+		.rootfs_image_size = make_rootfs(image),
+		.rootfs_storage = rootfs,
+		.rootfs_capacity = 4,
+		.rootfs_name_storage = names,
+		.rootfs_name_capacity = sizeof(names),
+		.netfs_config = &invalid_netfs,
+	};
+	memset(&g_capture, 0, sizeof(g_capture));
+	assert_int_equal(lxp_host_init_cpio(&host, &config), LXP_ERR_INVALID_PARAM);
+	assert_int_equal(g_capture.rootfs_window_calls, 0);
+	assert_int_equal(host.initialized, 0);
+
+	config.netfs_config = NULL;
+	config.net_ops = NULL;
+	config.netif = (lxp_netif_t)&host;
+	assert_int_equal(lxp_host_init_cpio(&host, &config), LXP_ERR_INVALID_PARAM);
+	assert_int_equal(g_capture.rootfs_window_calls, 0);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_host_parses_once_and_composes_each_launch),
 		cmocka_unit_test(test_failed_reinit_clears_previous_host),
 		cmocka_unit_test(test_host_rejects_invalid_contract_before_rootfs_access),
+		cmocka_unit_test(test_host_rejects_invalid_topology_before_rootfs_access),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

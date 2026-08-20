@@ -478,8 +478,15 @@ static void start_mock_and_mount(void)
 	assert_int_equal(pthread_create(&g_mock_thread, NULL, mock9p, &g_mock_ls), 0);
 
 	uint8_t ip[4] = {127, 0, 0, 1};
-	lxp_netfs_mount_config("/mnt/pi", ip, (uint16_t)port, "/srv", "root");
-	lxp_netfs_init(); /* initiates; call_pump drives non-blocking connect + handshake */
+	const lxp_netfs_config_t config = {
+		.mountpoint = "/mnt/pi",
+		.server_ip = {ip[0], ip[1], ip[2], ip[3]},
+		.port = (uint16_t)port,
+		.aname = "/srv",
+		.uname = "root",
+	};
+	assert_int_equal(lxp_netfs_init(&config), LXP_OK);
+	/* call_pump drives the non-blocking connect + handshake. */
 }
 
 static void stop_mock(void)
@@ -512,12 +519,26 @@ static void test_netfs_init_never_waits_for_server(void **state)
 	lxp_providers_publish(&probe_ops, g_lxp_disp_ops, NULL, NULL);
 	g_init_connect_timeout_ns = UINT64_MAX;
 
-	uint8_t ip[4] = {192, 0, 2, 1};
-	lxp_netfs_mount_config("/mnt/pi", ip, 564, "/srv", "root");
-	lxp_netfs_init();
+	const lxp_netfs_config_t config = {
+		.mountpoint = "/mnt/pi",
+		.server_ip = {192, 0, 2, 1},
+		.port = 564,
+		.aname = "/srv",
+		.uname = "root",
+	};
+	assert_int_equal(lxp_netfs_init(&config), LXP_OK);
+	assert_int_equal(lxp_netfs_lookup("/mnt/pi/file"), 0);
 
 	uint64_t observed_timeout_ns = g_init_connect_timeout_ns;
 	lxp_netfs_shutdown();
+	assert_int_equal(lxp_netfs_lookup("/mnt/pi/file"), -1);
+	const lxp_netfs_config_t invalid = {
+		.mountpoint = "mnt/pi",
+		.server_ip = {192, 0, 2, 1},
+		.port = 564,
+	};
+	assert_int_equal(lxp_netfs_init(&invalid), LXP_ERR_INVALID_PARAM);
+	assert_int_equal(lxp_netfs_lookup("/mnt/pi/file"), -1);
 	lxp_providers_publish(real_ops, g_lxp_disp_ops, NULL, NULL);
 	assert_int_equal(observed_timeout_ns, 0);
 }

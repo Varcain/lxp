@@ -608,9 +608,14 @@ void lxp_sock_fstat(int oi, uint32_t *mode, uint64_t *size)
 
 static lxp_netif_t g_lnx_netif; /* the interface the SIOC* ioctls act on (one eth0) */
 
-void lxp_sock_set_netif(void *netif_handle)
+void lxp_sock_run_begin(lxp_netif_t netif)
 {
-	g_lnx_netif = (lxp_netif_t)netif_handle;
+	g_lnx_netif = netif;
+}
+
+void lxp_sock_run_end(void)
+{
+	g_lnx_netif = NULL;
 }
 
 /* Snapshot the registered interface for the /proc/net/{dev,route} generators (which live

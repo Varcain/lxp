@@ -68,7 +68,7 @@ typedef struct {
  */
 #define LXP_NET_CAP_SOCKET_READY_EVENT 0x01u
 
-#define LXP_NET_OPS_ABI_VERSION 3u
+#define LXP_NET_OPS_ABI_VERSION 4u
 
 /* Max concurrent socket opens the personality pools (listener + clients). Shared
  * so the host adapter can size its storage pool to match. */
@@ -122,8 +122,6 @@ typedef struct lxp_net_ops {
 	int (*netif_set_addr)(lxp_netif_t nif, const lxp_sockaddr_t *ip, const lxp_sockaddr_t *nm,
 			      const lxp_sockaddr_t *gw);
 	int (*netif_set_up)(lxp_netif_t nif, int up);
-
-	lxp_netif_t netif; /**< eth0 the SIOC* ioctls act on; host sets it before the run. */
 
 	/* LXP_NET_CAP_* bits. Kept last so older designated initializers default to
 	 * the polling fallback without moving existing members. */

@@ -19,14 +19,17 @@ LXP owns:
 - architecture helpers used by those ports, under `include/lxp/arch/` rather
   than a consumer application;
 - reusable host composition under `include/lxp/lxp_host.h`: early rootfs-window
-  publication, zero-heap CPIO ingestion, immutable provider/rootfs capture, and
-  construction of complete per-run contracts;
+  publication, zero-heap CPIO ingestion, immutable provider/rootfs/network
+  topology capture, and construction of complete per-run contracts;
 - generation-qualified asynchronous provider correlation under
   `include/lxp/lxp_async_gate.h`, including cancellation/completion races;
 - Linux block-device reader/writer aggregation: providers acquire one native
   lease for the first reader through the last reader, or one exclusive writer;
 - guest socket lifecycle, nonblocking publication, parked retry state, and the
   coordinator wakeup selected by a run-scoped provider readiness callback;
+- run-scoped binding and clearing of the host-selected interface used by eth0
+  ioctls and `/proc/net`, plus copying and clearing the optional 9P mount on
+  every run so sequential hosts cannot inherit topology;
 - console wait semantics and the run-scoped readiness subscription that turns
   a host RX notification into a coordinator wakeup without exposing a global
   LXP kick symbol;
@@ -45,7 +48,8 @@ A consuming host owns:
 - translating the host build configuration into `LXP_ENABLE_*` and sizing
   definitions; and
 - product policy: the init path, rootfs choice, enabled providers, priorities,
-  watchdog behavior, diagnostics, and demo workloads.
+  interface addressing, netfs endpoint, watchdog behavior, diagnostics, and
+  demo workloads.
 
 An application owns only application behavior. Benchmark signal generation,
 fault demonstrations, workload selection, and reporting may remain in an app.
@@ -54,14 +58,22 @@ and generic process lifecycle do not become application-owned merely because
 one app was their first consumer.
 
 The consumer still chooses the rootfs image, fixed table/name storage capacity,
-enabled providers, init path, and launch callbacks. The host facade sequences
-those choices; it does not turn product policy into LXP defaults.
+enabled providers, native interface configuration, optional netfs endpoint,
+init path, and launch callbacks. The host facade sequences native interface
+bring-up and translates those choices into an immutable LXP host; it does not
+turn product policy into LXP defaults.
 
 Native-media arbitration does not move into LXP. It must also cover RTOS-native
 filesystem and raw-block callers, so the host storage layer owns physical-card
 generation leases, DMA-safe staging, worker priority, and budget admission.
 
 Native socket storage and stack notification policy likewise remain host-owned.
+The host owns native interface allocation, bring-up, address readiness, rollback,
+and teardown. LXP receives only an opaque interface handle in its immutable host
+contract and binds it for one run; no application or provider mutates a process-
+global LXP interface selector. The optional netfs topology follows the same
+contract: the host supplies product-selected strings/addressing, LXP copies them,
+and teardown clears the active mount before the provider is withdrawn.
 The network provider may subscribe to an RTOS or driver readiness source only
 while it owns native sockets. If it advertises readiness events, it translates
 that source into the callback supplied to `run_begin()`; it does not call a

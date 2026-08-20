@@ -39,6 +39,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_guest.h"
+#include "lxp/lxp_netfs_config.h"
 #include "lxp/lxp_proc_fwd.h"
 
 #ifdef __cplusplus
@@ -56,27 +57,15 @@ extern "C" {
 
 /* ---- boot: mount config + connection init (coordinator thread) ------------- */
 
-/**
- * @brief Configure the static mount (call at app boot, before lxp_run).
- * @param mountpoint absolute guest path, e.g. "/mnt/pi" (copied; must outlive use).
- * @param ip         IPv4 of the 9P server (the Pi), e.g. {172,1,1,1}.
- * @param port       9P server TCP port (diod default 564; a non-privileged port otherwise).
- * @param aname      the export path to attach (diod -e path, e.g. "/srv/pi9").
- * @param uname      the user name to attach as (diod -n no-auth accepts any; "root").
- */
-void lxp_netfs_mount_config(const char *mountpoint, const uint8_t ip[4], uint16_t port,
-			    const char *aname, const char *uname);
-
-/** @brief Open the socket + do the blocking Tversion/Tattach handshake. Coordinator
- *  thread only (from lxp_dev_autoreg_all's region). A down server is non-fatal:
- *  the mount is marked DISCONNECTED and reconnected lazily; boot never hangs. */
-void lxp_netfs_init(void);
+/** @brief Copy this run's optional topology and initiate a non-blocking connection.
+ * Coordinator thread only. NULL disables the mount. A down server is non-fatal:
+ * the configured mount reconnects lazily and boot never waits for the server. */
+int lxp_netfs_init(const lxp_netfs_config_t *config);
 
 /** @brief Close the transport and discard all per-run requests, opens and fids.
  *
  * Called after every guest has been stopped and its descriptors closed. The
- * mount configuration is retained, so a later @ref lxp_netfs_init starts a
- * completely fresh session against the same configured mount.
+ * Mount topology is discarded as well, so a later run cannot inherit it.
  */
 void lxp_netfs_shutdown(void);
 

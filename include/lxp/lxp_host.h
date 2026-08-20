@@ -39,6 +39,10 @@ typedef struct lxp_host_config {
 	int rootfs_capacity;
 	char *rootfs_name_storage;
 	size_t rootfs_name_capacity;
+	/** Optional native interface exposed as eth0 for this host's runs. */
+	lxp_netif_t netif;
+	/** Optional 9P mount topology. All strings are copied into the host. */
+	const lxp_netfs_config_t *netfs_config;
 } lxp_host_config_t;
 
 /** Per-launch policy layered over an initialized host's immutable rootfs and
@@ -72,6 +76,13 @@ typedef struct lxp_host {
 	int rootfs_count;
 	const void *rootfs_image;
 	size_t rootfs_image_size;
+	lxp_netif_t netif;
+	char netfs_mountpoint[LXP_NETFS_MOUNTPOINT_CAP];
+	uint8_t netfs_server_ip[4];
+	uint16_t netfs_port;
+	char netfs_aname[LXP_NETFS_ANAME_CAP];
+	char netfs_uname[LXP_NETFS_UNAME_CAP];
+	uint32_t netfs_configured;
 	uint32_t initialized;
 } lxp_host_t;
 

@@ -2519,9 +2519,10 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	lxp_dev_autoreg_all();
 #endif
 #if LXP_ENABLE_NETFS
-	/* Connect the remote-fs mount (9P Tversion/Tattach). Coordinator thread, where blocking
-	 * init is legal; a down server is non-fatal — the mount reconnects lazily. */
-	lxp_netfs_init();
+	/* Copy this run's remote-fs topology and initiate its non-blocking 9P
+	 * connection. A down server remains non-fatal and reconnects lazily. */
+	if (lxp_netfs_init(cfg->netfs_config) != LXP_OK)
+		goto launch_failed;
 #endif
 
 	int bb = -1;
@@ -2845,6 +2846,17 @@ static int run_config_valid(const lxp_run_config_t *cfg)
 	if (!!cfg->console_subscribe != !!cfg->console_unsubscribe ||
 	    (cfg->console_subscribe && (!cfg->read_fn || !cfg->console_poll)))
 		return 0;
+#if !LXP_ENABLE_NET
+	if (cfg->netif)
+		return 0;
+#endif
+#if LXP_ENABLE_NETFS
+	if (cfg->netfs_config && !lxp_netfs_config_valid(cfg->netfs_config))
+		return 0;
+#else
+	if (cfg->netfs_config)
+		return 0;
+#endif
 	return 1;
 }
 
@@ -2884,6 +2896,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	if (net_ops->run_begin(lxp_socket_ready, os_ops) != LXP_OK)
 		goto out;
 	net_entered = 1;
+	lxp_sock_run_begin(run_config->netif);
 #endif
 #if LXP_ENABLE_FS
 	if (fs_ops->run_begin() != LXP_OK)
@@ -2943,8 +2956,10 @@ out:
 	(void)fs_entered;
 #endif
 #if LXP_ENABLE_NET
-	if (net_entered)
+	if (net_entered) {
+		lxp_sock_run_end();
 		net_ops->run_end();
+	}
 #else
 	(void)net_entered;
 #endif

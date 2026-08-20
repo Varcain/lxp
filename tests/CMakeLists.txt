@@ -123,6 +123,7 @@ target_include_directories(lxp_host_test PRIVATE
   "${cmocka_SOURCE_DIR}/include"
 )
 target_compile_options(lxp_host_test PRIVATE -Wall -Wextra -Werror)
+target_compile_definitions(lxp_host_test PRIVATE LXP_ENABLE_NET=1 LXP_ENABLE_NETFS=1)
 target_link_libraries(lxp_host_test PRIVATE cmocka-static)
 add_test(NAME lxp_unit_host COMMAND lxp_host_test)
 

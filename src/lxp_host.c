@@ -13,6 +13,14 @@
 
 #define LXP_HOST_INITIALIZED 0x4c585048u /* "LXPH" */
 
+static void copy_config_string(char *dst, size_t capacity, const char *src)
+{
+	size_t len = src ? strlen(src) : 0u;
+	if (len != 0u)
+		memcpy(dst, src, len);
+	dst[len < capacity ? len : capacity - 1u] = '\0';
+}
+
 int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 {
 	if (!host)
@@ -24,6 +32,21 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 	    config->rootfs_capacity <= 0 || !config->rootfs_name_storage ||
 	    config->rootfs_name_capacity == 0u)
 		return LXP_ERR_INVALID_PARAM;
+#if LXP_ENABLE_NET
+	if (config->netif && !config->net_ops)
+		return LXP_ERR_INVALID_PARAM;
+#else
+	if (config->netif)
+		return LXP_ERR_INVALID_PARAM;
+#endif
+#if LXP_ENABLE_NETFS
+	if (config->netfs_config &&
+	    (!config->net_ops || !lxp_netfs_config_valid(config->netfs_config)))
+		return LXP_ERR_INVALID_PARAM;
+#else
+	if (config->netfs_config)
+		return LXP_ERR_INVALID_PARAM;
+#endif
 
 	uintptr_t lo = (uintptr_t)config->rootfs_image;
 	if (lo + config->rootfs_image_size < lo)
@@ -50,6 +73,21 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 	host->rootfs_count = count;
 	host->rootfs_image = config->rootfs_image;
 	host->rootfs_image_size = config->rootfs_image_size;
+	host->netif = config->netif;
+	if (config->netfs_config) {
+		copy_config_string(host->netfs_mountpoint, sizeof(host->netfs_mountpoint),
+				   config->netfs_config->mountpoint);
+		memcpy(host->netfs_server_ip, config->netfs_config->server_ip,
+		       sizeof(host->netfs_server_ip));
+		host->netfs_port = config->netfs_config->port;
+		copy_config_string(host->netfs_aname, sizeof(host->netfs_aname),
+				   config->netfs_config->aname);
+		copy_config_string(host->netfs_uname, sizeof(host->netfs_uname),
+				   (config->netfs_config->uname && config->netfs_config->uname[0])
+					   ? config->netfs_config->uname
+					   : "root");
+		host->netfs_configured = 1u;
+	}
 	host->initialized = LXP_HOST_INITIALIZED;
 	return LXP_OK;
 }
@@ -59,12 +97,22 @@ int lxp_host_run(const lxp_host_t *host, const lxp_launch_config_t *launch_confi
 {
 	if (!host || host->initialized != LXP_HOST_INITIALIZED)
 		return LXP_RUN_ELAUNCH;
+	lxp_netfs_config_t netfs_config = {
+		.mountpoint = host->netfs_mountpoint,
+		.server_ip = {host->netfs_server_ip[0], host->netfs_server_ip[1],
+			      host->netfs_server_ip[2], host->netfs_server_ip[3]},
+		.port = host->netfs_port,
+		.aname = host->netfs_aname,
+		.uname = host->netfs_uname,
+	};
 
 	lxp_run_config_t config = {
 		.rootfs = host->rootfs,
 		.rootfs_count = host->rootfs_count,
 		.rootfs_image = host->rootfs_image,
 		.rootfs_image_size = host->rootfs_image_size,
+		.netif = host->netif,
+		.netfs_config = host->netfs_configured ? &netfs_config : NULL,
 	};
 	if (launch_config) {
 		config.write_fn = launch_config->write_fn;

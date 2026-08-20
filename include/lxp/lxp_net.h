@@ -182,9 +182,10 @@ void lxp_sock_fstat(int oi, uint32_t *mode, uint64_t *size);
  * so no open index. */
 long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg);
 
-/* Register the interface handle the SIOC* ioctls operate on (opaque lxp_netif_t; the
- * board/app calls this once at boot, after bringing the interface up). */
-void lxp_sock_set_netif(void *netif_handle);
+/** Bind/clear the interface handle for exactly one lxp_run() lifecycle.
+ * These are coordinator-owned lifecycle hooks, not application configuration. */
+void lxp_sock_run_begin(lxp_netif_t netif);
+void lxp_sock_run_end(void);
 
 /* Snapshot the registered interface for the /proc/net/{dev,route} generators. Any out
  * param may be NULL. Returns 0, or -1 if no interface is registered. */

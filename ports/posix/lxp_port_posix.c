@@ -359,7 +359,7 @@ struct lxp_netif {
 };
 static struct lxp_netif g_posix_netif = {.ip = {127, 0, 0, 1}, .nm = {255, 0, 0, 0}, .up = 1};
 
-/* Handle a host test passes to lxp_sock_set_netif() before the SIOC* ioctls. */
+/* Synthetic handle a host can bind to one run for eth0 SIOC* ioctls. */
 lxp_netif_t lxp_posix_netif(void)
 {
 	return &g_posix_netif;
@@ -448,7 +448,6 @@ static const lxp_net_ops_t g_posix_net_ops = {
 	.netif_get_flags = nif_get_flags,
 	.netif_set_addr = nif_set_addr,
 	.netif_set_up = nif_set_up,
-	.netif = &g_posix_netif,
 };
 const lxp_net_ops_t *lxp_posix_net_ops(void)
 {
