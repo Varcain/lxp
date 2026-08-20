@@ -128,7 +128,7 @@ static uint32_t lxp_blocked_wait_policy(lxp_wait_kind_t kind)
 	case LXP_WAIT_FUTEX:
 		return LXP_BLOCKED_WAIT_POLL;
 	case LXP_WAIT_CONSOLE:
-		return LXP_BLOCKED_WAIT_POLL | LXP_BLOCKED_WAIT_CONSOLE;
+		return LXP_BLOCKED_WAIT_CONSOLE;
 	case LXP_WAIT_SOCKET:
 		return LXP_BLOCKED_WAIT_SOCKET;
 	case LXP_WAIT_NONE:

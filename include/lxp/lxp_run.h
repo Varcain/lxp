@@ -108,6 +108,12 @@ typedef struct lxp_run_config {
 	/** Optional host real-time snapshot exposed verbatim as /proc/rt_scope. */
 	lxp_rt_scope_read_fn rt_scope_read;
 	void *rt_scope_ctx; /**< Opaque, passed to @p rt_scope_read. */
+	/** Optional paired run-scoped readiness subscription. A successful
+	 * subscription lets the coordinator wait for an event instead of polling a
+	 * parked console every 5 ms. The provider must stop callbacks before
+	 * console_unsubscribe returns. Both callbacks must be set or both NULL. */
+	lxp_console_subscribe_fn console_subscribe;
+	lxp_console_unsubscribe_fn console_unsubscribe;
 } lxp_run_config_t;
 
 /** @ref lxp_run outcomes (negative; a non-negative result is the init
@@ -145,15 +151,6 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const lxp_block_ops_t *block_ops,
 	    const lxp_run_config_t *run_config, const char *path, int argc,
 	    const char *const argv[]);
-
-/**
- * Notify the active coordinator that console input became ready.
- *
- * Console providers call this from their RX-ready path after publishing the
- * byte(s). It is safe before/after a run and becomes a no-op when no
- * coordinator owns the provider.
- */
-void lxp_console_kick(void);
 
 /**
  * Whether the tty is in ISIG (canonical) mode. A @c read_fn consults this to

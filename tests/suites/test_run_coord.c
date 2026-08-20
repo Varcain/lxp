@@ -136,6 +136,11 @@ static struct {
 	lxp_net_ready_fn net_ready;
 	const void *net_ready_context;
 	int net_ready_fire_in_prepare;
+	int console_subscribe_calls;
+	int console_subscribe_result;
+	int console_unsubscribe_calls;
+	lxp_console_ready_fn console_ready;
+	const void *console_ready_context;
 } g_mock;
 
 static uint8_t g_mock_regions[LXP_NREG][256] __attribute__((aligned(256)));
@@ -364,6 +369,38 @@ static void mock_net_end(void)
 	g_mock.net_end_calls++;
 	g_mock.net_ready = NULL;
 	g_mock.net_ready_context = NULL;
+}
+static int mock_console_subscribe(void *ctx, lxp_console_ready_fn ready,
+				  const void *ready_context)
+{
+	(void)ctx;
+	g_mock.console_subscribe_calls++;
+	if (g_mock.console_subscribe_result != LXP_OK)
+		return g_mock.console_subscribe_result;
+	g_mock.console_ready = ready;
+	g_mock.console_ready_context = ready_context;
+	ready(ready_context);
+	return LXP_OK;
+}
+static void mock_console_unsubscribe(void *ctx)
+{
+	(void)ctx;
+	g_mock.console_unsubscribe_calls++;
+	g_mock.console_ready = NULL;
+	g_mock.console_ready_context = NULL;
+}
+static long mock_console_read(void *ctx, int fd, void *buf, size_t len)
+{
+	(void)ctx;
+	(void)fd;
+	(void)buf;
+	(void)len;
+	return 0;
+}
+static int mock_console_poll(void *ctx)
+{
+	(void)ctx;
+	return 0;
 }
 
 /* The coordinator suite enables the writable-filesystem path so its blocked
@@ -2030,6 +2067,65 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	assert_null(g_lxp_net_ops);
 }
 
+static void test_console_readiness_lifecycle_is_run_scoped(void **state)
+{
+	(void)state;
+	uint8_t image[1] = {0};
+	const lxp_file_t files[] = {
+		{.path = "/init", .data = image, .size = sizeof(image), .mode = LXP_S_IFREG | 0755},
+	};
+	lxp_run_config_t cfg = {
+		.rootfs = files,
+		.rootfs_count = 1,
+		.rootfs_image = image,
+		.rootfs_image_size = sizeof(image),
+		.read_fn = mock_console_read,
+		.console_poll = mock_console_poll,
+		.console_subscribe = mock_console_subscribe,
+		.console_unsubscribe = mock_console_unsubscribe,
+	};
+	const char *const argv[] = {"init", NULL};
+	lxp_net_ops_t net_ops = *g_test_net_ops;
+	net_ops.run_begin = mock_net_begin;
+	net_ops.run_end = mock_net_end;
+
+	/* A one-sided lifecycle or an event source without poll/read semantics is
+	 * rejected before any provider or OS state is acquired. */
+	cfg.console_unsubscribe = NULL;
+	assert_false(run_config_valid(&cfg));
+	cfg.console_unsubscribe = mock_console_unsubscribe;
+	cfg.console_poll = NULL;
+	assert_false(run_config_valid(&cfg));
+	cfg.console_poll = mock_console_poll;
+	assert_true(run_config_valid(&cfg));
+
+	/* Subscription happens only after host preparation. Failure tears the host
+	 * and earlier providers down, but does not unsubscribe an unacquired source. */
+	g_mock.console_subscribe_result = LXP_ERR_NOT_SUPPORTED;
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg,
+				 "/init", 1, argv),
+			 LXP_RUN_ELAUNCH);
+	assert_int_equal(g_mock.prepare_calls, 1);
+	assert_int_equal(g_mock.console_subscribe_calls, 1);
+	assert_int_equal(g_mock.console_unsubscribe_calls, 0);
+	assert_int_equal(g_mock.teardown_calls, 1);
+	assert_null(g_mock.console_ready);
+
+	/* Once acquired, readiness reaches the engine directly and unsubscribe
+	 * withdraws both callback and context even when image launch then fails. */
+	g_mock.console_subscribe_result = LXP_OK;
+	g_mock.launch_failures = 1;
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg,
+				 "/init", 1, argv),
+			 LXP_RUN_ELAUNCH);
+	assert_int_equal(g_mock.prepare_calls, 2);
+	assert_int_equal(g_mock.console_subscribe_calls, 2);
+	assert_int_equal(g_mock.console_unsubscribe_calls, 1);
+	assert_int_equal(g_mock.event_posts, 1);
+	assert_null(g_mock.console_ready);
+	assert_null(g_mock.console_ready_context);
+}
+
 static void test_rootfs_requires_one_explicit_trusted_window(void **state)
 {
 	(void)state;
@@ -2099,14 +2195,18 @@ static void test_coordinator_socket_wait_uses_readiness_events(void **state)
 	(void)state;
 
 	/* Legacy/portable ports retain the bounded polling fallback. */
-	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_SOCKET, 0), 5);
+	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_SOCKET, 0, 0), 5);
 	/* An event-driven net port can sleep until its run-scoped callback (or the
 	 * normal 50 ms maintenance wakeup) without quantizing readiness to 5 ms. */
-	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_SOCKET, 1), 50);
+	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_SOCKET, 1, 0), 50);
 	/* A different polling wait class still requires the short timeout. */
 	assert_int_equal(
-		coordinator_wait_timeout(LXP_BLOCKED_WAIT_POLL | LXP_BLOCKED_WAIT_SOCKET, 1), 5);
-	assert_int_equal(coordinator_wait_timeout(0, 0), 50);
+		coordinator_wait_timeout(LXP_BLOCKED_WAIT_POLL | LXP_BLOCKED_WAIT_SOCKET, 1, 0),
+		5);
+	/* A console readiness subscription removes its independent 5 ms fallback. */
+	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_CONSOLE, 0, 0), 5);
+	assert_int_equal(coordinator_wait_timeout(LXP_BLOCKED_WAIT_CONSOLE, 0, 1), 50);
+	assert_int_equal(coordinator_wait_timeout(0, 0, 0), 50);
 }
 
 static void test_coordinator_service_classes_are_weighted_and_aged(void **state)
@@ -3845,7 +3945,10 @@ static void test_blocked_scan_reports_wait_policy(void **state)
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
 
 	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_eng, &g_mock_cfg, 1);
-	assert_int_equal(scan.wait_policy, LXP_BLOCKED_WAIT_POLL | LXP_BLOCKED_WAIT_CONSOLE);
+	/* The coordinator decides whether this class needs polling from the
+	 * run-scoped subscription; the scan reports the class without conflating it
+	 * with generic poll-only waits. */
+	assert_int_equal(scan.wait_policy, LXP_BLOCKED_WAIT_CONSOLE);
 	assert_false(scan.progress);
 }
 
@@ -4476,6 +4579,8 @@ int main(void)
 		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
 		cmocka_unit_test_setup(test_port_abi_and_required_ops_are_validated, reset_state),
 		cmocka_unit_test_setup(test_failed_prepare_is_rolled_back, reset_state),
+		cmocka_unit_test_setup(test_console_readiness_lifecycle_is_run_scoped,
+				       reset_state),
 		cmocka_unit_test_setup(test_rootfs_requires_one_explicit_trusted_window,
 				       reset_state),
 		cmocka_unit_test_setup(test_resource_stats_track_slots_and_reserved_regions,

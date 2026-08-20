@@ -40,7 +40,8 @@ struct lxp_runtime_test_fixture {
 struct lxp_runtime_test_fixture *lxp_runtime_test_fixture(void);
 lxp_region_ref_t lxp_test_region_ref_at(int region);
 int lxp_test_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t owner);
-unsigned lxp_test_coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events);
+unsigned lxp_test_coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events,
+					   int console_ready_events);
 void lxp_test_coordinator_teardown_all(const lxp_os_ops_t *eng);
 int lxp_test_futex_has_corunner(const lxp_proc_t *proc);
 void lxp_test_diag_reset_health(void);

@@ -137,6 +137,20 @@ static int mock_poll(void *ctx)
 	return ctx != NULL;
 }
 
+static int mock_console_subscribe(void *ctx, lxp_console_ready_fn ready,
+				  const void *ready_context)
+{
+	(void)ctx;
+	(void)ready;
+	(void)ready_context;
+	return LXP_OK;
+}
+
+static void mock_console_unsubscribe(void *ctx)
+{
+	(void)ctx;
+}
+
 static long mock_rt_scope(void *ctx, char *buf, size_t cap)
 {
 	(void)ctx;
@@ -205,6 +219,8 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 		.display_height = 480,
 		.rt_scope_read = mock_rt_scope,
 		.rt_scope_ctx = &host,
+		.console_subscribe = mock_console_subscribe,
+		.console_unsubscribe = mock_console_unsubscribe,
 	};
 	assert_int_equal(lxp_host_run(&host, &launch, "/bin/init", 1, argv), 37);
 	assert_int_equal(g_capture.run_calls, 1);
@@ -228,6 +244,8 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	assert_int_equal(g_capture.run_config.display_height, 480);
 	assert_ptr_equal(g_capture.run_config.rt_scope_read, mock_rt_scope);
 	assert_ptr_equal(g_capture.run_config.rt_scope_ctx, &host);
+	assert_ptr_equal(g_capture.run_config.console_subscribe, mock_console_subscribe);
+	assert_ptr_equal(g_capture.run_config.console_unsubscribe, mock_console_unsubscribe);
 	assert_string_equal(g_capture.path, "/bin/init");
 	assert_int_equal(g_capture.argc, 1);
 	assert_ptr_equal(g_capture.argv, argv);

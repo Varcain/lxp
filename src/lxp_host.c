@@ -78,6 +78,8 @@ int lxp_host_run(const lxp_host_t *host, const lxp_launch_config_t *launch_confi
 		config.display_height = launch_config->display_height;
 		config.rt_scope_read = launch_config->rt_scope_read;
 		config.rt_scope_ctx = launch_config->rt_scope_ctx;
+		config.console_subscribe = launch_config->console_subscribe;
+		config.console_unsubscribe = launch_config->console_unsubscribe;
 	}
 
 	return lxp_run(host->os_ops, host->net_ops, host->display_ops, host->fs_ops,

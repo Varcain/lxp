@@ -32,6 +32,13 @@ extern "C" {
 typedef long (*lxp_write_fn)(void *ctx, int fd, const void *buf, size_t len);
 /** fd 0 input source. Returns bytes read (0 = EOF) or a negated Linux errno. */
 typedef long (*lxp_read_fn)(void *ctx, int fd, void *buf, size_t len);
+/** Run-scoped notification that console input may now be readable. */
+typedef void (*lxp_console_ready_fn)(const void *context);
+/** Subscribe the active console source to a coordinator readiness callback. */
+typedef int (*lxp_console_subscribe_fn)(void *ctx, lxp_console_ready_fn ready,
+					const void *ready_context);
+/** Stop console readiness callbacks before their run context is withdrawn. */
+typedef void (*lxp_console_unsubscribe_fn)(void *ctx);
 
 /** One node in the read-only in-memory rootfs (a flat path to bytes table). */
 typedef struct lxp_file {

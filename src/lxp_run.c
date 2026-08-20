@@ -407,10 +407,13 @@ void lxp_dev_kick(void)
 }
 #endif
 
-void lxp_console_kick(void)
+/* Run-scoped console-provider callback. The provider retains the immutable
+ * engine table only until its matching unsubscribe returns. */
+static void lxp_console_ready(const void *context)
 {
-	if (g_eng && g_eng->event_post)
-		g_eng->event_post();
+	const lxp_os_ops_t *eng = context;
+	if (eng && eng->event_post)
+		eng->event_post();
 }
 
 #if LXP_ENABLE_NET
@@ -442,13 +445,16 @@ int lxp_fs_completion_hint_take(void)
 #endif
 
 /*
- * Socket waits only need the short retry timeout when the host cannot publish
- * readiness changes. Other wait classes retain their polling fallback.
+ * Socket and console waits only need the short retry timeout when their host
+ * providers cannot publish readiness changes. Other wait classes retain their
+ * polling fallback.
  */
-static unsigned coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events)
+static unsigned coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events,
+					 int console_ready_events)
 {
 	int socket_poll = (wait_policy & LXP_BLOCKED_WAIT_SOCKET) && !socket_ready_events;
-	return ((wait_policy & LXP_BLOCKED_WAIT_POLL) || socket_poll) ? 5u : 50u;
+	int console_poll = (wait_policy & LXP_BLOCKED_WAIT_CONSOLE) && !console_ready_events;
+	return ((wait_policy & LXP_BLOCKED_WAIT_POLL) || socket_poll || console_poll) ? 5u : 50u;
 }
 
 #define LXP_COORDINATOR_EVENT_BURST 4u
@@ -2472,8 +2478,9 @@ void fork_child_guard_reset(int child_slot)
 	g_vfork_guard[child_slot].snapshot = lxp_region_ref_none();
 }
 
-static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, const char *path,
-			  int argc, const char *const argv[])
+static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
+			  int console_ready_events, const char *path, int argc,
+			  const char *const argv[])
 {
 	if (!eng || !eng->exec_capture || !cfg || !cfg->rootfs || !cfg->rootfs_image ||
 	    cfg->rootfs_image_size == 0u || !path || argc < 1 || !argv)
@@ -2664,7 +2671,8 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, 
 		socket_ready_events = g_lxp_net_ops && (g_lxp_net_ops->capabilities &
 							LXP_NET_CAP_SOCKET_READY_EVENT);
 #endif
-		unsigned to = coordinator_wait_timeout(blocked.wait_policy, socket_ready_events);
+		unsigned to = coordinator_wait_timeout(blocked.wait_policy, socket_ready_events,
+					       console_ready_events);
 		if (blocked.next_deadline_us != UINT64_MAX && blocked.next_deadline_us > now) {
 			uint64_t d_ms = (blocked.next_deadline_us - now + 999u) /
 					1000u; /* round up, don't wake early */
@@ -2834,6 +2842,9 @@ static int run_config_valid(const lxp_run_config_t *cfg)
 		if (start < lo || end < start || end > hi)
 			return 0;
 	}
+	if (!!cfg->console_subscribe != !!cfg->console_unsubscribe ||
+	    (cfg->console_subscribe && (!cfg->read_fn || !cfg->console_poll)))
+		return 0;
 	return 1;
 }
 
@@ -2851,6 +2862,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	int fs_entered = 0;
 	int block_entered = 0;
 	int dev_entered = 0;
+	int console_entered = 0;
 	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
 	lxp_diag_reset_health();
 	g_diag_native_known = 0;
@@ -2899,9 +2911,17 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	}
 	if (os_ops->validate_memory_contract(os_ops->cpu_memory_contract) != LXP_OK)
 		goto out;
-	rc = lxp_run_common(os_ops, run_config, path, argc, argv);
+	if (run_config->console_subscribe) {
+		if (run_config->console_subscribe(run_config->io_ctx, lxp_console_ready, os_ops) !=
+		    LXP_OK)
+			goto out;
+		console_entered = 1;
+	}
+	rc = lxp_run_common(os_ops, run_config, console_entered, path, argc, argv);
 
 out:
+	if (console_entered)
+		run_config->console_unsubscribe(run_config->io_ctx);
 #if LXP_ENABLE_DEV
 	if (dev_entered)
 		lxp_dev_run_end();
@@ -2972,9 +2992,10 @@ int lxp_test_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t ow
 	return lxp_region_commit_address_space(ref, owner);
 }
 
-unsigned lxp_test_coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events)
+unsigned lxp_test_coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events,
+					   int console_ready_events)
 {
-	return coordinator_wait_timeout(wait_policy, socket_ready_events);
+	return coordinator_wait_timeout(wait_policy, socket_ready_events, console_ready_events);
 }
 
 void lxp_test_coordinator_teardown_all(const lxp_os_ops_t *eng)

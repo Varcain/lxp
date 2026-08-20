@@ -27,6 +27,9 @@ LXP owns:
   lease for the first reader through the last reader, or one exclusive writer;
 - guest socket lifecycle, nonblocking publication, parked retry state, and the
   coordinator wakeup selected by a run-scoped provider readiness callback;
+- console wait semantics and the run-scoped readiness subscription that turns
+  a host RX notification into a coordinator wakeup without exposing a global
+  LXP kick symbol;
 - patches required to make a supported RTOS port implement LXP's task,
   privilege, or MPU contract; and
 - standalone port tests and integration fixtures.
@@ -67,6 +70,14 @@ coordinator event and retry generation-qualified parked socket operations.
 Every opened or accepted provider socket must successfully enter nonblocking
 mode before LXP publishes it, because a blocking call would stall the privileged
 coordinator rather than only the calling guest.
+
+Console input follows the same callback-lifetime rule. The host owns the UART,
+RX FIFO, newline transport policy, and any non-consuming lookahead required by
+its HAL. If it can publish RX readiness, the per-launch subscription retains
+LXP's callback and immutable context only until the matching unsubscribe
+returns. LXP owns what readiness means: wake the current coordinator and retry
+the generation-qualified console wait. Hosts without an event source leave the
+subscription unset and retain the bounded polling fallback.
 
 Display and input follow the same split. LXP owns Linux framebuffer and evdev
 semantics, dirty-rectangle coalescing, presentation cadence, touch-event state,
