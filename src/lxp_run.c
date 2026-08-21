@@ -431,16 +431,26 @@ static void lxp_socket_ready(const void *context)
 #if LXP_ENABLE_FS
 static int g_fs_completion_ready;
 
-void lxp_fs_kick(void)
+void lxp_fs_completion_ready(const void *context)
 {
 	__atomic_store_n(&g_fs_completion_ready, 1, __ATOMIC_RELEASE);
-	if (g_eng && g_eng->event_post)
-		g_eng->event_post();
+	const lxp_os_ops_t *eng = context;
+	if (eng && eng->event_post)
+		eng->event_post();
 }
 
 int lxp_fs_completion_hint_take(void)
 {
 	return __atomic_exchange_n(&g_fs_completion_ready, 0, __ATOMIC_ACQ_REL);
+}
+#endif
+
+#if LXP_ENABLE_BLOCK
+static void lxp_block_ready(const void *context)
+{
+	const lxp_os_ops_t *eng = context;
+	if (eng && eng->event_post)
+		eng->event_post();
 }
 #endif
 
@@ -2899,12 +2909,12 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	lxp_sock_run_begin(run_config->netif);
 #endif
 #if LXP_ENABLE_FS
-	if (fs_ops->run_begin() != LXP_OK)
+	if (fs_ops->run_begin(lxp_fs_completion_ready, os_ops) != LXP_OK)
 		goto out;
 	fs_entered = 1;
 #endif
 #if LXP_ENABLE_BLOCK
-	if (block_ops->run_begin() != LXP_OK)
+	if (block_ops->run_begin(lxp_block_ready, os_ops) != LXP_OK)
 		goto out;
 	block_entered = 1;
 #endif

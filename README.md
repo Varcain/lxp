@@ -114,6 +114,10 @@ DOS/MBR primary-partition views at `/dev/mmcblk0p1`…`p4`, geometry and partiti
 ioctls, durable sync, true 64-bit positioned I/O, and `/proc/partitions`. The filesystem
 provider's mount lifecycle arbitrates raw writable leases; ports must not allow a mounted
 filesystem and a writable raw user to own the same medium concurrently.
+Filesystem and block providers receive separate readiness callbacks in their
+`run_begin()` operations. An asynchronous provider invokes the appropriate callback after
+a parked request may be collected and withdraws it before `run_end()` returns; neither
+provider links back to a process-global coordinator wake symbol.
 
 The network provider also has a run-scoped lifecycle. LXP owns guest handles,
 park/retry state, deadlines, and coordinator wakeup; the host owns native socket

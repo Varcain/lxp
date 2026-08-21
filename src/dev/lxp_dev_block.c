@@ -486,9 +486,4 @@ void lxp_dev_autoreg_block(void)
 	}
 }
 
-void lxp_block_kick(void)
-{
-	lxp_dev_kick();
-}
-
 #endif /* LXP_ENABLE_BLOCK */

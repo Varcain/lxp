@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-#define LXP_FS_OPS_ABI_VERSION 7u
+#define LXP_FS_OPS_ABI_VERSION 8u
 #define LXP_FS_NAME_MAX 256u
 
 /* Provider open flags. Access mode is explicit instead of encoded in low bits
@@ -82,6 +82,9 @@ typedef struct lxp_fs_open_result {
 	uint8_t type;
 	uint8_t _reserved[7];
 } lxp_fs_open_result_t;
+
+/** Notify LXP that one asynchronous filesystem operation may be complete. */
+typedef void (*lxp_fs_ready_fn)(const void *context);
 
 /** Validated block view selected by mount(2). Partition zero is the whole disk. */
 typedef struct lxp_fs_mount_spec {
@@ -148,8 +151,15 @@ typedef struct lxp_fs_ops {
 
 	/** Acquire and release run-scoped storage. A missing medium is not a
 	 * provider-lifecycle failure: run_begin should succeed and let individual
-	 * operations return LXP_ERR_NOT_REGISTERED until media is available. */
-	int (*run_begin)(void);
+	 * operations return LXP_ERR_NOT_REGISTERED until media is available.
+	 *
+	 * An asynchronous provider retains @p ready and @p context only between a
+	 * successful run_begin() and the matching run_end(). It invokes the callback
+	 * after a request which returned LXP_ERR_WOULD_BLOCK may be collected, and
+	 * must stop all invocations before run_end() returns. A synchronous provider
+	 * may ignore both values. run_begin() leaves prior state unchanged on
+	 * failure. */
+	int (*run_begin)(lxp_fs_ready_fn ready, const void *context);
 	void (*run_end)(void);
 	/** Select the generation-qualified guest owner for the next operation.
 	 * Owner zero denotes host lifecycle work which may execute synchronously. */
@@ -194,9 +204,6 @@ typedef struct lxp_fs_ops {
 	/** Snapshot run-scoped service telemetry without resetting it. */
 	int (*metrics)(lxp_fs_metrics_t *out);
 } lxp_fs_ops_t;
-
-/** Wake the coordinator after a non-blocking provider request completes. */
-void lxp_fs_kick(void);
 
 #ifdef __cplusplus
 }

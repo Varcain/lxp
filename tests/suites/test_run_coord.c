@@ -30,6 +30,7 @@
 #include "run/lxp_exec_private.h"
 #include "run/lxp_fork_private.h"
 #include "run/lxp_image.h"
+#include "run/lxp_coordinator.h"
 #include "run/lxp_runtime_test.h"
 
 #define TEST_RUNTIME (lxp_runtime_test_fixture())
@@ -136,6 +137,11 @@ static struct {
 	lxp_net_ready_fn net_ready;
 	const void *net_ready_context;
 	int net_ready_fire_in_prepare;
+	int fs_begin_calls;
+	int fs_end_calls;
+	lxp_fs_ready_fn fs_ready;
+	const void *fs_ready_context;
+	int fs_ready_fire_in_prepare;
 	int console_subscribe_calls;
 	int console_subscribe_result;
 	int console_unsubscribe_calls;
@@ -349,6 +355,8 @@ static int mock_prepare(void)
 	g_mock.prepare_calls++;
 	if (g_mock.net_ready_fire_in_prepare && g_mock.net_ready)
 		g_mock.net_ready(g_mock.net_ready_context);
+	if (g_mock.fs_ready_fire_in_prepare && g_mock.fs_ready)
+		g_mock.fs_ready(g_mock.fs_ready_context);
 	return g_mock.prepare_result;
 }
 static void mock_teardown(void)
@@ -407,12 +415,18 @@ static int mock_console_poll(void *ctx)
  * completion semantics are compiled exactly as in firmware. Most tests never
  * perform storage I/O; this complete provider keeps lxp_run() validation and
  * lifecycle tests representative without introducing host filesystem state. */
-static int mock_fs_begin(void)
+static int mock_fs_begin(lxp_fs_ready_fn ready, const void *context)
 {
+	g_mock.fs_begin_calls++;
+	g_mock.fs_ready = ready;
+	g_mock.fs_ready_context = context;
 	return LXP_OK;
 }
 static void mock_fs_end(void)
 {
+	g_mock.fs_end_calls++;
+	g_mock.fs_ready = NULL;
+	g_mock.fs_ready_context = NULL;
 }
 static void mock_fs_owner(uint64_t owner)
 {
@@ -2040,16 +2054,21 @@ static void test_failed_prepare_is_rolled_back(void **state)
 
 	g_mock.prepare_result = -LXP_EIO;
 	g_mock.net_ready_fire_in_prepare = 1;
+	g_mock.fs_ready_fire_in_prepare = 1;
 	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
-				 1, argv),
+			 1, argv),
 			 LXP_RUN_ELAUNCH);
 	assert_int_equal(g_mock.net_begin_calls, 1);
 	assert_int_equal(g_mock.net_end_calls, 1);
+	assert_int_equal(g_mock.fs_begin_calls, 1);
+	assert_int_equal(g_mock.fs_end_calls, 1);
 	assert_int_equal(g_mock.prepare_calls, 1);
 	assert_int_equal(g_mock.teardown_calls, 1);
-	assert_int_equal(g_mock.event_posts, 1);
+	assert_int_equal(g_mock.event_posts, 2);
 	assert_null(g_mock.net_ready);
 	assert_null(g_mock.net_ready_context);
+	assert_null(g_mock.fs_ready);
+	assert_null(g_mock.fs_ready_context);
 	assert_null(g_eng);
 	assert_null(g_cfg);
 	assert_null(g_lxp_rootfs_lo);
@@ -2245,7 +2264,7 @@ static void test_coordinator_service_classes_are_weighted_and_aged(void **state)
 	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
 	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
 	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 1);
-	lxp_fs_kick();
+	lxp_fs_completion_ready(&g_mock_eng);
 	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
 #endif
 }

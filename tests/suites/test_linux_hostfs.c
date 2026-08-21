@@ -76,8 +76,10 @@ static const lxp_block_ops_t g_fake_block_ops = {
 	.read = fake_block_read,
 };
 
-static int fake_run_begin(void)
+static int fake_run_begin(lxp_fs_ready_fn ready, const void *context)
 {
+	(void)ready;
+	(void)context;
 	return LXP_OK;
 }
 static int fake_mount(const lxp_fs_mount_spec_t *spec)

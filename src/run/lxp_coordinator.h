@@ -129,6 +129,7 @@ int claim_slot_event(int slot);
 void lxp_event_post_slot(const lxp_os_ops_t *eng, int slot);
 struct lxp_claimed_event coordinator_claim_event(const lxp_os_ops_t *eng, unsigned *cursor);
 #if LXP_ENABLE_FS
+void lxp_fs_completion_ready(const void *context);
 int lxp_fs_completion_hint_take(void);
 #endif
 
