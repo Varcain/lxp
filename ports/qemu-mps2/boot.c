@@ -11,6 +11,7 @@
  * embedded rootfs cpio and runs the guest via lxp_run() from a coordinator task.
  */
 #include "FreeRTOS.h"
+#include "semphr.h"
 #include "task.h"
 
 #include <stddef.h>
@@ -72,6 +73,31 @@ static void sh_exit(int code)
 static volatile uint64_t g_us;
 static lxp_freertos_tick_fn g_tick_callback;
 
+#if LXP_MILESTONE == 9
+/* A native task above both the Linux guests (priority 1) and their selector
+ * (priority 2). Waking it every tick reproduces the ready-list perturbation
+ * which used to defeat guest nice weighting after each host preemption. */
+static StaticSemaphore_t g_preempt_sem_buf;
+static SemaphoreHandle_t g_preempt_sem;
+static StaticTask_t g_preempt_tcb;
+static StackType_t g_preempt_stack[configMINIMAL_STACK_SIZE];
+static volatile uint32_t g_preempt_count;
+static volatile uint32_t g_preempt_mix;
+
+static void preempt_task(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		(void)xSemaphoreTake(g_preempt_sem, portMAX_DELAY);
+		uint32_t value = g_preempt_mix ^ 0x9e3779b9u;
+		for (unsigned i = 0; i < 16u; i++)
+			value = (value << 5) ^ (value >> 3) ^ i;
+		g_preempt_mix = value;
+		g_preempt_count++;
+	}
+}
+#endif
+
 int lxp_qemu_tick_subscribe(lxp_freertos_tick_fn callback)
 {
 	if (!callback)
@@ -98,6 +124,13 @@ void vApplicationTickHook(void)
 	lxp_freertos_tick_fn callback = g_tick_callback;
 	if (callback)
 		callback();
+#if LXP_MILESTONE == 9
+	if (g_preempt_sem) {
+		BaseType_t woken = pdFALSE;
+		xSemaphoreGiveFromISR(g_preempt_sem, &woken);
+		portYIELD_FROM_ISR(woken);
+	}
+#endif
 }
 uint64_t lxp_qemu_now_us(void)
 {
@@ -171,7 +204,13 @@ static void coordinator_task(void *arg)
 	/* The initial program + argv, selected at build time per milestone:
 	 *   M1 = /hello           M2 = /init (execs /child)
 	 *   M3 = /bin/busybox echo lxp-m3-ok  (dynamic-FDPIC: ld.so + libc.so + busybox) */
-#if LXP_MILESTONE == 8
+#if LXP_MILESTONE == 9
+	/* M9 = two CPU-bound CLONE_VM workers at nice -20/+19 while a native,
+	 * higher-priority task wakes at 1 kHz. */
+	const char *entry = "/schedtest";
+	const char *const argv[] = {"schedtest", NULL};
+	int argc = 1;
+#elif LXP_MILESTONE == 8
 	/* M8 = vfork + FAILED exec + wait4: the command-not-found path. The parent must reap
 	 * the child's 127 without faulting or losing the code to the child's-death SIGCHLD. */
 	const char *entry = "/vforkx";
@@ -221,6 +260,14 @@ static void coordinator_task(void *arg)
 	int argc = 1;
 #endif
 	int rc = lxp_run(&g_lxp_host_engine, NULL, NULL, NULL, NULL, &cfg, entry, argc, argv);
+#if LXP_MILESTONE == 9
+	/* The guest's zero status proves bounded weighted progress. This separate
+	 * minimum proves the 1 kHz native interference was present throughout it. */
+	if (rc == 0 && g_preempt_count >= 1000u)
+		lxp_dbg("lxp-m9-ok\n");
+	else
+		lxp_dbg("lxp-m9-FAIL\n");
+#endif
 	sh_exit(rc >= 0 ? rc : 100 - rc);
 }
 
@@ -249,6 +296,13 @@ int main(void)
 	 * and touches the cpio, every program region and kernel state, so it must be
 	 * PRIVILEGED (portPRIVILEGE_BIT) under the MPU port — the guests are the only
 	 * unprivileged tasks. */
+#if LXP_MILESTONE == 9
+	g_preempt_sem = xSemaphoreCreateBinaryStatic(&g_preempt_sem_buf);
+	if (!g_preempt_sem ||
+	    !xTaskCreateStatic(preempt_task, "host-rt", configMINIMAL_STACK_SIZE, NULL,
+			       4 | portPRIVILEGE_BIT, g_preempt_stack, &g_preempt_tcb))
+		sh_exit(84);
+#endif
 	xTaskCreateStatic(coordinator_task, "coord", 4096, NULL, 2 | portPRIVILEGE_BIT,
 			  g_coord_stack, &g_coord_tcb);
 	vTaskStartScheduler();

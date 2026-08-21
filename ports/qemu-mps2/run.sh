@@ -6,11 +6,12 @@
 #   M=2 bash run.sh              -> /init execs /child     -> "lxp-m2-ok"
 #   M=3 bash run.sh              -> /bin/busybox echo ...  -> "lxp-m3-ok"
 #   M=7 bash run.sh              -> hard-float /fpcheck     -> "lxp-m7-ok"
+#   M=9 bash run.sh              -> nice-weighted workers   -> "lxp-m9-ok"
 #
-# M1/M2 embed a small cpio in flash (pinned guest/rootfs.cpio; CI needs only
+# Static-fixture milestones embed a small cpio in flash (pinned guest/rootfs.cpio; CI needs only
 # arm-none-eabi-gcc + qemu). M3 XIPs a big dynamic-FDPIC busybox cpio from PSRAM
 # @0x60000000 via `-device loader`; M3_CPIO points at it (default: the Buildroot
-# image). Set REGEN_GUEST=1 to rebuild the M1/M2 fixture from guest/*.c (FDPIC gcc).
+# image). Set REGEN_GUEST=1 to rebuild the pinned fixture from guest/*.c (FDPIC gcc).
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
@@ -35,7 +36,8 @@ case "$M" in
     6) MARK="lxp-m6-ok" ;;
     7) MARK="lxp-m7-ok" ;;
     8) MARK="lxp-m8-ok" ;;
-    *) echo "unknown milestone M=$M (use 1..8)"; exit 2 ;;
+    9) MARK="lxp-m9-ok" ;;
+    *) echo "unknown milestone M=$M (use 1..9)"; exit 2 ;;
 esac
 
 mkdir -p build
@@ -43,8 +45,8 @@ LOG="$HERE/build/m$M.log"
 
 # The dynamic busybox milestones (M3, M6) XIP the cpio from PSRAM; the rest embed it in flash.
 if [ "$M" != 3 ] && [ "$M" != 6 ]; then
-    # ---- flash-embedded fixture (M1/M2/M4/M5/M7) ---------------------------
-    GUESTS="hello init child syscheck spin futex"
+    # ---- flash-embedded fixture --------------------------------------------
+    GUESTS="hello init child syscheck spin futex schedtest"
     CPIO_IMAGE="guest/rootfs.cpio"
     if [ "$M" = 7 ]; then
         [ -x "$FDCC" ] || { echo "M7 needs an FDPIC gcc: $FDCC"; exit 1; }

@@ -42,7 +42,7 @@
 #define TRAMP_STORAGE_WORDS 256u	  /* 768-byte stack + 256-byte resume handoff */
 #define SLOT_PRIO (tskIDLE_PRIORITY + 1u) /* below the run-loop task (its creator) */
 #define GUEST_SCHED_PRIO (SLOT_PRIO + 1u) /* no higher than coordinator; above every guest */
-#define GUEST_SCHED_STACK_WORDS 192u
+#define GUEST_SCHED_STACK_WORDS 128u /* measured peak: 33 words under QEMU M9 stress */
 #define PORT_CONFIG g_lxp_freertos_port_config
 #define dyn_pools ((uint8_t (*)[LXP_DYN_POOL_SIZE])(void *)PORT_CONFIG.dynamic_pools)
 #define prog_regions ((uint8_t (*)[LXP_PROG_REGION_SIZE])(void *)PORT_CONFIG.program_regions)

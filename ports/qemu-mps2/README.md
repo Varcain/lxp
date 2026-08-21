@@ -26,6 +26,7 @@ dependency on any OS, so `scripts/check-decoupled.sh` still passes.
 | `guest/syscheck.c` | the M4 conformance guest (resume-register ABI, 32-bit r0, statx via svc6, fork/kill/wait4) |
 | `guest/spin.c` | the M4 helper — blocks forever so the parent can kill a live process |
 | `guest/fpcheck.c` | the M7 hard-float guest (all VFP registers + FPSCR across deferred/blocking syscalls) |
+| `guest/schedtest.c` | the M9 nice-weighted CPU workers (with a 1 kHz higher-priority native preemptor) |
 | `guest/rootfs.cpio` | **M1/M2 pinned fixture** — the built hand-written guests (embedded in flash) |
 | `guest/mkrootfs_m3.sh` | rebuilds the minimal busybox rootfs from a Buildroot FDPIC target tree |
 | `guest/rootfs_m3.cpio` | **M3 pinned fixture** — minimal dynamic-FDPIC busybox (busybox + ld.so + libc, ~620 KiB) |
@@ -48,6 +49,7 @@ M=2 bash run.sh             # M2: /init execs /child -> asserts "lxp-m2-ok"
 M=3 bash run.sh             # M3: /bin/busybox echo  -> asserts "lxp-m3-ok"  (busybox from PSRAM)
 M=4 bash run.sh             # M4: /syscheck          -> asserts "lxp-m4-ok"  (syscall conformance)
 M=7 bash run.sh             # M7: hard-float /fpcheck -> asserts "lxp-m7-ok" (needs FDPIC gcc)
+M=9 bash run.sh             # M9: weighted CPU guests under native preemption -> "lxp-m9-ok"
 REGEN_GUEST=1 bash run.sh   # rebuild guest/rootfs.cpio from guest/*.c first (needs FDPIC gcc)
 ```
 
@@ -77,6 +79,14 @@ rootfs (~11 MiB) instead of the minimal fixture.
   `s0-s31` registers and FPSCR across both the deferred coordinator and a blocking
   saved-frame resume of the persistent guest task. It is generated on demand because
   the normal pinned fixture deliberately remains soft-float. **Done.**
+- **M9** — proportional guest scheduling under native preemption. `/schedtest`
+  runs identical co-resident `CLONE_VM` workers at nice -20 and nice +19 while a
+  higher-priority native task wakes at 1 kHz. It requires forward progress from
+  both workers, a bounded 8:1–40:1 work ratio, and at least 1,000 native wakeups
+  during the two-second window. This catches equal-priority ready-list rotation
+  bypassing the LXP weighted gate. A one-off high-water probe measured the
+  selector at 33 words under this stress; its production stack retains 128 words
+  (512 bytes), nearly four times that peak. **Done.**
 
 ## Gotchas (learned the hard way)
 

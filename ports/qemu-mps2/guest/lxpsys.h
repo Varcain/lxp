@@ -112,6 +112,14 @@ static inline long sys_vfork(void)
 	__asm__ volatile("svc 0" : "=r"(r0) : "r"(r7) : "memory");
 	return r0;
 }
+static inline long sys_nice(int increment)
+{
+	return lxp_svc0(34, increment);
+}
+static inline long sys_nanosleep(const long req[2])
+{
+	return lxp_svc1(162, (long)req, 0);
+}
 static inline void sys_exit(int code)
 {
 	lxp_svc0(248, code); /* NR_exit_group */
