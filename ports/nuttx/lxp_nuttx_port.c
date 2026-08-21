@@ -840,6 +840,8 @@ static int nuttx_thread_list(struct lxp_thread_info *o, size_t m, size_t *n)
 		info->priority = (int)g_tcb[s].cmn.sched_priority;
 		info->stack_size = g_tcb[s].cmn.adj_stack_size;
 		info->state_times.running_us = guest_runtime_us(s);
+		info->valid_fields =
+			LXP_THREAD_INFO_VALID_STACK_SIZE | LXP_THREAD_INFO_VALID_RUNNING_TIME;
 	}
 	*written = count;
 	return rc;

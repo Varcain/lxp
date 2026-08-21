@@ -126,6 +126,18 @@ struct lxp_thread_state_times {
 /** No Linux slot owns this host thread. */
 #define LXP_THREAD_SLOT_NONE (-1)
 
+/** Optional host-thread fields supplied by the RTOS seam. */
+#define LXP_THREAD_INFO_VALID_STACK_USED     (1u << 0)
+#define LXP_THREAD_INFO_VALID_STACK_SIZE     (1u << 1)
+#define LXP_THREAD_INFO_VALID_CPU_PERCENT    (1u << 2)
+#define LXP_THREAD_INFO_VALID_RUNNING_TIME   (1u << 3)
+#define LXP_THREAD_INFO_VALID_READY_TIME     (1u << 4)
+#define LXP_THREAD_INFO_VALID_BLOCKED_TIME   (1u << 5)
+#define LXP_THREAD_INFO_VALID_SUSPENDED_TIME (1u << 6)
+#define LXP_THREAD_INFO_VALID_STATE_TIMES                                           \
+	(LXP_THREAD_INFO_VALID_RUNNING_TIME | LXP_THREAD_INFO_VALID_READY_TIME |      \
+	 LXP_THREAD_INFO_VALID_BLOCKED_TIME | LXP_THREAD_INFO_VALID_SUSPENDED_TIME)
+
 /**
  * @brief Snapshot of one host kernel thread.
  *
@@ -142,6 +154,7 @@ struct lxp_thread_info {
 	size_t stack_used;
 	size_t stack_size;
 	uint32_t cpu_percent_x100;
+	uint32_t valid_fields;
 	struct lxp_thread_state_times state_times;
 };
 

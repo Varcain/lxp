@@ -145,7 +145,9 @@ static void refresh_stats(void)
 	uint64_t idle = 0, busy = 0;
 	for (size_t i = 0; i < n; i++) {
 		const char *name = ti[i].name ? ti[i].name : "?";
-		uint64_t rus = ti[i].state_times.running_us;
+		uint64_t rus = (ti[i].valid_fields & LXP_THREAD_INFO_VALID_RUNNING_TIME)
+				       ? ti[i].state_times.running_us
+				       : 0;
 		int cls = lxp_stats_classify(name);
 		if (cls == 1) {
 			idle += rus;
@@ -172,8 +174,11 @@ static void refresh_stats(void)
 		if (lxp_stats_classify(name) != 0 || ti[i].lxp_slot != LXP_THREAD_SLOT_NONE)
 			continue; /* idle or a Linux slot thread */
 		int kpid = lxp_kpid_for(name);
+		uint64_t running_us = (ti[i].valid_fields & LXP_THREAD_INFO_VALID_RUNNING_TIME)
+					      ? ti[i].state_times.running_us
+					      : 0;
 		if (kpid < 0 ||
-		    lxp_stats_add(kpid, 0, name, 'S', ti[i].state_times.running_us, 0, 1) !=
+		    lxp_stats_add(kpid, 0, name, 'S', running_us, 0, 1) !=
 			    LXP_OK)
 			overflow = 1;
 	}
