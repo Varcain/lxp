@@ -151,8 +151,10 @@ typedef struct lxp_run_config {
  *               geometry (required).
  *
  * @p argv[0] is the program name seen by the program (it may differ from @p path,
- * e.g. run @c /bin/busybox as @c "sh"). @p path must name a regular file in
- * @p run_config->rootfs. Calls are sequential: each run publishes the ops, runs
+ * e.g. run @c /bin/busybox as @c "sh"). @p path must name a regular file or a
+ * @c #! interpreter script in @p run_config->rootfs; symlinks are followed for
+ * both the initial path and its interpreter. Calls are sequential: each run
+ * publishes the ops, runs
  * @c os_ops->prepare(), drives the loop, then @c os_ops->teardown() and tears down
  * its threads before returning, so a host may call this repeatedly.
  *

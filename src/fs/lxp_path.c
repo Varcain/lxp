@@ -164,7 +164,7 @@ int fs_follow(const lxp_proc_t *p, int idx)
 long lxp_rootfs_resolve(const lxp_file_t *fs, int count, const char *abspath,
 			    const uint8_t **data, size_t *len)
 {
-	int idx = fsx_follow(fs, count, fsx_lookup(fs, count, abspath));
+	int idx = lxp_rootfs_resolve_index(fs, count, abspath);
 	if (idx < 0)
 		return -LXP_ENOENT;
 	if (data)
@@ -172,4 +172,11 @@ long lxp_rootfs_resolve(const lxp_file_t *fs, int count, const char *abspath,
 	if (len)
 		*len = fs[idx].size;
 	return 0;
+}
+
+int lxp_rootfs_resolve_index(const lxp_file_t *fs, int count, const char *abspath)
+{
+	if (!fs || count < 0 || !abspath)
+		return -1;
+	return fsx_follow(fs, count, fsx_lookup(fs, count, abspath));
 }

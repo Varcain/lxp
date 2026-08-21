@@ -27,6 +27,7 @@ set(LXP_RUNTIME_SOURCES
     "${LXP_SOURCE_ROOT}/src/fs/lxp_tmpfs.c"
     "${LXP_SOURCE_ROOT}/src/proc/lxp_process.c"
     "${LXP_SOURCE_ROOT}/src/proc/lxp_procfs.c"
+    "${LXP_SOURCE_ROOT}/src/proc/lxp_script.c"
 )
 
 set(LXP_COORDINATOR_SOURCES
@@ -39,6 +40,7 @@ set(LXP_COORDINATOR_SOURCES
     "${LXP_SOURCE_ROOT}/src/run/lxp_fork.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_guest_event.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_image.c"
+    "${LXP_SOURCE_ROOT}/src/run/lxp_initial.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_lifecycle.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_primary.c"
 )

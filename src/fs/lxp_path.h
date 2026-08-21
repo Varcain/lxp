@@ -38,4 +38,7 @@ int fs_lookup(const lxp_proc_t *p, const char *abspath);
 /* Follow symlinks from rootfs index `idx` to the final target index, or -1. */
 int fs_follow(const lxp_proc_t *p, int idx);
 
+/* Resolve a trusted absolute rootfs path to its final non-symlink index. */
+int lxp_rootfs_resolve_index(const lxp_file_t *fs, int count, const char *abspath);
+
 #endif /* LXP_FS_PATH_H */

@@ -26,6 +26,7 @@
 #include "fs/lxp_pipe.h"     /* pipe ring ops (FD_PIPE) */
 #include "fs/lxp_tmpfs.h"    /* writable VFS overlay nodes (FD_TMPFS) */
 #include "proc/lxp_procfs.h" /* synthetic /proc content generation (FD_PROC) */
+#include "proc/lxp_script.h" /* bounded #! parsing shared with initial launch */
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h" /* /dev character-device routing (FD_DEV) */
 #endif
@@ -3134,33 +3135,18 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	 * the interpreter, with argv = [interp, arg?, scriptpath, original argv[1:]].
 	 * init runs /etc/init.d/rcS (a #!/bin/sh script) this way. */
 	const lxp_file_t *f = &p->fs[idx];
-	char interp[64], iarg[64];
-	int have_iarg = 0, interp_idx = -1;
-	if (f->data && f->size >= 2 && f->data[0] == '#' && f->data[1] == '!') {
-		const char *s = (const char *)f->data + 2, *end = (const char *)f->data + f->size;
-		while (s < end && (*s == ' ' || *s == '\t'))
-			s++;
-		int k = 0;
-		while (s < end && *s != ' ' && *s != '\t' && *s != '\n' &&
-		       k < (int)sizeof(interp) - 1)
-			interp[k++] = *s++;
-		interp[k] = '\0';
-		while (s < end && (*s == ' ' || *s == '\t'))
-			s++;
-		int m = 0;
-		while (s < end && *s != '\n' && *s != ' ' && *s != '\t' &&
-		       m < (int)sizeof(iarg) - 1)
-			iarg[m++] = *s++;
-		iarg[m] = '\0';
-		have_iarg = (m > 0);
-		if (k == 0)
-			return -LXP_ENOEXEC;
+	lxp_script_spec_t script;
+	int script_rc = lxp_script_parse(f->data, f->size, &script);
+	if (script_rc < 0)
+		return script_rc;
+	int interp_idx = -1;
+	if (script_rc == LXP_SCRIPT_PRESENT) {
 		char interpabs[LXP_PATH_MAX];
 		/* _trusted, not resolve_path(): interp was copied out of the script's
 		 * own bytes into this stack buffer, so it is not a guest pointer and
 		 * resolve_path()'s lxp_guest_strnlen guard rejects it -EFAULT. That made
 		 * every #! script unrunnable — BusyBox init's /etc/init.d/rcS included. */
-		if (resolve_path_trusted(interp, interpabs, sizeof(interpabs)) < 0)
+		if (resolve_path_trusted(script.interpreter, interpabs, sizeof(interpabs)) < 0)
 			return -LXP_ENOENT;
 		interp_idx = fs_follow(p, fs_lookup(p, interpabs));
 		if (interp_idx < 0)
@@ -3169,8 +3155,9 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 
 	int argc = raw_argc;
 	if (interp_idx >= 0) {
-		long ar = exec_rewrite_script_argv(cap, raw_argc, raw_argbytes, interp, iarg,
-						   have_iarg, execabs, &argc);
+		long ar = exec_rewrite_script_argv(cap, raw_argc, raw_argbytes, script.interpreter,
+						   script.argument, script.has_argument, execabs,
+						   &argc);
 		if (ar < 0)
 			return ar;
 		idx = interp_idx;

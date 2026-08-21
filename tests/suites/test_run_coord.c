@@ -30,6 +30,7 @@
 #include "run/lxp_exec_private.h"
 #include "run/lxp_fork_private.h"
 #include "run/lxp_image.h"
+#include "run/lxp_initial.h"
 #include "run/lxp_coordinator.h"
 #include "run/lxp_runtime_test.h"
 
@@ -2086,6 +2087,62 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	assert_int_equal(g_mock.prepare_calls, 1);
 	assert_int_equal(g_mock.teardown_calls, 1);
 	assert_null(g_lxp_net_ops);
+}
+
+static void test_initial_launch_resolves_scripts_and_symlinks(void **state)
+{
+	(void)state;
+	static const uint8_t busybox[] = {0x7f, 'E', 'L', 'F'};
+	static const uint8_t shell_link[] = "busybox";
+	static const uint8_t script[] = "#!/bin/sh -e\nexec ignored\n";
+	static const uint8_t malformed[] = "#!  \n";
+	const lxp_file_t files[] = {
+		{.path = "/bin/busybox",
+		 .data = busybox,
+		 .size = sizeof(busybox),
+		 .mode = LXP_S_IFREG | 0755},
+		{.path = "/bin/sh",
+		 .data = shell_link,
+		 .size = sizeof(shell_link) - 1u,
+		 .mode = LXP_S_IFLNK | 0777},
+		{.path = "/usr/libexec/guest",
+		 .data = script,
+		 .size = sizeof(script) - 1u,
+		 .mode = LXP_S_IFREG | 0755},
+		{.path = "/usr/libexec/bad",
+		 .data = malformed,
+		 .size = sizeof(malformed) - 1u,
+		 .mode = LXP_S_IFREG | 0755},
+	};
+	const lxp_run_config_t cfg = {
+		.rootfs = files,
+		.rootfs_count = (int)(sizeof(files) / sizeof(files[0])),
+	};
+	const char *const script_argv[] = {"guest", "boot", "verbose", NULL};
+	struct lxp_initial_image image;
+	assert_int_equal(lxp_initial_resolve(&cfg, "/usr/libexec/guest", 3, script_argv, &image),
+			 0);
+	assert_ptr_equal(image.data, busybox);
+	assert_int_equal(image.size, sizeof(busybox));
+	assert_int_equal(image.file_index, 0);
+	assert_int_equal(image.argc, 5);
+	assert_string_equal(image.argv[0], "/bin/sh");
+	assert_string_equal(image.argv[1], "-e");
+	assert_string_equal(image.argv[2], "/usr/libexec/guest");
+	assert_string_equal(image.argv[3], "boot");
+	assert_string_equal(image.argv[4], "verbose");
+	assert_null(image.argv[5]);
+
+	const char *const direct_argv[] = {"sh", NULL};
+	assert_int_equal(lxp_initial_resolve(&cfg, "/bin/sh", 1, direct_argv, &image), 0);
+	assert_ptr_equal(image.data, busybox);
+	assert_int_equal(image.file_index, 0);
+	assert_int_equal(image.argc, 1);
+	assert_string_equal(image.argv[0], "sh");
+	assert_int_equal(lxp_initial_resolve(&cfg, "/usr/libexec/bad", 1, direct_argv, &image),
+			 -LXP_ENOEXEC);
+	assert_int_equal(lxp_initial_resolve(&cfg, "/missing", 1, direct_argv, &image),
+			 -LXP_ENOENT);
 }
 
 static void test_console_readiness_lifecycle_is_run_scoped(void **state)
@@ -4600,6 +4657,8 @@ int main(void)
 		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
 		cmocka_unit_test_setup(test_port_abi_and_required_ops_are_validated, reset_state),
 		cmocka_unit_test_setup(test_failed_prepare_is_rolled_back, reset_state),
+		cmocka_unit_test_setup(test_initial_launch_resolves_scripts_and_symlinks,
+				       reset_state),
 		cmocka_unit_test_setup(test_console_readiness_lifecycle_is_run_scoped,
 				       reset_state),
 		cmocka_unit_test_setup(test_rootfs_requires_one_explicit_trusted_window,

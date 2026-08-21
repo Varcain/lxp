@@ -51,6 +51,7 @@
 #include "fs/lxp_pipe.h"
 #include "run/lxp_coordinator.h"
 #include "run/lxp_image.h"
+#include "run/lxp_initial.h"
 #include "run/lxp_runtime_store.h"
 #if defined(LXP_TEST_INTERNALS)
 #include "run/lxp_runtime_test.h"
@@ -2535,13 +2536,8 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		goto launch_failed;
 #endif
 
-	int bb = -1;
-	for (int i = 0; i < cfg->rootfs_count; i++)
-		if (strcmp(cfg->rootfs[i].path, path) == 0) {
-			bb = i;
-			break;
-		}
-	if (bb < 0 || !cfg->rootfs[bb].data)
+	struct lxp_initial_image initial;
+	if (lxp_initial_resolve(cfg, path, argc, argv, &initial) != 0)
 		goto launch_failed;
 
 	/* Concurrent process model: the run loop COORDINATES the live process SET
@@ -2555,11 +2551,13 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	(void)region_reserve(0, slot_ref_at(0));
 	lxp_region_ref_t initial_region = region_ref_at(0);
 	lxp_slot_ref_t initial_owner = slot_ref_at(0);
-	if (lxp_image_launch(eng, cfg, 0, initial_region, initial_owner, cfg->rootfs[bb].data,
-			     cfg->rootfs[bb].size, 1, 0, argc, argv, cfg->env, 0) != 0) {
+	if (lxp_image_launch(eng, cfg, 0, initial_region, initial_owner, initial.data, initial.size,
+			     1, 0, initial.argc, initial.argv, cfg->env, 0) != 0) {
 		goto launch_failed;
 	}
-	g_lxp_slots[0].proc.exec_file_idx = bb; /* the running image, for /proc/self/exe re-exec */
+	/* Interpreter scripts name the interpreter's final non-symlink image here,
+	 * so /proc/self/exe keeps re-execing the ELF which actually runs. */
+	g_lxp_slots[0].proc.exec_file_idx = initial.file_index;
 	refresh_stats();
 	lxp_diag_checkpoint();
 
