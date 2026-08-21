@@ -348,6 +348,24 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	assert_string_equal(g_capture.path, "/bin/init");
 	assert_int_equal(g_capture.argc, 1);
 	assert_ptr_equal(g_capture.argv, argv);
+
+	/* Reuse the parsed host without inheriting launch-scoped callbacks from the
+	 * preceding invocation. Host-owned providers and topology remain present. */
+	assert_int_equal(lxp_host_run(&host, NULL, "/bin/init", 1, argv), 37);
+	assert_int_equal(g_capture.run_calls, 2);
+	assert_ptr_equal(g_capture.os_ops, &g_os_ops);
+	assert_ptr_equal(g_capture.net_ops, &g_net_ops);
+	assert_ptr_equal(g_capture.display_ops, &g_display_ops);
+	assert_ptr_equal(g_capture.fs_ops, &g_fs_ops);
+	assert_ptr_equal(g_capture.block_ops, &g_block_ops);
+	assert_null(g_capture.run_config.write_fn);
+	assert_null(g_capture.run_config.read_fn);
+	assert_null(g_capture.run_config.io_ctx);
+	assert_null(g_capture.run_config.on_guest_exit);
+	assert_null(g_capture.run_config.rt_scope_read);
+	assert_ptr_equal(g_capture.run_config.netif, &netif_cookie);
+	assert_non_null(g_capture.run_config.netfs_config);
+	assert_string_equal(g_capture.run_config.netfs_config->mountpoint, "/mnt/pi");
 }
 
 static void test_failed_reinit_clears_previous_host(void **state)
