@@ -904,8 +904,8 @@ static int zephyr_spawn_resume(int sidx, uint32_t generation, int ridx,
 	 * architecture exception-frame headroom, so resume_tramp can read it
 	 * without another MPU partition. AN521 already uses stack plus four domain
 	 * partitions; STM32F746 uses stack plus three. A separate shared partition
-	 * previously overflowed the AN521 dynamic-region budget and dropped
-	 * executable kernel text. */
+	 * would exceed the AN521 dynamic-region budget and drop executable kernel
+	 * text. */
 	struct lxp_resume_ctx *slot = zephyr_guest_resume_slot(ctx->sp);
 	*slot = *ctx;
 	g_slots[sidx].tid = k_thread_create(&g_thread_storage[sidx], g_tramp_stacks[sidx],
