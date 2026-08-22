@@ -47,7 +47,7 @@ extern "C" {
 #define LXP_SOCKW_CONNECT 1u
 #define LXP_SOCKW_SEND 2u
 #define LXP_SOCKW_RECV 3u
-#define LXP_SOCKW_ACCEPT 4u /**< P4: a blocked accept(2). */
+#define LXP_SOCKW_ACCEPT 4u /**< A blocked accept(2). */
 #define LXP_SOCKW_POLL 5u   /**< A blocking poll(2)/select over a set that includes a socket. */
 
 /* Guest socket ABI. LXP_AF_* and LXP_SOCK_STREAM/DGRAM/RAW are the provider
@@ -71,7 +71,7 @@ typedef struct lxp_sockaddr_in {
 	uint8_t sin_zero[8];
 } lxp_sockaddr_in;
 
-/* ---- interface config ioctls (ifconfig/route, P2) ------------------------- */
+/* ---- interface configuration ioctls (ifconfig/route) --------------------- */
 #define LXP_SIOCADDRT 0x890b	  /* add a routing table entry */
 #define LXP_SIOCDELRT 0x890c	  /* delete a routing table entry */
 #define LXP_SIOCGIFCONF 0x8912	  /* list interfaces */

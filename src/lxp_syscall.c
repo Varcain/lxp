@@ -1381,7 +1381,7 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 	}
 
 #if LXP_ENABLE_DEV
-	/* Device mmap (P3): a real /dev fd with a driver .mmap op (e.g. /dev/fb0) is mapped to
+	/* A real /dev fd with a driver .mmap op (e.g. /dev/fb0) is mapped to
 	 * the device's own buffer — lxp_dev_mmap parks on DEVW_MMAP and the coordinator
 	 * installs the unprivileged MPU region + resumes with the mapped address. Devices
 	 * without an .mmap op return -ENODEV and fall through to the anonymous-arena copy. */

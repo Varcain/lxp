@@ -137,7 +137,7 @@ static unsigned mock_poll(struct lxp_dev *d, struct lxp_dev_open *o)
 	return LXP_POLLIN | LXP_POLLOUT;
 }
 
-/* mmap(2) (P3): hand back a fixed "device buffer" + a cache-attr hint, rejecting a
+/* mmap(2): hand back a fixed "device buffer" + a cache-attr hint, rejecting a
  * request past the device extent — the shape the /dev/fb0 driver's op has. */
 static uint8_t g_mock_fb[256];
 static long mock_mmap(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, size_t len,
@@ -577,7 +577,7 @@ static void test_dev_fb_dma2d_blit(void **state)
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
 
-/* mmap(2) of a device buffer (P3): sys_mmap2 routes a /dev fd with an .mmap op to it, which
+/* mmap(2) of a device buffer: sys_mmap2 routes a /dev fd with an .mmap op to it, which
  * PARKS on DEVW_MMAP — the run-loop coordinator (not present in this unit test) would then
  * install the MPU region + resume with r0 = the mapped address. Assert the deferral state the
  * coordinator consumes (typed device wait payload), and that a request past the device

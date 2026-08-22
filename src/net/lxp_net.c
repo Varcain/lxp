@@ -556,7 +556,7 @@ long lxp_sock_getsockopt(lxp_proc_t *p, int oi, int level, int optname, void *uv
 		int se = g_lxp_net_ops->sock_get_error(o->sock);
 		val = (int)(-net_errno_to_lnx(se)); /* positive Linux errno, or 0 */
 	}
-	/* Other options report 0 (accept-and-report; real passthrough in P4). */
+	/* Other accepted options report their emulated zero value. */
 	uint32_t n = cap < sizeof(int) ? cap : (uint32_t)sizeof(int);
 	if (lxp_copy_to_guest(p, (uintptr_t)uval, &val, n) != 0)
 		return -LXP_EFAULT;
@@ -574,8 +574,8 @@ long lxp_sock_setsockopt(lxp_proc_t *p, int oi, int level, int optname, const vo
 	if (len && (!uval || !lxp_guest_access_ok(p, uval, len, 0)))
 		return -LXP_EFAULT;
 	/* Accept-and-ignore: the socket is driven non-blocking with coordinator
-	 * park/retry, so SO_RCVTIMEO / SO_REUSEADDR / TCP_NODELAY are no-ops here
-	 * (P4 adds real passthrough for the options busybox depends on). */
+	 * park/retry, so SO_RCVTIMEO / SO_REUSEADDR / TCP_NODELAY are emulated
+	 * no-ops here. */
 	return 0;
 }
 

@@ -494,7 +494,7 @@ static void test_net_raw_socket(void **state)
 	}
 }
 
-/* Server path (P4): guest bind/listen/accept. The guest listens on loopback, a host
+/* Server path: guest bind/listen/accept. The guest listens on loopback, a host
  * client connects, and the guest accept(2) parks then the coordinator retry mints the
  * client fd; then a bidirectional byte exchange over the accepted socket. */
 static void test_net_server_accept(void **state)

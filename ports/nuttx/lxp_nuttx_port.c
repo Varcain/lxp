@@ -358,7 +358,7 @@ static lxp_exec_capture_t *nuttx_exec_capture(int sidx)
 	return (sidx >= 0 && sidx < LXP_NSLOT) ? &g_exec_captures[sidx] : NULL;
 }
 
-/* map_device (P3): prepare one of this slot's two UNPRIVILEGED device MPU
+/* map_device: prepare one of this slot's two UNPRIVILEGED device MPU
  * ranges. Programming the hardware here would make the mapping global until
  * another caller changed it; instead the context-switch hook installs the
  * incoming slot's descriptors in regions 5 and 6. size 0 clears every mapping

@@ -215,7 +215,7 @@ static unsigned fb_poll(struct lxp_dev *d, struct lxp_dev_open *o)
 	return LXP_POLLOUT; /* always writable, never readable-blocking */
 }
 
-/* mmap(2) (P3): hand the guest the framebuffer itself, so a stock LVGL fbdev program
+/* mmap(2): hand the guest the framebuffer itself, so a stock LVGL fbdev program
  * with LV_LINUX_FBDEV_MMAP=1 writes pixels straight into it — replacing ~272 per-row
  * pwrite syscalls/frame with a userspace memcpy. Normal-NC: the guest's stores reach
  * SDRAM directly for the LTDC's continuous scanout, with no cache maintenance. The

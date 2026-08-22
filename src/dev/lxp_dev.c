@@ -293,7 +293,7 @@ long lxp_dev_ioctl(lxp_proc_t *p, int oi, unsigned long cmd, unsigned long arg)
 	return r;
 }
 
-/* mmap(2) a device buffer (P3): the driver's .mmap op resolves the physical range +
+/* mmap(2) a device buffer: the driver's .mmap op resolves the physical range +
  * cache attrs (e.g. /dev/fb0 -> the LTDC framebuffer, Normal-NC), then we PARK on
  * DEVW_MMAP. Adding the unprivileged MPU region over that range is a domain/TCB edit
  * that is not safe from the svc-exception dispatch, so the run-loop coordinator does
@@ -625,7 +625,7 @@ void lxp_dev_autoreg_all(void)
 #endif
 }
 
-/* Weak input feeder so the core links before the evdev class (P4) defines it. */
+/* Weak input feeder so the core links before the evdev class defines it. */
 __attribute__((weak)) void lxp_input_report_touch(int x, int y, int pressed)
 {
 	(void)x;

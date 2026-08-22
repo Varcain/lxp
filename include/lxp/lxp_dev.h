@@ -13,7 +13,7 @@
  * @file dev.h
  * @defgroup lxp_linux_dev Linux personality device layer
  * @ingroup lxp_linux
- * @brief Character-device nodes under /dev for the Linux personality.
+ * @brief Device nodes under /dev for the Linux personality.
  *
  * A small in-kernel device model bolted onto the syscall layer: class drivers
  * register an @ref lxp_dev (a path like "/dev/fb0" + an ops vtable) and the
@@ -79,12 +79,12 @@ struct lxp_dev_ops {
 	int (*present)(struct lxp_dev *d);
 	uint64_t (*size)(struct lxp_dev *d);
 	/** mmap(2): fill @p phys with the device buffer address + @p attrs; the core
-	 *  defers the MPU work to the engine seam. NULL => -ENODEV. (Phase P3.) */
+	 *  defers the MPU work to the engine seam. NULL => -ENODEV. */
 	long (*mmap)(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, size_t len,
 		     uint32_t pgoff, uintptr_t *phys, unsigned *attrs);
 };
 
-/** A registered character device. */
+/** A registered character or block device. */
 struct lxp_dev {
 	const char *path;	       /**< Absolute node path, e.g. "/dev/fb0". */
 	const struct lxp_dev_ops *ops; /**< Class operations. */
@@ -111,11 +111,11 @@ struct lxp_dev_open {
 	union {
 		struct {
 			uint16_t addr;
-		} i2c; /**< I2C_SLAVE address (P2 i2c). */
+		} i2c; /**< I2C_SLAVE address. */
 		struct {
 			uint32_t tail; /* matches the uint32_t g_in_head; a uint16_t wrapped after 65536 events */
 			uint8_t overrun;
-		} input; /**< evdev ring cursor (P4 input). */
+		} input; /**< evdev ring cursor. */
 		struct {
 			uint8_t write_lease;
 			uint8_t reread_phase;
@@ -131,7 +131,7 @@ struct lxp_dev_open {
 #define LXP_DEVW_READ 1u
 #define LXP_DEVW_WRITE 2u
 #define LXP_DEVW_IOCTL 3u
-#define LXP_DEVW_MMAP 4u /**< P3: coordinator installs the MPU region, resumes r0 = mapped addr. */
+#define LXP_DEVW_MMAP 4u /**< Coordinator installs the MPU region and resumes with its address. */
 #define LXP_DEVW_PREAD 5u
 #define LXP_DEVW_PWRITE 6u
 #define LXP_DEVW_SYNC 7u
@@ -155,7 +155,7 @@ int lxp_dev_register(const struct lxp_dev *dev);
 void lxp_dev_kick(void);
 
 /**
- * @brief Engine-neutral touch-input feeder (Phase P4).
+ * @brief Engine-neutral touch-input feeder.
  *
  * A touch driver (FT5336) or a test injector calls this from the coordinator
  * tick; the evdev class turns it into /dev/input/event0 events. Weak no-op
@@ -187,7 +187,7 @@ long lxp_dev_write(lxp_proc_t *p, int oi, const void *buf, size_t len);
 long lxp_dev_pread(lxp_proc_t *p, int oi, void *buf, size_t len, uint64_t off);
 long lxp_dev_pwrite(lxp_proc_t *p, int oi, const void *buf, size_t len, uint64_t off);
 long lxp_dev_ioctl(lxp_proc_t *p, int oi, unsigned long cmd, unsigned long arg);
-/** mmap(2) a device buffer (P3): resolve the physical range via the driver's .mmap
+/** mmap(2) a device buffer: resolve the physical range via the driver's .mmap
  *  op, then park (DEVW_MMAP) so the coordinator installs the MPU region + resumes
  *  the proc with r0 = the mapped address. Returns 0 (parked) or a negative errno. */
 long lxp_dev_mmap(lxp_proc_t *p, int oi, size_t len, uint32_t pgoff);
@@ -199,7 +199,7 @@ long lxp_dev_sync(lxp_proc_t *p, int oi);
 void lxp_dev_cancel(lxp_proc_t *p);
 /** A block request may already have mutated media when its completion arrives. */
 int lxp_dev_defer_caught_signal(const lxp_proc_t *p);
-/** Fill S_IFCHR mode / st_rdev / size for fstat/statx of open @p oi. */
+/** Fill node mode / st_rdev / size for fstat/statx of open @p oi. */
 void lxp_dev_fstat(int oi, uint32_t *mode, uint64_t *rdev, uint64_t *size);
 /** Path-based stat: fill mode/rdev for a device @p abspath; -1 if not a device. */
 int lxp_dev_stat_path(const char *abspath, uint32_t *mode, uint64_t *rdev);
