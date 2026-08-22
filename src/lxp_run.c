@@ -31,7 +31,7 @@
 #include "lxp/lxp_run.h"
 #include "lxp/lxp_stats.h"
 #if LXP_ENABLE_DEV
-#include "lxp/lxp_dev.h"      /* device-layer park/retry + autoreg + tick + kick */
+#include "lxp/lxp_dev.h" /* device-layer park/retry + autoreg + tick + kick */
 #include "lxp/lxp_display_ops.h"
 #endif
 #if LXP_ENABLE_NET
@@ -177,9 +177,7 @@ static void refresh_stats(void)
 		uint64_t running_us = (ti[i].valid_fields & LXP_THREAD_INFO_VALID_RUNNING_TIME)
 					      ? ti[i].state_times.running_us
 					      : 0;
-		if (kpid < 0 ||
-		    lxp_stats_add(kpid, 0, name, 'S', running_us, 0, 1) !=
-			    LXP_OK)
+		if (kpid < 0 || lxp_stats_add(kpid, 0, name, 'S', running_us, 0, 1) != LXP_OK)
 			overflow = 1;
 	}
 	if (overflow)
@@ -967,10 +965,10 @@ void lxp_diag_size_report(lxp_diag_size_report_t *out)
 			     out->debug_record;
 	out->per_region_core = out->arena + sizeof(g_regions[0]);
 	out->slot_table = sizeof(g_lxp_slots);
-	out->coordinator_static =
-		sizeof(g_lxp_slots) + sizeof(g_arenas) + sizeof(g_regions) + sizeof(g_vfork_guard) +
-		lxp_primary_events_bytes() + sizeof(g_lxp_dbg) + sizeof(g_sig_save) +
-		sizeof(g_diag_native_present) + sizeof(g_diag_health);
+	out->coordinator_static = sizeof(g_lxp_slots) + sizeof(g_arenas) + sizeof(g_regions) +
+				  sizeof(g_vfork_guard) + lxp_primary_events_bytes() +
+				  sizeof(g_lxp_dbg) + sizeof(g_sig_save) +
+				  sizeof(g_diag_native_present) + sizeof(g_diag_health);
 }
 
 void lxp_diag_health(lxp_diag_health_t *out)
@@ -1329,12 +1327,13 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 			lxp_proc_t *target = &g_lxp_slots[s].proc;
 			if (!target->alive)
 				continue;
-			int match = (which == PRIO_PROCESS)
-					    ? (who == 0 ? target == proc : target->pid == who)
-					    : (which == PRIO_PGRP)
-						      ? (target->group && target->group->pgid ==
-										(who == 0 ? caller_pgid : who))
-						      : (who == 0); /* every guest has uid 0 */
+			int match =
+				(which == PRIO_PROCESS)
+					? (who == 0 ? target == proc : target->pid == who)
+				: (which == PRIO_PGRP)
+					? (target->group &&
+					   target->group->pgid == (who == 0 ? caller_pgid : who))
+					: (who == 0); /* every guest has uid 0 */
 			if (!match)
 				continue;
 			found = 1;
@@ -1759,99 +1758,6 @@ int coordinator_map_mm_range(const lxp_os_ops_t *eng, lxp_mm_t *mm, uintptr_t ad
 }
 #endif
 
-/* A child (cpid, status) exited: hand it to its parent (ppid). Wake a parent blocked
- * in wait4 (resume returning cpid + write *status), else queue the zombie for a later
- * wait4. Decrements the parent's live-children count either way. */
-static int child_wait_accepts(const lxp_proc_t *p, int cpid, int stopped)
-{
-	return p->wait.kind == LXP_WAIT_CHILD &&
-	       (p->wait.data.child.pid <= 0 || p->wait.data.child.pid == cpid) &&
-	       (!stopped || (p->wait.data.child.options & LXP_WUNTRACED));
-}
-
-static lxp_proc_t *parent_task_for_child(int ppid, int cpid, int stopped)
-{
-	lxp_proc_t *fallback = NULL;
-	for (int t = 0; t < LXP_NSLOT; t++) {
-		lxp_proc_t *p = &g_lxp_slots[t].proc;
-		if (!p->alive || !p->group || p->group->tgid != ppid)
-			continue;
-		if (!fallback)
-			fallback = p;
-		if (child_wait_accepts(p, cpid, stopped))
-			return p;
-	}
-	return fallback;
-}
-
-void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int status, int sigchld)
-{
-	lxp_proc_t *par = parent_task_for_child(ppid, cpid, 0);
-	if (!par)
-		return;
-	int pslot = slot_of(par);
-	if (par->group->live_children > 0)
-		par->group->live_children--;
-	if (child_wait_accepts(par, cpid, 0)) {
-		if (par->wait.data.child.status) {
-			/* Encode the wait status the way Linux does: a signal-killed child (our exit_status
-			 * convention is 128 + signal) becomes WIFSIGNALED — low 7 bits = the signal — so the
-			 * shell prints "Terminated"/"Killed", not "Done"; a normal exit stays WIFEXITED with
-			 * the code in bits 8-15. (1..31 covers every signal we deliver.) */
-			*(int *)(uintptr_t)par->wait.data.child.status = lxp_encode_wstatus(status);
-		}
-		(void)lxp_wait_complete(par, LXP_WAIT_CHILD);
-		coordinator_park_slot(eng, pslot);
-		(void)coordinator_complete_slot(eng, slot_ref_at(pslot), cpid);
-	} else {
-		/* The parent is not blocking in wait4 (typically sitting in select()/poll() —
-		 * busybox inetd's accept loop, dropbear's session relay). Queue the zombie for a
-		 * later wait4 and raise SIGCHLD: the parent's handler runs, wait4()s the zombie, and
-		 * closes the session / reaps the connection. Default action is IGNORE, so a parent
-		 * without a handler is unaffected. Coalesce onto a free pending slot (as SIGALRM). */
-		if (par->group->child_count < LXP_MAX_CHILD) {
-			par->group->child_pid[par->group->child_count] = cpid;
-			par->group->child_status[par->group->child_count] = status;
-			par->group->child_kind[par->group->child_count] = LXP_CHILD_EXITED;
-			par->group->child_count++;
-		}
-		/* A vfork parent was just resumed (vfork returned the child pid) and will wait4() the
-		 * queued zombie immediately; raising SIGCHLD here would interrupt that wait4 (-EINTR)
-		 * before it reaps, so the shell prints "waitpid: Interrupted" and loses the exit code.
-		 * Only signal a parent that is NOT synchronously reaping (a daemon in select/poll). */
-		if (sigchld)
-			lxp_signal_latch(par, LXP_SIGCHLD);
-	}
-}
-
-/* A child (cpid) just STOPPED for job control (stopsig). Notify its parent (ppid) the
- * way reap_to_parent does for an exit — resume a wait4 that accepts stops (WUNTRACED)
- * with a WIFSTOPPED status, else queue a stop notice + raise SIGCHLD — but WITHOUT
- * decrementing live_children: a stopped child is still alive, only its state changed. */
-void notify_parent_stopped(const lxp_os_ops_t *eng, int ppid, int cpid, int stopsig)
-{
-	lxp_proc_t *par = parent_task_for_child(ppid, cpid, 1);
-	if (!par)
-		return;
-	int pslot = slot_of(par);
-	if (child_wait_accepts(par, cpid, 1)) {
-		if (par->wait.data.child.status)
-			*(int *)(uintptr_t)par->wait.data.child.status =
-				lxp_encode_wstopped(stopsig);
-		(void)lxp_wait_complete(par, LXP_WAIT_CHILD);
-		coordinator_park_slot(eng, pslot);
-		(void)coordinator_complete_slot(eng, slot_ref_at(pslot), cpid);
-	} else {
-		if (par->group->child_count < LXP_MAX_CHILD) {
-			par->group->child_pid[par->group->child_count] = cpid;
-			par->group->child_status[par->group->child_count] = stopsig;
-			par->group->child_kind[par->group->child_count] = LXP_CHILD_STOPPED;
-			par->group->child_count++;
-		}
-		lxp_signal_latch(par, LXP_SIGCHLD);
-	}
-}
-
 /* Report a stable snapshot before LXP_EV_EXIT clears/reuses the process slot. The
  * callback is deliberately outside exception context; an embedded host may log
  * it, increment retained counters, or leave it unset for zero runtime cost. */
@@ -1946,8 +1852,9 @@ int thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slot, int f
  * just resumes with `ret`; SIG_DFL terminates (the LXP_EV_EXIT pass reaps it). */
 void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, int sig, long ret)
 {
-	uintptr_t h = lxp_sig_handler_get(proc, sig);
-	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
+	struct lxp_signal_delivery delivery;
+	enum lxp_signal_action action = lxp_signal_prepare(proc, sig, &delivery);
+	if (action == LXP_SIGNAL_IGNORE) {
 		(void)coordinator_complete_slot(
 			eng, slot_ref_at(slot),
 			ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
@@ -1955,7 +1862,7 @@ void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, 
 	}
 	/* A deferred completion is itself a signal-delivery boundary and the native
 	 * task is already parked. Retain its result and let SIGCONT resume it. */
-	if (sig_stops_proc(proc, sig)) {
+	if (action == LXP_SIGNAL_STOP) {
 		proc->stopped = 1;
 		proc->stop_kind = LXP_STOP_PARKED;
 		proc->stop_sig = (uint8_t)sig;
@@ -1964,36 +1871,13 @@ void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, 
 		notify_parent_stopped(eng, proc->group->ppid, proc->pid, sig);
 		return;
 	}
-	if (h == LXP_SIG_DFL) {
-		(void)lxp_intent_exit(proc, 0);
-		proc->exit_status = 128 + sig;
-		proc->exit_reason = LXP_EXIT_REASON_SIGNAL;
-		proc->exit_signal = (uint8_t)sig;
+	if (action == LXP_SIGNAL_TERMINATE) {
 		primary_slot_mark(slot);
 		return;
 	}
-	uintptr_t entry, restorer;
-	uint32_t got;
-	if (resolve_handler(proc, sig, &entry, &got, &restorer) != 0) {
-		proc->exit_status = 128 + LXP_SIGSEGV;
-		proc->exit_reason = LXP_EXIT_REASON_MEMORY_FAULT;
-		proc->exit_signal = LXP_SIGSEGV;
-		proc->exit_address = h;
-		(void)lxp_intent_exit(proc, 0);
-		primary_slot_mark(slot);
+	if (action != LXP_SIGNAL_HANDLER)
 		return;
-	}
-	struct sig_save_s *sv = sig_save_push(proc, sig);
-	if (!sv) {
-		/* Bounded signal state is exhausted. Never overwrite an older return
-		 * context: terminate only this already-parked guest. */
-		(void)lxp_intent_exit(proc, 0);
-		proc->exit_status = 128 + LXP_SIGSEGV;
-		proc->exit_reason = LXP_EXIT_REASON_SIGNAL_DEPTH;
-		proc->exit_signal = LXP_SIGSEGV;
-		primary_slot_mark(slot);
-		return;
-	}
+	struct sig_save_s *sv = delivery.save;
 	sv->r0 = (uint32_t)ret;
 	sv->r1 = g_lxp_slots[slot].resume.r1;
 	sv->r2 = g_lxp_slots[slot].resume.r2;
@@ -2013,9 +1897,10 @@ void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, 
 	 * (the handler's own GOT for FDPIC — resolve_handler derefs the {entry,GOT} funcdescs; the
 	 * restart handler lives in libpthread, a different module than the interrupted libc). */
 	if (proc->is_fdpic)
-		g_lxp_slots[slot].resume.r4_11[5] = got; /* r9 = handler's GOT */
-	g_lxp_slots[slot].resume.lr = restorer | 1u; /* return -> sa_restorer entry -> sigreturn */
-	g_lxp_slots[slot].resume.pc = entry | 1u;    /* enter the handler (Thumb) */
+		g_lxp_slots[slot].resume.r4_11[5] = delivery.got; /* r9 = handler's GOT */
+	g_lxp_slots[slot].resume.lr = delivery.restorer |
+				      1u; /* return -> sa_restorer entry -> sigreturn */
+	g_lxp_slots[slot].resume.pc = delivery.entry | 1u; /* enter the handler (Thumb) */
 	coordinator_resume_slot(eng, slot, proc->mm->region.index, &g_lxp_slots[slot].resume,
 				sig); /* r0 = signo */
 }
@@ -2686,7 +2571,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 							LXP_NET_CAP_SOCKET_READY_EVENT);
 #endif
 		unsigned to = coordinator_wait_timeout(blocked.wait_policy, socket_ready_events,
-					       console_ready_events);
+						       console_ready_events);
 		if (blocked.next_deadline_us != UINT64_MAX && blocked.next_deadline_us > now) {
 			uint64_t d_ms = (blocked.next_deadline_us - now + 999u) /
 					1000u; /* round up, don't wake early */
@@ -2877,9 +2762,8 @@ static int run_config_valid(const lxp_run_config_t *cfg)
  * providers, then bracket the coordinator with optional host setup/teardown. */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const lxp_display_ops_t *display_ops, const lxp_fs_ops_t *fs_ops,
-	    const lxp_block_ops_t *block_ops,
-	    const lxp_run_config_t *run_config, const char *path, int argc,
-	    const char *const argv[])
+	    const lxp_block_ops_t *block_ops, const lxp_run_config_t *run_config, const char *path,
+	    int argc, const char *const argv[])
 {
 	int rc = LXP_RUN_ELAUNCH;
 	int prepare_entered = 0;
@@ -2894,8 +2778,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
 	g_diag_lifecycle_epoch = 0;
 	g_diag_native_epoch = 0;
-	if (!os_ops_valid(os_ops) || !net_ops_valid(net_ops) ||
-	    !display_ops_valid(display_ops) ||
+	if (!os_ops_valid(os_ops) || !net_ops_valid(net_ops) || !display_ops_valid(display_ops) ||
 	    !fs_ops_valid(fs_ops) || !block_ops_valid(block_ops) || !run_config_valid(run_config) ||
 	    !path || argc < 1 || !argv)
 		return LXP_RUN_ELAUNCH;

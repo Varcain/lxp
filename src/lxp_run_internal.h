@@ -37,19 +37,39 @@ struct sig_save_stack_s {
 };
 extern struct sig_save_stack_s g_sig_save[LXP_NSLOT];
 
+enum lxp_signal_action {
+	LXP_SIGNAL_INVALID,
+	LXP_SIGNAL_IGNORE,
+	LXP_SIGNAL_STOP,
+	LXP_SIGNAL_TERMINATE,
+	LXP_SIGNAL_HANDLER,
+};
+
+struct lxp_signal_delivery {
+	uintptr_t entry;
+	uintptr_t restorer;
+	uint32_t got;
+	struct sig_save_s *save;
+};
+
 /* ---- coordinator primitives (lxp_run.c) ------------------------------------ */
-int slot_of(const lxp_proc_t *p);	/* slot index of proc in the private runtime table */
-void park_frame(struct lxp_frame *f, lxp_proc_t *proc); /* park + publish this slot to the coordinator */
+int slot_of(const lxp_proc_t *p); /* slot index of proc in the private runtime table */
+void park_frame(struct lxp_frame *f,
+		lxp_proc_t *proc); /* park + publish this slot to the coordinator */
 
 /* ---- signal delivery (lxp_signal.c) ---------------------------------------- */
 int resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
 		    uintptr_t *restorer);
 int sig_swallowed(const lxp_proc_t *proc, int sig);
-int sig_default_ignore(int sig); /* SIG_DFL of this signal never terminates (SIGCHLD/SIGCONT/SIGURG/SIGWINCH) */
-int sig_is_stop(int sig);	 /* a job-control stop signal (SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU) */
+int sig_default_ignore(
+	int sig); /* SIG_DFL of this signal never terminates (SIGCHLD/SIGCONT/SIGURG/SIGWINCH) */
+int sig_is_stop(int sig); /* a job-control stop signal (SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU) */
 int sig_stops_proc(const lxp_proc_t *proc, int sig); /* would delivering `sig` stop `proc`? */
 void lxp_signal_latch(lxp_proc_t *proc, int sig);
 struct sig_save_s *sig_save_push(lxp_proc_t *proc, int sig);
+void lxp_signal_terminate(lxp_proc_t *proc, int sig, uint8_t reason, uintptr_t address);
+enum lxp_signal_action lxp_signal_prepare(lxp_proc_t *proc, int sig,
+					  struct lxp_signal_delivery *delivery);
 void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret);
 void sig_restore(struct lxp_frame *f, lxp_proc_t *proc);
 

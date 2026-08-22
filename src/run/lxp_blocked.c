@@ -39,9 +39,9 @@ enum lxp_service_class {
 /* Four FS, three socket, two console and one ordinary opportunity per cycle.
  * Aging can override the sequence once a class has waited for 20 ms. */
 static const uint8_t g_service_schedule[] = {
-	LXP_SERVICE_FS,      LXP_SERVICE_FS,      LXP_SERVICE_FS, LXP_SERVICE_FS,
-	LXP_SERVICE_SOCKET,  LXP_SERVICE_SOCKET,  LXP_SERVICE_SOCKET,
-	LXP_SERVICE_CONSOLE, LXP_SERVICE_CONSOLE, LXP_SERVICE_ORDINARY,
+	LXP_SERVICE_FS,	     LXP_SERVICE_FS,	   LXP_SERVICE_FS,     LXP_SERVICE_FS,
+	LXP_SERVICE_SOCKET,  LXP_SERVICE_SOCKET,   LXP_SERVICE_SOCKET, LXP_SERVICE_CONSOLE,
+	LXP_SERVICE_CONSOLE, LXP_SERVICE_ORDINARY,
 };
 static uint8_t g_service_cursor;
 static uint8_t g_service_slot_cursor[LXP_SERVICE_COUNT];
@@ -153,9 +153,8 @@ static int lxp_blocked_pending_fatal(const lxp_proc_t *proc)
 	for (int sig = 1; sig < LXP_NSIG; sig++) {
 		if (!(proc->pending_sigs & lxp_sig_bit(sig)) || lxp_sig_blocked(proc, sig))
 			continue;
-		if (sig == LXP_SIGKILL ||
-		    (lxp_sig_handler_get(proc, sig) == LXP_SIG_DFL &&
-		     !sig_default_ignore(sig) && !sig_is_stop(sig)))
+		if (sig == LXP_SIGKILL || (lxp_sig_handler_get(proc, sig) == LXP_SIG_DFL &&
+					   !sig_default_ignore(sig) && !sig_is_stop(sig)))
 			return sig;
 	}
 	return 0;
@@ -218,10 +217,7 @@ static int lxp_blocked_handle_stopped(const lxp_os_ops_t *eng, int slot, lxp_pro
 	if (fatal) {
 		proc->pending_sigs &= ~lxp_sig_bit(fatal);
 		lxp_blocked_clear_stop(proc);
-		(void)lxp_intent_exit(proc, 0);
-		proc->exit_status = 128 + fatal;
-		proc->exit_reason = LXP_EXIT_REASON_SIGNAL;
-		proc->exit_signal = (uint8_t)fatal;
+		lxp_signal_terminate(proc, fatal, LXP_EXIT_REASON_SIGNAL, 0);
 		primary_slot_mark(slot);
 		scan->progress = 1;
 		return 1;
@@ -252,7 +248,8 @@ static int lxp_blocked_handle_stopped(const lxp_os_ops_t *eng, int slot, lxp_pro
 			 * SIGCONT remains pending for delivery after userspace
 			 * unmasks it, but cannot keep this task stopped. */
 			(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
-						      lxp_slot_resume_view(slot_ref_at(slot)), stop_r0);
+						      lxp_slot_resume_view(slot_ref_at(slot)),
+						      stop_r0);
 		}
 		/* A non-ready task without a typed wait is parked by another
 		 * lifecycle owner (notably a vfork child). Do not violate that
@@ -394,10 +391,10 @@ static void lxp_blocked_retry_hostfs(const lxp_os_ops_t *eng, int slot, lxp_proc
 		return;
 	scan->any_busy = 1;
 	lxp_wait_t saved = proc->wait;
-	long rc = lxp_syscall(proc, (long)saved.data.hostfs.nr,
-			      (long)saved.data.hostfs.args[0], (long)saved.data.hostfs.args[1],
-			      (long)saved.data.hostfs.args[2], (long)saved.data.hostfs.args[3],
-			      (long)saved.data.hostfs.args[4], (long)saved.data.hostfs.args[5]);
+	long rc = lxp_syscall(proc, (long)saved.data.hostfs.nr, (long)saved.data.hostfs.args[0],
+			      (long)saved.data.hostfs.args[1], (long)saved.data.hostfs.args[2],
+			      (long)saved.data.hostfs.args[3], (long)saved.data.hostfs.args[4],
+			      (long)saved.data.hostfs.args[5]);
 	if (rc == -LXP_EAGAIN && proc->wait.kind == LXP_WAIT_HOSTFS)
 		return;
 	(void)lxp_wait_complete(proc, LXP_WAIT_HOSTFS);
@@ -428,8 +425,8 @@ static void lxp_blocked_retry_socket(const lxp_os_ops_t *eng, int slot, lxp_proc
 #endif
 
 #if LXP_ENABLE_NETFS
-void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				      long rc, struct lxp_blocked_scan *scan)
+void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, long rc,
+				      struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind == LXP_WAIT_NETFS)
 		(void)lxp_wait_complete(proc, LXP_WAIT_NETFS);
@@ -607,8 +604,7 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 
 	/* Async ^C/^Z for a foreground program that never reads stdin. */
 	if (lxp_tty_isig() && !(scan.wait_policy & LXP_BLOCKED_WAIT_CONSOLE) && cfg &&
-	    cfg->console_poll &&
-	    cfg->console_poll(cfg->io_ctx)) {
+	    cfg->console_poll && cfg->console_poll(cfg->io_ctx)) {
 		uint8_t ch = 0;
 		long rc = cfg->read_fn ? cfg->read_fn(cfg->io_ctx, 0, &ch, 1) : 0;
 		if (rc == 1 && (ch == 3 || ch == 26)) {

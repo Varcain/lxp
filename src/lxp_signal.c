@@ -95,9 +95,8 @@ void lxp_signal_latch(lxp_proc_t *proc, int sig)
 	if (!proc || sig <= 0 || sig >= LXP_NSIG)
 		return;
 	uint64_t pending = proc->pending_sigs;
-	const uint64_t stop_mask =
-		lxp_sig_bit(LXP_SIGSTOP) | lxp_sig_bit(LXP_SIGTSTP) |
-		lxp_sig_bit(LXP_SIGTTIN) | lxp_sig_bit(LXP_SIGTTOU);
+	const uint64_t stop_mask = lxp_sig_bit(LXP_SIGSTOP) | lxp_sig_bit(LXP_SIGTSTP) |
+				   lxp_sig_bit(LXP_SIGTTIN) | lxp_sig_bit(LXP_SIGTTOU);
 	if (sig == LXP_SIGCONT)
 		pending &= ~stop_mask;
 	else if (sig_is_stop(sig))
@@ -131,11 +130,52 @@ struct sig_save_s *sig_save_push(lxp_proc_t *proc, int sig)
 	return sv;
 }
 
+void lxp_signal_terminate(lxp_proc_t *proc, int sig, uint8_t reason, uintptr_t address)
+{
+	(void)lxp_intent_exit(proc, 0);
+	proc->exit_status = 128 + sig;
+	proc->exit_reason = reason;
+	proc->exit_signal = (uint8_t)sig;
+	proc->exit_detail = 0;
+	proc->exit_address = address;
+}
+
+/* Resolve one disposition before choosing the live-frame or parked-frame
+ * delivery mechanism. This is the sole owner of ignore/default/handler-fault
+ * semantics; callers retain only their different host-context transitions. */
+enum lxp_signal_action lxp_signal_prepare(lxp_proc_t *proc, int sig,
+					  struct lxp_signal_delivery *delivery)
+{
+	if (!proc || !delivery || sig < 1 || sig >= LXP_NSIG)
+		return LXP_SIGNAL_INVALID;
+	if (sig_stops_proc(proc, sig))
+		return LXP_SIGNAL_STOP;
+	if (sig_swallowed(proc, sig))
+		return LXP_SIGNAL_IGNORE;
+
+	uintptr_t handler = lxp_sig_handler_get(proc, sig);
+	if (handler == LXP_SIG_DFL) {
+		lxp_signal_terminate(proc, sig, LXP_EXIT_REASON_SIGNAL, 0);
+		return LXP_SIGNAL_TERMINATE;
+	}
+	if (resolve_handler(proc, sig, &delivery->entry, &delivery->got, &delivery->restorer) !=
+	    0) {
+		lxp_signal_terminate(proc, LXP_SIGSEGV, LXP_EXIT_REASON_MEMORY_FAULT, handler);
+		return LXP_SIGNAL_TERMINATE;
+	}
+	delivery->save = sig_save_push(proc, sig);
+	if (!delivery->save) {
+		lxp_signal_terminate(proc, LXP_SIGSEGV, LXP_EXIT_REASON_SIGNAL_DEPTH, 0);
+		return LXP_SIGNAL_TERMINATE;
+	}
+	return LXP_SIGNAL_HANDLER;
+}
+
 /* Deliver signal `sig` to `proc`; `ret` is the interrupted syscall's result
  * (0 for a kill/tkill, -EINTR for a console-interrupted read). */
 void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 {
-	if (sig < 1 || sig >= LXP_NSIG) {
+	if (!proc || sig < 1 || sig >= LXP_NSIG) {
 		f->r[0] = (uint32_t)-LXP_EINVAL;
 		return;
 	}
@@ -147,11 +187,13 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		f->r[0] = (uint32_t)ret;
 		return;
 	}
+	struct lxp_signal_delivery delivery;
+	enum lxp_signal_action action = lxp_signal_prepare(proc, sig, &delivery);
 	/* Job-control stop taken by a running proc at a syscall boundary. Save the
 	 * completed syscall result, redirect this frame to the persistent park entry,
 	 * and publish a typed stop event; the coordinator owns the native suspend and
 	 * later resumes this exact context on SIGCONT. */
-	if (sig_stops_proc(proc, sig)) {
+	if (action == LXP_SIGNAL_STOP) {
 		proc->stopped = 1;
 		proc->stop_kind = LXP_STOP_READY;
 		proc->stop_sig = (uint8_t)sig;
@@ -159,43 +201,20 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		park_frame(f, proc);
 		return;
 	}
-	uintptr_t h = lxp_sig_handler_get(proc, sig);
-	if (h == LXP_SIG_IGN || (h == LXP_SIG_DFL && sig_default_ignore(sig))) {
+	if (action == LXP_SIGNAL_IGNORE) {
 		f->r[0] = (uint32_t)
 			ret; /* SIG_IGN, or a default-ignore signal (SIGCHLD/SIGCONT/...) */
 		return;
 	}
-	if (h == LXP_SIG_DFL) {
-		(void)lxp_intent_exit(proc, 0);
-		proc->exit_status = 128 + sig;
-		proc->exit_reason = LXP_EXIT_REASON_SIGNAL;
-		proc->exit_signal = (uint8_t)sig;
+	if (action == LXP_SIGNAL_TERMINATE) {
 		park_frame(f, proc); /* the coordinator reaps it */
 		return;
 	}
-	uintptr_t entry, restorer;
-	uint32_t got;
-	if (resolve_handler(proc, sig, &entry, &got, &restorer) != 0) {
-		(void)lxp_intent_exit(proc, 0);
-		proc->exit_status = 128 + LXP_SIGSEGV;
-		proc->exit_reason = LXP_EXIT_REASON_MEMORY_FAULT;
-		proc->exit_signal = LXP_SIGSEGV;
-		proc->exit_address = h;
-		park_frame(f, proc);
+	if (action != LXP_SIGNAL_HANDLER) {
+		f->r[0] = (uint32_t)-LXP_EINVAL;
 		return;
 	}
-	struct sig_save_s *sv = sig_save_push(proc, sig);
-	if (!sv) {
-		/* The bounded host stack must never wrap or overwrite an older context.
-		 * Match guest stack exhaustion: terminate this process with SIGSEGV and
-		 * leave the host/coordinator operational. */
-		(void)lxp_intent_exit(proc, 0);
-		proc->exit_status = 128 + LXP_SIGSEGV;
-		proc->exit_reason = LXP_EXIT_REASON_SIGNAL_DEPTH;
-		proc->exit_signal = LXP_SIGSEGV;
-		park_frame(f, proc);
-		return;
-	}
+	struct sig_save_s *sv = delivery.save;
 	sv->r0 = (uint32_t)ret;
 	sv->r1 = f->r[1];
 	sv->r2 = f->r[2];
@@ -213,10 +232,10 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		sv->fp.active = 0;
 #endif
 	if (proc->is_fdpic)
-		f->r[9] = got;	  /* FDPIC: r9 = the handler's own GOT */
-	f->r[15] = entry & ~1u;	  /* pc -> handler entry (Thumb via xPSR.T) */
-	f->r[0] = (uint32_t)sig;  /* r0 = signo */
-	f->r[14] = restorer | 1u; /* lr -> sa_restorer */
+		f->r[9] = delivery.got;	   /* FDPIC: r9 = the handler's own GOT */
+	f->r[15] = delivery.entry & ~1u;   /* pc -> handler entry (Thumb via xPSR.T) */
+	f->r[0] = (uint32_t)sig;	   /* r0 = signo */
+	f->r[14] = delivery.restorer | 1u; /* lr -> sa_restorer */
 	f->xpsr |= (1u << 24);
 }
 
