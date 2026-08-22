@@ -1013,8 +1013,8 @@ static unsigned fop_poll_pty(lxp_proc_t *p, lxp_ofd_t *s)
 
 /* ---- per-kind ops tables + kind→ops resolver ----
  * A NULL read/write means the kind rejects that direction: the syscall entry
- * returns -EBADF (the errno the former fallthrough returned for rootfs/proc and
- * a wrong-direction console). netfs is the exception — its write returns -EROFS,
+ * returns -EBADF for rootfs/proc and a wrong-direction console. netfs is the
+ * exception — its write returns -EROFS,
  * so it supplies an explicit write fop rather than a NULL. */
 static const lxp_file_ops_t console_fops = {.read = fop_read_console,
 					    .write = fop_write_console,
@@ -1079,8 +1079,7 @@ static const lxp_file_ops_t pty_fops = {.read = fop_read_pty,
 					.poll = fop_poll_pty};
 #endif
 
-/* Resolve an fd kind to its ops table (stamped on the fd at creation). This is the
- * ONE place the fd syscalls' former per-verb kind ladders collapse into. */
+/* Resolve an fd kind to the ops table stamped on the fd at creation. */
 static const struct lxp_file_ops *ops_for_kind(uint8_t kind)
 {
 	switch (kind) {
@@ -3194,10 +3193,8 @@ static void now_sec_nsec(int clockid, uint64_t *sec, uint32_t *nsec)
 	*sec = (clockid == 0) ? (LXP_BOOT_EPOCH + up) : up;
 }
 
-/* ── Large syscall handlers, extracted from the lxp_syscall() switch so the
- *    dispatcher stays a lean router; each is individually unit-testable. The
- *    args keep the raw (nr, a0..a5) names the dispatcher passes, so the bodies
- *    are byte-for-byte the former switch-arm bodies. ── */
+/* ── Large syscall handlers keep lxp_syscall() a lean router. Raw argument
+ *    names mirror the dispatcher ABI and make each handler unit-testable. ── */
 static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 {
 	lxp_ofd_t *s = fd_slot(proc, (int)a0);

@@ -42,9 +42,8 @@ typedef struct lxp_guest_stack_observation {
  * One self-contained observation of the most recently completed run.
  *
  * Take this after lxp_host_run() returns, when coordinator-owned diagnostic and
- * latency counters are quiescent. The copy deliberately groups data which was
- * previously read piecemeal from process-global registries. Latency storage is
- * absent from builds which compile the recorder out.
+ * latency counters are quiescent. Latency storage is absent from builds which
+ * compile the recorder out.
  */
 typedef struct lxp_host_observation {
 	uint32_t abi_version;

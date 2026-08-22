@@ -53,7 +53,7 @@ extern "C" {
 #define LXP_NETFSW_GETDENTS 3u /**< getdents64: Treaddir -> emit dirent64 records. */
 #define LXP_NETFSW_STAT 4u     /**< path stat: Twalk -> Tlgetattr -> Tclunk -> fill guest stat. */
 #define LXP_NETFSW_EXECFETCH \
-	5u /**< Phase B: read a whole remote ELF into the exec staging buffer. */
+	5u /**< Read a whole remote ELF into the exec staging buffer. */
 
 /* ---- boot: mount config + connection init (coordinator thread) ------------- */
 
@@ -129,7 +129,7 @@ int lxp_netfs_busy(void);
 long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t mode, uint64_t size,
 			 uint64_t mtime, uint64_t ino);
 
-/* ---- Phase B: exec a program off the mount (LXP_ENABLE_NETFS_EXEC) ---- */
+/* ---- remote executable staging (LXP_ENABLE_NETFS_EXEC) --------------- */
 #if LXP_ENABLE_NETFS_EXEC
 /** exec_file_idx marker: the image to launch lives in the netfs exec staging buffer (RAM),
  *  not the rootfs table. The run loop's EV_EXEC sources it via lxp_netfs_exec_image. */

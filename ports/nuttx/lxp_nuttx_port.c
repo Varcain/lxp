@@ -132,9 +132,8 @@ extern dq_queue_t g_stoppedtasks;
  * trusts its cancellation, cleanup, errno, and task-info fields. Keep that
  * allocation outside every unprivileged guest MPU range. The task never
  * executes ordinary code on this substrate stack: spawn_task() relocates the
- * initial ARM exception frame to the guest PSP before activation. 1 KiB is
- * already the proven minimum used by the former clone-thread path and leaves
- * ample room for TLS, argv metadata, and the full FPU exception frame. */
+ * initial ARM exception frame to the guest PSP before activation. The validated
+ * 1 KiB minimum leaves room for TLS, argv metadata, and the full FPU frame. */
 static uint8_t *nuttx_exec_stage(size_t *cap)
 {
 	if (cap)

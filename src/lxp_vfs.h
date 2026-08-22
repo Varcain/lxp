@@ -12,8 +12,7 @@
  * lxp_ofd_t.kind. A NULL method means the operation is unsupported for that kind,
  * and the syscall returns the kind's conventional errno (e.g. EBADF for a
  * wrong-direction read/write on a read-only kind). A blocking backend parks the
- * proc (sets the coordinator park state) and returns 0, exactly as the former
- * inline handlers did.
+ * proc, sets the coordinator wait state, and returns 0 for deferred completion.
  */
 
 #ifndef LXP_VFS_H

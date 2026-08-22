@@ -10,8 +10,7 @@
  *
  * File bytes come from a fixed pool managed by the module's arena allocator
  * (first-fit + boundary coalescing), so a node's block is reclaimed when the file
- * grows (the old block is freed) or is removed (wfs_free) — no leak, unlike the
- * former pure-bump pool.
+ * grows (the old block is freed) or is removed (wfs_free).
  */
 #include "fs/lxp_tmpfs.h"
 

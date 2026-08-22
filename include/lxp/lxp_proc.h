@@ -532,18 +532,12 @@ typedef struct lxp_proc {
 	 * signal whose bit is set is deferred at delivery until unblocked; a handler blocks
 	 * its own signal for its duration (restored at rt_sigreturn). SIGKILL/SIGSTOP never. */
 	uint64_t sig_blocked;
-	/* rt_sigsuspend installs its own mask for the duration of the wait (POSIX: atomically set the
-	 * mask, suspend, restore the prior mask when a caught signal's handler returns). saved_mask holds
-	 * the pre-suspend sig_blocked; sig_restore restores it after the handler. WITHOUT this the mask
-	 * arg was ignored, so a signal the caller had blocked (the LinuxThreads restart, which sigsuspend
-	 * is meant to UNBLOCK while waiting) stayed blocked -> the coordinator's pending_deliverable
-	 * skipped it -> a thread parked in sigsuspend/sigwait was never woken (curl's threaded resolver
-	 * deadlocked: manager + main + a sigwait thread all stuck). */
+	/* rt_sigsuspend atomically installs a wait mask. The saved mask is restored
+	 * after the caught signal handler returns. */
 	uint64_t sigsuspend_saved_mask;
 	int sigsuspend_active; /**< Wait mask installed; next caught signal frame consumes saved_mask. */
-	/* The coordinator consumes exactly one typed action and one typed blocking
-	 * reason. Their tagged payloads replace the formerly independent pending
-	 * flags, which could describe impossible combinations after an error path. */
+	/* The coordinator consumes at most one typed action and one typed blocking
+	 * reason, preventing contradictory pending states. */
 	lxp_intent_t intent;
 	lxp_wait_t wait;
 	/* execve request: the target image identity and capture outlive the intent
@@ -562,8 +556,8 @@ typedef struct lxp_proc {
 	lxp_region_ref_t snapshot; /**< Scratch region holding the parent's data snapshot. */
 	uintptr_t stack_lo; /**< Boundary between this proc's in-region writable data and its stack. */
 	int is_fdpic; /**< Program is FDPIC: signal handlers/restorers are funcdescs {entry,GOT}. */
-	/* Cross-process signals (Phase D3): kill(pid,sig) from another proc, or a coordinator-
-	 * raised SIGCHLD/SIGALRM, latches here as a bitmask (bit sig-1); delivered lowest-first at
+	/* kill(pid,sig) from another proc, or a coordinator-raised SIGCHLD/SIGALRM,
+	 * latches here as a bitmask (bit sig-1); delivered lowest-first at
 	 * this proc's next syscall boundary (if running) or by the coordinator (if parked). A set
 	 * rather than a single slot so a signal blocked by sig_blocked can stay pending without a
 	 * later signal overwriting it. 0 = none. */

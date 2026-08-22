@@ -4,9 +4,9 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Cross-TU private internals of the syscall core: user-pointer validation + a couple
- * of rootfs helpers the extracted subsystem TUs (fs/proc/...) share with the
- * dispatcher. Defined in src/lxp_syscall.c; NOT part of the public include/ API.
+ * Cross-TU private internals of the syscall core: user-pointer validation and
+ * rootfs helpers shared by subsystem TUs and the dispatcher. Defined in
+ * src/lxp_syscall.c; not part of the public include/ API.
  */
 #ifndef LXP_INTERNAL_H
 #define LXP_INTERNAL_H

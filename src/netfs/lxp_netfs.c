@@ -7,8 +7,8 @@
  *
  * Linux-personality remote filesystem: a coordinator-owned 9P2000.L client over a
  * single non-blocking TCP connection to a 9P server (diod), exposed as an FD_NET
- * provider the syscall handlers route /mnt/pi opens to. Read-only browse (+ exec
- * off the mount, Phase B). Mirrors linux/net/lxp_net.c: a refcounted per-open
+ * provider the syscall handlers route /mnt/pi opens to. It supports read-only
+ * browsing and remote execution. Like net/lxp_net.c, a refcounted per-open
  * pool (each = a 9P fid); a generic open-file description owns fork/dup
  * aliases and the last close clunks.
  *

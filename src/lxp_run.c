@@ -1377,7 +1377,7 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 			deliver_signal(f, proc, sig, 0);
 			return;
 		}
-		/* Cross-process kill (Phase D3): latch the signal on the target proc(s); it is
+		/* Latch a cross-process signal on the target proc(s); it is
 		 * delivered at the target's next syscall boundary (running) or by the coordinator
 		 * (parked in sleep/wait/pipe). Real Linux targeting: pid>0 = that process; pid==0 =
 		 * the caller's process group; pid<-1 = process group |pid|; pid==-1 = broadcast to
@@ -1466,8 +1466,8 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		park_frame(f, proc);
 		return;
 	}
-	/* Cross-process signal (Phase D3): another proc's kill() latched a signal on us;
-	 * deliver it at this syscall boundary (Linux at-the-boundary async delivery) unless the
+	/* Another proc's kill() latched a signal on us; deliver it at this syscall
+	 * boundary (Linux at-the-boundary async delivery) unless the
 	 * proc has blocked it (rt_sigprocmask) — a blocked signal stays latched and is delivered
 	 * at a later boundary once unblocked. (The parked-thread and console-^C paths do not yet
 	 * consult the mask; blocking those is uncommon.) */

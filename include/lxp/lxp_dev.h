@@ -15,7 +15,7 @@
  * @ingroup lxp_linux
  * @brief Device nodes under /dev for the Linux personality.
  *
- * A small in-kernel device model bolted onto the syscall layer: class drivers
+ * A bounded device registry integrated with the syscall layer: class drivers
  * register an @ref lxp_dev (a path like "/dev/fb0" + an ops vtable) and the
  * personality routes open/read/write/ioctl/poll/lseek/mmap on that path to the
  * driver. Built-in display/input drivers use @c lxp_display_ops_t; another host
