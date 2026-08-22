@@ -1215,7 +1215,7 @@ static int lxp_seam_mem_stats(struct lxp_mem_stats *out)
 
 static const char *lxp_seam_system_version(void)
 {
-	return PORT_CONFIG.system_version ? PORT_CONFIG.system_version() : "FreeRTOS";
+	return PORT_CONFIG.system_version ? PORT_CONFIG.system_version : "FreeRTOS";
 }
 
 static int freertos_random_fill(void *buf, size_t len)

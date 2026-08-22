@@ -19,7 +19,7 @@
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_port.h"
 
-#define LXP_NUTTX_PORT_CONFIG_ABI_VERSION 2u
+#define LXP_NUTTX_PORT_CONFIG_ABI_VERSION 3u
 
 typedef int32_t (*lxp_nuttx_slot_lookup_t)(uintptr_t identity);
 
@@ -76,7 +76,7 @@ typedef struct lxp_nuttx_port_config {
 	int (*host_thread_list)(struct lxp_thread_info *out, size_t max_count, size_t *actual_count,
 				lxp_nuttx_slot_lookup_t slot_lookup);
 	int (*mem_stats)(struct lxp_mem_stats *out);
-	const char *(*system_version)(void);
+	const char *system_version;
 	int (*validate_memory_contract)(const lxp_cpu_memory_contract_t *declared,
 					const struct lxp_cortex_m_cache_geometry *geometry);
 	void (*runtime_reset)(int32_t current_pid);

@@ -1078,7 +1078,7 @@ static int lxp_seam_mem_stats(struct lxp_mem_stats *out)
 
 static const char *lxp_seam_system_version(void)
 {
-	return PORT_CONFIG.system_version ? PORT_CONFIG.system_version() : "Zephyr";
+	return PORT_CONFIG.system_version ? PORT_CONFIG.system_version : "Zephyr";
 }
 
 static int lxp_seam_time_us(uint64_t *out)

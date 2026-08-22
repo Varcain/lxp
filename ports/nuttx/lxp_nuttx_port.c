@@ -864,7 +864,7 @@ static int nuttx_mem_stats(struct lxp_mem_stats *out)
 
 static const char *nuttx_system_version(void)
 {
-	return PORT_CONFIG.system_version ? PORT_CONFIG.system_version()
+	return PORT_CONFIG.system_version ? PORT_CONFIG.system_version
 					  : "NuttX " CONFIG_VERSION_STRING;
 }
 

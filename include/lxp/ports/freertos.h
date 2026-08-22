@@ -18,7 +18,7 @@
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_port.h"
 
-#define LXP_FREERTOS_PORT_CONFIG_ABI_VERSION 3u
+#define LXP_FREERTOS_PORT_CONFIG_ABI_VERSION 4u
 #define LXP_FREERTOS_ROOTFS_REGION_MAX 2u
 
 typedef int32_t (*lxp_freertos_slot_lookup_t)(uintptr_t identity);
@@ -76,7 +76,7 @@ typedef struct lxp_freertos_port_config {
 	int (*thread_list)(struct lxp_thread_info *out, size_t max_count, size_t *actual_count,
 			   lxp_freertos_slot_lookup_t slot_lookup);
 	int (*mem_stats)(struct lxp_mem_stats *out);
-	const char *(*system_version)(void);
+	const char *system_version;
 	int (*random_fill)(void *buf, size_t len);
 	void (*cache_clean)(const void *base, size_t len);
 	void (*cache_invalidate)(const void *base, size_t len);

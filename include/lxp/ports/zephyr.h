@@ -20,7 +20,7 @@
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_port.h"
 
-#define LXP_ZEPHYR_PORT_CONFIG_ABI_VERSION 2u
+#define LXP_ZEPHYR_PORT_CONFIG_ABI_VERSION 3u
 
 typedef int32_t (*lxp_zephyr_slot_lookup_t)(uintptr_t identity);
 
@@ -61,7 +61,7 @@ typedef struct lxp_zephyr_port_config {
 	int (*thread_list)(struct lxp_thread_info *out, size_t max_count, size_t *actual_count,
 			   lxp_zephyr_slot_lookup_t slot_lookup);
 	int (*mem_stats)(struct lxp_mem_stats *out);
-	const char *(*system_version)(void);
+	const char *system_version;
 	int (*random_fill)(void *buf, size_t len);
 	int (*validate_memory_contract)(const lxp_cpu_memory_contract_t *declared,
 					const struct lxp_cortex_m_cache_geometry *geometry);

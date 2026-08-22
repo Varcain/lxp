@@ -53,11 +53,6 @@ static int qemu_mem_stats(struct lxp_mem_stats *out)
 	return LXP_OK;
 }
 
-static const char *qemu_system_version(void)
-{
-	return "FreeRTOS " tskKERNEL_VERSION_NUMBER " lxp-standalone";
-}
-
 /* Deterministic and explicitly non-cryptographic: this is a development port. */
 static int qemu_random_fill(void *buf, size_t len)
 {
@@ -122,7 +117,7 @@ const lxp_freertos_port_config_t g_lxp_freertos_port_config = {
 	.time_us = qemu_time_us,
 	.time_ns = qemu_time_ns,
 	.mem_stats = qemu_mem_stats,
-	.system_version = qemu_system_version,
+	.system_version = "FreeRTOS " tskKERNEL_VERSION_NUMBER " lxp-standalone",
 	.random_fill = qemu_random_fill,
 	.validate_memory_contract = qemu_validate_memory_contract,
 };
