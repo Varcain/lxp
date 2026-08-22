@@ -271,8 +271,6 @@ typedef struct lxp_pollfd {
 #define LXP_POLLIN 0x0001
 #define LXP_POLLOUT 0x0004
 
-struct lxp_file_ops; /* per-fd-kind operation vtable; full definition in src/lxp_vfs.h */
-
 /** Refcounted open-file description shared by dup() and inherited descriptors. */
 typedef struct lxp_ofd {
 	uint16_t refs;	  /**< Number of descriptor-table entries referring to this object. */
@@ -286,9 +284,6 @@ typedef struct lxp_ofd {
 	uint8_t accmode; /**< O_RDONLY/O_WRONLY/O_RDWR for regular provider-backed files. */
 	int file_idx;  /**< rootfs index (file) / pipe index (pipe) / open-pool index (device). */
 	size_t offset; /**< Read cursor (kind == file). */
-	const struct lxp_file_ops *ops; /**< read/write dispatch vtable for this fd's kind,
-					 *   set at creation via ops_for_kind() (the Linux
-					 *   struct file_operations pattern). */
 } lxp_ofd_t;
 
 /** One descriptor-table entry: descriptor-local flags plus an open-file description. */

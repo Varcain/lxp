@@ -6,10 +6,9 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * VFS file-operation vtable — per-fd-kind dispatch for the fd syscalls, the Linux
- * struct file_operations / gVisor FileDescriptionImpl pattern. Each open fd
- * (lxp_ofd_t) carries a pointer to its kind's ops, set at fd creation via
- * ops_for_kind(); the fd syscalls call through it instead of switching on
- * lxp_ofd_t.kind. A NULL method means the operation is unsupported for that kind,
+ * struct file_operations / gVisor FileDescriptionImpl pattern. The immutable fd
+ * kind indexes one shared vtable instead of storing a redundant pointer in every
+ * open-file description. A NULL method means the operation is unsupported for that kind,
  * and the syscall returns the kind's conventional errno (e.g. EBADF for a
  * wrong-direction read/write on a read-only kind). A blocking backend parks the
  * proc, sets the coordinator wait state, and returns 0 for deferred completion.
@@ -51,5 +50,15 @@ struct lxp_file_ops {
 };
 
 typedef struct lxp_file_ops lxp_file_ops_t;
+
+/* LXP_FD_HOSTFS is the highest fixed descriptor kind. Keep the table dense so
+ * resolving an OFD remains one checked indexed load rather than a switch. */
+#define LXP_FD_KIND_COUNT (LXP_FD_HOSTFS + 1u)
+extern const lxp_file_ops_t *const g_lxp_file_ops[LXP_FD_KIND_COUNT];
+
+static inline const lxp_file_ops_t *lxp_vfs_ops(const lxp_ofd_t *ofd)
+{
+	return ofd && ofd->kind < LXP_FD_KIND_COUNT ? g_lxp_file_ops[ofd->kind] : NULL;
+}
 
 #endif /* LXP_VFS_H */

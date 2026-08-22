@@ -114,13 +114,16 @@ static void test_syscall_payload_quantum(void **st)
 
 	/* A potentially blocking fd stops at one segment: its retry state can hold
 	 * only one buffer, so returning a short write preserves the remaining iovec. */
-	lxp_fd_description(&p, 1)->kind =
-		LXP_FD_SOCKET; /* retain the test console ops, change park capability */
-	g_write_calls = 0;
-	assert_int_equal(lxp_syscall(&p, LXP_NR_writev, 1, (long)(uintptr_t)iov, 2, 0, 0, 0),
+	int pipefd[2];
+	assert_int_equal(lxp_syscall(&p, LXP_NR_pipe2, (long)(uintptr_t)pipefd, 0, 0, 0, 0, 0),
+			 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_writev, pipefd[1], (long)(uintptr_t)iov, 2, 0,
+				     0, 0),
 			 first);
-	assert_int_equal(g_write_calls, 1);
-	lxp_fd_description(&p, 1)->kind = LXP_FD_CONSOLE;
+	static uint8_t pipe_payload[LXP_SYSCALL_QUANTUM_BYTES];
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, pipefd[0], (long)(uintptr_t)pipe_payload,
+				     sizeof(pipe_payload), 0, 0, 0),
+			 first);
 
 	payload[LXP_SYSCALL_QUANTUM_BYTES] = 0xa5;
 	g_lxp_test_random_result = LXP_OK;

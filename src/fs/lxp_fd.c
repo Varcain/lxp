@@ -50,10 +50,9 @@ int lxp_fd_backing(const lxp_proc_t *proc, int fd)
 	return ofd ? ofd->file_idx : -1;
 }
 
-int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset,
-		const struct lxp_file_ops *ops)
+int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset)
 {
-	if (!proc || !proc->files)
+	if (!proc || !proc->files || kind >= LXP_FD_KIND_COUNT || !g_lxp_file_ops[kind])
 		return -LXP_EMFILE;
 
 	int oi = -1;
@@ -75,7 +74,6 @@ int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset,
 		g_ofd[oi].accmode = LXP_O_RDONLY;
 		g_ofd[oi].file_idx = backing;
 		g_ofd[oi].offset = offset;
-		g_ofd[oi].ops = ops;
 		proc->files->fd[fd].ofd = (uint16_t)(oi + 1);
 		proc->files->fd[fd].cloexec = 0;
 		return fd;
@@ -127,8 +125,9 @@ int lxp_fd_close(lxp_proc_t *proc, int fd)
 		return -LXP_EBADF;
 	proc->files->fd[fd] = (lxp_fd_t){0};
 	if (--ofd->refs == 0) {
-		if (ofd->ops && ofd->ops->close)
-			ofd->ops->close(proc, ofd);
+		const lxp_file_ops_t *ops = lxp_vfs_ops(ofd);
+		if (ops && ops->close)
+			ops->close(proc, ofd);
 		memset(ofd, 0, sizeof(*ofd));
 	}
 	return 0;

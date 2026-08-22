@@ -11,11 +11,8 @@
 
 #include "lxp/lxp_proc.h"
 
-struct lxp_file_ops;
-
 /** Allocate the lowest descriptor and its open-file description. */
-int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset,
-		const struct lxp_file_ops *ops);
+int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset);
 /** Set open-description direction and nonblocking state. */
 int lxp_fd_set_status(lxp_proc_t *proc, int fd, int direction, int nonblock);
 /** Set or query the descriptor-local close-on-exec flag. */

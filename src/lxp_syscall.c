@@ -158,8 +158,6 @@ int lxp_wait_cancel(lxp_proc_t *proc)
  * before that point. */
 static long random_fill(void *buf, size_t count, int unavailable_errno);
 
-/* fd-kind → file-operation vtable resolver (defined with the fops below). */
-static const struct lxp_file_ops *ops_for_kind(uint8_t kind);
 static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off);
 
 #if LXP_ENABLE_NET
@@ -388,9 +386,8 @@ static void fill_kstat64(struct lxp_kstat64 *st, uint32_t ino, uint32_t mode, ui
 
 /* ─────────────────────────────────────────────────────────────────────────
  * VFS file-operation vtable (src/lxp_vfs.h). The fd syscalls dispatch on the
- * open fd's kind through a per-kind ops table instead of an inline switch — the
- * Linux struct file_operations / gVisor FileDescriptionImpl pattern. Each fd
- * carries its kind's ops (set at creation via ops_for_kind); a NULL method means
+ * open fd's kind through a shared per-kind ops table instead of an inline switch — the
+ * Linux struct file_operations / gVisor FileDescriptionImpl pattern. A NULL method means
  * the kind does not support that operation. A blocking backend parks the proc
  * (sets the coordinator park state) and returns 0, exactly as before.
  * ───────────────────────────────────────────────────────────────────────── */
@@ -1073,46 +1070,29 @@ static const lxp_file_ops_t pty_fops = {.read = fop_read_pty,
 					.poll = fop_poll_pty};
 #endif
 
-/* Resolve an fd kind to the ops table stamped on the fd at creation. */
-static const struct lxp_file_ops *ops_for_kind(uint8_t kind)
-{
-	switch (kind) {
-	case LXP_FD_CONSOLE:
-		return &console_fops;
-	case LXP_FD_FILE:
-		return &rootfs_fops;
-	case LXP_FD_TMPFS:
-		return &tmpfs_fops;
-	case LXP_FD_PIPE:
-		return &pipe_fops;
-	case LXP_FD_PROC:
-		return &proc_fops;
-	case LXP_FD_EVENTFD:
-		return &eventfd_fops;
+const lxp_file_ops_t *const g_lxp_file_ops[LXP_FD_KIND_COUNT] = {
+	[LXP_FD_CONSOLE] = &console_fops,
+	[LXP_FD_FILE] = &rootfs_fops,
+	[LXP_FD_PIPE] = &pipe_fops,
+	[LXP_FD_TMPFS] = &tmpfs_fops,
+	[LXP_FD_PROC] = &proc_fops,
+	[LXP_FD_EVENTFD] = &eventfd_fops,
 #if LXP_ENABLE_DEV
-	case LXP_FD_DEV:
-		return &dev_fops;
+	[LXP_FD_DEV] = &dev_fops,
 #endif
 #if LXP_ENABLE_NET
-	case LXP_FD_SOCKET:
-		return &socket_fops;
+	[LXP_FD_SOCKET] = &socket_fops,
 #endif
 #if LXP_ENABLE_NETFS
-	case LXP_FD_NET:
-		return &netfs_fops;
+	[LXP_FD_NET] = &netfs_fops,
 #endif
 #if LXP_ENABLE_FS
-	case LXP_FD_HOSTFS:
-		return &hostfs_fops;
+	[LXP_FD_HOSTFS] = &hostfs_fops,
 #endif
 #if LXP_ENABLE_PTY
-	case LXP_FD_PTY:
-		return &pty_fops;
+	[LXP_FD_PTY] = &pty_fops,
 #endif
-	default:
-		return NULL;
-	}
-}
+};
 
 static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 {
@@ -1132,8 +1112,9 @@ static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 	 * internally; the duplicate clean is harmless and keeps this boundary correct for every fd. */
 	if (len)
 		lxp_cache_clean(buf, len);
-	if (s->ops && s->ops->write)
-		return s->ops->write(p, s, buf, len);
+	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+	if (ops && ops->write)
+		return ops->write(p, s, buf, len);
 	return -LXP_EBADF; /* read-only kind (rootfs/proc) or wrong-direction console */
 }
 
@@ -1195,8 +1176,9 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
 	if (s->kind == LXP_FD_HOSTFS && s->accmode == LXP_O_WRONLY)
 		return -LXP_EBADF;
 #endif
-	if (s->ops && s->ops->read)
-		return s->ops->read(p, s, buf, len);
+	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+	if (ops && ops->read)
+		return ops->read(p, s, buf, len);
 	return -LXP_EBADF;
 }
 
@@ -1427,7 +1409,7 @@ static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
 {
 	if (kind == LXP_FD_TMPFS && wfs_open(idx) != 0)
 		return -LXP_EMFILE;
-	int fd = lxp_fd_open(p, kind, idx, off, ops_for_kind(kind));
+	int fd = lxp_fd_open(p, kind, idx, off);
 	if (fd < 0 && kind == LXP_FD_TMPFS)
 		wfs_close(idx);
 	return fd;
@@ -1738,8 +1720,9 @@ static long sys_lseek(lxp_proc_t *p, int fd, long off, int whence)
 	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-	if (s->ops && s->ops->lseek)
-		return s->ops->lseek(p, s, off, whence);
+	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+	if (ops && ops->lseek)
+		return ops->lseek(p, s, off, whence);
 	return -LXP_ESPIPE; /* console/pipe/proc/eventfd/pty/socket not seekable */
 }
 
@@ -2005,8 +1988,9 @@ static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, statbuf, sizeof(struct lxp_kstat64), 1))
 		return -LXP_EFAULT;
-	if (s->ops && s->ops->fstat)
-		return s->ops->fstat(p, s, statbuf);
+	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+	if (ops && ops->fstat)
+		return ops->fstat(p, s, statbuf);
 	/* console/pipe/eventfd: a bare character device (S_IFCHR) so isatty()/stdio behaves. */
 	fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, LXP_S_IFCHR | 0620u, 0);
 	return 0;
@@ -3452,8 +3436,9 @@ static long sys_ioctl(lxp_proc_t *proc, long a0, long a1, long a2)
 	lxp_ofd_t *s = lxp_fd_description(proc, (int)a0);
 	if (!s)
 		return -LXP_ENOTTY;
-	if (s->ops && s->ops->ioctl)
-		return s->ops->ioctl(proc, s, (unsigned long)a1, (unsigned long)a2);
+	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+	if (ops && ops->ioctl)
+		return ops->ioctl(proc, s, (unsigned long)a1, (unsigned long)a2);
 	return -LXP_ENOTTY; /* not a tty / char device / socket */
 }
 
@@ -4319,8 +4304,9 @@ static int lxp_poll_scan(lxp_proc_t *proc, lxp_pollfd *pfds, unsigned nfds)
 			continue;
 		/* Dispatch readiness through the fd's ops; a kind with no poll fop
 		 * (regular file / tmpfs / proc / netfs) is always ready. */
-		unsigned pb = (s->ops && s->ops->poll) ? s->ops->poll(proc, s)
-						       : (unsigned)(LXP_POLLIN | LXP_POLLOUT);
+		const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+		unsigned pb = ops && ops->poll ? ops->poll(proc, s)
+						    : (unsigned)(LXP_POLLIN | LXP_POLLOUT);
 		pfds[i].revents = (short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
 		if (pfds[i].revents)
 			ready++;
