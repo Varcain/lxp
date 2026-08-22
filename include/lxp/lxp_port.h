@@ -123,6 +123,16 @@ typedef enum lxp_spawn_resume_mode {
 	LXP_SPAWN_RESUME_PARKED = 2,
 } lxp_spawn_resume_mode_t;
 
+/** Fail-closed overlap check for validating host-owned memory ranges. */
+static inline int lxp_range_overlaps(uintptr_t first_base, size_t first_size,
+				     uintptr_t second_base, size_t second_size)
+{
+	if (first_size == 0u || second_size == 0u || first_base > UINTPTR_MAX - first_size ||
+	    second_base > UINTPTR_MAX - second_size)
+		return 1;
+	return first_base < second_base + second_size && second_base < first_base + first_size;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * OS / engine port — the process-model substrate.
  *

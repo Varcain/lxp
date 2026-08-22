@@ -86,10 +86,8 @@ _Static_assert(GUEST_SCHED_PRIO < configMAX_PRIORITIES,
 
 static lxp_slot_ref_t task_slot_ref(int slot)
 {
-	return (lxp_slot_ref_t){
-		.index = (int16_t)slot,
-		.generation = slot >= 0 && slot < LXP_NSLOT ? g_slots[slot].generation : 0,
-	};
+	return lxp_slot_ref(slot,
+			    slot >= 0 && slot < LXP_NSLOT ? g_slots[slot].generation : 0);
 }
 
 #if LXP_ENABLE_NETFS_EXEC
@@ -698,21 +696,6 @@ static void freertos_park_entry(void *token)
 	__builtin_unreachable();
 }
 
-static void slot_task_name(char name[6], int sidx)
-{
-	name[0] = 'l';
-	name[1] = 'n';
-	name[2] = 'x';
-	if (sidx >= 10) {
-		name[3] = (char)('0' + (sidx / 10) % 10);
-		name[4] = (char)('0' + sidx % 10);
-		name[5] = '\0';
-	} else {
-		name[3] = (char)('0' + sidx);
-		name[4] = '\0';
-	}
-}
-
 /* Compile the core's versioned policy once into the exact native descriptors
  * consumed by xTaskCreateRestrictedStatic(). A fresh slot/address-space/device/
  * execute tuple invalidates the cache; a persistent parked-task resume does not
@@ -720,10 +703,7 @@ static void slot_task_name(char name[6], int sidx)
 static int freertos_prepare_profile(int sidx, uint32_t generation, int ridx)
 {
 	lxp_memory_policy_t policy;
-	lxp_slot_ref_t slot = {
-		.index = (int16_t)sidx,
-		.generation = generation,
-	};
+	lxp_slot_ref_t slot = lxp_slot_ref(sidx, generation);
 	if (lxp_slot_memory_policy(slot, &policy) != LXP_OK ||
 	    lxp_memory_policy_validate(&policy) != LXP_OK || policy.address_space.index != ridx ||
 	    policy.device_count != 0)
@@ -868,7 +848,7 @@ static int freertos_validate_active_profile(int sidx)
 static int freertos_spawn_common(int sidx, uint32_t generation, int ridx, struct resume_desc *desc)
 {
 	char nm[6];
-	slot_task_name(nm, sidx); /* diagnostic only; attribution uses the task handle */
+	lxp_slot_name(nm, sidx); /* diagnostic only; attribution uses the task handle */
 	if (freertos_prepare_profile(sidx, generation, ridx) != 0)
 		return -1;
 	TaskParameters_t tp = {

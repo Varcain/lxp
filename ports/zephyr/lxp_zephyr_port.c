@@ -87,10 +87,8 @@ static int zephyr_validate_active_profile(int sidx);
 
 static lxp_slot_ref_t task_slot_ref(int slot)
 {
-	return (lxp_slot_ref_t){
-		.index = (int16_t)slot,
-		.generation = slot >= 0 && slot < LXP_NSLOT ? g_slots[slot].generation : 0,
-	};
+	return lxp_slot_ref(slot,
+			    slot >= 0 && slot < LXP_NSLOT ? g_slots[slot].generation : 0);
 }
 
 static int current_slot(void)
@@ -563,10 +561,7 @@ static void __attribute__((naked)) zephyr_park_entry(void *token __attribute__((
 static int setup_domain(int sidx, uint32_t generation, int ridx)
 {
 	lxp_memory_policy_t policy;
-	lxp_slot_ref_t slot = {
-		.index = (int16_t)sidx,
-		.generation = generation,
-	};
+	lxp_slot_ref_t slot = lxp_slot_ref(sidx, generation);
 	if (lxp_slot_memory_policy(slot, &policy) != LXP_OK ||
 	    lxp_memory_policy_validate(&policy) != LXP_OK || policy.address_space.index != ridx ||
 	    policy.device_count != 0)
@@ -657,10 +652,7 @@ static int setup_domain(int sidx, uint32_t generation, int ridx)
 static int zephyr_bind_prepared_domain(int sidx, uint32_t generation, int ridx)
 {
 	lxp_memory_policy_t policy;
-	lxp_slot_ref_t slot = {
-		.index = (int16_t)sidx,
-		.generation = generation,
-	};
+	lxp_slot_ref_t slot = lxp_slot_ref(sidx, generation);
 	if (lxp_slot_memory_policy(slot, &policy) != LXP_OK ||
 	    lxp_memory_policy_validate(&policy) != LXP_OK || policy.address_space.index != ridx ||
 	    policy.device_count != 0 || !g_regions[ridx].policy_valid ||
@@ -796,21 +788,6 @@ static uint8_t *zephyr_exec_stage(size_t *cap)
 }
 #endif
 
-static void slot_task_name(char name[6], int sidx)
-{
-	name[0] = 'l';
-	name[1] = 'n';
-	name[2] = 'x';
-	if (sidx >= 10) {
-		name[3] = (char)('0' + (sidx / 10) % 10);
-		name[4] = (char)('0' + sidx % 10);
-		name[5] = '\0';
-	} else {
-		name[3] = (char)('0' + sidx);
-		name[4] = '\0';
-	}
-}
-
 static int zephyr_spawn_launch(int sidx, uint32_t generation, int ridx,
 			       const lxp_guest_launch_t *launch)
 {
@@ -832,7 +809,7 @@ static int zephyr_spawn_launch(int sidx, uint32_t generation, int ridx,
 	zephyr_guest_patch_initial_frame(g_slots[sidx].tid);
 	{ /* Diagnostic task name; CPU attribution uses the native thread identity. */
 		char nm[6];
-		slot_task_name(nm, sidx);
+		lxp_slot_name(nm, sidx);
 		k_thread_name_set(g_slots[sidx].tid, nm);
 	}
 	if (k_mem_domain_add_thread(&g_domains[ridx], g_slots[sidx].tid) != 0) {
@@ -915,7 +892,7 @@ static int zephyr_spawn_resume(int sidx, uint32_t generation, int ridx,
 	zephyr_guest_patch_initial_frame(g_slots[sidx].tid);
 	{ /* Diagnostic task name; CPU attribution uses the native thread identity. */
 		char nm[6];
-		slot_task_name(nm, sidx);
+		lxp_slot_name(nm, sidx);
 		k_thread_name_set(g_slots[sidx].tid, nm);
 	}
 	if (k_mem_domain_add_thread(&g_domains[ridx], g_slots[sidx].tid) != 0) {
@@ -1091,15 +1068,6 @@ static int lxp_seam_time_ns(uint64_t *out)
 	return PORT_CONFIG.time_ns ? PORT_CONFIG.time_ns(out) : LXP_ERR_NOT_SUPPORTED;
 }
 
-static int zephyr_ranges_overlap(uintptr_t first_base, size_t first_size, uintptr_t second_base,
-				 size_t second_size)
-{
-	if (first_size == 0u || second_size == 0u || first_base > UINTPTR_MAX - first_size ||
-	    second_base > UINTPTR_MAX - second_size)
-		return 1;
-	return first_base < second_base + second_size && second_base < first_base + first_size;
-}
-
 static int zephyr_port_config_valid(void)
 {
 	const size_t program_bytes = (size_t)LXP_NREG * LXP_PROG_REGION_SIZE;
@@ -1117,12 +1085,12 @@ static int zephyr_port_config_valid(void)
 	    !PORT_CONFIG.time_ns || !PORT_CONFIG.thread_list || !PORT_CONFIG.mem_stats ||
 	    !PORT_CONFIG.system_version || !PORT_CONFIG.random_fill ||
 	    !PORT_CONFIG.validate_memory_contract ||
-	    zephyr_ranges_overlap((uintptr_t)PORT_CONFIG.program_regions, program_bytes,
+	    lxp_range_overlaps((uintptr_t)PORT_CONFIG.program_regions, program_bytes,
 				  (uintptr_t)PORT_CONFIG.dynamic_pools, dynamic_bytes) ||
 	    (PORT_CONFIG.rootfs_partition_enabled &&
-	     (zephyr_ranges_overlap(PORT_CONFIG.rootfs_base, PORT_CONFIG.rootfs_size,
+	     (lxp_range_overlaps(PORT_CONFIG.rootfs_base, PORT_CONFIG.rootfs_size,
 				    (uintptr_t)PORT_CONFIG.program_regions, program_bytes) ||
-	      zephyr_ranges_overlap(PORT_CONFIG.rootfs_base, PORT_CONFIG.rootfs_size,
+	      lxp_range_overlaps(PORT_CONFIG.rootfs_base, PORT_CONFIG.rootfs_size,
 				    (uintptr_t)PORT_CONFIG.dynamic_pools, dynamic_bytes))))
 		return 0;
 #if LXP_ENABLE_NETFS_EXEC

@@ -182,10 +182,8 @@ static int nuttx_profile_is_current(int sidx);
 
 static lxp_slot_ref_t task_slot_ref(int slot)
 {
-	return (lxp_slot_ref_t){
-		.index = (int16_t)slot,
-		.generation = slot >= 0 && slot < LXP_NSLOT ? g_slots[slot].generation : 0,
-	};
+	return lxp_slot_ref(slot,
+			    slot >= 0 && slot < LXP_NSLOT ? g_slots[slot].generation : 0);
 }
 
 static uint64_t guest_runtime_us(int sidx)
@@ -454,21 +452,6 @@ static void *nuttx_park_prepare(int sidx, uint32_t generation, const struct lxp_
 	return NULL;
 }
 
-static void slot_task_name(char name[6], int sidx)
-{
-	name[0] = 'l';
-	name[1] = 'n';
-	name[2] = 'x';
-	if (sidx >= 10) {
-		name[3] = (char)('0' + (sidx / 10) % 10);
-		name[4] = (char)('0' + sidx % 10);
-		name[5] = '\0';
-	} else {
-		name[3] = (char)('0' + sidx);
-		name[4] = '\0';
-	}
-}
-
 /* Create slot `sidx` with trusted NuttX TLS/stack metadata, then move the
  * architecture context to the guest stack. On Cortex-M exception return the
  * hardware PSP is the end of the exception frame, not REG_SP in the software
@@ -481,7 +464,7 @@ static int spawn_task(int sidx, uintptr_t guest_sp)
 	memset(&g_tcb[sidx], 0, sizeof(g_tcb[sidx]));
 	g_tcb[sidx].cmn.flags = TCB_FLAG_TTYPE_TASK; /* static TCB: no FREE_TCB/FREE_STACK */
 	char nm[6];
-	slot_task_name(nm, sidx); /* diagnostic only; attribution uses the task PID */
+	lxp_slot_name(nm, sidx); /* diagnostic only; attribution uses the task PID */
 	uint8_t *slot_stack =
 		PORT_CONFIG.slot_stacks + (size_t)sidx * PORT_CONFIG.slot_stack_stride;
 	if (nxtask_init(&g_tcb[sidx], nm, PORT_CONFIG.guest_priority, slot_stack,
@@ -525,10 +508,7 @@ static int nuttx_spawn_launch(int sidx, uint32_t generation, int ridx,
 	    !launch || g_slots[sidx].pid >= 0)
 		return -1;
 	lxp_memory_policy_t policy;
-	lxp_slot_ref_t slot = {
-		.index = (int16_t)sidx,
-		.generation = generation,
-	};
+	lxp_slot_ref_t slot = lxp_slot_ref(sidx, generation);
 	if (lxp_slot_memory_policy(slot, &policy) != LXP_OK ||
 	    lxp_memory_policy_validate(&policy) != LXP_OK || policy.address_space.index != ridx ||
 	    policy.copied_text_base != launch->copied_text_base ||
@@ -1318,15 +1298,6 @@ static int nuttx_region_config_valid(const lxp_nuttx_mpu_region_t *region, int r
 	       (region->size >= 256u || region->subregion_disable == 0u);
 }
 
-static int nuttx_ranges_overlap(uintptr_t first_base, size_t first_size, uintptr_t second_base,
-				size_t second_size)
-{
-	if (first_size == 0u || second_size == 0u || first_base > UINTPTR_MAX - first_size ||
-	    second_base > UINTPTR_MAX - second_size)
-		return 1;
-	return first_base < second_base + second_size && second_base < first_base + first_size;
-}
-
 static int nuttx_port_config_valid(void)
 {
 	const size_t program_bytes = (size_t)LXP_NREG * LXP_PROG_REGION_SIZE;
@@ -1352,14 +1323,14 @@ static int nuttx_port_config_valid(void)
 	    ((uintptr_t)PORT_CONFIG.dynamic_pools & (LXP_DYN_POOL_SIZE - 1u)) != 0u ||
 	    (uintptr_t)g_tcb < PORT_CONFIG.trusted_tcb_base ||
 	    (uintptr_t)g_tcb + sizeof(g_tcb) > PORT_CONFIG.trusted_tcb_end ||
-	    nuttx_ranges_overlap(PORT_CONFIG.code_region.base, PORT_CONFIG.code_region.size,
+	    lxp_range_overlaps(PORT_CONFIG.code_region.base, PORT_CONFIG.code_region.size,
 				 PORT_CONFIG.pool_region.base, PORT_CONFIG.pool_region.size) ||
-	    nuttx_ranges_overlap((uintptr_t)PORT_CONFIG.program_regions, program_bytes,
+	    lxp_range_overlaps((uintptr_t)PORT_CONFIG.program_regions, program_bytes,
 				 (uintptr_t)PORT_CONFIG.dynamic_pools, dynamic_bytes) ||
 	    (PORT_CONFIG.rootfs_region.enabled &&
-	     (nuttx_ranges_overlap(PORT_CONFIG.rootfs_region.base, PORT_CONFIG.rootfs_region.size,
+	     (lxp_range_overlaps(PORT_CONFIG.rootfs_region.base, PORT_CONFIG.rootfs_region.size,
 				   PORT_CONFIG.code_region.base, PORT_CONFIG.code_region.size) ||
-	      nuttx_ranges_overlap(PORT_CONFIG.rootfs_region.base, PORT_CONFIG.rootfs_region.size,
+	      lxp_range_overlaps(PORT_CONFIG.rootfs_region.base, PORT_CONFIG.rootfs_region.size,
 				   PORT_CONFIG.pool_region.base, PORT_CONFIG.pool_region.size))))
 		return 0;
 #if LXP_ENABLE_NETFS_EXEC
