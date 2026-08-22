@@ -9,7 +9,7 @@
  * /dev/input/event0 class drivers reach the panel + touch controller ONLY through
  * these ops, so the personality carries no direct dependency on a particular
  * framebuffer / touch HAL. On oveRTOS the ops are filled by
- * backends/common/lxp_ove_disp_adapter.c (bridging to ove_fb_* / ove_ft5336_*).
+ * backends/common/lxp_ove_display_adapter.c (bridging to ove_fb_* / ove_ft5336_*).
  * Display geometry, which used to come from the per-board board_desc.h, is now an
  * injected value (lxp_disp_set_geometry). Renamed to lxp_display_ops_t at the
  * module-extraction rename.
