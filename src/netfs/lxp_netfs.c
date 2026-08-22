@@ -8,9 +8,9 @@
  * Linux-personality remote filesystem: a coordinator-owned 9P2000.L client over a
  * single non-blocking TCP connection to a 9P server (diod), exposed as an FD_NET
  * provider the syscall handlers route /mnt/pi opens to. It supports read-only
- * browsing and remote execution. Like net/lxp_net.c, a refcounted per-open
- * pool (each = a 9P fid); a generic open-file description owns fork/dup
- * aliases and the last close clunks.
+ * browsing and remote execution. Like net/lxp_net.c, it uses a bounded per-open
+ * pool (each entry owns a 9P fid); generic open-file descriptions own fork/dup
+ * aliases and the last close clunks the fid.
  *
  * Blocking is deferred, never inline: every op that needs a Pi round-trip submits a
  * 9P request, publishes an LXP_WAIT_NETFS state, and returns 0 (parked);
@@ -100,8 +100,8 @@ enum {
 static lxp_socket_t g_sk; /* host-owned handle; the adapter owns the storage */
 static int g_conn;
 static uint32_t g_msize = NETFS_MSIZE;
-static uint32_t g_generation;	   /* bumped on every (re)connect; opens carry theirs. */
-static uint64_t g_reconnect_at_us; /* next reconnect attempt (backoff). */
+static uint32_t g_generation;	    /* bumped on every (re)connect; opens carry theirs. */
+static uint64_t g_reconnect_at_us;  /* next reconnect attempt (backoff). */
 static uint64_t g_conn_deadline_us; /* connect or current handshake-step deadline. */
 
 /* ---- fid allocator (bitmap; fid 0 = attached root) ------------------------- */
@@ -171,13 +171,13 @@ struct netfs_req {
 	uint8_t op; /* NETFSW_* (owner set) or REQ_OP_CLUNK (owner none). */
 	uint8_t step;
 	lxp_slot_ref_t owner; /* generation-qualified guest, or none for an internal request. */
-	uint32_t seq;	   /* FIFO ordering. */
-	int oi;		   /* open-pool slot (open reserves it; read/getdents use it). */
-	int fid;	   /* working fid (walk target / temp). */
-	uint64_t off;	   /* read / readdir offset. */
-	uintptr_t ubuf;	   /* guest buffer (read/getdents) or stat-out. */
-	size_t ulen;	   /* length / capacity. */
-	int flags;	   /* open flags / statkind / is64. */
+	uint32_t seq;	      /* FIFO ordering. */
+	int oi;		      /* open-pool slot (open reserves it; read/getdents use it). */
+	int fid;	      /* working fid (walk target / temp). */
+	uint64_t off;	      /* read / readdir offset. */
+	uintptr_t ubuf;	      /* guest buffer (read/getdents) or stat-out. */
+	size_t ulen;	      /* length / capacity. */
+	int flags;	      /* open flags / statkind / is64. */
 	int statkind;
 	int is64;
 	char path[LXP_PATH_MAX]; /* remote path (open/stat). */
@@ -288,6 +288,43 @@ static int path_split(const char *path, const char **comp, size_t *len, int max)
 			s++;
 	}
 	return n;
+}
+
+static void msg_fid(uint8_t type, int fid)
+{
+	size_t offset = msg_begin(type, P9_TAG);
+	put32(&offset, (uint32_t)fid);
+	msg_end(offset);
+}
+
+static void msg_io(uint8_t type, int fid, uint64_t offset, uint32_t count)
+{
+	size_t cursor = msg_begin(type, P9_TAG);
+	put32(&cursor, (uint32_t)fid);
+	put64(&cursor, offset);
+	put32(&cursor, count);
+	msg_end(cursor);
+}
+
+static long msg_walk(struct netfs_req *request)
+{
+	const char *component[NETFS_MAXWELEM];
+	size_t length[NETFS_MAXWELEM];
+	int count = path_split(request->path, component, length, NETFS_MAXWELEM);
+	if (count < 0)
+		return -LXP_ENAMETOOLONG;
+	request->fid = fid_alloc();
+	if (request->fid < 0)
+		return -LXP_EMFILE;
+
+	size_t offset = msg_begin(P9_TWALK, P9_TAG);
+	put32(&offset, P9_ROOT_FID);
+	put32(&offset, (uint32_t)request->fid);
+	put16(&offset, (uint16_t)count);
+	for (int index = 0; index < count; index++)
+		putstr(&offset, component[index], length[index]);
+	msg_end(offset);
+	return 0;
 }
 
 /* ---- low-level socket flush / drain (non-blocking) ------------------------- */
@@ -490,14 +527,13 @@ static void conn_advance(uint64_t now_us)
 		case CONN_CONNECTING: {
 			unsigned rev = 0;
 			int rc = g_lxp_net_ops->sock_poll(
-				g_sk, LXP_SOCK_POLLOUT | LXP_SOCK_POLLERR | LXP_SOCK_POLLHUP,
-				&rev, 0);
+				g_sk, LXP_SOCK_POLLOUT | LXP_SOCK_POLLERR | LXP_SOCK_POLLHUP, &rev,
+				0);
 			if (rc != LXP_OK) {
 				conn_attempt_failed(now_us);
 				return;
 			}
-			if (!(rev & (LXP_SOCK_POLLOUT | LXP_SOCK_POLLERR |
-				     LXP_SOCK_POLLHUP)))
+			if (!(rev & (LXP_SOCK_POLLOUT | LXP_SOCK_POLLERR | LXP_SOCK_POLLHUP)))
 				return;
 			if (g_lxp_net_ops->sock_get_error(g_sk) != LXP_OK) {
 				conn_attempt_failed(now_us);
@@ -518,7 +554,7 @@ static void conn_advance(uint64_t now_us)
 			if (rc == 0)
 				return;
 			g_conn = (g_conn == CONN_VERSION_SEND) ? CONN_VERSION_RECV
-							      : CONN_ATTACH_RECV;
+							       : CONN_ATTACH_RECV;
 			continue;
 		}
 		case CONN_VERSION_RECV:
@@ -573,8 +609,6 @@ static void conn_advance(uint64_t now_us)
  * or a negative errno that completes the request. */
 static long req_build(struct netfs_req *r)
 {
-	const char *comp[NETFS_MAXWELEM];
-	size_t clen[NETFS_MAXWELEM];
 	size_t o;
 
 	switch (r->op) {
@@ -583,22 +617,8 @@ static long req_build(struct netfs_req *r)
 #if LXP_ENABLE_NETFS_EXEC
 	case LXP_NETFSW_EXECFETCH:
 #endif
-		if (r->step == 0) { /* Twalk(root -> fid, components) */
-			int n = path_split(r->path, comp, clen, NETFS_MAXWELEM);
-			if (n < 0)
-				return -LXP_ENAMETOOLONG;
-			r->fid = fid_alloc();
-			if (r->fid < 0)
-				return -LXP_EMFILE;
-			o = msg_begin(P9_TWALK, P9_TAG);
-			put32(&o, P9_ROOT_FID);
-			put32(&o, (uint32_t)r->fid);
-			put16(&o, (uint16_t)n);
-			for (int i = 0; i < n; i++)
-				putstr(&o, comp[i], clen[i]);
-			msg_end(o);
-			return 0;
-		}
+		if (r->step == 0) /* Twalk(root -> fid, components) */
+			return msg_walk(r);
 		if (r->step == 1) { /* Tlgetattr(fid) */
 			o = msg_begin(P9_TLGETATTR, P9_TAG);
 			put32(&o, (uint32_t)r->fid);
@@ -608,9 +628,7 @@ static long req_build(struct netfs_req *r)
 		}
 		if (r->step == 2) {
 			if (r->op == LXP_NETFSW_STAT) { /* stat: clunk the temp fid */
-				o = msg_begin(P9_TCLUNK, P9_TAG);
-				put32(&o, (uint32_t)r->fid);
-				msg_end(o);
+				msg_fid(P9_TCLUNK, r->fid);
 				return 0;
 			}
 			/* OPEN + EXECFETCH: Tlopen(fid, O_RDONLY). Always O_RDONLY — files read via Tread,
@@ -628,17 +646,11 @@ static long req_build(struct netfs_req *r)
 			uint32_t cnt = (uint32_t)(g_msize - 24);
 			if (r->off + cnt > g_exec_cap) /* never overflow the staging buffer */
 				cnt = (uint32_t)(g_exec_cap - r->off);
-			o = msg_begin(P9_TREAD, P9_TAG);
-			put32(&o, (uint32_t)r->fid);
-			put64(&o, r->off);
-			put32(&o, cnt);
-			msg_end(o);
+			msg_io(P9_TREAD, r->fid, r->off, cnt);
 			return 0;
 		}
 		if (r->step == 4) { /* EXECFETCH: clunk after EOF */
-			o = msg_begin(P9_TCLUNK, P9_TAG);
-			put32(&o, (uint32_t)r->fid);
-			msg_end(o);
+			msg_fid(P9_TCLUNK, r->fid);
 			return 0;
 		}
 #endif
@@ -651,11 +663,7 @@ static long req_build(struct netfs_req *r)
 		uint32_t cnt = (uint32_t)r->ulen;
 		if (cnt > g_msize - 24)
 			cnt = g_msize - 24;
-		o = msg_begin(P9_TREAD, P9_TAG);
-		put32(&o, (uint32_t)op->fid);
-		put64(&o, op->rd_off);
-		put32(&o, cnt);
-		msg_end(o);
+		msg_io(P9_TREAD, op->fid, op->rd_off, cnt);
 		return 0;
 	}
 	case LXP_NETFSW_GETDENTS: {
@@ -665,17 +673,11 @@ static long req_build(struct netfs_req *r)
 		/* Treaddir count must leave room for the 9P read header (P9_IOHDRSZ = 24) within msize,
 		 * else diod Rlerrors — same cap as Tread above (a bigger count here = an empty ls). */
 		uint32_t cnt = (uint32_t)(g_msize - 24);
-		o = msg_begin(P9_TREADDIR, P9_TAG);
-		put32(&o, (uint32_t)op->fid);
-		put64(&o, op->dir_off);
-		put32(&o, cnt);
-		msg_end(o);
+		msg_io(P9_TREADDIR, op->fid, op->dir_off, cnt);
 		return 0;
 	}
 	default: /* REQ_OP_CLUNK */
-		o = msg_begin(P9_TCLUNK, P9_TAG);
-		put32(&o, (uint32_t)r->fid);
-		msg_end(o);
+		msg_fid(P9_TCLUNK, r->fid);
 		return 0;
 	}
 }
@@ -733,16 +735,85 @@ static void req_complete(struct netfs_req *r, long result)
 	g_inflight = -1;
 }
 
+static void req_fail(struct netfs_req *request, long result)
+{
+	if (request->op == REQ_OP_CLUNK) {
+		fid_free(request->fid);
+		request->fid = -1;
+		request->state = REQ_FREE;
+		g_inflight = -1;
+		return;
+	}
+	if (request->fid > 0) {
+		clunk_enqueue(request->fid);
+		request->fid = -1;
+	}
+	if (request->op == LXP_NETFSW_OPEN && request->oi >= 0)
+		g_open[request->oi].used = 0;
+	req_complete(request, result);
+}
+
+static uint8_t req_expected_reply(const struct netfs_req *request)
+{
+	if (request->op == REQ_OP_CLUNK)
+		return P9_RCLUNK;
+	if (request->op == LXP_NETFSW_READ)
+		return P9_RREAD;
+	if (request->op == LXP_NETFSW_GETDENTS)
+		return P9_RREADDIR;
+	if (request->step == 0)
+		return P9_RWALK;
+	if (request->step == 1)
+		return P9_RLGETATTR;
+	if (request->op == LXP_NETFSW_STAT)
+		return request->step == 2 ? P9_RCLUNK : 0;
+	if (request->step == 2)
+		return P9_RLOPEN;
+#if LXP_ENABLE_NETFS_EXEC
+	if (request->op == LXP_NETFSW_EXECFETCH)
+		return request->step == 3 ? P9_RREAD : request->step == 4 ? P9_RCLUNK : 0;
+#endif
+	return 0;
+}
+
+static int reply_walk_advance(struct netfs_req *request, const uint8_t *body, size_t length)
+{
+	if (length < 2) {
+		req_fail(request, -LXP_EIO);
+		return 0;
+	}
+	size_t offset = 0;
+	uint16_t walked = get16(body, &offset);
+	const char *component[NETFS_MAXWELEM];
+	size_t component_length[NETFS_MAXWELEM];
+	int requested = path_split(request->path, component, component_length, NETFS_MAXWELEM);
+	if (requested < 0 || walked != (uint16_t)requested) {
+		req_fail(request,
+			 requested >= 0 && walked < (uint16_t)requested ? -LXP_ENOENT : -LXP_EIO);
+		return 0;
+	}
+	request->step++;
+	return 1;
+}
+
+static uint32_t reply_data_count(const uint8_t *body, size_t length, size_t *offset)
+{
+	if (length < 4)
+		return 0;
+	uint32_t count = get32(body, offset);
+	return count > length - *offset ? (uint32_t)(length - *offset) : count;
+}
+
 /* Parse Rlgetattr body (cursor at first field after the 7-byte header) into attrs. */
-static void parse_getattr(const uint8_t *b, size_t o, size_t blen, uint32_t *mode, uint64_t *size,
-			  uint64_t *mtime, uint64_t *ino)
+static int parse_getattr(const uint8_t *b, size_t o, size_t blen, uint32_t *mode, uint64_t *size,
+			 uint64_t *mtime, uint64_t *ino)
 {
 	*mode = 0;
 	*size = 0;
 	*mtime = 0;
 	*ino = 0;
 	if (o + 97 > blen) /* the Rgetattr fields read below span 97 bytes from o */
-		return;
+		return 0;
 	(void)get64(b, &o); /* valid */
 	uint8_t qtype = get8(b, &o);
 	(void)get32(b, &o); /* qid.version */
@@ -763,10 +834,11 @@ static void parse_getattr(const uint8_t *b, size_t o, size_t blen, uint32_t *mod
 	*mtime = mt;
 	*ino = qpath;
 	(void)qtype;
+	return 1;
 }
 
-static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
-			 const uint8_t *body, size_t blen)
+static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type, const uint8_t *body,
+			 size_t blen)
 {
 	size_t o = 0;
 	(void)blen;
@@ -790,38 +862,27 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
 	if (type == P9_RLERROR) {
 		uint32_t ecode = (blen < 4) ? (uint32_t)LXP_EIO
 					    : get32(body, &o); /* truncated Rlerror */
-		/* clean up any fid this op had walked to */
-		if (r->fid > 0) {
-			clunk_enqueue(r->fid);
-			r->fid = -1;
-		}
-		if (r->op == LXP_NETFSW_OPEN && r->oi >= 0)
-			g_open[r->oi].used = 0;
-		req_complete(r, -(long)ecode);
+		req_fail(r, -(long)ecode);
+		return;
+	}
+	if (type != req_expected_reply(r)) {
+		req_fail(r, -LXP_EIO);
 		return;
 	}
 
 	switch (r->op) {
 	case LXP_NETFSW_OPEN:
 		if (r->step == 0) { /* Rwalk: nwqid must equal the requested component count */
-			uint16_t nwqid = (blen < 2) ? 0 : get16(body, &o); /* truncated Rwalk */
-			const char *cp[NETFS_MAXWELEM];
-			size_t cl[NETFS_MAXWELEM];
-			int n = path_split(r->path, cp, cl, NETFS_MAXWELEM);
-			if (n > 0 && nwqid < n) { /* a component did not resolve */
-				clunk_enqueue(r->fid);
-				r->fid = -1;
-				g_open[r->oi].used = 0;
-				req_complete(r, -LXP_ENOENT);
-				return;
-			}
-			r->step = 1;
+			(void)reply_walk_advance(r, body, blen);
 			return; /* stay inflight; pump rebuilds Tlgetattr */
 		}
 		if (r->step == 1) { /* Rlgetattr */
 			uint32_t mode;
 			uint64_t size, mtime, ino;
-			parse_getattr(body, o, blen, &mode, &size, &mtime, &ino);
+			if (!parse_getattr(body, o, blen, &mode, &size, &mtime, &ino)) {
+				req_fail(r, -LXP_EIO);
+				return;
+			}
 			struct netfs_open *op = &g_open[r->oi];
 			op->is_dir = (mode & LXP_S_IFMT) == LXP_S_IFDIR;
 			op->mode = mode;
@@ -844,11 +905,7 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
 		break;
 
 	case LXP_NETFSW_READ: {
-		uint32_t cnt =
-			(blen < 4) ? 0u
-				   : get32(body, &o); /* short Rread: don't read the count OOB */
-		if (blen >= 4 && cnt > blen - 4)
-			cnt = (uint32_t)(blen - 4);
+		uint32_t cnt = reply_data_count(body, blen, &o);
 		if (cnt > r->ulen)
 			cnt = (uint32_t)r->ulen;
 		if (cnt && lxp_copy_to_guest(owner, r->ubuf, body + o, cnt) != 0) {
@@ -862,7 +919,7 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
 		return;
 	}
 	case LXP_NETFSW_GETDENTS: {
-		uint32_t cnt = (blen < 4) ? 0u : get32(body, &o); /* bytes of readdir data */
+		uint32_t cnt = reply_data_count(body, blen, &o);
 		size_t end = o + cnt;
 		size_t filled = 0;
 		struct netfs_open *op = open_slot(r->oi);
@@ -882,8 +939,8 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
 			const char *nm = (const char *)(body + o);
 			o += nlen;
 			uint8_t dtype = dt9 ? dt9 : dtype_from_qid(qt);
-			long emitted = dirent_emit_rec(owner, r->is64, r->ubuf, r->ulen,
-						       filled, qpath, doff, dtype, nm, nlen);
+			long emitted = dirent_emit_rec(owner, r->is64, r->ubuf, r->ulen, filled,
+						       qpath, doff, dtype, nm, nlen);
 			if (emitted < 0) {
 				req_complete(r, emitted);
 				return;
@@ -900,22 +957,16 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
 	}
 	case LXP_NETFSW_STAT:
 		if (r->step == 0) { /* Rwalk: walked to the temp fid (or a component missing) */
-			uint16_t nwqid = (blen < 2) ? 0 : get16(body, &o); /* truncated Rwalk */
-			const char *cp[NETFS_MAXWELEM];
-			size_t cl[NETFS_MAXWELEM];
-			int n = path_split(r->path, cp, cl, NETFS_MAXWELEM);
-			if (n > 0 && nwqid < n) { /* partial walk: the temp fid was not bound */
-				r->fid = -1;
-				req_complete(r, -LXP_ENOENT);
-				return;
-			}
-			r->step = 1;
+			(void)reply_walk_advance(r, body, blen);
 			return; /* stay inflight; pump rebuilds Tlgetattr */
 		}
 		if (r->step == 1) { /* Rlgetattr → fill guest stat, then clunk */
 			uint32_t mode;
 			uint64_t size, mtime, ino;
-			parse_getattr(body, o, blen, &mode, &size, &mtime, &ino);
+			if (!parse_getattr(body, o, blen, &mode, &size, &mtime, &ino)) {
+				req_fail(r, -LXP_EIO);
+				return;
+			}
 			r->result = lxp_netfs_fill_stat(owner, r->ubuf, r->statkind, mode, size,
 							mtime, ino);
 			r->step = 2; /* send Tclunk(fid) */
@@ -931,23 +982,17 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
 
 #if LXP_ENABLE_NETFS_EXEC
 	case LXP_NETFSW_EXECFETCH:
-		if (r->step == 0) {					   /* Rwalk */
-			uint16_t nwqid = (blen < 2) ? 0 : get16(body, &o); /* truncated Rwalk */
-			const char *cp[NETFS_MAXWELEM];
-			size_t cl[NETFS_MAXWELEM];
-			int n = path_split(r->path, cp, cl, NETFS_MAXWELEM);
-			if (n > 0 && nwqid < n) {
-				r->fid = -1;
-				req_complete(r, -LXP_ENOENT);
-				return;
-			}
-			r->step = 1;
+		if (r->step == 0) { /* Rwalk */
+			(void)reply_walk_advance(r, body, blen);
 			return;
 		}
 		if (r->step == 1) { /* Rlgetattr → capture the file size (regular files only) */
 			uint32_t mode;
 			uint64_t size, mtime, ino;
-			parse_getattr(body, o, blen, &mode, &size, &mtime, &ino);
+			if (!parse_getattr(body, o, blen, &mode, &size, &mtime, &ino)) {
+				req_fail(r, -LXP_EIO);
+				return;
+			}
 			if ((mode & LXP_S_IFMT) != LXP_S_IFREG) {
 				r->result = -LXP_EACCES;
 				r->step = 4; /* skip open/read → just clunk the walked fid */
@@ -964,12 +1009,7 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
 			return;
 		}
 		if (r->step == 3) { /* Rread → copy a chunk into staging */
-			uint32_t cnt =
-				(blen < 4) ? 0u
-					   : get32(body,
-						   &o); /* short Rread: don't read the count OOB */
-			if (blen >= 4 && cnt > blen - 4)
-				cnt = (uint32_t)(blen - 4);
+			uint32_t cnt = reply_data_count(body, blen, &o);
 			if (r->off + cnt > g_exec_cap)
 				cnt = (uint32_t)(g_exec_cap - r->off);
 			if (cnt)
@@ -1000,7 +1040,7 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
 		return;
 	}
 	/* Unexpected reply for the step: fail the op. */
-	req_complete(r, -LXP_EIO);
+	req_fail(r, -LXP_EIO);
 }
 
 /* ---- the pump: advance the transport one step ------------------------------ */
@@ -1374,7 +1414,7 @@ void lxp_netfs_cancel(lxp_proc_t *p)
 		return;
 	struct netfs_req *r = &g_req[ri];
 	if (!lxp_slot_ref_equal(r->owner, owner))
-		return;	 /* the slot was already reclaimed / reused for another proc */
+		return; /* the slot was already reclaimed / reused for another proc */
 	r->owner = lxp_slot_ref_none(); /* a late reply cannot target a recycled guest */
 	r->ubuf = 0;
 	if (r->state != REQ_INFLIGHT) {
