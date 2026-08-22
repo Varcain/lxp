@@ -1994,6 +1994,81 @@ static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 	return 0;
 }
 
+struct lxp_path_stat {
+	uint32_t mode;
+	uint32_t inode;
+	uint32_t dev_major;
+	uint32_t dev_minor;
+	uint64_t size;
+	uint64_t rdev;
+	uint64_t mtime;
+};
+
+enum lxp_path_stat_result {
+	LXP_PATH_STAT_LOCAL,
+	LXP_PATH_STAT_NETFS,
+};
+
+/* Resolve all local pathname namespaces in their authoritative precedence.
+ * Remote 9P metadata retains its asynchronous guest-buffer path, so identify
+ * that boundary without duplicating the rest of the lookup ladder. */
+static long path_stat_lookup(lxp_proc_t *p, const char *abspath, int follow,
+			     struct lxp_path_stat *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (proc_is(abspath)) {
+		out->mode = proc_mode(abspath, p);
+		if (out->mode == 0)
+			return -LXP_ENOENT;
+		out->inode = 0x200000u;
+		return LXP_PATH_STAT_LOCAL;
+	}
+#if LXP_ENABLE_DEV
+	if (lxp_dev_stat_path(abspath, &out->mode, &out->rdev) == 0) {
+		out->inode = 0x300000u;
+		return LXP_PATH_STAT_LOCAL;
+	}
+#endif
+#if LXP_ENABLE_NETFS
+	if (lxp_netfs_lookup(abspath) >= 0)
+		return LXP_PATH_STAT_NETFS;
+#endif
+#if LXP_ENABLE_FS
+	if (lxp_hostfs_match(abspath)) {
+		lxp_fs_stat_t stat;
+		long rc = lxp_hostfs_path_stat(p, abspath, &stat);
+		if (rc < 0)
+			return rc;
+		out->mode = hostfs_mode(&stat);
+		out->size = stat.size;
+		out->mtime = stat.mtime_sec;
+		out->inode = lxp_hostfs_path_inode(abspath);
+		out->dev_major = LXP_HOSTFS_DEV_MAJOR;
+		out->dev_minor = LXP_HOSTFS_DEV_MINOR;
+		return LXP_PATH_STAT_LOCAL;
+	}
+#endif
+	int index = wfs_find(abspath);
+	if (index >= 0) {
+		out->mode = wnode_at(index)->mode;
+		out->size = wnode_at(index)->size;
+		out->inode = 0x100000u + (uint32_t)index;
+		return LXP_PATH_STAT_LOCAL;
+	}
+	index = fs_lookup(p, abspath);
+	if (index < 0)
+		return -LXP_ENOENT;
+	if (follow) {
+		index = fs_follow(p, index);
+		if (index < 0)
+			return -LXP_ENOENT;
+	}
+	out->mode = file_mode(&p->fs[index]);
+	out->size = p->fs[index].size;
+	out->inode = 1u + (uint32_t)index;
+	return LXP_PATH_STAT_LOCAL;
+}
+
 /* path-based stat: resolve, optionally follow a trailing symlink, fill kstat64. */
 static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *statbuf)
 {
@@ -2003,56 +2078,19 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 	long rr = resolve_path(p, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
-	if (proc_is(abspath)) {
-		uint32_t m = proc_mode(abspath, p);
-		if (m == 0)
-			return -LXP_ENOENT;
-		fill_kstat64(statbuf, 0x200000u, m, 0);
-		return 0;
-	}
-#if LXP_ENABLE_DEV
-	{
-		uint32_t dmode;
-		uint64_t drdev;
-		if (lxp_dev_stat_path(abspath, &dmode, &drdev) == 0) {
-			fill_kstat64(statbuf, 0x300000u, dmode, 0);
-			((struct lxp_kstat64 *)statbuf)->st_rdev = drdev;
-			return 0;
-		}
-	}
-#endif
+	struct lxp_path_stat stat;
+	long source = path_stat_lookup(p, abspath, follow, &stat);
 #if LXP_ENABLE_NETFS
-	if (lxp_netfs_lookup(abspath) >= 0)
+	if (source == LXP_PATH_STAT_NETFS)
 		return lxp_netfs_stat(p, abspath, (uintptr_t)statbuf, 0); /* parks */
 #endif
-#if LXP_ENABLE_FS
-	if (lxp_hostfs_match(abspath)) {
-		lxp_fs_stat_t stat;
-		long rc = lxp_hostfs_path_stat(p, abspath, &stat);
-		if (rc < 0)
-			return rc;
-		fill_kstat64(statbuf, lxp_hostfs_path_inode(abspath), hostfs_mode(&stat),
-			     stat.size);
-		((struct lxp_kstat64 *)statbuf)->st_dev = LXP_HOSTFS_DEV;
-		((struct lxp_kstat64 *)statbuf)->st_mtime = (uint32_t)stat.mtime_sec;
-		return 0;
-	}
-#endif
-	int wi = wfs_find(abspath); /* writable overlay shadows the rootfs */
-	if (wi >= 0) {
-		fill_kstat64(statbuf, 0x100000u + (uint32_t)wi, wnode_at(wi)->mode,
-			     wnode_at(wi)->size);
-		return 0;
-	}
-	int idx = fs_lookup(p, abspath);
-	if (idx < 0)
-		return -LXP_ENOENT;
-	if (follow) {
-		idx = fs_follow(p, idx);
-		if (idx < 0)
-			return -LXP_ENOENT;
-	}
-	fill_kstat64(statbuf, 1u + (uint32_t)idx, file_mode(&p->fs[idx]), p->fs[idx].size);
+	if (source < 0)
+		return source;
+	fill_kstat64(statbuf, stat.inode, stat.mode, stat.size);
+	struct lxp_kstat64 *out = statbuf;
+	out->st_rdev = stat.rdev;
+	out->st_dev = ((uint64_t)stat.dev_major << 8) | stat.dev_minor;
+	out->st_mtime = (uint32_t)stat.mtime;
 	return 0;
 }
 
@@ -2806,56 +2844,21 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 		long rr = resolve_path(p, path, abspath, sizeof(abspath));
 		if (rr < 0)
 			return rr;
-		int wi;
-		if (proc_is(abspath)) {
-			mode = proc_mode(abspath, p);
-			if (mode == 0)
-				return -LXP_ENOENT;
-			size = 0;
-			ino = 0x200000u;
-#if LXP_ENABLE_DEV
-		} else if (lxp_dev_lookup(abspath) >= 0) { /* /dev character node */
-			uint32_t dmode;
-			uint64_t drdev;
-			lxp_dev_stat_path(abspath, &dmode, &drdev);
-			mode = dmode;
-			size = 0;
-			rdev = drdev;
-			ino = 0x300000u;
-#endif
+		struct lxp_path_stat stat;
+		long source =
+			path_stat_lookup(p, abspath, !(flags & LXP_AT_SYMLINK_NOFOLLOW), &stat);
 #if LXP_ENABLE_NETFS
-		} else if (lxp_netfs_lookup(abspath) >= 0) {
+		if (source == LXP_PATH_STAT_NETFS)
 			return lxp_netfs_stat(p, abspath, (uintptr_t)buf, 1); /* parks */
 #endif
-#if LXP_ENABLE_FS
-		} else if (lxp_hostfs_match(abspath)) {
-			lxp_fs_stat_t stat;
-			long rc = lxp_hostfs_path_stat(p, abspath, &stat);
-			if (rc < 0)
-				return rc;
-			mode = hostfs_mode(&stat);
-			size = stat.size;
-			ino = lxp_hostfs_path_inode(abspath);
-			dev_major = LXP_HOSTFS_DEV_MAJOR;
-			dev_minor = LXP_HOSTFS_DEV_MINOR;
-#endif
-		} else if ((wi = wfs_find(abspath)) >= 0) { /* writable overlay shadows rootfs */
-			mode = wnode_at(wi)->mode;
-			size = wnode_at(wi)->size;
-			ino = 0x100000u + (uint32_t)wi;
-		} else {
-			int idx = fs_lookup(p, abspath);
-			if (idx < 0)
-				return -LXP_ENOENT;
-			if (!(flags & LXP_AT_SYMLINK_NOFOLLOW)) { /* lstat passes NOFOLLOW */
-				idx = fs_follow(p, idx);
-				if (idx < 0)
-					return -LXP_ENOENT;
-			}
-			mode = file_mode(&p->fs[idx]);
-			size = p->fs[idx].size;
-			ino = 1u + (uint32_t)idx;
-		}
+		if (source < 0)
+			return source;
+		mode = stat.mode;
+		size = stat.size;
+		rdev = stat.rdev;
+		ino = stat.inode;
+		dev_major = stat.dev_major;
+		dev_minor = stat.dev_minor;
 	} else {
 		lxp_ofd_t *s = lxp_fd_description(p, dirfd);
 		if (!s)
