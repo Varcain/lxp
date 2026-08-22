@@ -135,7 +135,7 @@ uint8_t lxp_console_input_xlate(uint8_t ch)
 /* A mock display port so the /dev/fb0 driver (src/dev/lxp_dev_fb.c) links + runs on the
  * host. The test entry point publishes it through the same private provider seam
  * lxp_run() uses. */
-#include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_display_ops.h"
 
 static uint8_t g_mock_fb[64 * 64 * 2];
 static int mock_fb_init(void)

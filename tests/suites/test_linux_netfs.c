@@ -516,7 +516,7 @@ static void test_netfs_init_never_waits_for_server(void **state)
 	const lxp_net_ops_t *real_ops = g_lxp_net_ops;
 	lxp_net_ops_t probe_ops = *real_ops;
 	probe_ops.sock_connect = init_nonblocking_connect;
-	lxp_providers_publish(&probe_ops, g_lxp_disp_ops, NULL, NULL);
+	lxp_providers_publish(&probe_ops, g_lxp_display_ops, NULL, NULL);
 	g_init_connect_timeout_ns = UINT64_MAX;
 
 	const lxp_netfs_config_t config = {
@@ -539,7 +539,7 @@ static void test_netfs_init_never_waits_for_server(void **state)
 	};
 	assert_int_equal(lxp_netfs_init(&invalid), LXP_ERR_INVALID_PARAM);
 	assert_int_equal(lxp_netfs_lookup("/mnt/pi/file"), -1);
-	lxp_providers_publish(real_ops, g_lxp_disp_ops, NULL, NULL);
+	lxp_providers_publish(real_ops, g_lxp_display_ops, NULL, NULL);
 	assert_int_equal(observed_timeout_ns, 0);
 }
 

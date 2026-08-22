@@ -32,7 +32,7 @@
 #include "lxp/lxp_stats.h"
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h"      /* device-layer park/retry + autoreg + tick + kick */
-#include "lxp/lxp_disp_ops.h" /* lxp_disp_set_geometry */
+#include "lxp/lxp_display_ops.h"
 #endif
 #if LXP_ENABLE_NET
 #include "lxp/lxp_net.h" /* socket-layer park/retry + fork/exit fd lifecycle */
@@ -2876,7 +2876,7 @@ static int run_config_valid(const lxp_run_config_t *cfg)
 /* THE port entry (see lxp_run.h). Validate and publish this run's exact
  * providers, then bracket the coordinator with optional host setup/teardown. */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
-	    const lxp_display_ops_t *disp_ops, const lxp_fs_ops_t *fs_ops,
+	    const lxp_display_ops_t *display_ops, const lxp_fs_ops_t *fs_ops,
 	    const lxp_block_ops_t *block_ops,
 	    const lxp_run_config_t *run_config, const char *path, int argc,
 	    const char *const argv[])
@@ -2894,13 +2894,14 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
 	g_diag_lifecycle_epoch = 0;
 	g_diag_native_epoch = 0;
-	if (!os_ops_valid(os_ops) || !net_ops_valid(net_ops) || !display_ops_valid(disp_ops) ||
+	if (!os_ops_valid(os_ops) || !net_ops_valid(net_ops) ||
+	    !display_ops_valid(display_ops) ||
 	    !fs_ops_valid(fs_ops) || !block_ops_valid(block_ops) || !run_config_valid(run_config) ||
 	    !path || argc < 1 || !argv)
 		return LXP_RUN_ELAUNCH;
 
 	/* Assign even NULL providers so a later sequential run cannot inherit one. */
-	lxp_providers_publish(net_ops, disp_ops, fs_ops, block_ops);
+	lxp_providers_publish(net_ops, display_ops, fs_ops, block_ops);
 #if LXP_ENABLE_DEV
 	lxp_dev_run_begin();
 	dev_entered = 1;
@@ -2924,7 +2925,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 #if LXP_ENABLE_DEV_INPUT
 	/* Publish this run's geometry including explicit zero-to-default semantics,
 	 * so sequential runs cannot inherit a predecessor's panel dimensions. */
-	lxp_disp_set_geometry(run_config->display_width, run_config->display_height);
+	lxp_display_set_geometry(run_config->display_width, run_config->display_height);
 #endif
 
 	if (os_ops->rootfs_window)

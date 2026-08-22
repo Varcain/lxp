@@ -19,7 +19,7 @@
 
 #include "lxp/lxp_port.h"
 #include "lxp/lxp_dev.h"
-#include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_display_ops.h"
 #include "lxp/lxp_proc.h"
 #include "lxp/lxp_types.h"
 #include "lxp_uapi.h"
@@ -72,7 +72,7 @@ static void fb_copy16(uint8_t *dst, const uint8_t *src, size_t len)
 static long fb_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, void *buf,
 		    size_t len)
 {
-	uint8_t *fb = g_lxp_disp_ops->fb_get_buffer();
+	uint8_t *fb = g_lxp_display_ops->fb_get_buffer();
 	if (!fb || o->pos >= d->size)
 		return 0; /* EOF at/after the buffer end */
 	size_t n = d->size - o->pos;
@@ -88,7 +88,7 @@ static long fb_read(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, vo
 static long fb_write(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 		     const void *buf, size_t len)
 {
-	uint8_t *fb = g_lxp_disp_ops->fb_get_buffer();
+	uint8_t *fb = g_lxp_display_ops->fb_get_buffer();
 	if (!fb || o->pos >= d->size)
 		return -LXP_EFBIG; /* a write past the framebuffer end */
 	size_t n = d->size - o->pos;
@@ -127,7 +127,7 @@ static void fill_finfo(struct lxp_fb_fix_screeninfo *f)
 {
 	memset(f, 0, sizeof(*f));
 	memcpy(f->id, "ovefb", 5);
-	f->smem_start = (uint32_t)(uintptr_t)g_lxp_disp_ops->fb_get_buffer();
+	f->smem_start = (uint32_t)(uintptr_t)g_lxp_display_ops->fb_get_buffer();
 	f->smem_len = g_fbinfo.smem_len;
 	f->type = LXP_FB_TYPE_PACKED_PIXELS;
 	f->visual = LXP_FB_VISUAL_TRUECOLOR;
@@ -170,7 +170,7 @@ static long fb_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 		 * The coordinator validates the guest SOURCE rect (a DMA engine with a
 		 * guest-supplied address is a confused-deputy risk); the destination is the
 		 * framebuffer it owns, so it is trusted but still bounds-checked. */
-		if (!g_lxp_disp_ops->dma2d_submit)
+		if (!g_lxp_display_ops->dma2d_submit)
 			return -LXP_ENOSYS; /* no accelerator → guest keeps its pwrite/memcpy path */
 		struct lxp_fb_blit b;
 		if (lxp_copy_from_guest(p, &b, (uintptr_t)arg, sizeof(b)) != 0)
@@ -182,7 +182,7 @@ static long fb_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 		uint64_t src_span = (uint64_t)(b.h - 1) * b.src_stride + (uint64_t)b.w * bpp;
 		if (!lxp_guest_access_ok(p, (const void *)(uintptr_t)b.src, (size_t)src_span, 0))
 			return -LXP_EFAULT;
-		uint8_t *fb = g_lxp_disp_ops->fb_get_buffer();
+		uint8_t *fb = g_lxp_display_ops->fb_get_buffer();
 		if (!fb)
 			return -LXP_EIO;
 		uint32_t fb_stride = g_fbinfo.stride_bytes;
@@ -198,7 +198,7 @@ static long fb_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 		op.fg_addr = (uintptr_t)b.src;
 		op.fg_offset = b.src_stride / bpp - b.w;
 		op.fg_cf = LXP_DMA2D_CF_RGB565;
-		if (g_lxp_disp_ops->dma2d_submit(&op) != 0)
+		if (g_lxp_display_ops->dma2d_submit(&op) != 0)
 			return -LXP_EIO; /* guest falls back to the pwrite path */
 		fb_mark_dirty((int)b.x, (int)b.y, (int)b.w, (int)b.h);
 		return 0;
@@ -225,7 +225,7 @@ static long fb_mmap(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, si
 {
 	(void)o;
 	(void)p;
-	uint8_t *fb = g_lxp_disp_ops->fb_get_buffer();
+	uint8_t *fb = g_lxp_display_ops->fb_get_buffer();
 	if (!fb || pgoff != 0 || len > d->size)
 		return -LXP_EINVAL;
 	*phys = (uintptr_t)fb;
@@ -253,7 +253,7 @@ static void fb_tick(uint64_t now_us)
 	int w = g_fb_dirty_x1 - x;
 	int h = g_fb_dirty_y1 - y;
 	g_fb_dirty = 0;
-	g_lxp_disp_ops->fb_present(x, y, w, h);
+	g_lxp_display_ops->fb_present(x, y, w, h);
 }
 
 void lxp_dev_autoreg_fb(void)
@@ -261,9 +261,9 @@ void lxp_dev_autoreg_fb(void)
 	memset(&g_fbinfo, 0, sizeof(g_fbinfo));
 	g_fb_last_present_us = 0;
 	g_fb_dirty = 0;
-	if (g_lxp_disp_ops->fb_init() != 0)
+	if (g_lxp_display_ops->fb_init() != 0)
 		return; /* no display on this board (e.g. an521) → /dev/fb0 absent */
-	if (g_lxp_disp_ops->fb_get_info(&g_fbinfo) != 0)
+	if (g_lxp_display_ops->fb_get_info(&g_fbinfo) != 0)
 		return;
 	struct lxp_dev dev = {
 		.path = "/dev/fb0",

@@ -11,7 +11,7 @@
 
 #include "lxp/lxp_config.h"
 #include "lxp/lxp_block_ops.h"
-#include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_display_ops.h"
 #include "lxp/lxp_fs_ops.h"
 #include "lxp/lxp_net_ops.h"
 
@@ -19,7 +19,7 @@
 extern const lxp_net_ops_t *g_lxp_net_ops;
 #endif
 #if LXP_ENABLE_DEV
-extern const lxp_display_ops_t *g_lxp_disp_ops;
+extern const lxp_display_ops_t *g_lxp_display_ops;
 #endif
 #if LXP_ENABLE_FS
 extern const lxp_fs_ops_t *g_lxp_fs_ops;
@@ -28,7 +28,8 @@ extern const lxp_fs_ops_t *g_lxp_fs_ops;
 extern const lxp_block_ops_t *g_lxp_block_ops;
 #endif
 
-void lxp_providers_publish(const lxp_net_ops_t *net_ops, const lxp_display_ops_t *disp_ops,
+void lxp_providers_publish(const lxp_net_ops_t *net_ops,
+			   const lxp_display_ops_t *display_ops,
 			   const lxp_fs_ops_t *fs_ops, const lxp_block_ops_t *block_ops);
 void lxp_providers_clear(void);
 

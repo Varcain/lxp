@@ -18,7 +18,7 @@
 
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_types.h"
-#include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_display_ops.h"
 #include "lxp/lxp_proc.h"
 #include "lxp_uapi.h"
 #include "lxp_provider.h"
@@ -32,7 +32,7 @@
 static int g_disp_w = LXP_DEFAULT_DISPLAY_WIDTH;
 static int g_disp_h = LXP_DEFAULT_DISPLAY_HEIGHT;
 
-void lxp_disp_set_geometry(int width, int height)
+void lxp_display_set_geometry(int width, int height)
 {
 	g_disp_w = width > 0 ? width : LXP_DEFAULT_DISPLAY_WIDTH;
 	g_disp_h = height > 0 ? height : LXP_DEFAULT_DISPLAY_HEIGHT;
@@ -260,7 +260,7 @@ static void ft5336_tick(uint64_t now_us)
 		return;
 	g_touch_last_us = now_us;
 	int x, y, pressed;
-	if (g_lxp_disp_ops->touch_read(&x, &y, &pressed) == 0) {
+	if (g_lxp_display_ops->touch_read(&x, &y, &pressed) == 0) {
 		if (pressed || g_touch_last_pressed)
 			lxp_input_report_touch(x, y, pressed);
 		g_touch_last_pressed = pressed;
@@ -292,7 +292,7 @@ void lxp_dev_autoreg_input(void)
 	 * fallback for QEMU (no touch HW) or if the FT5336 does not probe. Registering
 	 * both would let two sources drive one /dev/input/event0 — garbage. */
 #if LXP_ENABLE_TOUCH
-	if (g_lxp_disp_ops->touch_init() == 0) {
+	if (g_lxp_display_ops->touch_init() == 0) {
 		lxp_dev_tick_register(ft5336_tick); /* real HW touch panel */
 		g_touch_ready = 1;
 	}
@@ -306,8 +306,8 @@ void lxp_dev_autoreg_input(void)
 void lxp_dev_input_run_end(void)
 {
 #if LXP_ENABLE_TOUCH
-	if (g_touch_ready && g_lxp_disp_ops && g_lxp_disp_ops->touch_deinit)
-		g_lxp_disp_ops->touch_deinit();
+	if (g_touch_ready && g_lxp_display_ops && g_lxp_display_ops->touch_deinit)
+		g_lxp_display_ops->touch_deinit();
 #endif
 	g_touch_ready = 0;
 	g_touch_last_pressed = 0;

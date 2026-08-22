@@ -15,7 +15,7 @@
 #include "lxp/lxp_arena.h"
 #include "lxp/lxp_block_ops.h"
 #include "lxp/lxp_dev.h"
-#include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_display_ops.h"
 #include "lxp/lxp_port.h" /* LXP_MAP_NC */
 #include "lxp/lxp_syscall.h"
 #include "../../src/dev/lxp_uapi.h" /* struct lxp_dma2d_submit + LXP_DMA2D_* */
@@ -323,7 +323,7 @@ static void test_dev_input_geometry_resets_to_run_defaults(void **state)
 	assert_true(fd >= 3);
 
 	struct lxp_input_absinfo info;
-	lxp_disp_set_geometry(800, 480);
+	lxp_display_set_geometry(800, 480);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_X),
 				     (long)(uintptr_t)&info, 0, 0, 0),
 			 0);
@@ -334,7 +334,7 @@ static void test_dev_input_geometry_resets_to_run_defaults(void **state)
 	assert_int_equal(info.maximum, 479);
 
 	/* A later zero-initialized run config must not inherit 800x480. */
-	lxp_disp_set_geometry(0, 0);
+	lxp_display_set_geometry(0, 0);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_X),
 				     (long)(uintptr_t)&info, 0, 0, 0),
 			 0);
@@ -981,7 +981,7 @@ static void test_dev_block_geometry_partitions_and_64bit_io(void **state)
 	lxp_arena_t arena;
 	setup(&p, &arena);
 	const lxp_net_ops_t *saved_net = g_lxp_net_ops;
-	const lxp_display_ops_t *saved_display = g_lxp_disp_ops;
+	const lxp_display_ops_t *saved_display = g_lxp_display_ops;
 	const lxp_fs_ops_t *saved_fs = g_lxp_fs_ops;
 
 	memset(g_block_mbr, 0, sizeof(g_block_mbr));

@@ -15,7 +15,7 @@
 #include "lxp/lxp_block_ops.h"
 #include "lxp/lxp_config.h"
 #include "lxp/lxp_diag.h"
-#include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_display_ops.h"
 #include "lxp/lxp_fs_ops.h"
 #include "lxp/lxp_host.h"
 #include "lxp/lxp_net_ops.h"

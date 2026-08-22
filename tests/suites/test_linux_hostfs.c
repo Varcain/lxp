@@ -875,7 +875,7 @@ static int group_setup(void **state)
 {
 	(void)state;
 	g_saved_net = g_lxp_net_ops;
-	g_saved_display = g_lxp_disp_ops;
+	g_saved_display = g_lxp_display_ops;
 	g_saved_block = g_lxp_block_ops;
 	lxp_providers_publish(g_saved_net, g_saved_display, &g_fake_ops, &g_fake_block_ops);
 	lxp_dev_autoreg_block();

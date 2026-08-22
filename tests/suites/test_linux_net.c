@@ -53,7 +53,7 @@ static void publish_net(const lxp_net_ops_t *net_ops)
 {
 	lxp_providers_publish(net_ops,
 #if LXP_ENABLE_DEV
-			      g_lxp_disp_ops,
+			      g_lxp_display_ops,
 #else
 			      NULL,
 #endif

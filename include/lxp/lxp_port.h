@@ -7,7 +7,7 @@
  *
  * The OS / engine port for the Linux personality. A host (any RTOS or
  * bare-metal) implements this process-model substrate; the independent network
- * and display providers live in lxp_net_ops.h and lxp_disp_ops.h.
+ * and display providers live in lxp_net_ops.h and lxp_display_ops.h.
  *
  * The module is single-instance (one run at a time). The ops are plain vtables
  * with no per-call context pointer: a port keeps whatever state it needs in its

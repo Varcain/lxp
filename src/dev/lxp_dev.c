@@ -20,7 +20,7 @@
 #if LXP_ENABLE_DEV
 
 #include "lxp/lxp_dev.h"
-#include "lxp/lxp_disp_ops.h"
+#include "lxp/lxp_display_ops.h"
 #include "lxp/lxp_proc.h"
 #include "lxp_pool.h"	      /* shared refcounted open-pool primitives */
 #include "lxp_provider.h"

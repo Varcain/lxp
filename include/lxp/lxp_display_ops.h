@@ -5,18 +5,17 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * The display / input port for the Linux personality. The /dev/fb0 and
+ * The display/input port for the Linux personality. The /dev/fb0 and
  * /dev/input/event0 class drivers reach the panel + touch controller ONLY through
  * these ops, so the personality carries no direct dependency on a particular
  * framebuffer / touch HAL. On oveRTOS the ops are filled by
  * backends/common/lxp_ove_display_adapter.c (bridging to ove_fb_* / ove_ft5336_*).
- * Display geometry, which used to come from the per-board board_desc.h, is now an
- * injected value (lxp_disp_set_geometry). Renamed to lxp_display_ops_t at the
- * module-extraction rename.
+ * Display geometry is run-scoped policy injected through
+ * lxp_display_set_geometry().
  */
 
-#ifndef LXP_DISP_OPS_H
-#define LXP_DISP_OPS_H
+#ifndef LXP_DISPLAY_OPS_H
+#define LXP_DISPLAY_OPS_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -71,10 +70,10 @@ typedef struct lxp_display_ops {
 /* Set the display geometry used to clamp / report touch coordinates.
  * Non-positive dimensions reset to the 480x272 default independently.
  * lxp_run() seeds it from lxp_run_config_t. */
-void lxp_disp_set_geometry(int width, int height);
+void lxp_display_set_geometry(int width, int height);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* LXP_DISP_OPS_H */
+#endif /* LXP_DISPLAY_OPS_H */

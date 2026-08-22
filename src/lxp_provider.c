@@ -12,7 +12,7 @@
 const lxp_net_ops_t *g_lxp_net_ops;
 #endif
 #if LXP_ENABLE_DEV
-const lxp_display_ops_t *g_lxp_disp_ops;
+const lxp_display_ops_t *g_lxp_display_ops;
 #endif
 #if LXP_ENABLE_FS
 const lxp_fs_ops_t *g_lxp_fs_ops;
@@ -21,7 +21,8 @@ const lxp_fs_ops_t *g_lxp_fs_ops;
 const lxp_block_ops_t *g_lxp_block_ops;
 #endif
 
-void lxp_providers_publish(const lxp_net_ops_t *net_ops, const lxp_display_ops_t *disp_ops,
+void lxp_providers_publish(const lxp_net_ops_t *net_ops,
+			   const lxp_display_ops_t *display_ops,
 			   const lxp_fs_ops_t *fs_ops, const lxp_block_ops_t *block_ops)
 {
 #if LXP_ENABLE_NET
@@ -30,9 +31,9 @@ void lxp_providers_publish(const lxp_net_ops_t *net_ops, const lxp_display_ops_t
 	(void)net_ops;
 #endif
 #if LXP_ENABLE_DEV
-	g_lxp_disp_ops = disp_ops;
+	g_lxp_display_ops = display_ops;
 #else
-	(void)disp_ops;
+	(void)display_ops;
 #endif
 #if LXP_ENABLE_FS
 	g_lxp_fs_ops = fs_ops;
@@ -52,7 +53,7 @@ void lxp_providers_clear(void)
 	g_lxp_net_ops = NULL;
 #endif
 #if LXP_ENABLE_DEV
-	g_lxp_disp_ops = NULL;
+	g_lxp_display_ops = NULL;
 #endif
 #if LXP_ENABLE_FS
 	g_lxp_fs_ops = NULL;
