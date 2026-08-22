@@ -10,7 +10,8 @@
  *                                              symlink follow (lxp_rootfs_resolve).
  *   - writable VFS       (src/fs/lxp_tmpfs.c): wfs_create/find/reserve + wnode_at.
  *   - pipe ring          (src/fs/lxp_pipe.c):  alloc + the no-reader/no-writer guards.
- *   - synthetic /proc    (src/proc/lxp_procfs.c): proc_is / p_dec / proc_gen.
+ *   - synthetic /proc    (src/proc/lxp_procfs.c): proc_is / proc_gen.
+ *   - bounded text       (src/lxp_text.h): decimal construction and truncation.
  *   - pointer validators (src/lxp_syscall.c):  lxp_guest_access_ok / lxp_guest_strnlen / file_mode.
  * The syscall suite drives these through lxp_syscall(); here they are exercised directly.
  */
@@ -22,6 +23,7 @@
 #include "fs/lxp_pipe.h"
 #include "fs/lxp_tmpfs.h"
 #include "lxp_internal.h"
+#include "lxp_text.h"
 #include "proc/lxp_procfs.h"
 
 #include <stdint.h>
@@ -170,11 +172,11 @@ static void test_pipe_guards(void **s)
 	/* No live process holds either end (host test has no proc-table fds), so: an empty
 	 * pipe with no writer reads EOF, and a write with no reader is a broken pipe. */
 	uint8_t buf[8];
-	assert_int_equal(pipe_try_read(pi, buf, sizeof(buf)), 0);	 /* EOF */
-	assert_int_equal(pipe_try_write(pi, "abc", 3), -LXP_EPIPE);	 /* no readers */
+	assert_int_equal(pipe_try_read(pi, buf, sizeof(buf)), 0);   /* EOF */
+	assert_int_equal(pipe_try_write(pi, "abc", 3), -LXP_EPIPE); /* no readers */
 }
 
-/* ---- procfs: membership test, decimal builder, content generation ------------- */
+/* ---- procfs: membership test, text builder, content generation ---------------- */
 static void test_procfs(void **s)
 {
 	(void)s;
@@ -184,11 +186,13 @@ static void test_procfs(void **s)
 	assert_int_equal(proc_is("/etc/passwd"), 0);
 
 	char b[32];
-	size_t n = p_dec(b, 0, sizeof(b), 42);
-	assert_int_equal((int)n, 2);
+	lxp_text_t text = lxp_text_make(b, sizeof(b));
+	lxp_text_u64(&text, 42);
+	assert_int_equal((int)text.length, 2);
 	assert_memory_equal(b, "42", 2);
-	n = p_dec(b, 0, sizeof(b), 0);
-	assert_int_equal((int)n, 1);
+	text = lxp_text_make(b, sizeof(b));
+	lxp_text_u64(&text, 0);
+	assert_int_equal((int)text.length, 1);
 	assert_int_equal(b[0], '0');
 
 	lxp_arena_t arena;
@@ -233,9 +237,8 @@ static void test_procfs(void **s)
 	assert_true(r > 0);
 	assert_true((size_t)r < sizeof(out));
 	out[r] = '\0';
-	assert_string_equal(out,
-			    "Linux version 6.1.0 (TestRTOS 1.2.3 ove-abcdef0 lxp-1234567) "
-			    "(uClibc)\n");
+	assert_string_equal(out, "Linux version 6.1.0 (TestRTOS 1.2.3 ove-abcdef0 lxp-1234567) "
+				 "(uClibc)\n");
 
 	lxp_proc_nice_set(&p, -7);
 	r = proc_gen("/proc/self/stat", &p, out, sizeof(out) - 1);
@@ -257,9 +260,10 @@ static void test_user_helpers(void **s)
 	setup_proc(&p, &arena);
 
 	int stackvar = 0;
-	assert_int_equal(lxp_guest_access_ok(&p, NULL, 4, 0), 0);	     /* NULL rejected (region_lo=1) */
-	assert_int_equal(lxp_guest_access_ok(&p, &stackvar, 4, 0), 1);   /* in the all-permitting range */
-	assert_int_equal(lxp_guest_access_ok(&p, &stackvar, 4, 1), 1);   /* writable too */
+	assert_int_equal(lxp_guest_access_ok(&p, NULL, 4, 0), 0); /* NULL rejected (region_lo=1) */
+	assert_int_equal(lxp_guest_access_ok(&p, &stackvar, 4, 0),
+			 1); /* in the all-permitting range */
+	assert_int_equal(lxp_guest_access_ok(&p, &stackvar, 4, 1), 1); /* writable too */
 
 	assert_int_equal((int)lxp_guest_strnlen(&p, "abc", 256), 3);
 	assert_int_equal((int)lxp_guest_strnlen(&p, "", 256), 0);
@@ -274,12 +278,9 @@ static void test_user_helpers(void **s)
 int test_fs_run(void)
 {
 	const struct CMUnitTest tests[] = {
-		cmocka_unit_test(test_path_normalize),
-		cmocka_unit_test(test_path_rootfs_resolve),
-		cmocka_unit_test(test_tmpfs_nodes),
-		cmocka_unit_test(test_tmpfs_reclaim),
-		cmocka_unit_test(test_pipe_guards),
-		cmocka_unit_test(test_procfs),
+		cmocka_unit_test(test_path_normalize), cmocka_unit_test(test_path_rootfs_resolve),
+		cmocka_unit_test(test_tmpfs_nodes),    cmocka_unit_test(test_tmpfs_reclaim),
+		cmocka_unit_test(test_pipe_guards),    cmocka_unit_test(test_procfs),
 		cmocka_unit_test(test_user_helpers),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

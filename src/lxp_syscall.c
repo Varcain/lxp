@@ -16,6 +16,7 @@
 #include "lxp/lxp_types.h"
 
 #include "lxp_internal.h" /* lxp_guest_access_ok / lxp_guest_strnlen / file_mode / lxp_encode_wstatus */
+#include "lxp_text.h"	  /* bounded text construction for synthetic names */
 #include "lxp_vfs.h"	  /* per-fd-kind file-operation vtable (dispatch by kind) */
 
 #include "fs/lxp_fd_private.h" /* descriptor-table reference transaction */
@@ -1071,12 +1072,9 @@ static const lxp_file_ops_t pty_fops = {.read = fop_read_pty,
 #endif
 
 const lxp_file_ops_t *const g_lxp_file_ops[LXP_FD_KIND_COUNT] = {
-	[LXP_FD_CONSOLE] = &console_fops,
-	[LXP_FD_FILE] = &rootfs_fops,
-	[LXP_FD_PIPE] = &pipe_fops,
-	[LXP_FD_TMPFS] = &tmpfs_fops,
-	[LXP_FD_PROC] = &proc_fops,
-	[LXP_FD_EVENTFD] = &eventfd_fops,
+	[LXP_FD_CONSOLE] = &console_fops, [LXP_FD_FILE] = &rootfs_fops,
+	[LXP_FD_PIPE] = &pipe_fops,	  [LXP_FD_TMPFS] = &tmpfs_fops,
+	[LXP_FD_PROC] = &proc_fops,	  [LXP_FD_EVENTFD] = &eventfd_fops,
 #if LXP_ENABLE_DEV
 	[LXP_FD_DEV] = &dev_fops,
 #endif
@@ -2069,7 +2067,9 @@ static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufs
 		return rr;
 	if (strcmp(abspath, "/proc/self") == 0) { /* -> the running process's pid */
 		char tmp[12];
-		size_t n = p_dec(tmp, 0, sizeof(tmp), (uint64_t)p->pid);
+		lxp_text_t pid_text = lxp_text_make(tmp, sizeof(tmp));
+		lxp_text_u64(&pid_text, (uint64_t)p->pid);
+		size_t n = pid_text.length;
 		if (n > bufsiz)
 			n = bufsiz;
 		if (lxp_copy_to_guest(p, (uintptr_t)buf, tmp, n) != 0)
@@ -2717,7 +2717,9 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 				if (!e)
 					break;
 				char pidstr[12];
-				size_t k = p_dec(pidstr, 0, sizeof(pidstr) - 1, (uint64_t)e->pid);
+				lxp_text_t pid_text = lxp_text_make(pidstr, sizeof(pidstr) - 1);
+				lxp_text_u64(&pid_text, (uint64_t)e->pid);
+				size_t k = pid_text.length;
 				pidstr[k] = '\0';
 				seen1 |= (e->pid == 1);
 				seenself |= (e->pid == p->pid);
@@ -2731,7 +2733,9 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 				full = 1;
 			if (!full && !seenself && p->pid != 1) {
 				char pidstr[12];
-				size_t k = p_dec(pidstr, 0, sizeof(pidstr) - 1, (uint64_t)p->pid);
+				lxp_text_t pid_text = lxp_text_make(pidstr, sizeof(pidstr) - 1);
+				lxp_text_u64(&pid_text, (uint64_t)p->pid);
+				size_t k = pid_text.length;
 				pidstr[k] = '\0';
 				if (!dirent_emit(out, count, &filled, &pos, s, ino++, pidstr,
 						 LXP_S_IFDIR))
@@ -2789,7 +2793,7 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 
 	uint32_t mode;
 	uint64_t size;
-	uint64_t rdev = 0;	  /* device id for a character node, else 0 */
+	uint64_t rdev = 0; /* device id for a character node, else 0 */
 	uint32_t dev_major = 0;
 	uint32_t dev_minor = 0;
 	uint32_t ino = 0x300000u; /* unique, non-zero inode: ld.so dedups by (st_dev, st_ino) */
@@ -4306,7 +4310,7 @@ static int lxp_poll_scan(lxp_proc_t *proc, lxp_pollfd *pfds, unsigned nfds)
 		 * (regular file / tmpfs / proc / netfs) is always ready. */
 		const lxp_file_ops_t *ops = lxp_vfs_ops(s);
 		unsigned pb = ops && ops->poll ? ops->poll(proc, s)
-						    : (unsigned)(LXP_POLLIN | LXP_POLLOUT);
+					       : (unsigned)(LXP_POLLIN | LXP_POLLOUT);
 		pfds[i].revents = (short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
 		if (pfds[i].revents)
 			ready++;

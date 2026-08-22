@@ -71,7 +71,7 @@ static void hostfs_select(lxp_proc_t *proc)
 static long hostfs_result(lxp_proc_t *proc, int result)
 {
 	if (result != LXP_ERR_WOULD_BLOCK)
-		return result == LXP_OK ? 0 : lxp_hostfs_error(result);
+		return result == LXP_OK ? 0 : lxp_provider_error(result);
 	if (!proc || g_hostfs_syscall.proc != proc)
 		return -LXP_EAGAIN;
 	if (proc->wait.kind == LXP_WAIT_HOSTFS)
@@ -95,57 +95,6 @@ void lxp_hostfs_cancel(lxp_proc_t *proc)
 	if (proc && proc->wait.kind == LXP_WAIT_HOSTFS && g_lxp_fs_ops &&
 	    g_lxp_fs_ops->request_cancel)
 		g_lxp_fs_ops->request_cancel(proc->wait.data.hostfs.owner);
-}
-
-long lxp_hostfs_error(int result)
-{
-	switch (result) {
-	case LXP_OK:
-		return 0;
-	case LXP_ERR_NOT_REGISTERED:
-		return -LXP_ENODEV;
-	case LXP_ERR_INVALID_PARAM:
-	case LXP_ERR_INVAL:
-		return -LXP_EINVAL;
-	case LXP_ERR_NO_MEMORY:
-		return -LXP_ENOMEM;
-	case LXP_ERR_TIMEOUT:
-		return -LXP_ETIMEDOUT;
-	case LXP_ERR_NOT_SUPPORTED:
-		return -LXP_EOPNOTSUPP;
-	case LXP_ERR_QUEUE_FULL:
-	case LXP_ERR_QUEUE_EMPTY:
-	case LXP_ERR_WOULD_BLOCK:
-		return -LXP_EAGAIN;
-	case LXP_ERR_BUSY:
-		return -LXP_EBUSY;
-	case LXP_ERR_EOF:
-		return 0;
-	case LXP_ERR_NOT_FOUND:
-		return -LXP_ENOENT;
-	case LXP_ERR_ALREADY_EXISTS:
-		return -LXP_EEXIST;
-	case LXP_ERR_NO_SPACE:
-		return -LXP_ENOSPC;
-	case LXP_ERR_NOT_DIR:
-		return -LXP_ENOTDIR;
-	case LXP_ERR_IS_DIR:
-		return -LXP_EISDIR;
-	case LXP_ERR_NOT_EMPTY:
-		return -LXP_ENOTEMPTY;
-	case LXP_ERR_READ_ONLY:
-		return -LXP_EROFS;
-	case LXP_ERR_NAME_TOO_LONG:
-		return -LXP_ENAMETOOLONG;
-	case LXP_ERR_BAD_HANDLE:
-		return -LXP_EBADF;
-	case LXP_ERR_PERMISSION:
-		return -LXP_EACCES;
-	case LXP_ERR_CROSS_DEVICE:
-		return -LXP_EXDEV;
-	default:
-		return -LXP_EIO;
-	}
 }
 
 int lxp_hostfs_match(const char *abspath)
@@ -297,7 +246,7 @@ long lxp_hostfs_read(lxp_proc_t *proc, int index, void *buf, size_t len)
 		return hostfs_result(proc, rc);
 	if (done > len)
 		return -LXP_EIO;
-	return rc == LXP_OK || rc == LXP_ERR_EOF ? (long)done : lxp_hostfs_error(rc);
+	return rc == LXP_OK || rc == LXP_ERR_EOF ? (long)done : lxp_provider_error(rc);
 }
 
 long lxp_hostfs_write(lxp_proc_t *proc, int index, const void *buf, size_t len)
@@ -316,7 +265,7 @@ long lxp_hostfs_write(lxp_proc_t *proc, int index, const void *buf, size_t len)
 		return hostfs_result(proc, rc);
 	if (done > len)
 		return -LXP_EIO;
-	return rc == LXP_OK ? (long)done : lxp_hostfs_error(rc);
+	return rc == LXP_OK ? (long)done : lxp_provider_error(rc);
 }
 
 long lxp_hostfs_seek(lxp_proc_t *proc, int index, int64_t offset, int whence)
@@ -357,7 +306,7 @@ static long hostfs_positioned(lxp_proc_t *proc, int index, void *buf, size_t len
 		return hostfs_result(proc, rc);
 	if (done > len)
 		return -LXP_EIO;
-	return rc == LXP_OK || (!write && rc == LXP_ERR_EOF) ? (long)done : lxp_hostfs_error(rc);
+	return rc == LXP_OK || (!write && rc == LXP_ERR_EOF) ? (long)done : lxp_provider_error(rc);
 }
 
 long lxp_hostfs_pread(lxp_proc_t *proc, int index, void *buf, size_t len, uint64_t offset)
@@ -418,7 +367,7 @@ long lxp_hostfs_sync_all(void)
 			continue;
 		hostfs_select(NULL);
 		int native = g_lxp_fs_ops->file_sync(g_hostfs_open[i].handle.file);
-		long rc = native == LXP_OK ? 0 : lxp_hostfs_error(native);
+		long rc = native == LXP_OK ? 0 : lxp_provider_error(native);
 		if (rc < 0)
 			return rc;
 	}
@@ -536,7 +485,7 @@ long lxp_hostfs_dir_peek(lxp_proc_t *proc, int index, const lxp_fs_dirent_t **en
 		if (rc == LXP_ERR_EOF)
 			return 0;
 		if (rc != LXP_OK)
-			return lxp_hostfs_error(rc);
+			return lxp_provider_error(rc);
 		slot->pending.name[LXP_FS_NAME_MAX - 1u] = '\0';
 		slot->has_pending = 1;
 	}

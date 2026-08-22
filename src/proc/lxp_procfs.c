@@ -15,6 +15,7 @@
 #include "lxp/lxp_proc.h"
 #include "lxp/lxp_stats.h"
 #include "lxp_internal.h"
+#include "lxp_text.h"
 #if LXP_ENABLE_BLOCK
 #include "dev/lxp_dev_block.h"
 #endif
@@ -29,15 +30,9 @@
 #include <string.h>
 
 /* ---- synthetic /proc (read-only, generated on open) ----------------------- */
-static size_t p_str(char *o, size_t off, size_t cap, const char *s)
-{
-	while (*s && off < cap)
-		o[off++] = *s++;
-	return off;
-}
 #if LXP_ENABLE_FS
 /* /proc/mounts uses the fstab escaping convention for whitespace and '\\'. */
-static size_t p_mount_field(char *o, size_t off, size_t cap, const char *s)
+static void p_mount_field(lxp_text_t *text, const char *s)
 {
 	while (*s) {
 		const char *escape = NULL;
@@ -55,53 +50,25 @@ static size_t p_mount_field(char *o, size_t off, size_t cap, const char *s)
 			escape = "\\134";
 			break;
 		default:
-			if (off < cap)
-				o[off++] = *s;
+			lxp_text_putc(text, *s);
 			break;
 		}
 		if (escape)
-			off = p_str(o, off, cap, escape);
+			lxp_text_puts(text, escape);
 		s++;
 	}
-	return off;
 }
 #endif
-size_t p_dec(char *o, size_t off, size_t cap, uint64_t v)
-{
-	char t[20];
-	int n = 0;
-	if (!v)
-		t[n++] = '0';
-	while (v) {
-		t[n++] = (char)('0' + v % 10u);
-		v /= 10u;
-	}
-	while (n && off < cap)
-		o[off++] = t[--n];
-	return off;
-}
-static size_t p_sdec(char *o, size_t off, size_t cap, int v)
-{
-	if (v < 0) {
-		if (off < cap)
-			o[off++] = '-';
-		return p_dec(o, off, cap, (uint64_t)(-(int64_t)v));
-	}
-	return p_dec(o, off, cap, (uint64_t)v);
-}
 #if LXP_ENABLE_NET
 /* Format a 4-byte IPv4 address as the 8 upper-hex digits the kernel writes in
  * /proc/net/route: the __be32 value read in the host's (little-endian) order. */
-static size_t p_hexle(char *o, size_t off, size_t cap, const uint8_t a[4])
+static void p_hexle(lxp_text_t *text, const uint8_t a[4])
 {
 	static const char h[] = "0123456789ABCDEF";
 	for (int i = 3; i >= 0; i--) {
-		if (off < cap)
-			o[off++] = h[a[i] >> 4];
-		if (off < cap)
-			o[off++] = h[a[i] & 0xf];
+		lxp_text_putc(text, h[a[i] >> 4]);
+		lxp_text_putc(text, h[a[i] & 0xf]);
 	}
-	return off;
 }
 #endif
 
@@ -185,7 +152,7 @@ uint32_t proc_mode(const char *abs, const lxp_proc_t *p)
 /* Generate the content of a /proc FILE into buf[cap]; returns length, or -1. */
 long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 {
-	size_t o = 0;
+	lxp_text_t text = lxp_text_make(buf, cap);
 	const char *file;
 	int pid = proc_pid(abs, p, &file);
 	if (pid > 0 && file) {
@@ -223,89 +190,85 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		comm[ci] = '\0';
 		uint64_t utime = cpu_us / 10000ull; /* USER_HZ = 100 → jiffies */
 		if (strcmp(file, "stat") == 0) {
-			o = p_dec(buf, o, cap, (uint64_t)pid);
-			o = p_str(buf, o, cap, " (");
-			o = p_str(buf, o, cap, comm);
-			o = p_str(buf, o, cap, ") ");
-			if (o < cap)
-				buf[o++] = state;
-			o = p_str(buf, o, cap, " ");
-			o = p_dec(buf, o, cap, (uint64_t)ppid);
+			lxp_text_u64(&text, (uint64_t)pid);
+			lxp_text_puts(&text, " (");
+			lxp_text_puts(&text, comm);
+			lxp_text_puts(&text, ") ");
+			lxp_text_putc(&text, state);
+			lxp_text_puts(&text, " ");
+			lxp_text_u64(&text, (uint64_t)ppid);
 			/* fields 5..13 (pgrp..cmajflt), then field 14 utime, then 15..24. */
-			o = p_str(buf, o, cap, " 0 0 0 0 0 0 0 0 0 ");
-			o = p_dec(buf, o, cap, utime);
-			o = p_str(buf, o, cap, " 0 0 0 ");
-			o = p_sdec(buf, o, cap, 20 + nice);
-			o = p_str(buf, o, cap, " ");
-			o = p_sdec(buf, o, cap, nice);
-			o = p_str(buf, o, cap, " 0 0 0 0 0\n");
+			lxp_text_puts(&text, " 0 0 0 0 0 0 0 0 0 ");
+			lxp_text_u64(&text, utime);
+			lxp_text_puts(&text, " 0 0 0 ");
+			lxp_text_s64(&text, 20 + nice);
+			lxp_text_puts(&text, " ");
+			lxp_text_s64(&text, nice);
+			lxp_text_puts(&text, " 0 0 0 0 0\n");
 		} else if (strcmp(file, "cmdline") == 0) {
 			/* kernel threads have a 0-byte cmdline so ps/top bracket them. */
 			if (!is_kernel) {
-				o = p_str(buf, o, cap, comm);
-				if (o < cap)
-					buf[o++] = '\0';
+				lxp_text_puts(&text, comm);
+				lxp_text_putc(&text, '\0');
 			}
 		} else if (strcmp(file, "comm") == 0) {
-			o = p_str(buf, o, cap, comm);
-			o = p_str(buf, o, cap, "\n");
+			lxp_text_puts(&text, comm);
+			lxp_text_puts(&text, "\n");
 		} else if (strcmp(file, "status") == 0) {
-			o = p_str(buf, o, cap, "Name:\t");
-			o = p_str(buf, o, cap, comm);
-			o = p_str(buf, o, cap, "\nState:\t");
-			if (o < cap)
-				buf[o++] = state;
-			o = p_str(buf, o, cap,
-				  (state == 'R') ? " (running)\nPid:\t" : " (sleeping)\nPid:\t");
-			o = p_dec(buf, o, cap, (uint64_t)pid);
-			o = p_str(buf, o, cap, "\nPPid:\t");
-			o = p_dec(buf, o, cap, (uint64_t)ppid);
-			o = p_str(buf, o, cap, "\nNice:\t");
-			o = p_sdec(buf, o, cap, nice);
-			o = p_str(buf, o, cap, "\n");
+			lxp_text_puts(&text, "Name:\t");
+			lxp_text_puts(&text, comm);
+			lxp_text_puts(&text, "\nState:\t");
+			lxp_text_putc(&text, state);
+			lxp_text_puts(&text, (state == 'R') ? " (running)\nPid:\t"
+							    : " (sleeping)\nPid:\t");
+			lxp_text_u64(&text, (uint64_t)pid);
+			lxp_text_puts(&text, "\nPPid:\t");
+			lxp_text_u64(&text, (uint64_t)ppid);
+			lxp_text_puts(&text, "\nNice:\t");
+			lxp_text_s64(&text, nice);
+			lxp_text_puts(&text, "\n");
 		} else {
 			return -1;
 		}
-		return (long)o;
+		return (long)text.length;
 	}
 	if (strcmp(abs, "/proc/version") == 0) {
-		o = p_str(buf, o, cap, "Linux version 6.1.0 (");
-		o = p_str(buf, o, cap, lxp_system_version());
-		o = p_str(buf, o, cap, ") (uClibc)\n");
+		lxp_text_puts(&text, "Linux version 6.1.0 (");
+		lxp_text_puts(&text, lxp_system_version());
+		lxp_text_puts(&text, ") (uClibc)\n");
 	} else if (strcmp(abs, "/proc/uptime") == 0) {
 		uint64_t ns = 0;
 		lxp_time_ns(&ns);
-		o = p_dec(buf, o, cap, ns / 1000000000ull);
-		o = p_str(buf, o, cap, ".00 ");
-		o = p_dec(buf, o, cap, ns / 1000000000ull);
-		o = p_str(buf, o, cap, ".00\n");
+		lxp_text_u64(&text, ns / 1000000000ull);
+		lxp_text_puts(&text, ".00 ");
+		lxp_text_u64(&text, ns / 1000000000ull);
+		lxp_text_puts(&text, ".00\n");
 	} else if (strcmp(abs, "/proc/meminfo") == 0) {
 		struct lxp_resource_stats resources;
 		struct lxp_mem_stats heap;
 		lxp_get_resource_stats(&resources);
 		(void)lxp_mem_stats(&heap);
-		o = p_str(buf, o, cap, "MemTotal:       ");
-		o = p_dec(buf, o, cap, resources.total_bytes / 1024u);
-		o = p_str(buf, o, cap, " kB\nMemFree:        ");
-		o = p_dec(buf, o, cap, resources.free_bytes / 1024u);
-		o = p_str(buf, o, cap, " kB\nMemAvailable:   ");
-		o = p_dec(buf, o, cap, resources.available_bytes / 1024u);
-		o = p_str(buf, o, cap,
-			  " kB\nBuffers:           0 kB\nCached:            0 kB\n"
-			  "SReclaimable:      0 kB\n");
-		o = p_str(buf, o, cap, "LxpSlotsTotal:  ");
-		o = p_dec(buf, o, cap, resources.slots_total);
-		o = p_str(buf, o, cap, "\nLxpSlotsFree:   ");
-		o = p_dec(buf, o, cap, resources.slots_free);
-		o = p_str(buf, o, cap, "\nLxpRegionsTotal: ");
-		o = p_dec(buf, o, cap, resources.regions_total);
-		o = p_str(buf, o, cap, "\nLxpRegionsFree: ");
-		o = p_dec(buf, o, cap, resources.regions_free);
-		o = p_str(buf, o, cap, "\nHostHeapTotal:  ");
-		o = p_dec(buf, o, cap, heap.total / 1024u);
-		o = p_str(buf, o, cap, " kB\nHostHeapFree:   ");
-		o = p_dec(buf, o, cap, heap.free / 1024u);
-		o = p_str(buf, o, cap, " kB\n");
+		lxp_text_puts(&text, "MemTotal:       ");
+		lxp_text_u64(&text, resources.total_bytes / 1024u);
+		lxp_text_puts(&text, " kB\nMemFree:        ");
+		lxp_text_u64(&text, resources.free_bytes / 1024u);
+		lxp_text_puts(&text, " kB\nMemAvailable:   ");
+		lxp_text_u64(&text, resources.available_bytes / 1024u);
+		lxp_text_puts(&text, " kB\nBuffers:           0 kB\nCached:            0 kB\n"
+				     "SReclaimable:      0 kB\n");
+		lxp_text_puts(&text, "LxpSlotsTotal:  ");
+		lxp_text_u64(&text, resources.slots_total);
+		lxp_text_puts(&text, "\nLxpSlotsFree:   ");
+		lxp_text_u64(&text, resources.slots_free);
+		lxp_text_puts(&text, "\nLxpRegionsTotal: ");
+		lxp_text_u64(&text, resources.regions_total);
+		lxp_text_puts(&text, "\nLxpRegionsFree: ");
+		lxp_text_u64(&text, resources.regions_free);
+		lxp_text_puts(&text, "\nHostHeapTotal:  ");
+		lxp_text_u64(&text, heap.total / 1024u);
+		lxp_text_puts(&text, " kB\nHostHeapFree:   ");
+		lxp_text_u64(&text, heap.free / 1024u);
+		lxp_text_puts(&text, " kB\n");
 	} else if (strcmp(abs, "/proc/partitions") == 0) {
 #if LXP_ENABLE_BLOCK
 		return lxp_block_proc_partitions(buf, cap);
@@ -317,11 +280,11 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		struct lxp_mem_stats heap;
 		lxp_get_resource_stats(&resources);
 		(void)lxp_mem_stats(&heap);
-#define RESOURCE_LINE(name, value)                         \
-	do {                                               \
-		o = p_str(buf, o, cap, name " ");          \
-		o = p_dec(buf, o, cap, (uint64_t)(value)); \
-		o = p_str(buf, o, cap, "\n");              \
+#define RESOURCE_LINE(name, value)                      \
+	do {                                            \
+		lxp_text_puts(&text, name " ");         \
+		lxp_text_u64(&text, (uint64_t)(value)); \
+		lxp_text_puts(&text, "\n");             \
 	} while (0)
 		RESOURCE_LINE("slots_total", resources.slots_total);
 		RESOURCE_LINE("slots_free", resources.slots_free);
@@ -341,11 +304,11 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		memset(&metrics, 0, sizeof(metrics));
 		int available = g_lxp_fs_ops != NULL && g_lxp_fs_ops->metrics != NULL &&
 				g_lxp_fs_ops->metrics(&metrics) == LXP_OK;
-#define FS_METRIC_LINE(name, value)                        \
-	do {                                               \
-		o = p_str(buf, o, cap, name " ");          \
-		o = p_dec(buf, o, cap, (uint64_t)(value)); \
-		o = p_str(buf, o, cap, "\n");              \
+#define FS_METRIC_LINE(name, value)                     \
+	do {                                            \
+		lxp_text_puts(&text, name " ");         \
+		lxp_text_u64(&text, (uint64_t)(value)); \
+		lxp_text_puts(&text, "\n");             \
 	} while (0)
 		FS_METRIC_LINE("provider_available", available);
 		FS_METRIC_LINE("requests_submitted", metrics.requests_submitted);
@@ -381,25 +344,24 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 	} else if (strcmp(abs, "/proc/rt_scope") == 0) {
 		long length = lxp_rt_scope_read(buf, cap);
 		if (length < 0) {
-			o = p_str(buf, o, cap, "available 0\n");
+			lxp_text_puts(&text, "available 0\n");
 		} else {
 			return length;
 		}
 	} else if (strcmp(abs, "/proc/cpuinfo") == 0) {
-		o = p_str(buf, o, cap,
-			  "processor\t: 0\nmodel name\t: ARM Cortex-M\nFeatures\t: thumb\n\n");
+		lxp_text_puts(&text,
+			      "processor\t: 0\nmodel name\t: ARM Cortex-M\nFeatures\t: thumb\n\n");
 	} else if (strcmp(abs, "/proc/mounts") == 0) {
-		o = p_str(buf, o, cap,
-			  "rootfs / rootfs ro 0 0\nproc /proc proc rw 0 0\n"
-			  "tmpfs /tmp tmpfs rw 0 0\n");
+		lxp_text_puts(&text, "rootfs / rootfs ro 0 0\nproc /proc proc rw 0 0\n"
+				     "tmpfs /tmp tmpfs rw 0 0\n");
 #if LXP_ENABLE_FS
 		if (lxp_hostfs_is_mounted()) {
-			o = p_mount_field(buf, o, cap, lxp_hostfs_mount_source());
-			o = p_str(buf, o, cap, " ");
-			o = p_mount_field(buf, o, cap, lxp_hostfs_mount_path());
-			o = p_str(buf, o, cap, " vfat ");
-			o = p_str(buf, o, cap, lxp_hostfs_is_read_only() ? "ro" : "rw");
-			o = p_str(buf, o, cap, ",nosuid,nodev,noexec 0 0\n");
+			p_mount_field(&text, lxp_hostfs_mount_source());
+			lxp_text_puts(&text, " ");
+			p_mount_field(&text, lxp_hostfs_mount_path());
+			lxp_text_puts(&text, " vfat ");
+			lxp_text_puts(&text, lxp_hostfs_is_read_only() ? "ro" : "rw");
+			lxp_text_puts(&text, ",nosuid,nodev,noexec 0 0\n");
 		}
 #endif
 	} else if (strcmp(abs, "/proc/stat") == 0) {
@@ -408,68 +370,69 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 		uint64_t idle_us = 0, busy_us = 0;
 		lxp_cpu_totals(&idle_us, &busy_us);
 		uint64_t user = busy_us / 10000ull, idle = idle_us / 10000ull;
-		o = p_str(buf, o, cap, "cpu  ");
-		o = p_dec(buf, o, cap, user);
-		o = p_str(buf, o, cap, " 0 0 ");
-		o = p_dec(buf, o, cap, idle);
-		o = p_str(buf, o, cap, " 0 0 0 0 0 0\ncpu0 ");
-		o = p_dec(buf, o, cap, user);
-		o = p_str(buf, o, cap, " 0 0 ");
-		o = p_dec(buf, o, cap, idle);
-		o = p_str(buf, o, cap, " 0 0 0 0 0 0\nctxt 0\nbtime 0\n");
+		lxp_text_puts(&text, "cpu  ");
+		lxp_text_u64(&text, user);
+		lxp_text_puts(&text, " 0 0 ");
+		lxp_text_u64(&text, idle);
+		lxp_text_puts(&text, " 0 0 0 0 0 0\ncpu0 ");
+		lxp_text_u64(&text, user);
+		lxp_text_puts(&text, " 0 0 ");
+		lxp_text_u64(&text, idle);
+		lxp_text_puts(&text, " 0 0 0 0 0 0\nctxt 0\nbtime 0\n");
 	} else if (strcmp(abs, "/proc/loadavg") == 0) {
 		int nproc = lxp_pent_count();
-		o = p_str(buf, o, cap, "0.00 0.00 0.00 1/");
-		o = p_dec(buf, o, cap, (uint64_t)(nproc > 0 ? nproc : 1));
-		o = p_str(buf, o, cap, " ");
-		o = p_dec(buf, o, cap, (uint64_t)p->pid);
-		o = p_str(buf, o, cap, "\n");
+		lxp_text_puts(&text, "0.00 0.00 0.00 1/");
+		lxp_text_u64(&text, (uint64_t)(nproc > 0 ? nproc : 1));
+		lxp_text_puts(&text, " ");
+		lxp_text_u64(&text, (uint64_t)p->pid);
+		lxp_text_puts(&text, "\n");
 	} else if (strcmp(abs, "/proc/filesystems") == 0) {
-		o = p_str(buf, o, cap, "nodev\tproc\nnodev\ttmpfs\n");
+		lxp_text_puts(&text, "nodev\tproc\nnodev\ttmpfs\n");
 #if LXP_ENABLE_FS
-		o = p_str(buf, o, cap, "\tvfat\n");
+		lxp_text_puts(&text, "\tvfat\n");
 #endif
 #if LXP_ENABLE_NET
 	} else if (strcmp(abs, "/proc/net/dev") == 0) {
 		/* busybox ifconfig reads this to enumerate interfaces + show RX/TX stats.
 		 * The network-provider contract has no traffic counters, so report zeros. */
-		o = p_str(
-			buf, o, cap,
+		lxp_text_puts(
+			&text,
 			"Inter-|   Receive                                                |  Transmit\n"
 			" face |bytes    packets errs drop fifo frame compressed multicast|bytes    "
 			"packets errs drop fifo colls carrier compressed\n");
 		/* One interface (eth0). The SIOC* ioctls ignore ifr_name, so listing a
 		 * loopback here would make busybox print it with eth0's data — omit it. */
 		if (lxp_sock_ifsnapshot(NULL, NULL, NULL, NULL, NULL) == 0)
-			o = p_str(
-				buf, o, cap,
+			lxp_text_puts(
+				&text,
 				"  eth0:       0       0    0    0    0     0          0         0"
 				"        0       0    0    0    0     0       0          0\n");
 	} else if (strcmp(abs, "/proc/net/route") == 0) {
 		uint8_t ip[4] = {0}, gw[4] = {0}, nm[4] = {0};
-		o = p_str(buf, o, cap,
-			  "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU"
-			  "\tWindow\tIRTT\n");
+		lxp_text_puts(
+			&text,
+			"Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU"
+			"\tWindow\tIRTT\n");
 		if (lxp_sock_ifsnapshot(ip, gw, nm, NULL, NULL) == 0) {
 			uint8_t net[4];
 			for (int i = 0; i < 4; i++)
 				net[i] = (uint8_t)(ip[i] & nm[i]);
 			/* local subnet: dest = ip & mask, no gateway, flags = UP */
-			o = p_str(buf, o, cap, "eth0\t");
-			o = p_hexle(buf, o, cap, net);
-			o = p_str(buf, o, cap, "\t00000000\t0001\t0\t0\t0\t");
-			o = p_hexle(buf, o, cap, nm);
-			o = p_str(buf, o, cap, "\t0\t0\t0\n");
+			lxp_text_puts(&text, "eth0\t");
+			p_hexle(&text, net);
+			lxp_text_puts(&text, "\t00000000\t0001\t0\t0\t0\t");
+			p_hexle(&text, nm);
+			lxp_text_puts(&text, "\t0\t0\t0\n");
 			/* default route: dest = 0, gateway = gw, flags = UP|GATEWAY */
 			if (gw[0] | gw[1] | gw[2] | gw[3]) {
-				o = p_str(buf, o, cap, "eth0\t00000000\t");
-				o = p_hexle(buf, o, cap, gw);
-				o = p_str(buf, o, cap, "\t0003\t0\t0\t0\t00000000\t0\t0\t0\n");
+				lxp_text_puts(&text, "eth0\t00000000\t");
+				p_hexle(&text, gw);
+				lxp_text_puts(&text, "\t0003\t0\t0\t0\t00000000\t0\t0\t0\n");
 			}
 		}
 #endif
 	} else {
 		return -1;
 	}
-	return (long)o;
+	return (long)text.length;
 }

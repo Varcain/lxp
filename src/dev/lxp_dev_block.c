@@ -15,6 +15,7 @@
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_proc.h"
 #include "lxp_provider.h"
+#include "lxp_text.h"
 
 #include <limits.h>
 #include <string.h>
@@ -48,10 +49,8 @@ struct lxp_block_view {
 };
 
 static struct lxp_block_view g_views[LXP_BLOCK_NODE_COUNT] = {
-	{.path = "/dev/mmcblk0", .partition = 0},
-	{.path = "/dev/mmcblk0p1", .partition = 1},
-	{.path = "/dev/mmcblk0p2", .partition = 2},
-	{.path = "/dev/mmcblk0p3", .partition = 3},
+	{.path = "/dev/mmcblk0", .partition = 0},   {.path = "/dev/mmcblk0p1", .partition = 1},
+	{.path = "/dev/mmcblk0p2", .partition = 2}, {.path = "/dev/mmcblk0p3", .partition = 3},
 	{.path = "/dev/mmcblk0p4", .partition = 4},
 };
 static uint8_t g_mbr[LXP_MBR_SIZE];
@@ -75,37 +74,6 @@ static void block_select(lxp_proc_t *proc)
 {
 	if (g_lxp_block_ops && g_lxp_block_ops->request_owner)
 		g_lxp_block_ops->request_owner(block_owner(proc));
-}
-
-static long block_error(int result)
-{
-	switch (result) {
-	case LXP_OK:
-		return 0;
-	case LXP_ERR_WOULD_BLOCK:
-	case LXP_ERR_QUEUE_FULL:
-	case LXP_ERR_QUEUE_EMPTY:
-		return -LXP_EAGAIN;
-	case LXP_ERR_NOT_REGISTERED:
-		return -LXP_ENODEV;
-	case LXP_ERR_INVALID_PARAM:
-	case LXP_ERR_INVAL:
-		return -LXP_EINVAL;
-	case LXP_ERR_BUSY:
-		return -LXP_EBUSY;
-	case LXP_ERR_READ_ONLY:
-		return -LXP_EROFS;
-	case LXP_ERR_PERMISSION:
-		return -LXP_EACCES;
-	case LXP_ERR_NO_MEMORY:
-		return -LXP_ENOMEM;
-	case LXP_ERR_TIMEOUT:
-		return -LXP_ETIMEDOUT;
-	case LXP_ERR_NOT_SUPPORTED:
-		return -LXP_EOPNOTSUPP;
-	default:
-		return -LXP_EIO;
-	}
 }
 
 static uint64_t view_size(const struct lxp_block_view *view)
@@ -133,9 +101,8 @@ static void parse_mbr(void)
 		uint64_t count = get_le32(entry + 12);
 		/* Extended containers are not data partitions. Supporting them requires
 		 * walking an EBR chain, so omit them instead of exposing a misleading node. */
-		if (type == 0u || type == 0x05u || type == 0x0fu || type == 0x85u ||
-		    count == 0u || first >= g_views[0].block_count ||
-		    count > g_views[0].block_count - first)
+		if (type == 0u || type == 0x05u || type == 0x0fu || type == 0x85u || count == 0u ||
+		    first >= g_views[0].block_count || count > g_views[0].block_count - first)
 			continue;
 		int overlaps = 0;
 		for (size_t prior = 1; prior <= i; prior++) {
@@ -176,14 +143,14 @@ static long block_open(struct lxp_dev *dev, struct lxp_dev_open *open, int flags
 		return -LXP_ENODEV;
 	if (view->open_count == UINT8_MAX)
 		return -LXP_EMFILE;
-	unsigned provider_flags =
-		(flags & LXP_O_ACCMODE) == LXP_O_RDONLY ? 0u : LXP_BLOCK_OPEN_WRITE;
+	unsigned provider_flags = (flags & LXP_O_ACCMODE) == LXP_O_RDONLY ? 0u
+									  : LXP_BLOCK_OPEN_WRITE;
 	if (provider_flags != 0u) {
 		if (g_provider_writer || g_provider_readers)
 			return -LXP_EBUSY;
 		int rc = g_lxp_block_ops->open(provider_flags);
 		if (rc != LXP_OK)
-			return block_error(rc);
+			return lxp_provider_error(rc);
 		g_provider_writer = 1u;
 	} else {
 		if (g_provider_writer || g_provider_readers == UINT8_MAX)
@@ -191,7 +158,7 @@ static long block_open(struct lxp_dev *dev, struct lxp_dev_open *open, int flags
 		if (g_provider_readers == 0u) {
 			int rc = g_lxp_block_ops->open(0u);
 			if (rc != LXP_OK)
-				return block_error(rc);
+				return lxp_provider_error(rc);
 		}
 		g_provider_readers++;
 	}
@@ -250,7 +217,7 @@ static long block_transfer(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_p
 	if (done > count)
 		return -LXP_EIO;
 	if (rc != LXP_OK)
-		return block_error(rc);
+		return lxp_provider_error(rc);
 	open->pos += done;
 	return (long)done;
 }
@@ -299,7 +266,7 @@ static long block_reread(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_pro
 			return -LXP_EAGAIN;
 		if (rc != LXP_OK) {
 			g_reread_open = NULL;
-			return block_error(rc);
+			return lxp_provider_error(rc);
 		}
 		open->u.block.reread_phase = 1u;
 	}
@@ -310,7 +277,7 @@ static long block_reread(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_pro
 	open->u.block.reread_phase = 0u;
 	g_reread_open = NULL;
 	if (rc != LXP_OK)
-		return block_error(rc);
+		return lxp_provider_error(rc);
 	if (done != sizeof(g_mbr))
 		return -LXP_EIO;
 	parse_mbr();
@@ -330,7 +297,8 @@ static long block_ioctl(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_proc
 		return put_value(proc, arg, &size, sizeof(size));
 	}
 	case LXP_BLKGETSIZE: {
-		uint32_t sectors = bytes / 512u > UINT32_MAX ? UINT32_MAX : (uint32_t)(bytes / 512u);
+		uint32_t sectors = bytes / 512u > UINT32_MAX ? UINT32_MAX
+							     : (uint32_t)(bytes / 512u);
 		return put_value(proc, arg, &sectors, sizeof(sectors));
 	}
 	case LXP_BLKGETSIZE64_32:
@@ -343,7 +311,7 @@ static long block_ioctl(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_proc
 			.sectors = 63,
 			.cylinders = cylinders > UINT16_MAX ? UINT16_MAX : (uint16_t)cylinders,
 			.start = view->first_block > UINT32_MAX ? UINT32_MAX
-								      : (uint32_t)view->first_block,
+								: (uint32_t)view->first_block,
 		};
 		return put_value(proc, arg, &geometry, sizeof(geometry));
 	}
@@ -359,7 +327,7 @@ static long block_sync(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_proc_
 	(void)dev;
 	(void)open;
 	block_select(proc);
-	return block_error(g_lxp_block_ops->sync());
+	return lxp_provider_error(g_lxp_block_ops->sync());
 }
 
 static void block_cancel(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_proc_t *proc)
@@ -401,45 +369,24 @@ int lxp_block_resolve(const char *path, lxp_block_view_info_t *out)
 	return -LXP_ENODEV;
 }
 
-static size_t append_text(char *buffer, size_t offset, size_t capacity, const char *text)
-{
-	while (*text && offset < capacity)
-		buffer[offset++] = *text++;
-	return offset;
-}
-
-static size_t append_decimal(char *buffer, size_t offset, size_t capacity, uint64_t value)
-{
-	char digits[20];
-	size_t count = 0;
-	if (value == 0u)
-		digits[count++] = '0';
-	while (value != 0u) {
-		digits[count++] = (char)('0' + value % 10u);
-		value /= 10u;
-	}
-	while (count && offset < capacity)
-		buffer[offset++] = digits[--count];
-	return offset;
-}
-
 long lxp_block_proc_partitions(char *buffer, size_t capacity)
 {
 	if (!buffer && capacity)
 		return -LXP_EINVAL;
-	size_t offset = append_text(buffer, 0u, capacity, "major minor  #blocks  name\n\n");
+	lxp_text_t text = lxp_text_make(buffer, capacity);
+	lxp_text_puts(&text, "major minor  #blocks  name\n\n");
 	for (size_t i = 0; i < LXP_BLOCK_NODE_COUNT; i++) {
 		if (!g_views[i].present)
 			continue;
-		offset = append_text(buffer, offset, capacity, " 179        ");
-		offset = append_decimal(buffer, offset, capacity, i);
-		offset = append_text(buffer, offset, capacity, " ");
-		offset = append_decimal(buffer, offset, capacity, view_size(&g_views[i]) / 1024u);
-		offset = append_text(buffer, offset, capacity, " ");
-		offset = append_text(buffer, offset, capacity, g_views[i].path + 5);
-		offset = append_text(buffer, offset, capacity, "\n");
+		lxp_text_puts(&text, " 179        ");
+		lxp_text_u64(&text, i);
+		lxp_text_putc(&text, ' ');
+		lxp_text_u64(&text, view_size(&g_views[i]) / 1024u);
+		lxp_text_putc(&text, ' ');
+		lxp_text_puts(&text, g_views[i].path + 5);
+		lxp_text_putc(&text, '\n');
 	}
-	return (long)offset;
+	return (long)text.length;
 }
 
 void lxp_dev_autoreg_block(void)

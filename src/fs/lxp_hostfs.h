@@ -73,7 +73,6 @@ void lxp_hostfs_syscall_enter(lxp_proc_t *proc, long nr, long a0, long a1, long 
 /** Abandon a generation-qualified request when a parked syscall is interrupted. */
 void lxp_hostfs_cancel(lxp_proc_t *proc);
 /** Convert an LXP_ERR_* provider result to a negated Linux errno. */
-long lxp_hostfs_error(int result);
 /** Release any handles left by an interrupted/test run. */
 void lxp_hostfs_runtime_reset(void);
 

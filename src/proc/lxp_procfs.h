@@ -26,10 +26,6 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap);
 
 /* --- helpers the dispatcher's /proc getdents/readlink glue also uses --------- */
 
-/* Append the decimal of `v` to o[off..cap); returns the new offset. (A small string
- * builder; /proc/self readlink formats the pid with it.) */
-size_t p_dec(char *o, size_t off, size_t cap, uint64_t v);
-
 /* If `abs` is /proc/<pid> or /proc/<pid>/<file>, return the pid and set *file to the
  * trailing component (NULL for the dir itself); 0 if `abs` is not a /proc/<pid> path. */
 int proc_pid(const char *abs, const lxp_proc_t *p, const char **file);
