@@ -7,7 +7,7 @@
 
 #include <string.h>
 
-#include "lxp/lxp_proc.h"
+#include "lxp/lxp_linux_uapi.h"
 
 static int copy_token(const uint8_t **cursor, const uint8_t *end, char *dst, size_t capacity)
 {

@@ -39,125 +39,6 @@
 extern "C" {
 #endif
 
-/* clone(2) resource-sharing flags used by the bounded NOMMU task model. */
-#define LXP_CLONE_VM 0x00000100u
-#define LXP_CLONE_FS 0x00000200u
-#define LXP_CLONE_FILES 0x00000400u
-#define LXP_CLONE_SIGHAND 0x00000800u
-#define LXP_CLONE_THREAD 0x00010000u
-#define LXP_AT_REMOVEDIR 0x200
-
-/* mmap flags (ARM). Only anonymous mappings are backed (from the arena). */
-#define LXP_MAP_ANONYMOUS 0x20
-
-/* open(2) flags: low two bits select the access mode (read-only filesystem). */
-#define LXP_O_ACCMODE 0x3
-#define LXP_O_RDONLY 0x0
-#define LXP_O_WRONLY 0x1
-#define LXP_O_RDWR 0x2
-#define LXP_O_CREAT 0x40
-#define LXP_O_EXCL 0x80
-#define LXP_O_TRUNC 0x200
-#define LXP_O_APPEND 0x400
-#define LXP_O_NONBLOCK 0x800  /* a device open that returns -EAGAIN instead of blocking */
-#define LXP_O_DIRECTORY 0x4000
-#define LXP_O_CLOEXEC 0x80000 /* close-on-exec (also pipe2/dup3/accept4 flag) */
-#define LXP_FD_CLOEXEC 1      /* fcntl(F_SETFD/F_GETFD) close-on-exec bit */
-/* openat dirfd sentinel for the current working directory. */
-#define LXP_AT_FDCWD (-100)
-/* lseek(2) whence. */
-#define LXP_SEEK_SET 0
-#define LXP_SEEK_CUR 1
-#define LXP_SEEK_END 2
-/* struct stat st_mode file-type bits. */
-#define LXP_S_IFMT 0xf000u
-#define LXP_S_IFREG 0x8000u
-#define LXP_S_IFDIR 0x4000u
-#define LXP_S_IFBLK 0x6000u
-#define LXP_S_IFCHR 0x2000u
-#define LXP_S_IFLNK 0xa000u
-#define LXP_S_IFSOCK 0xc000u
-/* getdents64 d_type values. */
-#define LXP_DT_CHR 2
-#define LXP_DT_DIR 4
-#define LXP_DT_BLK 6
-#define LXP_DT_REG 8
-/* termios ioctls so a console looks like a tty (isatty → interactive shell). */
-#define LXP_TCGETS 0x5401
-#define LXP_TCSETS 0x5402
-#define LXP_TCSETSW 0x5403
-#define LXP_TCSETSF 0x5404
-#define LXP_TIOCGWINSZ 0x5413
-#define LXP_TIOCSWINSZ 0x5414
-/* Unix98 pty-master ioctls (dropbear/openpty on /dev/ptmx): get the pts number and
- * lock/unlock the slave (grantpt/unlockpt). _IOR/_IOW('T',0x30/0x31) encodings. */
-#define LXP_TIOCGPTN 0x80045430u
-#define LXP_TIOCSPTLCK 0x40045431u
-#define LXP_TIOCGPTPEER 0x5441
-/* tty/session ioctls getty + login issue (accepted; we are a single console). */
-#define LXP_TIOCSCTTY 0x540e
-#define LXP_TIOCGPGRP 0x540f
-#define LXP_TIOCSPGRP 0x5410
-#define LXP_TIOCNOTTY 0x5422
-/* c_lflag/c_iflag/c_oflag/c_cflag bits used for the canonical-tty default. */
-#define LXP_ISIG 0x0001u
-#define LXP_ICANON 0x0002u
-#define LXP_ECHO 0x0008u
-#define LXP_ICRNL 0x0100u
-#define LXP_OPOST 0x0001u
-#define LXP_ONLCR 0x0004u
-#define LXP_CS8 0x0030u
-#define LXP_CREAD 0x0080u
-/* Signals: a per-process disposition table + the handful the shell cares about.
- * SIG_DFL/SIG_IGN are the special handler sentinels. Must cover the POSIX RT signals
- * (SIGRTMIN..): LinuxThreads uses __SIGRTMIN (>=32) for its thread restart/cancel/debug
- * signals, so a 32-wide table would reject the restart kill() and hang every pthread. */
-#define LXP_NSIG 65
-#define LXP_SIG_DFL 0
-#define LXP_SIG_IGN 1
-#define LXP_SIGINT 2
-#define LXP_SIGQUIT 3
-#define LXP_SIGABRT 6
-#define LXP_SIGKILL 9
-#define LXP_SIGSEGV 11
-#define LXP_SIGPIPE 13
-#define LXP_SIGALRM 14
-#define LXP_SIGTERM 15
-#define LXP_SIGCHLD 17	/* child stop/exit; default action = IGNORE (never terminates) */
-#define LXP_SIGCONT 18	/* continue a stopped process; default action never terminates */
-#define LXP_SIGSTOP 19	/* stop (job control); can never be caught or blocked */
-#define LXP_SIGTSTP 20	/* stop from the tty (^Z); default action = stop */
-#define LXP_SIGTTIN 21	/* background read from the tty; default action = stop */
-#define LXP_SIGTTOU 22	/* background write to the tty; default action = stop */
-#define LXP_SIGURG 23	/* urgent socket data; default action = IGNORE */
-#define LXP_SIGWINCH 28 /* terminal resized; default action = IGNORE */
-
-/* rt_sigprocmask(2) `how` values. */
-#define LXP_SIG_BLOCK 0
-#define LXP_SIG_UNBLOCK 1
-#define LXP_SIG_SETMASK 2
-#define LXP_ITIMER_REAL 0 /* setitimer(): real-time countdown -> SIGALRM */
-/* fcntl commands: F_DUPFD duplicates an fd (the shell dups stdin for its
- * interactive fd); the rest are benign get/set probes. */
-#define LXP_F_DUPFD 0
-#define LXP_F_GETFD 1
-#define LXP_F_SETFD 2
-#define LXP_F_GETFL 3
-#define LXP_F_SETFL 4
-#define LXP_F_DUPFD_CLOEXEC 1030
-/* c_cc indices (Linux generic, NCCS=19). */
-#define LXP_VINTR 0
-#define LXP_VERASE 2
-#define LXP_VEOF 4
-#define LXP_VMIN 6
-#define LXP_VSUSP 10 /* ^Z suspend key */
-#define LXP_NCCS 19
-
-/* wait4/waitpid options. */
-#define LXP_WNOHANG 1
-#define LXP_WUNTRACED 2 /* also report children that stopped (job control) */
-#define LXP_WCONTINUED 8
-
 /* Ready-child queue entry kind (child_kind[]): an exited zombie vs a stop notification. */
 #define LXP_CHILD_EXITED 0
 #define LXP_CHILD_STOPPED 1
@@ -167,109 +48,6 @@ extern "C" {
 #define LXP_STOP_PARKED \
 	1 /* stopped while already host-parked; the existing wait/lifecycle owner retains it */
 #define LXP_STOP_READY 2 /* saved slot context has a completed result and may resume on SIGCONT */
-/* statx: AT_EMPTY_PATH means "stat the dirfd itself" (fstat); the basic-stats
- * result mask reported back in stx_mask. */
-#define LXP_AT_EMPTY_PATH 0x1000
-#define LXP_AT_SYMLINK_NOFOLLOW 0x100
-#define LXP_STATX_BASIC_STATS 0x000007ffu
-
-/* Linux errno values returned (negated) on syscall failure. */
-#define LXP_EPERM 1
-#define LXP_ENOENT 2
-#define LXP_ESRCH 3
-#define LXP_EINTR 4
-#define LXP_EIO 5
-#define LXP_E2BIG 7
-#define LXP_ENOEXEC 8
-#define LXP_EBADF 9
-#define LXP_ECHILD 10
-#define LXP_EAGAIN 11
-#define LXP_ENOMEM 12
-#define LXP_EACCES 13
-#define LXP_EFAULT 14
-#define LXP_EBUSY 16
-#define LXP_EXDEV 18
-#define LXP_ENODEV 19
-#define LXP_ENOTDIR 20
-#define LXP_EISDIR 21
-#define LXP_EMFILE 24
-#define LXP_ENOTTY 25
-#define LXP_EFBIG 27
-#define LXP_ESPIPE 29
-#define LXP_EROFS 30
-#define LXP_EPIPE 32
-#define LXP_EEXIST 17
-#define LXP_EINVAL 22
-#define LXP_ENOSPC 28
-#define LXP_ERANGE 34
-#define LXP_ENAMETOOLONG 36
-#define LXP_ENOTEMPTY 39
-#define LXP_ENOSYS 38
-#define LXP_EOVERFLOW 75
-#define LXP_ETIMEDOUT 110 /* a futex wait whose timeout expired */
-/* socket errnos (asm-generic values; ARM shares them). */
-#define LXP_ENOTSOCK 88
-#define LXP_EMSGSIZE 90
-#define LXP_EPROTONOSUPPORT 93
-#define LXP_EOPNOTSUPP 95
-#define LXP_EAFNOSUPPORT 97
-#define LXP_EADDRINUSE 98
-#define LXP_EADDRNOTAVAIL 99
-#define LXP_ENETUNREACH 101
-#define LXP_ECONNRESET 104
-#define LXP_EISCONN 106
-#define LXP_ENOTCONN 107
-#define LXP_ECONNREFUSED 111
-#define LXP_EHOSTUNREACH 113
-#define LXP_EALREADY 114
-#define LXP_EINPROGRESS 115
-#define LXP_ESTALE 116 /* a remote-fs fid invalidated by a server reconnect */
-
-/** Scatter/gather element, matching the target's @c struct iovec layout. */
-typedef struct lxp_iovec {
-	void *iov_base; /**< Start of the buffer (in the program's address space). */
-	size_t iov_len; /**< Length of the buffer in bytes. */
-} lxp_iovec;
-
-/** Message header for sendmsg(2)/recvmsg(2), matching the target's @c struct msghdr.
- * Ancillary data (@c msg_control) is not interpreted — SCM_RIGHTS fd-passing is
- * unsupported — so only the iovec payload is carried. */
-typedef struct lxp_msghdr {
-	void *msg_name;		  /**< Optional address (datagram dest / source), or NULL. */
-	unsigned int msg_namelen; /**< Length of @c msg_name (in, and out on recvmsg). */
-	lxp_iovec *msg_iov;	  /**< Scatter/gather buffer array. */
-	size_t msg_iovlen;	  /**< Entries in @c msg_iov. */
-	void *msg_control;	  /**< Ancillary data (ignored). */
-	size_t msg_controllen;	  /**< Length of @c msg_control (out: 0). */
-	int msg_flags;		  /**< Flags (out: 0 on recvmsg). */
-} lxp_msghdr;
-
-/** Kernel @c struct termios (ARM, NCCS=19), filled by the TCGETS ioctl. */
-typedef struct lxp_termios {
-	uint32_t c_iflag;
-	uint32_t c_oflag;
-	uint32_t c_cflag;
-	uint32_t c_lflag;
-	uint8_t c_line;
-	uint8_t c_cc[LXP_NCCS];
-} lxp_termios;
-
-/** @c struct winsize returned by TIOCGWINSZ. */
-typedef struct lxp_winsize {
-	uint16_t ws_row;
-	uint16_t ws_col;
-	uint16_t ws_xpixel;
-	uint16_t ws_ypixel;
-} lxp_winsize;
-
-/** @c struct pollfd for poll(2). */
-typedef struct lxp_pollfd {
-	int fd;
-	short events;
-	short revents;
-} lxp_pollfd;
-#define LXP_POLLIN 0x0001
-#define LXP_POLLOUT 0x0004
 
 /** Refcounted open-file description shared by dup() and inherited descriptors. */
 typedef struct lxp_ofd {
@@ -313,11 +91,6 @@ typedef struct lxp_fd {
 #define LXP_FD_NET 10
 /** host-backed writable filesystem fd. @c file_idx = hostfs open-pool index. */
 #define LXP_FD_HOSTFS 11
-/* eventfd2(2) flags. */
-#define LXP_EFD_SEMAPHORE 0x00000001
-#define LXP_EFD_NONBLOCK 0x00000800
-#define LXP_EFD_CLOEXEC 0x00080000
-
 /** Maximum simultaneously-open file descriptors per process. A fork-per-connection
  * server (httpd) holds std streams + the listener + the accepted client, per proc. */
 #define LXP_MAX_FDS 32
@@ -709,11 +482,6 @@ uint32_t lxp_nice_weight(int nice);
 
 /** Bind and clear the transient exec capture owned by @p proc's process slot. */
 void lxp_proc_bind_exec_capture(lxp_proc_t *proc, lxp_exec_capture_t *capture);
-
-/* getrandom(2) flags from Linux UAPI <linux/random.h>. */
-#define LXP_GRND_NONBLOCK 0x0001u
-#define LXP_GRND_RANDOM 0x0002u
-#define LXP_GRND_INSECURE 0x0004u
 
 #ifdef __cplusplus
 }

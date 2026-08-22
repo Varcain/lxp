@@ -11,12 +11,15 @@
 
 /**
  * @file lxp_linux_uapi.h
- * @brief Linux ARM EABI constants shared across the personality boundary.
+ * @brief Immutable Linux ARM EABI constants and wire layouts.
  *
- * Keep syscall numbers independent of the mutable process representation.
- * Dispatchers, RTOS seams, tests, and conformance tooling can consume this
- * contract without acquiring ownership of @c lxp_proc_t internals.
+ * Keep target ABI definitions independent of the mutable process
+ * representation. Dispatchers, providers, tests, and conformance tooling can
+ * consume this contract without acquiring ownership of @c lxp_proc_t internals.
  */
+
+#include <stddef.h>
+#include <stdint.h>
 
 /* Linux ARM EABI syscall numbers implemented or classified by lxp. */
 #define LXP_NR_exit 1
@@ -174,5 +177,213 @@
 #define LXP_NR_sendmsg 296
 #define LXP_NR_recvmsg 297
 #define LXP_NR_accept4 366
+
+/* clone(2) resource-sharing flags used by the bounded NOMMU task model. */
+#define LXP_CLONE_VM 0x00000100u
+#define LXP_CLONE_FS 0x00000200u
+#define LXP_CLONE_FILES 0x00000400u
+#define LXP_CLONE_SIGHAND 0x00000800u
+#define LXP_CLONE_THREAD 0x00010000u
+
+/* *at(2), mmap(2), and descriptor flags. */
+#define LXP_AT_FDCWD (-100)
+#define LXP_AT_SYMLINK_NOFOLLOW 0x100
+#define LXP_AT_REMOVEDIR 0x200
+#define LXP_AT_EMPTY_PATH 0x1000
+#define LXP_MAP_ANONYMOUS 0x20
+#define LXP_O_ACCMODE 0x3
+#define LXP_O_RDONLY 0x0
+#define LXP_O_WRONLY 0x1
+#define LXP_O_RDWR 0x2
+#define LXP_O_CREAT 0x40
+#define LXP_O_EXCL 0x80
+#define LXP_O_TRUNC 0x200
+#define LXP_O_APPEND 0x400
+#define LXP_O_NONBLOCK 0x800
+#define LXP_O_DIRECTORY 0x4000
+#define LXP_O_CLOEXEC 0x80000
+#define LXP_FD_CLOEXEC 1
+#define LXP_SEEK_SET 0
+#define LXP_SEEK_CUR 1
+#define LXP_SEEK_END 2
+
+/* struct stat file types and getdents64 d_type values. */
+#define LXP_S_IFMT 0xf000u
+#define LXP_S_IFREG 0x8000u
+#define LXP_S_IFDIR 0x4000u
+#define LXP_S_IFBLK 0x6000u
+#define LXP_S_IFCHR 0x2000u
+#define LXP_S_IFLNK 0xa000u
+#define LXP_S_IFSOCK 0xc000u
+#define LXP_DT_CHR 2
+#define LXP_DT_DIR 4
+#define LXP_DT_BLK 6
+#define LXP_DT_REG 8
+
+/* termios and Unix98 pty ioctls used by the personality. */
+#define LXP_TCGETS 0x5401
+#define LXP_TCSETS 0x5402
+#define LXP_TCSETSW 0x5403
+#define LXP_TCSETSF 0x5404
+#define LXP_TIOCGWINSZ 0x5413
+#define LXP_TIOCSWINSZ 0x5414
+#define LXP_TIOCGPTN 0x80045430u
+#define LXP_TIOCSPTLCK 0x40045431u
+#define LXP_TIOCGPTPEER 0x5441
+#define LXP_TIOCSCTTY 0x540e
+#define LXP_TIOCGPGRP 0x540f
+#define LXP_TIOCSPGRP 0x5410
+#define LXP_TIOCNOTTY 0x5422
+#define LXP_ISIG 0x0001u
+#define LXP_ICANON 0x0002u
+#define LXP_ECHO 0x0008u
+#define LXP_ICRNL 0x0100u
+#define LXP_OPOST 0x0001u
+#define LXP_ONLCR 0x0004u
+#define LXP_CS8 0x0030u
+#define LXP_CREAD 0x0080u
+#define LXP_VINTR 0
+#define LXP_VERASE 2
+#define LXP_VEOF 4
+#define LXP_VMIN 6
+#define LXP_VSUSP 10
+#define LXP_NCCS 19
+
+/* Linux signal numbers and mask operations. */
+#define LXP_NSIG 65
+#define LXP_SIG_DFL 0
+#define LXP_SIG_IGN 1
+#define LXP_SIGINT 2
+#define LXP_SIGQUIT 3
+#define LXP_SIGABRT 6
+#define LXP_SIGKILL 9
+#define LXP_SIGSEGV 11
+#define LXP_SIGPIPE 13
+#define LXP_SIGALRM 14
+#define LXP_SIGTERM 15
+#define LXP_SIGCHLD 17
+#define LXP_SIGCONT 18
+#define LXP_SIGSTOP 19
+#define LXP_SIGTSTP 20
+#define LXP_SIGTTIN 21
+#define LXP_SIGTTOU 22
+#define LXP_SIGURG 23
+#define LXP_SIGWINCH 28
+#define LXP_SIG_BLOCK 0
+#define LXP_SIG_UNBLOCK 1
+#define LXP_SIG_SETMASK 2
+#define LXP_ITIMER_REAL 0
+
+/* fcntl(2), wait4(2), statx(2), eventfd2(2), and getrandom(2). */
+#define LXP_F_DUPFD 0
+#define LXP_F_GETFD 1
+#define LXP_F_SETFD 2
+#define LXP_F_GETFL 3
+#define LXP_F_SETFL 4
+#define LXP_F_DUPFD_CLOEXEC 1030
+#define LXP_WNOHANG 1
+#define LXP_WUNTRACED 2
+#define LXP_WCONTINUED 8
+#define LXP_STATX_BASIC_STATS 0x000007ffu
+#define LXP_EFD_SEMAPHORE 0x00000001
+#define LXP_EFD_NONBLOCK 0x00000800
+#define LXP_EFD_CLOEXEC 0x00080000
+#define LXP_GRND_NONBLOCK 0x0001u
+#define LXP_GRND_RANDOM 0x0002u
+#define LXP_GRND_INSECURE 0x0004u
+
+/* Linux errno values returned negated by the syscall boundary. */
+#define LXP_EPERM 1
+#define LXP_ENOENT 2
+#define LXP_ESRCH 3
+#define LXP_EINTR 4
+#define LXP_EIO 5
+#define LXP_E2BIG 7
+#define LXP_ENOEXEC 8
+#define LXP_EBADF 9
+#define LXP_ECHILD 10
+#define LXP_EAGAIN 11
+#define LXP_ENOMEM 12
+#define LXP_EACCES 13
+#define LXP_EFAULT 14
+#define LXP_EBUSY 16
+#define LXP_EEXIST 17
+#define LXP_EXDEV 18
+#define LXP_ENODEV 19
+#define LXP_ENOTDIR 20
+#define LXP_EISDIR 21
+#define LXP_EINVAL 22
+#define LXP_EMFILE 24
+#define LXP_ENOTTY 25
+#define LXP_EFBIG 27
+#define LXP_ENOSPC 28
+#define LXP_ESPIPE 29
+#define LXP_EROFS 30
+#define LXP_EPIPE 32
+#define LXP_ERANGE 34
+#define LXP_ENAMETOOLONG 36
+#define LXP_ENOSYS 38
+#define LXP_ENOTEMPTY 39
+#define LXP_EOVERFLOW 75
+#define LXP_ENOTSOCK 88
+#define LXP_EMSGSIZE 90
+#define LXP_EPROTONOSUPPORT 93
+#define LXP_EOPNOTSUPP 95
+#define LXP_EAFNOSUPPORT 97
+#define LXP_EADDRINUSE 98
+#define LXP_EADDRNOTAVAIL 99
+#define LXP_ENETUNREACH 101
+#define LXP_ECONNRESET 104
+#define LXP_EISCONN 106
+#define LXP_ENOTCONN 107
+#define LXP_ETIMEDOUT 110
+#define LXP_ECONNREFUSED 111
+#define LXP_EHOSTUNREACH 113
+#define LXP_EALREADY 114
+#define LXP_EINPROGRESS 115
+#define LXP_ESTALE 116
+
+/** Scatter/gather element matching the target's struct iovec layout. */
+typedef struct lxp_iovec {
+	void *iov_base;
+	size_t iov_len;
+} lxp_iovec;
+
+/** Target struct msghdr; ancillary data is not interpreted by LXP. */
+typedef struct lxp_msghdr {
+	void *msg_name;
+	unsigned int msg_namelen;
+	lxp_iovec *msg_iov;
+	size_t msg_iovlen;
+	void *msg_control;
+	size_t msg_controllen;
+	int msg_flags;
+} lxp_msghdr;
+
+/** Kernel struct termios for ARM (NCCS=19). */
+typedef struct lxp_termios {
+	uint32_t c_iflag;
+	uint32_t c_oflag;
+	uint32_t c_cflag;
+	uint32_t c_lflag;
+	uint8_t c_line;
+	uint8_t c_cc[LXP_NCCS];
+} lxp_termios;
+
+typedef struct lxp_winsize {
+	uint16_t ws_row;
+	uint16_t ws_col;
+	uint16_t ws_xpixel;
+	uint16_t ws_ypixel;
+} lxp_winsize;
+
+typedef struct lxp_pollfd {
+	int fd;
+	short events;
+	short revents;
+} lxp_pollfd;
+
+#define LXP_POLLIN 0x0001
+#define LXP_POLLOUT 0x0004
 
 #endif /* LXP_LINUX_UAPI_H */

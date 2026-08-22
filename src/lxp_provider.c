@@ -8,7 +8,7 @@
  */
 #include "lxp_provider.h"
 
-#include "lxp/lxp_proc.h"
+#include "lxp/lxp_linux_uapi.h"
 
 #if LXP_ENABLE_NET
 const lxp_net_ops_t *g_lxp_net_ops;
