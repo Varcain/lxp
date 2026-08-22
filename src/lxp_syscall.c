@@ -266,18 +266,12 @@ static const char *child_name(const char *dir, const char *path)
 	return (*name && !strchr(name, '/')) ? name : NULL;
 }
 
-/* Local spelling retained while syscall handlers migrate backing classes. */
-static lxp_ofd_t *fd_slot(lxp_proc_t *p, int fd)
-{
-	return lxp_fd_description(p, fd);
-}
-
 #if LXP_ENABLE_NET
 /* Resolve @p fd to its socket open-pool index, or -1 if @p fd is not a socket. Collapses
- * the fd_slot + kind check that the socket syscalls all repeat. */
+ * descriptor lookup + kind check that the socket syscalls all repeat. */
 static int sock_slot(lxp_proc_t *p, int fd)
 {
-	lxp_ofd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	return (s && s->kind == LXP_FD_SOCKET) ? s->file_idx : -1;
 }
 
@@ -858,21 +852,21 @@ static void fop_close_eventfd(lxp_proc_t *p, lxp_ofd_t *s)
 static void fop_close_dev(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
-	lxp_dev_close(s->file_idx); /* refs--, ops->release at the last close */
+	lxp_dev_close(s->file_idx); /* release the backing object owned by this OFD */
 }
 #endif
 #if LXP_ENABLE_NET
 static void fop_close_socket(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
-	lxp_sock_close(s->file_idx); /* refs--, socket close at the last close */
+	lxp_sock_close(s->file_idx); /* close the backing socket owned by this OFD */
 }
 #endif
 #if LXP_ENABLE_NETFS
 static void fop_close_netfs(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
-	lxp_netfs_close(s->file_idx); /* refs--, enqueue a Tclunk at the last close */
+	lxp_netfs_close(s->file_idx); /* enqueue Tclunk for the backing fid */
 }
 #endif
 #if LXP_ENABLE_FS
@@ -1122,7 +1116,7 @@ static const struct lxp_file_ops *ops_for_kind(uint8_t kind)
 
 static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 {
-	lxp_ofd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, buf, len,
@@ -1156,7 +1150,7 @@ static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
 	 * publishes each referenced payload independently. */
 	if (iovcnt)
 		lxp_cache_clean(iov, (size_t)iovcnt * sizeof(*iov));
-	lxp_ofd_t *slot = fd_slot(p, fd);
+	lxp_ofd_t *slot = lxp_fd_description(p, fd);
 	if (!slot)
 		return -LXP_EBADF;
 	/* The retry records describe one buffer, not an iovec cursor. Stop after one
@@ -1191,7 +1185,7 @@ static long sys_writev(lxp_proc_t *p, int fd, const lxp_iovec *iov, int iovcnt)
 
 static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
 {
-	lxp_ofd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, buf, len,
@@ -1214,7 +1208,7 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
  */
 static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint64_t off)
 {
-	lxp_ofd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, buf, len, 1))
@@ -1271,7 +1265,7 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint64_t off
  */
 static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint64_t off)
 {
-	lxp_ofd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, buf, len, 0))
@@ -1368,7 +1362,7 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 	 * backing span to its unprivileged guest as RO+X: a static or per-task window on FreeRTOS,
 	 * Zephyr's user-RX text/QSPI region, or the NuttX port's raw MPU region. */
 	if (!(flags & LXP_MAP_ANONYMOUS) && fd >= 0 && !(prot & 0x2 /* PROT_WRITE */)) {
-		lxp_ofd_t *s = fd_slot(p, fd);
+		lxp_ofd_t *s = lxp_fd_description(p, fd);
 		if (s && s->kind == LXP_FD_FILE) {
 			const lxp_file_t *f = &p->fs[s->file_idx];
 			size_t foff =
@@ -1385,7 +1379,7 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 	 * installs the unprivileged MPU region + resumes with the mapped address. Devices
 	 * without an .mmap op return -ENODEV and fall through to the anonymous-arena copy. */
 	if (fd >= 0 && !(flags & LXP_MAP_ANONYMOUS)) {
-		lxp_ofd_t *s = fd_slot(p, fd);
+		lxp_ofd_t *s = lxp_fd_description(p, fd);
 		if (s && s->kind == LXP_FD_DEV) {
 			long r = lxp_dev_mmap(p, s->file_idx, len, pgoff);
 			if (r != -LXP_ENODEV)
@@ -1741,7 +1735,7 @@ static long sys_dup(lxp_proc_t *p, int oldfd)
 
 static long sys_lseek(lxp_proc_t *p, int fd, long off, int whence)
 {
-	lxp_ofd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (s->ops && s->ops->lseek)
@@ -1754,7 +1748,7 @@ static long sys_lseek(lxp_proc_t *p, int fd, long off, int whence)
 static long sys_llseek(lxp_proc_t *p, int fd, unsigned long off_hi, unsigned long off_lo,
 		       uint64_t *result, unsigned int whence)
 {
-	lxp_ofd_t *slot = fd_slot(p, fd);
+	lxp_ofd_t *slot = lxp_fd_description(p, fd);
 	if (!slot)
 		return -LXP_EBADF;
 	int64_t offset = (int64_t)((uint64_t)(uint32_t)off_lo | ((uint64_t)(uint32_t)off_hi << 32));
@@ -1784,7 +1778,7 @@ static long sys_llseek(lxp_proc_t *p, int fd, unsigned long off_hi, unsigned lon
  * length, so editing an existing file shorter drops the old trailing bytes. */
 static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 {
-	lxp_ofd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 #if LXP_ENABLE_FS
@@ -1811,7 +1805,7 @@ static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 
 static long sys_sync_fd(lxp_proc_t *p, int fd)
 {
-	lxp_ofd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 #if LXP_ENABLE_FS
@@ -2006,7 +2000,7 @@ static void fill_kstat64(struct lxp_kstat64 *st, uint32_t ino, uint32_t mode, ui
 
 static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 {
-	lxp_ofd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, statbuf, sizeof(struct lxp_kstat64), 1))
@@ -2539,7 +2533,7 @@ static long sys_fstatfs(lxp_proc_t *p, int fd, size_t size, void *buf)
 {
 	if (!lxp_guest_access_ok(p, buf, sizeof(struct lxp_statfs64), 1))
 		return -LXP_EFAULT;
-	lxp_ofd_t *slot = fd_slot(p, fd);
+	lxp_ofd_t *slot = lxp_fd_description(p, fd);
 	if (!slot)
 		return -LXP_EBADF;
 	struct lxp_statfs64 st;
@@ -2615,7 +2609,7 @@ static int dirent_emit(uint8_t *out, size_t count, size_t *filled, long *pos, lx
 static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int is64)
 {
 	s_dirent_is64 = is64;
-	lxp_ofd_t *s = fd_slot(p, fd);
+	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, buf, count, 1))
@@ -2875,7 +2869,7 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 			ino = 1u + (uint32_t)idx;
 		}
 	} else {
-		lxp_ofd_t *s = fd_slot(p, dirfd);
+		lxp_ofd_t *s = lxp_fd_description(p, dirfd);
 		if (!s)
 			return -LXP_EBADF;
 		if (s->kind == LXP_FD_FILE) {
@@ -3197,7 +3191,7 @@ static void now_sec_nsec(int clockid, uint64_t *sec, uint32_t *nsec)
  *    names mirror the dispatcher ABI and make each handler unit-testable. ── */
 static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 {
-	lxp_ofd_t *s = fd_slot(proc, (int)a0);
+	lxp_ofd_t *s = lxp_fd_description(proc, (int)a0);
 	if (!s)
 		return -LXP_EBADF;
 	if ((int)a1 == LXP_F_DUPFD || (int)a1 == LXP_F_DUPFD_CLOEXEC) {
@@ -3339,7 +3333,7 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 #endif
 	for (unsigned i = 0; i < nfds; i++) {
 		pfds[i].revents = 0;
-		lxp_ofd_t *s = fd_slot(proc, pfds[i].fd);
+		lxp_ofd_t *s = lxp_fd_description(proc, pfds[i].fd);
 		if (!s)
 			continue;
 		int avail;
@@ -3455,7 +3449,7 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 
 static long sys_ioctl(lxp_proc_t *proc, long a0, long a1, long a2)
 {
-	lxp_ofd_t *s = fd_slot(proc, (int)a0);
+	lxp_ofd_t *s = lxp_fd_description(proc, (int)a0);
 	if (!s)
 		return -LXP_ENOTTY;
 	if (s->ops && s->ops->ioctl)
@@ -3570,7 +3564,7 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 #endif
 		return 0;
 	case LXP_NR_syncfs: {
-		lxp_ofd_t *slot = fd_slot(proc, (int)a0);
+		lxp_ofd_t *slot = lxp_fd_description(proc, (int)a0);
 		if (!slot)
 			return -LXP_EBADF;
 #if LXP_ENABLE_FS
@@ -4320,7 +4314,7 @@ static int lxp_poll_scan(lxp_proc_t *proc, lxp_pollfd *pfds, unsigned nfds)
 	int ready = 0;
 	for (unsigned i = 0; i < nfds; i++) {
 		pfds[i].revents = 0;
-		lxp_ofd_t *s = fd_slot(proc, pfds[i].fd);
+		lxp_ofd_t *s = lxp_fd_description(proc, pfds[i].fd);
 		if (!s)
 			continue;
 		/* Dispatch readiness through the fd's ops; a kind with no poll fop

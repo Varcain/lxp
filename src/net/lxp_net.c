@@ -25,23 +25,14 @@
 #include "lxp/lxp_net.h"
 #include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_proc.h"
-#include "lxp_pool.h" /* shared refcounted open-pool primitives */
 #include "lxp_provider.h"
 
 #include <string.h>
-
-/* fd-slot kind for a socket fd (fds[].file_idx = open-pool index). Kept in step
- * with the FD_* enumeration in lxp_syscall.c (free/console/file/pipe/tmpfs/
- * proc/dev = 0..6). */
-#ifndef LXP_FD_SOCKET
-#define LXP_FD_SOCKET 7
-#endif
 
 /** Per-open socket state. A generic open-file description owns descriptor
  * aliases; its last close closes the backing socket. */
 struct sock_open {
 	uint8_t used;
-	uint16_t refs;
 	uint8_t connecting;  /* a non-blocking connect is in flight */
 	uint8_t type;	     /* lxp_sock_type_t: STREAM / DGRAM / RAW (for sendmsg gathering) */
 	uint16_t oflags;     /* guest fd status flags (O_NONBLOCK gates parking) */
@@ -177,7 +168,6 @@ long lxp_sock_new(int domain, int type, int protocol)
 		return net_errno_to_lnx(r);
 	}
 	o->used = 1;
-	o->refs = 1;
 	o->type = (uint8_t)ot;
 	if (type & LXP_SOCK_NONBLOCK)
 		o->oflags |= LXP_O_NONBLOCK;
@@ -196,8 +186,6 @@ void lxp_sock_close(int oi)
 {
 	struct sock_open *o = open_slot(oi);
 	if (!o)
-		return;
-	if (!lxp_pool_put(&o->refs))
 		return;
 	g_lxp_net_ops->sock_close(o->sock);
 	o->used = 0;
@@ -331,7 +319,6 @@ static long do_accept(lxp_proc_t *p, struct sock_open *lo, void *uaddr, void *ua
 		return net_errno_to_lnx(r);
 	}
 	co->used = 1;
-	co->refs = 1;
 	if (flags & LXP_SOCK_NONBLOCK)
 		co->oflags |= LXP_O_NONBLOCK;
 	if (uaddr) {

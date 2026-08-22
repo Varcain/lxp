@@ -103,7 +103,6 @@ struct lxp_dev {
  */
 struct lxp_dev_open {
 	uint8_t used;	 /**< Slot allocated. */
-	uint16_t refs;	 /**< Distinct open-file descriptions; release at 0. */
 	uint8_t dev;	 /**< Registered-device index. */
 	uint16_t oflags; /**< open(2) flags (O_NONBLOCK gates blocking). */
 	uint64_t pos;	 /**< Seek cursor (block byte offset, fb byte offset, ...). */

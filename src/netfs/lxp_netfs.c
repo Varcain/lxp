@@ -27,7 +27,6 @@
 #include "lxp/lxp_guest.h"
 #include "lxp/lxp_loader.h"
 #include "lxp/lxp_net_ops.h"
-#include "lxp_pool.h" /* shared refcounted open-pool primitives */
 #include "lxp/lxp_proc.h"
 #include "lxp/lxp_types.h"
 #include "lxp_provider.h"
@@ -127,7 +126,6 @@ static void fid_free(int f)
 /* ---- open pool ------------------------------------------------------------- */
 struct netfs_open {
 	uint8_t used;
-	uint16_t refs; /* distinct open-file descriptions; last drop enqueues a clunk. */
 	uint8_t is_dir;
 	uint8_t stale; /* fid invalidated by a reconnect → read/getdents give -ESTALE. */
 	int fid;
@@ -836,7 +834,6 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type,
 		if (r->step == 2) { /* Rlopen → open is ready */
 			struct netfs_open *op = &g_open[r->oi];
 			op->used = 1;
-			op->refs = 1;
 			op->stale = 0;
 			op->fid = r->fid;
 			op->generation = g_generation;
@@ -1352,8 +1349,6 @@ void lxp_netfs_close(int oi)
 {
 	struct netfs_open *op = open_slot(oi);
 	if (!op)
-		return;
-	if (!lxp_pool_put(&op->refs))
 		return;
 	if (!op->stale && op->fid > 0)
 		clunk_enqueue(op->fid);

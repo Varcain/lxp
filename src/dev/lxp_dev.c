@@ -22,36 +22,12 @@
 #include "lxp/lxp_dev.h"
 #include "lxp/lxp_display_ops.h"
 #include "lxp/lxp_proc.h"
-#include "lxp_pool.h"	      /* shared refcounted open-pool primitives */
 #include "lxp_provider.h"
 
 #include <limits.h>
 #include <string.h>
 
-/* fd-slot kind for a device fd (fds[].file_idx = open-pool index). Kept in step
- * with the FD_* enumeration in lxp_syscall.c (free/console/file/pipe/
- * tmpfs/proc = 0..5). */
-#ifndef LXP_FD_DEV
-#define LXP_FD_DEV 6
-#endif
-
-/* O_NONBLOCK (ARM): a non-blocking open returns -EAGAIN instead of parking. */
-#ifndef LXP_O_NONBLOCK
-#define LXP_O_NONBLOCK 0x800
-#endif
-
-/* Access mode (ARM): the low two bits of the open flags — 0 = RDONLY, 1 = WRONLY, 2 = RDWR. */
-#ifndef LXP_O_ACCMODE
-#define LXP_O_ACCMODE 3
-#endif
-#ifndef LXP_O_RDONLY
-#define LXP_O_RDONLY 0
-#endif
-#ifndef LXP_O_WRONLY
-#define LXP_O_WRONLY 1
-#endif
-
-/* Device wait operations (LXP_DEVW_*) live in ove/linux/dev.h, shared with
+/* Device wait operations (LXP_DEVW_*) live in lxp_dev.h, shared with
  * the run loop so it can special-case DEVW_MMAP (needs the engine map_device seam). */
 
 #define LXP_NDEV 16	/* max registered device nodes */
@@ -166,7 +142,6 @@ long lxp_dev_open_new(lxp_proc_t *p, int devidx, int flags)
 	struct lxp_dev_open *o = &g_lnx_devopen[oi];
 	memset(o, 0, sizeof(*o));
 	o->used = 1;
-	o->refs = 1;
 	o->dev = (uint8_t)devidx;
 	o->oflags = (uint16_t)flags;
 	struct lxp_dev *d = &g_lnx_devs[devidx];
@@ -201,8 +176,6 @@ void lxp_dev_close(int oi)
 {
 	struct lxp_dev_open *o = open_slot(oi);
 	if (!o)
-		return;
-	if (!lxp_pool_put(&o->refs))
 		return;
 	struct lxp_dev *d = &g_lnx_devs[o->dev];
 	if (d->ops->release)
