@@ -33,64 +33,132 @@ static lxp_sighand_t g_sighand[LXP_RESOURCE_POOL_COUNT];
 static lxp_mm_t g_mm[LXP_RESOURCE_POOL_COUNT];
 static lxp_thread_group_t g_groups[LXP_RESOURCE_POOL_COUNT];
 
+LXP_STATIC_ASSERT(offsetof(lxp_files_t, refs) == 0, "resource refs must lead the object");
+LXP_STATIC_ASSERT(offsetof(lxp_fs_context_t, refs) == 0, "resource refs must lead the object");
+LXP_STATIC_ASSERT(offsetof(lxp_sighand_t, refs) == 0, "resource refs must lead the object");
+LXP_STATIC_ASSERT(offsetof(lxp_mm_t, refs) == 0, "resource refs must lead the object");
+LXP_STATIC_ASSERT(offsetof(lxp_thread_group_t, refs) == 0, "resource refs must lead the object");
+
+static void *resource_new(void *storage, size_t item_size)
+{
+	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++) {
+		void *item = (uint8_t *)storage + (size_t)i * item_size;
+		uint16_t *refs = item;
+		if (*refs == 0) {
+			memset(item, 0, item_size);
+			*refs = 1;
+			return item;
+		}
+	}
+	return NULL;
+}
+
 static lxp_files_t *files_new(void)
 {
-	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
-		if (g_files[i].refs == 0) {
-			memset(&g_files[i], 0, sizeof(g_files[i]));
-			g_files[i].refs = 1;
-			return &g_files[i];
-		}
-	return NULL;
+	return resource_new(g_files, sizeof(g_files[0]));
 }
 
 static lxp_fs_context_t *fs_context_new(void)
 {
-	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
-		if (g_fs_context[i].refs == 0) {
-			memset(&g_fs_context[i], 0, sizeof(g_fs_context[i]));
-			g_fs_context[i].refs = 1;
-			g_fs_context[i].umask = 022;
-			g_fs_context[i].cwd[0] = '/';
-			return &g_fs_context[i];
-		}
-	return NULL;
+	lxp_fs_context_t *context = resource_new(g_fs_context, sizeof(g_fs_context[0]));
+	if (context) {
+		context->umask = 022;
+		context->cwd[0] = '/';
+	}
+	return context;
 }
 
 static lxp_sighand_t *sighand_new(void)
 {
-	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
-		if (g_sighand[i].refs == 0) {
-			memset(&g_sighand[i], 0, sizeof(g_sighand[i]));
-			g_sighand[i].refs = 1;
-			return &g_sighand[i];
-		}
-	return NULL;
+	return resource_new(g_sighand, sizeof(g_sighand[0]));
 }
 
 static lxp_mm_t *mm_new(void)
 {
-	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
-		if (g_mm[i].refs == 0) {
-			memset(&g_mm[i], 0, sizeof(g_mm[i]));
-			g_mm[i].refs = 1;
-			g_mm[i].region = lxp_region_ref_none();
-			g_mm[i].device_generation = 1u;
-			g_mm[i].exec_generation = 1u;
-			return &g_mm[i];
-		}
-	return NULL;
+	lxp_mm_t *mm = resource_new(g_mm, sizeof(g_mm[0]));
+	if (mm) {
+		mm->region = lxp_region_ref_none();
+		mm->device_generation = 1u;
+		mm->exec_generation = 1u;
+	}
+	return mm;
 }
 
 static lxp_thread_group_t *group_new(void)
 {
-	for (int i = 0; i < LXP_RESOURCE_POOL_COUNT; i++)
-		if (g_groups[i].refs == 0) {
-			memset(&g_groups[i], 0, sizeof(g_groups[i]));
-			g_groups[i].refs = 1;
-			return &g_groups[i];
-		}
-	return NULL;
+	return resource_new(g_groups, sizeof(g_groups[0]));
+}
+
+int lxp_intent_begin(lxp_proc_t *proc, const lxp_intent_t *intent)
+{
+	if (!proc || !intent || intent->kind <= LXP_INTENT_NONE || intent->kind >= LXP_INTENT_COUNT)
+		return -LXP_EINVAL;
+	if (proc->intent.kind != LXP_INTENT_NONE || proc->wait.kind != LXP_WAIT_NONE)
+		return -LXP_EAGAIN;
+	proc->intent = *intent;
+	return 0;
+}
+
+int lxp_intent_complete(lxp_proc_t *proc, lxp_intent_kind_t expected)
+{
+	if (!proc || expected <= LXP_INTENT_NONE || expected >= LXP_INTENT_COUNT ||
+	    proc->intent.kind != expected)
+		return -LXP_EINVAL;
+	memset(&proc->intent, 0, sizeof(proc->intent));
+	return 0;
+}
+
+int lxp_intent_exit(lxp_proc_t *proc, int group)
+{
+	if (!proc)
+		return -LXP_EINVAL;
+	memset(&proc->intent, 0, sizeof(proc->intent));
+	proc->intent.kind = LXP_INTENT_EXIT;
+	proc->intent.data.exit.group = group != 0;
+	return 0;
+}
+
+int lxp_wait_begin(lxp_proc_t *proc, const lxp_wait_t *wait)
+{
+	if (!proc || !wait || wait->kind <= LXP_WAIT_NONE || wait->kind >= LXP_WAIT_COUNT)
+		return -LXP_EINVAL;
+	if (proc->wait.kind != LXP_WAIT_NONE || proc->intent.kind != LXP_INTENT_NONE)
+		return -LXP_EAGAIN;
+	proc->wait = *wait;
+	(void)lxp_time_us(&proc->wait.enqueued_us);
+	return 0;
+}
+
+static int wait_finish(lxp_proc_t *proc, lxp_wait_kind_t expected)
+{
+	if (!proc || expected <= LXP_WAIT_NONE || expected >= LXP_WAIT_COUNT ||
+	    proc->wait.kind != expected)
+		return -LXP_EINVAL;
+	memset(&proc->wait, 0, sizeof(proc->wait));
+	return 0;
+}
+
+int lxp_wait_complete(lxp_proc_t *proc, lxp_wait_kind_t expected)
+{
+	return wait_finish(proc, expected);
+}
+
+int lxp_wait_interrupt(lxp_proc_t *proc, lxp_wait_kind_t expected)
+{
+	return wait_finish(proc, expected);
+}
+
+int lxp_wait_timeout(lxp_proc_t *proc, lxp_wait_kind_t expected)
+{
+	return wait_finish(proc, expected);
+}
+
+int lxp_wait_cancel(lxp_proc_t *proc)
+{
+	if (!proc)
+		return -LXP_EINVAL;
+	memset(&proc->wait, 0, sizeof(proc->wait));
+	return 0;
 }
 
 void lxp_proc_runtime_reset(void)
