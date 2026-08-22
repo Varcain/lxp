@@ -10,7 +10,7 @@
  * the host owns socket storage and returns an opaque lxp_socket_t handle, so
  * the personality never embeds a backend-sized socket by value (that was the last
  * compile-time coupling to the RTOS storage layout). On oveRTOS the ops are filled
- * by backends/common/lxp_ove_adapter.c, which bridges to the ove_net HAL and
+ * by backends/common/lxp_ove_net_adapter.c, which bridges to the ove_net HAL and
  * owns the storage pool. A non-oveRTOS host provides its own adapter over its own
  * stack. (Renamed to the neutral lxp_net_ops_t at the module-extraction rename.)
  */
