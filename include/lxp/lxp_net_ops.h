@@ -6,13 +6,10 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * The handle-based network port for the Linux personality. The personality's
- * socket + remote-fs cores reach the host TCP/IP stack ONLY through these ops:
+ * socket + remote-fs cores reach the host TCP/IP stack only through these ops:
  * the host owns socket storage and returns an opaque lxp_socket_t handle, so
- * the personality never embeds a backend-sized socket by value (that was the last
- * compile-time coupling to the RTOS storage layout). On oveRTOS the ops are filled
- * by backends/common/lxp_ove_net_adapter.c, which bridges to the ove_net HAL and
- * owns the storage pool. A non-oveRTOS host provides its own adapter over its own
- * stack. (Renamed to the neutral lxp_net_ops_t at the module-extraction rename.)
+ * the personality never embeds a backend-sized socket by value. Each host
+ * supplies an adapter over its own stack and owns the backing storage pool.
  */
 
 #ifndef LXP_NET_OPS_H

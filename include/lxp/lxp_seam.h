@@ -28,8 +28,8 @@
 #include "lxp/lxp_identity.h"
 #include "lxp/lxp_port.h" /* lxp_os_ops_t — the engine/OS port vtable the run loop drives */
 
-/* Program-region / arena / dyn-pool sizes + LXP_NREG / LXP_NSLOT come from
- * lxp_config.h (host-overridable; the oveRTOS build maps them per engine). */
+/* Program-region, arena, dynamic-pool, LXP_NREG, and LXP_NSLOT sizes come from
+ * the host-overridable lxp_config.h contract. */
 
 /* Complete Cortex-M single-precision floating-point state. `active` records
  * whether the interrupted task owned an extended FP exception frame. The seam

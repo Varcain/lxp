@@ -5,12 +5,11 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Compile-time configuration: feature gates + sizing/placement knobs. Replaces
- * the module's former dependence on oveRTOS's generated ove_config.h and its
- * CONFIG_OVE_RTOS_* branches. A consumer sets these three ways (highest wins):
+ * Compile-time configuration: feature gates plus sizing/placement knobs. A
+ * consumer sets these three ways (highest wins):
  *
- *   1. -DLXP_ENABLE_NET=1 … on the compiler command line (the oveRTOS build maps
- *      its Kconfig to these; a standalone CMake exposes them as option()s).
+ *   1. -DLXP_ENABLE_NET=1 … on the compiler command line (standalone CMake
+ *      exposes supported gates as options).
  *   2. A drop-in "lxp_config_user.h" anywhere on the include path (picked up
  *      automatically below).
  *   3. Otherwise the safe defaults here apply — smallest footprint, so a missing
@@ -32,9 +31,8 @@
  * -DLXP_ENABLE_NET=1 enables and -DLXP_ENABLE_NET=0 (or leaving it unset) disables.
  * There is no footgun where "-DLXP_ENABLE_NET=0" still enables the subsystem. The
  * core (the personality itself + the FDPIC loader) is always on; the optional
- * subsystems are OPT-IN — a consumer sets the ones it wants to 1 (the oveRTOS build
- * maps its Kconfig to -D flags; a standalone CMake exposes them as option()s; or
- * set them in lxp_config_user.h / on the command line). */
+ * subsystems are OPT-IN — a consumer sets the ones it wants to 1 through CMake,
+ * lxp_config_user.h, or the compiler command line. */
 #ifndef LXP_ENABLE_LINUX
 #define LXP_ENABLE_LINUX 1
 #endif

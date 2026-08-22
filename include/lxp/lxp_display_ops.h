@@ -6,12 +6,10 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * The display/input port for the Linux personality. The /dev/fb0 and
- * /dev/input/event0 class drivers reach the panel + touch controller ONLY through
+ * /dev/input/event0 class drivers reach the panel + touch controller only through
  * these ops, so the personality carries no direct dependency on a particular
- * framebuffer / touch HAL. On oveRTOS the ops are filled by
- * backends/common/lxp_ove_display_adapter.c (bridging to ove_fb_* / ove_ft5336_*).
- * Display geometry is run-scoped policy injected through
- * lxp_display_set_geometry().
+ * framebuffer / touch HAL. Display geometry is run-scoped policy injected
+ * through lxp_display_set_geometry().
  */
 
 #ifndef LXP_DISPLAY_OPS_H

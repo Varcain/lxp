@@ -5,11 +5,8 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Vendored foundation types — a self-contained subset of what the personality
- * used to draw from <ove/types.h> / <ove/thread.h>. The module owns these so it
- * builds against ANY host (no oveRTOS headers required). The numeric values are
- * pinned identical to their OVE originals so a host that bridges to an existing
- * oveRTOS stack needs zero translation.
+ * Self-contained foundation types owned by the personality. No host framework
+ * headers are required.
  */
 
 #ifndef LXP_TYPES_H
@@ -35,10 +32,8 @@
 /**
  * @brief lxp result / error codes.
  *
- * Zero (@c LXP_OK) on success, negative on error. The numeric values match
- * their `LXP_ERR_*` originals exactly (pinned by the static-asserts below) so
- * an oveRTOS host port is a zero-translation pass-through and the guest-errno
- * mapping is unaffected.
+ * Zero (@c LXP_OK) on success, negative on error. These pinned values form the
+ * provider ABI; host adapters must return or translate to these exact codes.
  */
 typedef enum lxp_err {
 	LXP_OK = 0,
@@ -105,7 +100,7 @@ LXP_STATIC_ASSERT(LXP_ERR_CROSS_DEVICE == -34, "LXP_ERR_CROSS_DEVICE drifted");
 LXP_STATIC_ASSERT(LXP_WAIT_FOREVER == UINT64_MAX, "LXP_WAIT_FOREVER drifted");
 
 /* ---- thread introspection (for the ps/top /proc snapshot) ------------------ */
-/** @brief Execution state of a host kernel thread. Values match ove_thread_state_t. */
+/** @brief Execution state of a host kernel thread. */
 typedef enum lxp_thread_state {
 	LXP_THREAD_STATE_RUNNING = 0,
 	LXP_THREAD_STATE_READY,
@@ -161,9 +156,8 @@ struct lxp_thread_info {
 /**
  * @brief Host system-heap snapshot.
  *
- * This intentionally describes the allocator exposed by the host OS, not
- * fabricated physical RAM.  The layout mirrors oveRTOS's @c ove_mem_stats so
- * a host adapter only has to copy the four fields.
+ * This describes the allocator exposed by the host OS, not fabricated physical
+ * RAM. Every field is copied explicitly across the provider boundary.
  */
 struct lxp_mem_stats {
 	size_t total;     /**< Total host system-heap capacity in bytes. */
