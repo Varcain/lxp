@@ -1,6 +1,6 @@
 /* Hard-float FDPIC regression guest. It verifies the complete single-precision
  * VFP register file and FPSCR across both a normal deferred syscall and a
- * blocking syscall whose task is destroyed and recreated by the coordinator. */
+ * blocking syscall whose persistent native task is parked and resumed. */
 #include "lxpsys.h"
 
 #include <stdint.h>
@@ -63,7 +63,7 @@ void _start(void)
 	/* Unknown calls are deliberately routed through the deferred bottom half. */
 	ok &= check_context(999, 0, 0, 0, 0x13579bdfu, -38 /* ENOSYS */);
 	/* poll(NULL, 0, 1ms) hands ownership to the timer wait state machine before
-	 * the guest task is eventually recreated. */
+	 * the same guest task is resumed. */
 	ok &= check_context(168 /* poll */, 0, 0, 1, 0x2468ace0u, 0);
 
 	sys_write(1, ok ? "lxp-m7-ok\n" : "lxp-m7-FAIL\n", ok ? 10 : 12);

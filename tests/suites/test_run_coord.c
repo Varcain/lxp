@@ -3524,7 +3524,7 @@ static void test_dispatch_class_defaults_deferred(void **state)
 
 	memset(&f, 0, sizeof(f));
 	f.r[7] = 999;
-	f.xpsr = 0xa8000000u | (1u << 24); /* NZCV + Thumb survive task recreation */
+	f.xpsr = 0xa8000000u | (1u << 24); /* NZCV + Thumb survive park/resume */
 	struct lxp_fp_context fp;
 	memset(&fp, 0, sizeof(fp));
 	for (int i = 0; i < 32; i++)

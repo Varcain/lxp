@@ -164,7 +164,8 @@ uint64_t lxp_stats_charge(int pid, uint64_t thread_running_us)
 		return 0;
 	if (thread_running_us >= g_pc[slot].baseline_us)
 		g_pc[slot].accum_us += thread_running_us - g_pc[slot].baseline_us;
-	g_pc[slot].baseline_us = thread_running_us; /* recreate (drop below baseline) resets */
+	/* A reset native counter starts a new delta without reducing accumulated CPU. */
+	g_pc[slot].baseline_us = thread_running_us;
 	return g_pc[slot].accum_us;
 }
 
