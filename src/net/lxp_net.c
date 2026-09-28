@@ -23,6 +23,8 @@
 #if LXP_ENABLE_NET
 
 #include "net/lxp_net.h"
+#include "fs/lxp_stat.h"
+#include "fs/lxp_vfs.h"
 #include "lxp/lxp_net_ops.h"
 #include "proc/lxp_proc.h"
 #include "lxp_provider.h"
@@ -856,5 +858,53 @@ long lxp_sock_retry(lxp_proc_t *p)
 		return -LXP_EINVAL;
 	}
 }
+
+/* ---- FD_SOCKET file operations ---- */
+static long fop_read_socket(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+{
+	return lxp_sock_recv(p, s->file_idx, buf, len, 0, NULL, NULL);
+}
+
+static long fop_write_socket(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
+{
+	return lxp_sock_send(p, s->file_idx, buf, len, 0, NULL, 0);
+}
+
+static long fop_fstat_socket(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+{
+	(void)p;
+	uint32_t mode;
+	uint64_t size;
+	lxp_sock_fstat(s->file_idx, &mode, &size);
+	lxp_fill_kstat64(statbuf, 0x400000u + (uint32_t)s->file_idx, mode, size);
+	return 0;
+}
+
+static void fop_close_socket(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	lxp_sock_close(s->file_idx); /* close the backing socket owned by this OFD */
+}
+
+static long fop_ioctl_socket(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsigned long arg)
+{
+	(void)s;
+	return lxp_sock_ioctl(p, cmd, arg); /* SIOC* interface config (ifconfig/route) */
+}
+
+static unsigned fop_poll_socket(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	return (unsigned)lxp_sock_poll(s->file_idx);
+}
+
+const lxp_file_ops_t lxp_socket_fops = {
+	.read = fop_read_socket,
+	.write = fop_write_socket,
+	.fstat = fop_fstat_socket,
+	.close = fop_close_socket,
+	.ioctl = fop_ioctl_socket,
+	.poll = fop_poll_socket,
+};
 
 #endif /* LXP_ENABLE_NET */

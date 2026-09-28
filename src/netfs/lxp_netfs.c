@@ -24,6 +24,7 @@
 #if LXP_ENABLE_NETFS
 
 #include "netfs/lxp_netfs.h"
+#include "fs/lxp_vfs.h"
 #include "lxp_guest.h"
 #include "lxp_loader.h"
 #include "lxp/lxp_net_ops.h"
@@ -1596,5 +1597,50 @@ void lxp_netfs_fuzz_feed(lxp_proc_t *owner, uintptr_t ubuf, size_t ulen, unsigne
 	handle_reply(&r, owner, type, body, blen);
 }
 #endif /* LXP_FUZZ */
+
+/* ---- FD_NET file operations ---- */
+static long fop_read_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+{
+	return lxp_netfs_read(p, s->file_idx, buf, len);
+}
+
+static long fop_write_netfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
+{
+	(void)p;
+	(void)s;
+	(void)buf;
+	(void)len;
+	return -LXP_EROFS; /* read-only remote mount */
+}
+
+static long fop_lseek_netfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
+{
+	(void)p;
+	return lxp_netfs_lseek(s->file_idx, off, whence);
+}
+
+static long fop_fstat_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+{
+	uint32_t mode;
+	uint64_t size, mtime, ino;
+	if (lxp_netfs_fstat(s->file_idx, &mode, &size, &mtime, &ino) != 0)
+		return -LXP_EBADF;
+	return lxp_netfs_fill_stat(p, (uintptr_t)statbuf, 0, mode, size, mtime, ino);
+}
+
+static void fop_close_netfs(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	lxp_netfs_close(s->file_idx); /* enqueue Tclunk for the backing fid */
+}
+
+/* Read-only mount: write is an explicit -EROFS rather than NULL (-EBADF). */
+const lxp_file_ops_t lxp_netfs_fops = {
+	.read = fop_read_netfs,
+	.write = fop_write_netfs,
+	.lseek = fop_lseek_netfs,
+	.fstat = fop_fstat_netfs,
+	.close = fop_close_netfs,
+};
 
 #endif /* LXP_ENABLE_NETFS */

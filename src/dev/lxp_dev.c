@@ -20,6 +20,8 @@
 #if LXP_ENABLE_DEV
 
 #include "dev/lxp_dev.h"
+#include "fs/lxp_stat.h"
+#include "fs/lxp_vfs.h"
 #include "lxp/lxp_display_ops.h"
 #include "proc/lxp_proc.h"
 #include "lxp_provider.h"
@@ -595,5 +597,60 @@ void lxp_dev_autoreg_all(void)
 	lxp_dev_autoreg_block();
 #endif
 }
+
+/* ---- FD_DEV file operations ---- */
+static long fop_read_dev(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+{
+	return lxp_dev_read(p, s->file_idx, buf, len);
+}
+
+static long fop_write_dev(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
+{
+	return lxp_dev_write(p, s->file_idx, buf, len);
+}
+
+static long fop_lseek_dev(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
+{
+	(void)p;
+	return lxp_dev_lseek(s->file_idx, off, whence);
+}
+
+static long fop_fstat_dev(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+{
+	(void)p;
+	uint32_t mode;
+	uint64_t rdev, size;
+	lxp_dev_fstat(s->file_idx, &mode, &rdev, &size);
+	lxp_fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, mode, size);
+	((struct lxp_kstat64 *)statbuf)->st_rdev = rdev;
+	return 0;
+}
+
+static void fop_close_dev(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	lxp_dev_close(s->file_idx); /* release the backing object owned by this OFD */
+}
+
+static long fop_ioctl_dev(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsigned long arg)
+{
+	return lxp_dev_ioctl(p, s->file_idx, cmd, arg);
+}
+
+static unsigned fop_poll_dev(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	return (unsigned)lxp_dev_poll(s->file_idx);
+}
+
+const lxp_file_ops_t lxp_dev_fops = {
+	.read = fop_read_dev,
+	.write = fop_write_dev,
+	.lseek = fop_lseek_dev,
+	.fstat = fop_fstat_dev,
+	.close = fop_close_dev,
+	.ioctl = fop_ioctl_dev,
+	.poll = fop_poll_dev,
+};
 
 #endif /* LXP_ENABLE_DEV */

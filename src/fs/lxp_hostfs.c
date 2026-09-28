@@ -11,6 +11,8 @@
 #if LXP_ENABLE_FS
 
 #include "fs/lxp_hostfs.h"
+#include "fs/lxp_stat.h"
+#include "fs/lxp_vfs.h"
 
 #if LXP_ENABLE_BLOCK
 #include "dev/lxp_dev_block.h"
@@ -579,5 +581,50 @@ void lxp_hostfs_runtime_reset(void)
 	if (++g_hostfs_run_generation == 0u)
 		g_hostfs_run_generation = 1u;
 }
+
+/* ---- FD_HOSTFS file operations ---- */
+static long fop_read_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+{
+	return lxp_hostfs_read(p, s->file_idx, buf, len);
+}
+
+static long fop_write_hostfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
+{
+	return lxp_hostfs_write(p, s->file_idx, buf, len);
+}
+
+static long fop_lseek_hostfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
+{
+	long position = lxp_hostfs_seek(p, s->file_idx, off, whence);
+	if (position >= 0)
+		s->offset = (size_t)position;
+	return position;
+}
+
+static long fop_fstat_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+{
+	lxp_fs_stat_t stat;
+	long rc = lxp_hostfs_stat(p, s->file_idx, &stat);
+	if (rc < 0)
+		return rc;
+	lxp_fill_kstat64(statbuf, lxp_hostfs_inode(s->file_idx), lxp_hostfs_mode(&stat), stat.size);
+	((struct lxp_kstat64 *)statbuf)->st_dev = LXP_HOSTFS_DEV;
+	((struct lxp_kstat64 *)statbuf)->st_mtime = (uint32_t)stat.mtime_sec;
+	return 0;
+}
+
+static void fop_close_hostfs(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	lxp_hostfs_close(s->file_idx);
+}
+
+const lxp_file_ops_t lxp_hostfs_fops = {
+	.read = fop_read_hostfs,
+	.write = fop_write_hostfs,
+	.lseek = fop_lseek_hostfs,
+	.fstat = fop_fstat_hostfs,
+	.close = fop_close_hostfs,
+};
 
 #endif /* LXP_ENABLE_FS */

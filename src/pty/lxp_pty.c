@@ -27,6 +27,8 @@
 #include <string.h>
 
 #include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read */
+#include "fs/lxp_stat.h"
+#include "fs/lxp_vfs.h"
 #include "lxp_internal.h" /* foreground process-group signal service */
 #include "dev/lxp_dev.h" /* lxp_guest_access_ok() (confused-deputy guard for ioctl arg pointers) */
 #include "proc/lxp_proc.h"
@@ -432,5 +434,83 @@ void lxp_pty_runtime_reset(void)
 {
 	memset(g_ptys, 0, sizeof(g_ptys));
 }
+
+/* ---- FD_PTY file operations ---- */
+/* A pty end drains its ring (master reads program output, slave reads program input);
+ * blocks while empty + the peer end is open, EOF (0) once the peer closes. */
+static long fop_read_pty(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+{
+	long r = lxp_pty_read(p, s->file_idx, s->rw, buf, len);
+	if (r == -LXP_EAGAIN && !lxp_pty_nonblock(s->file_idx, s->rw)) {
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_PTY,
+			.op = s->rw ? LXP_PTYW_MREAD : LXP_PTYW_SREAD,
+			.data.io.object = s->file_idx,
+			.data.io.buffer = (uintptr_t)buf,
+			.data.io.length = len,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
+		return 0; /* parked; coordinator retries via lxp_pty_retry */
+	}
+	return r; /* bytes read, 0 (EOF), or -EAGAIN (O_NONBLOCK) */
+}
+
+/* A pty write feeds the peer's ring through the line discipline (master write runs
+ * input processing toward the slave; slave write runs output/ONLCR toward the master).
+ * Blocks (backpressure) when the destination ring is full and the peer is open. */
+static long fop_write_pty(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
+{
+	long r = lxp_pty_write(p, s->file_idx, s->rw, buf, len);
+	if (r == -LXP_EAGAIN && !lxp_pty_nonblock(s->file_idx, s->rw)) {
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_PTY,
+			.op = s->rw ? LXP_PTYW_MWRITE : LXP_PTYW_SWRITE,
+			.data.io.object = s->file_idx,
+			.data.io.buffer = (uintptr_t)buf,
+			.data.io.length = len,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
+		return 0; /* parked; coordinator completes via lxp_pty_retry */
+	}
+	return r; /* bytes consumed, or -EAGAIN (O_NONBLOCK) */
+}
+
+static long fop_fstat_pty(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+{
+	(void)p;
+	uint32_t mode;
+	uint64_t size;
+	lxp_pty_fstat(&mode, &size); /* S_IFCHR so isatty() → interactive shell */
+	lxp_fill_kstat64(statbuf, 0x500000u + (uint32_t)s->file_idx, mode, size);
+	return 0;
+}
+
+static void fop_close_pty(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	lxp_pty_end_close(s->file_idx, s->rw);
+}
+
+static long fop_ioctl_pty(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsigned long arg)
+{
+	return lxp_pty_ioctl(p, s->file_idx, s->rw, cmd, arg);
+}
+
+static unsigned fop_poll_pty(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	return (unsigned)lxp_pty_poll(s->file_idx, s->rw);
+}
+
+const lxp_file_ops_t lxp_pty_fops = {
+	.read = fop_read_pty,
+	.write = fop_write_pty,
+	.fstat = fop_fstat_pty,
+	.close = fop_close_pty,
+	.ioctl = fop_ioctl_pty,
+	.poll = fop_poll_pty,
+};
 
 #endif /* LXP_ENABLE_PTY */

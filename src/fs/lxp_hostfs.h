@@ -19,6 +19,17 @@
 
 #define LXP_HOSTFS_DEFAULT_MOUNT "/data"
 
+/* st_dev reported for every hostfs object. */
+#define LXP_HOSTFS_DEV_MAJOR 179u
+#define LXP_HOSTFS_DEV_MINOR 0u
+#define LXP_HOSTFS_DEV ((uint64_t)((LXP_HOSTFS_DEV_MAJOR << 8) | LXP_HOSTFS_DEV_MINOR))
+
+/* Guest st_mode of a provider object (providers report no permission bits). */
+static inline uint32_t lxp_hostfs_mode(const lxp_fs_stat_t *stat)
+{
+	return stat->type == LXP_FS_TYPE_DIR ? (LXP_S_IFDIR | 0777u) : (LXP_S_IFREG | 0666u);
+}
+
 /** Guest-visible attachment state for the single host filesystem provider. */
 const char *lxp_hostfs_mount_path(void);
 const char *lxp_hostfs_mount_source(void);
