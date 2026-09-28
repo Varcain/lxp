@@ -10,7 +10,7 @@
 #define LXP_NETFS_H
 
 /**
- * @file netfs.h
+ * @file lxp_netfs.h
  * @defgroup lxp_linux_netfs Linux personality remote filesystem (9P2000.L)
  * @ingroup lxp_linux
  * @brief A read-only remote filesystem mounted under a path (e.g. /mnt/pi).

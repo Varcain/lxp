@@ -10,7 +10,7 @@
 #define LXP_DEV_H
 
 /**
- * @file dev.h
+ * @file lxp_dev.h
  * @defgroup lxp_linux_dev Linux personality device layer
  * @ingroup lxp_linux
  * @brief Device nodes under /dev for the Linux personality.

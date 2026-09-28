@@ -10,7 +10,7 @@
 #define LXP_LOADER_H
 
 /**
- * @file loader.h
+ * @file lxp_loader.h
  * @defgroup lxp_loader Module Loader
  * @ingroup lxp_mem
  * @brief Runtime loader for relocatable native code modules.

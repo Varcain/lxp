@@ -10,7 +10,7 @@
 #define LXP_NET_H
 
 /**
- * @file net.h
+ * @file lxp_net.h
  * @defgroup lxp_linux_net Linux personality socket layer
  * @ingroup lxp_linux
  * @brief BSD sockets for the Linux personality, backed by a host network provider.

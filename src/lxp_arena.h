@@ -10,7 +10,7 @@
 #define LXP_ARENA_H
 
 /**
- * @file arena.h
+ * @file lxp_arena.h
  * @defgroup lxp_arena Arena Allocator
  * @ingroup lxp_mem
  * @brief Bounded, backend-independent region allocator.

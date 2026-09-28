@@ -5,7 +5,7 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 /**
- * @file pty.h
+ * @file lxp_pty.h
  * @brief Pseudo-terminal (Unix98 pty) layer for the Linux personality.
  *
  * A pty is a pair of in-memory rings (master↔slave) plus a minimal in-kernel line
