@@ -5,19 +5,21 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Engine-agnostic Linux-personality run loop + svc dispatch + signal delivery,
- * shared by the Zephyr / FreeRTOS / NuttX ports (see lxp_run.h). The
- * NOMMU process model lives here once; each port supplies the svc trap, the
- * program memory, and the task spawn through a small vtable.
+ * Engine-agnostic Linux-personality coordinator: the run loop, the SVC top half
+ * and process-lifecycle policy, driven through the port's lxp_os_ops_t (see
+ * lxp_port.h and lxp_seam.h). The NOMMU process model lives here once; each port
+ * supplies the SVC trap, the program memory and the task lifecycle. Signal-frame
+ * delivery is in lxp_signal.c and the fork/exec/exit transactions are in run/.
  *
- * Sequentialised vfork/exec/wait (observationally identical to vfork for the
- * shell pattern, since the parent waitpid()s anyway):
- *  - vfork: capture the parent's full resume context (r4-r11/r12/lr/sp/pc) and
- *    park it; the run loop spawns a CHILD resuming at that context with r0=0,
- *    sharing the parent's region until it execs.
- *  - execve: the run loop loads the new image into a SECOND region.
- *  - child exit: queue the status on the parent for wait4, then resume the
- *    parent at the captured context with r0 = child_pid.
+ * Every live process occupies a slot and runs in one of the fixed program regions:
+ *  - fork/vfork: the parent parks with its full resume context captured; the
+ *    child resumes at that context with r0 = 0 in the parent's region, whose
+ *    writable data is snapshotted. When the child execs or exits, the data is
+ *    restored and the parent resumes with r0 = child pid.
+ *  - clone(CLONE_VM): the child co-runs as a thread in the same address space.
+ *  - execve: the new image is built in a second region before the old one is
+ *    torn down.
+ *  - exit: the status is queued on the parent for wait4.
  */
 
 #include <string.h>
@@ -46,7 +48,7 @@
 #include "pty/lxp_pty.h" /* pty-layer park/retry (lxp_pty_retry) */
 #endif
 
-#include "lxp_internal.h" /* lxp_encode_wstatus (shared with sys_wait4) */
+#include "lxp_internal.h"
 #include "lxp_provider.h"
 #include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
 #include "fs/lxp_pipe.h"
@@ -215,11 +217,12 @@ static lxp_arena_t g_arenas[LXP_NREG];
  * its generation-bearing reference; lease_owner is populated only until a
  * prepared image/snapshot is either committed or aborted. */
 static struct lxp_region_runtime g_regions[LXP_NREG];
-static struct vfork_snapshot_guard g_vfork_guard[LXP_NSLOT];
 /* vfork data isolation: a snapshot of the shared arena's allocator metadata, taken when a vfork
  * child is spawned and restored when it execs/exits. The region+dyn_pool bytes and the
  * coordinator-owned allocator metadata all use the same reserved snapshot region: its
  * g_arenas[] entry is otherwise idle until the child either execs into or releases it. */
+static struct vfork_snapshot_guard g_vfork_guard[LXP_NSLOT];
+/* The active run's configuration and engine. */
 static const lxp_run_config_t *g_cfg;
 static const lxp_os_ops_t *g_eng; /* for the dispatch to post coordinator events */
 
@@ -1113,15 +1116,14 @@ void lxp_run_health(lxp_run_health_t *out)
 
 /* Another live thread shares this proc's address space (a co-running CLONE_VM thread or its
  * creator) — the only case where a parked FUTEX_WAIT could ever be woken. Without one, the
- * wait would deadlock, so the futex handler returns -EAGAIN instead of parking (which keeps
- * single-threaded behaviour byte-identical to the old stub). */
+ * wait would deadlock, so the futex handler returns -EAGAIN instead of parking. */
 static int futex_has_corunner(const lxp_proc_t *proc)
 {
 	if (!proc || !proc->mm)
 		return 0;
 	/* A suspended vfork parent shares our region but is frozen until we exec/exit, so it can
 	 * never FUTEX_WAKE us — exclude it (proc->vfork_parent.index), or a vfork child's libc
-	 * futex would park forever where the old stub returned -EAGAIN and made progress. */
+	 * futex would park forever instead of failing with -EAGAIN and making progress. */
 	int vp = proc->vfork_parent.index;
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		const lxp_proc_t *q = &g_lxp_slots[s].proc;
@@ -1373,7 +1375,7 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		 * (parked in sleep/wait/pipe). Real Linux targeting: pid>0 = that process; pid==0 =
 		 * the caller's process group; pid<-1 = process group |pid|; pid==-1 = broadcast to
 		 * all (but init). Skips the sender + init; an explicit self-signal took the inline
-		 * path above. This is the fix for `kill %job` no longer nuking unrelated procs. */
+		 * path above. */
 		f->r[0] = -LXP_ESRCH;
 		for (int t = 0; t < LXP_NSLOT; t++) {
 			lxp_proc_t *tp = &g_lxp_slots[t].proc;
@@ -1460,8 +1462,7 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	/* Another proc's kill() latched a signal on us; deliver it at this syscall
 	 * boundary (Linux at-the-boundary async delivery) unless the
 	 * proc has blocked it (rt_sigprocmask) — a blocked signal stays latched and is delivered
-	 * at a later boundary once unblocked. (The parked-thread and console-^C paths do not yet
-	 * consult the mask; blocking those is uncommon.) */
+	 * at a later boundary once unblocked. */
 	int psig = pending_deliverable(proc);
 	if (psig) {
 		proc->pending_sigs &= ~lxp_sig_bit(psig);
@@ -2512,9 +2513,9 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		 * touching the proc table; one brief critical section revalidates and claims
 		 * only that slot. Thus both lock duration and lock count are independent of
 		 * LXP_NSLOT. Act OUTSIDE the crit — abort/spawn/launch may yield. */
-		/* Event classes: enum lxp_ev_class, expanded from LXP_LAT_CLASS_LIST in
-		 * lxp_latency.h so the dispatch, the stats array and the names a port
-		 * prints cannot fall out of step. LXP_EV_NONE (0) means "nothing claimed". */
+		/* Event classes: enum lxp_ev_class, generated with the latency stats array
+		 * and class names from LXP_LAT_CLASS_LIST in lxp_latency.h so they cannot
+		 * fall out of step. LXP_EV_NONE (0) means "nothing claimed". */
 		struct lxp_claimed_event claimed = coordinator_claim_event(eng, &event_cursor);
 		int es = claimed.slot;
 		int et = claimed.type;
@@ -2589,8 +2590,8 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		/* Block until a program parks (event_post) or the timeout. NOT a busy 1ms poll —
 		 * that would preempt running programs every tick and reset their time-slice,
 		 * starving a fg command while a CPU-bound background job runs. The timeout is the
-		 * NEAREST sleeper deadline (so nanosleep wakes on time, not quantized to the old
-		 * fixed 50ms), clamped to a short poll for wait classes without an event source.
+		 * NEAREST sleeper deadline (so nanosleep wakes on time, not quantized to a fixed
+		 * poll period), clamped to a short poll for wait classes without an event source.
 		 * Socket waits use the run-scoped readiness callback when the port advertises it;
 		 * portable ports keep the 5ms fallback. */
 		int socket_ready_events = 0;

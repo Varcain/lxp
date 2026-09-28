@@ -35,10 +35,7 @@ void primary_slot_clear(int slot)
 	__atomic_fetch_and(&g_primary_pending[word], ~bit, __ATOMIC_RELAXED);
 }
 
-/* Publish a primary per-slot event and wake the coordinator. Ports use this for
- * contained guest faults; normal syscall/signal parking reaches it through
- * park_frame(). Safe when the slot is stale: the coordinator simply clears a
- * hint that fails revalidation. */
+/* Clear every pending per-slot event (run start). */
 void lxp_primary_events_reset(void)
 {
 	for (unsigned i = 0; i < LXP_EVENT_WORDS; i++)
@@ -50,6 +47,10 @@ size_t lxp_primary_events_bytes(void)
 	return sizeof(g_primary_pending);
 }
 
+/* Publish a primary per-slot event and wake the coordinator. Ports use this for
+ * contained guest faults; normal syscall/signal parking reaches it through
+ * park_frame(). Safe when the slot is stale: the coordinator simply clears a
+ * hint that fails revalidation. */
 void lxp_event_post_slot(const lxp_os_ops_t *eng, int slot)
 {
 	primary_slot_mark(slot);
