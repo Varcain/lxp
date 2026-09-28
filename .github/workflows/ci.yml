@@ -91,11 +91,17 @@ jobs:
           - { name: pty,      defs: "-DLXP_ENABLE_PTY=1" }
           - { name: dev,      defs: "-DLXP_ENABLE_DEV=1" }
           - { name: dev-full, defs: "-DLXP_ENABLE_DEV=1 -DLXP_ENABLE_DEV_FB=1 -DLXP_ENABLE_DEV_INPUT=1" }
-          - { name: all,      defs: "-DLXP_ENABLE_NET=1 -DLXP_ENABLE_NETFS=1 -DLXP_ENABLE_NETFS_EXEC=1 -DLXP_ENABLE_PTY=1 -DLXP_ENABLE_DEV=1 -DLXP_ENABLE_DEV_FB=1 -DLXP_ENABLE_DEV_INPUT=1" }
+          - { name: fs,       defs: "-DLXP_ENABLE_FS=1" }
+          - { name: block,    defs: "-DLXP_ENABLE_DEV=1 -DLXP_ENABLE_BLOCK=1" }
+          - { name: storage,  defs: "-DLXP_ENABLE_FS=1 -DLXP_ENABLE_DEV=1 -DLXP_ENABLE_BLOCK=1" }
+          - { name: dma2d,    defs: "-DLXP_ENABLE_DEV=1 -DLXP_ENABLE_DEV_DMA2D=1" }
+          - { name: input,    defs: "-DLXP_ENABLE_DEV=1 -DLXP_ENABLE_DEV_INPUT=1 -DLXP_ENABLE_DEV_INPUT_TESTPAD=1 -DLXP_ENABLE_TOUCH=1" }
+          - { name: cpu,      defs: "-DLXP_ENABLE_FPU_CONTEXT=1 -DLXP_ENABLE_RT_METRICS=1 -DLXP_ENABLE_LATENCY=1" }
+          - { name: all,      defs: "-DLXP_ENABLE_NET=1 -DLXP_ENABLE_NETFS=1 -DLXP_ENABLE_NETFS_EXEC=1 -DLXP_ENABLE_PTY=1 -DLXP_ENABLE_FS=1 -DLXP_ENABLE_DEV=1 -DLXP_ENABLE_BLOCK=1 -DLXP_ENABLE_DEV_FB=1 -DLXP_ENABLE_DEV_DMA2D=1 -DLXP_ENABLE_DEV_INPUT=1 -DLXP_ENABLE_DEV_INPUT_TESTPAD=1 -DLXP_ENABLE_TOUCH=1 -DLXP_ENABLE_FPU_CONTEXT=1 -DLXP_ENABLE_RT_METRICS=1 -DLXP_ENABLE_LATENCY=1" }
     steps:
       - uses: actions/checkout@v4
 
-      # Cache the toolchain .debs so the 7 matrix legs (and re-runs) install from disk instead
+      # Cache the toolchain .debs so the matrix legs (and re-runs) install from disk instead
       # of re-downloading gcc-arm-none-eabi each time. Shared key across the matrix.
       - name: Cache arm-none-eabi packages
         uses: actions/cache@v4
