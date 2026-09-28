@@ -41,4 +41,8 @@ int fs_follow(const lxp_proc_t *p, int idx);
 /* Resolve a trusted absolute rootfs path to its final non-symlink index. */
 int lxp_rootfs_resolve_index(const lxp_file_t *fs, int count, const char *abspath);
 
+/* If @p path names an entry exactly one component below directory @p dir, return
+ * that child's name; otherwise NULL. */
+const char *lxp_path_child_name(const char *dir, const char *path);
+
 #endif /* LXP_FS_PATH_H */

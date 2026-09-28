@@ -180,3 +180,17 @@ int lxp_rootfs_resolve_index(const lxp_file_t *fs, int count, const char *abspat
 		return -1;
 	return fsx_follow(fs, count, fsx_lookup(fs, count, abspath));
 }
+
+const char *lxp_path_child_name(const char *dir, const char *path)
+{
+	if (dir[0] == '/' && dir[1] == 0) { /* root */
+		if (path[0] != '/' || path[1] == 0)
+			return NULL;
+		return strchr(path + 1, '/') ? NULL : path + 1;
+	}
+	size_t dl = strlen(dir);
+	if (strncmp(path, dir, dl) != 0 || path[dl] != '/')
+		return NULL;
+	const char *name = path + dl + 1;
+	return (*name && !strchr(name, '/')) ? name : NULL;
+}

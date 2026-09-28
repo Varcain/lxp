@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "fs/lxp_dirent.h"
 #include "lxp/lxp_config.h"
 #include "proc/lxp_proc.h" /* lxp_proc_t, lxp_ofd_t */
 
@@ -44,6 +45,10 @@ struct lxp_file_ops {
 	 *  negated errno. NULL means the kind is not seekable (the syscall returns
 	 *  -ESPIPE). */
 	long (*lseek)(lxp_proc_t *p, lxp_ofd_t *f, long off, int whence);
+	/** getdents/getdents64: write the directory's next records into @p sink: bytes
+	 *  written, 0 at the end, a negated errno, or 0 after parking the proc (netfs).
+	 *  NULL means the kind is not a directory (the syscall returns -ENOTDIR). */
+	long (*getdents)(lxp_proc_t *p, lxp_ofd_t *f, lxp_dirent_sink_t *sink);
 	/** fill @p statbuf (a struct kstat64) for fstat64(2): 0, a negated errno, or
 	 *  0 after parking (netfs). NULL means the kind has no backing object and the
 	 *  syscall reports a bare character device (console/pipe/eventfd). */

@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "fs/lxp_dir.h"
 #include "fs/lxp_stat.h"
 #include "fs/lxp_vfs.h"
 #include "lxp_arena.h"
@@ -205,6 +206,14 @@ static long fop_lseek_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 	return lxp_vfs_seek(s, (long)wnode_at(s->file_idx)->size, off, whence);
 }
 
+static long fop_getdents_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *sink)
+{
+	lxp_wnode_t *t = wnode_at(s->file_idx);
+	if ((t->mode & LXP_S_IFMT) != LXP_S_IFDIR)
+		return -LXP_ENOTDIR;
+	return lxp_dir_list(p, s, t->path, sink);
+}
+
 static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	(void)p;
@@ -227,6 +236,7 @@ const lxp_file_ops_t lxp_tmpfs_fops = {
 	.pread = fop_pread_tmpfs,
 	.pwrite = fop_pwrite_tmpfs,
 	.lseek = fop_lseek_tmpfs,
+	.getdents = fop_getdents_tmpfs,
 	.fstat = fop_fstat_tmpfs,
 	.close = fop_close_tmpfs,
 };

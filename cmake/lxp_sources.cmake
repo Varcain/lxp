@@ -18,6 +18,7 @@ set(LXP_RUNTIME_SOURCES
     "${LXP_SOURCE_ROOT}/src/lxp_guest.c"
     "${LXP_SOURCE_ROOT}/src/lxp_provider.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_console.c"
+    "${LXP_SOURCE_ROOT}/src/fs/lxp_dir.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_dirent.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_eventfd.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_fd.c"

@@ -1584,6 +1584,12 @@ static long fop_lseek_netfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 	return lxp_netfs_lseek(s->file_idx, off, whence);
 }
 
+/* A Treaddir round-trip: parks, and the completion emits the records. */
+static long fop_getdents_netfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *sink)
+{
+	return lxp_netfs_getdents(p, s->file_idx, sink->ubuf, sink->cap, sink->is64);
+}
+
 static long fop_fstat_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	uint32_t mode;
@@ -1604,6 +1610,7 @@ const lxp_file_ops_t lxp_netfs_fops = {
 	.read = fop_read_netfs,
 	.write = fop_write_netfs,
 	.lseek = fop_lseek_netfs,
+	.getdents = fop_getdents_netfs,
 	.fstat = fop_fstat_netfs,
 	.close = fop_close_netfs,
 };

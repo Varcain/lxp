@@ -9,6 +9,7 @@
  */
 #include "fs/lxp_vfs.h"
 
+#include "fs/lxp_dir.h"
 #include "fs/lxp_stat.h"
 #include "lxp_internal.h"
 #include "lxp_linux_uapi.h"
@@ -41,6 +42,14 @@ static long fop_lseek_rootfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 	return lxp_vfs_seek(s, (long)p->fs[s->file_idx].size, off, whence);
 }
 
+static long fop_getdents_rootfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *sink)
+{
+	const lxp_file_t *f = &p->fs[s->file_idx];
+	if ((file_mode(f) & LXP_S_IFMT) != LXP_S_IFDIR)
+		return -LXP_ENOTDIR;
+	return lxp_dir_list(p, s, f->path, sink);
+}
+
 static long fop_fstat_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	lxp_fill_kstat64(statbuf, 1u + (uint32_t)s->file_idx, file_mode(&p->fs[s->file_idx]),
@@ -53,5 +62,6 @@ const lxp_file_ops_t lxp_rootfs_fops = {
 	.read = fop_read_rootfs,
 	.pread = fop_pread_rootfs,
 	.lseek = fop_lseek_rootfs,
+	.getdents = fop_getdents_rootfs,
 	.fstat = fop_fstat_rootfs,
 };

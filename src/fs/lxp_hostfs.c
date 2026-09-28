@@ -618,6 +618,25 @@ static long fop_lseek_hostfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 	return position;
 }
 
+/* One provider entry per call keeps an async retry idempotent: no earlier directory
+ * entries are consumed before a later read parks. */
+static long fop_getdents_hostfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *sink)
+{
+	if (!lxp_hostfs_is_dir(s->file_idx))
+		return -LXP_ENOTDIR;
+	const lxp_fs_dirent_t *entry = NULL;
+	long rc = lxp_hostfs_dir_peek(p, s->file_idx, &entry);
+	if (rc <= 0)
+		return rc;
+	uint32_t mode = entry->type == LXP_FS_TYPE_DIR ? LXP_S_IFDIR : LXP_S_IFREG;
+	if (!lxp_dirent_put(sink, 0x700001u + (uint64_t)s->offset, (uint64_t)s->offset + 1u,
+			    lxp_dirent_type(mode), entry->name, strlen(entry->name)))
+		return sink->error ? sink->error : -LXP_EINVAL;
+	s->offset++;
+	lxp_hostfs_dir_consume(s->file_idx);
+	return (long)sink->filled;
+}
+
 static long fop_fstat_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
 	lxp_fs_stat_t stat;
@@ -642,6 +661,7 @@ const lxp_file_ops_t lxp_hostfs_fops = {
 	.pread = fop_pread_hostfs,
 	.pwrite = fop_pwrite_hostfs,
 	.lseek = fop_lseek_hostfs,
+	.getdents = fop_getdents_hostfs,
 	.fstat = fop_fstat_hostfs,
 	.close = fop_close_hostfs,
 };

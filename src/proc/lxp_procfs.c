@@ -10,6 +10,7 @@
  */
 #include "proc/lxp_procfs.h"
 
+#include "fs/lxp_dir.h"
 #include "fs/lxp_stat.h"
 #include "fs/lxp_vfs.h"
 #include "lxp/lxp_config.h"
@@ -476,11 +477,6 @@ long lxp_procfs_open(lxp_proc_t *p, const char *abs)
 	return -LXP_EMFILE;
 }
 
-const char *lxp_procfs_dir_path(int idx)
-{
-	return g_procf[idx].is_dir ? g_procf[idx].path : NULL;
-}
-
 /* A /proc file read returns bytes from the content generated at open. */
 static long fop_pread_proc(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len, uint64_t off)
 {
@@ -496,6 +492,13 @@ static long fop_read_proc(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 	if (n > 0)
 		s->offset += (size_t)n;
 	return n;
+}
+
+static long fop_getdents_proc(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *sink)
+{
+	if (!g_procf[s->file_idx].is_dir)
+		return -LXP_ENOTDIR;
+	return lxp_dir_list(p, s, g_procf[s->file_idx].path, sink);
 }
 
 static long fop_fstat_proc(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
@@ -516,6 +519,7 @@ static void fop_close_proc(lxp_proc_t *p, lxp_ofd_t *s)
 const lxp_file_ops_t lxp_procfs_fops = {
 	.read = fop_read_proc,
 	.pread = fop_pread_proc,
+	.getdents = fop_getdents_proc,
 	.fstat = fop_fstat_proc,
 	.close = fop_close_proc,
 };

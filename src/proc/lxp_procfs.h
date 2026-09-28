@@ -40,7 +40,4 @@ extern const char *const g_proc_files[];
  * directory fd for getdents. Returns the fd or a negative errno. */
 long lxp_procfs_open(lxp_proc_t *p, const char *abs);
 
-/* The path of FD_PROC backing `idx` if it is a directory, else NULL. */
-const char *lxp_procfs_dir_path(int idx);
-
 #endif /* LXP_PROC_PROCFS_H */
