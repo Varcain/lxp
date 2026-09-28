@@ -162,6 +162,43 @@ static void test_fdpic_reject_filesz_gt_memsz(void **st)
 	assert_int_equal(load(img, sz), LXP_ERR_INVALID_PARAM);
 }
 
+/* A PT_DYNAMIC whose p_vaddr lies outside every RW segment: the loader walks the table at
+ * its runtime address, so validation and loading must both reject it rather than read the
+ * table from wherever that address happens to map. */
+#define DYN_IMG_SZ 192u
+static void test_fdpic_reject_dynamic_outside_rw(void **st)
+{
+	(void)st;
+	uint8_t img[DYN_IMG_SZ];
+	memset(img, 0, sizeof(img));
+	build_fdpic(img);
+	w16(img + 44, 3);	  /* e_phnum: text, data, dynamic */
+	w32(img + 84 + 4, 180);	  /* move the data bytes past the third phdr */
+	uint8_t *p2 = img + 116;  /* PT_DYNAMIC */
+	w32(p2 + 0, 2);		  /* PT_DYNAMIC */
+	w32(p2 + 4, 160);	  /* p_offset */
+	w32(p2 + 8, 0x2000);	  /* p_vaddr: outside the RW segment [0x1000, 0x1010) */
+	w32(p2 + 16, 16);	  /* p_filesz */
+	w32(p2 + 20, 16);	  /* p_memsz */
+
+	assert_int_equal(lxp_loader_validate_fdpic(img, sizeof(img), sizeof(g_region), 0),
+			 LXP_ERR_INVALID_PARAM);
+	assert_int_equal(load(img, sizeof(img)), LXP_ERR_INVALID_PARAM);
+
+	/* The same table inside the RW segment loads. The loader walks it through the 32-bit
+	 * loadmap, so the region must lie in the low 4 GiB. */
+	w32(p2 + 8, 0x1000);
+	w32(p2 + 4, 180);
+	w32(p2 + 16, 8);
+	w32(p2 + 20, 8);
+	fuzz_lowbuf_t reg = fuzz_lowbuf_map(512);
+	assert_non_null(reg.base);
+	lxp_flat_t prog;
+	memset(&prog, 0, sizeof(prog));
+	assert_int_equal(lxp_loader_load_fdpic(&prog, img, sizeof(img), reg.base, 512, 0, 0), LXP_OK);
+	munmap(reg.base, reg.cap + (size_t)sysconf(_SC_PAGESIZE));
+}
+
 /* Build a static FDPIC image with a large text segment plus a dynamic table declaring a
  * FUNCDESC-descriptor pool (DT_RELSZ/DT_RELENT), sized so the pool fits the region WITHOUT
  * the copied-text reservation but overflows it WITH it. Reaches the pool-bound check at a
@@ -368,6 +405,7 @@ int test_loader_fdpic_run(void)
 		cmocka_unit_test(test_fdpic_reject_small_phentsize),
 		cmocka_unit_test(test_fdpic_reject_phdr_table_oob),
 		cmocka_unit_test(test_fdpic_reject_filesz_gt_memsz),
+		cmocka_unit_test(test_fdpic_reject_dynamic_outside_rw),
 		cmocka_unit_test(test_fdpic_copytext_pool_bounds_region),
 		cmocka_unit_test(test_fdpic_reject_relent_zero),
 		cmocka_unit_test(test_fdpic_reject_hard_float),

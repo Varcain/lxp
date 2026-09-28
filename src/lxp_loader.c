@@ -782,8 +782,28 @@ static uint64_t copied_text_map_size(uint32_t text_size, size_t region_size)
 	return text_size <= size ? size : 0u;
 }
 
-int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t region_size,
-			      int copy_text)
+/* The shape of an acceptable FDPIC image, derived once from its immutable ELF and program
+ * headers. Validation and loading share this parse, so there is one definition of a
+ * loadable image. */
+struct fdpic_layout {
+	uint32_t entry;
+	uint32_t phoff;
+	uint16_t phentsize;
+	uint16_t phnum;
+	uint32_t nload;
+	uint32_t text_size; /* executable segment p_memsz (== p_filesz) */
+	uint32_t text_off;  /* executable segment p_offset */
+	uint32_t rw_lo;	    /* lowest RW p_vaddr */
+	uint32_t rw_span;   /* extent of the RW segments, packed into the region */
+	uint32_t rw_aligned;
+	uint32_t loadmap_size;
+	uint32_t text_reserved; /* copied-text lower half of the region; 0 for in-place text */
+	uint32_t dyn_vaddr;	/* PT_DYNAMIC p_vaddr, or 0 */
+	uint32_t dyn_size;
+};
+
+static int fdpic_layout_parse(const void *image, size_t image_size, size_t region_size,
+			      int copy_text, struct fdpic_layout *out)
 {
 	if (!image || image_size < 52u)
 		return LXP_ERR_INVALID_PARAM;
@@ -804,7 +824,7 @@ int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t regio
 	if (phentsize < 32u || (uint64_t)phoff + (uint64_t)phnum * phentsize > image_size)
 		return LXP_ERR_INVALID_PARAM;
 
-	uint32_t text_sz = 0;
+	uint32_t text_sz = 0, text_off = 0;
 	uint32_t rw_lo = UINT32_MAX, rw_hi = 0;
 	uint32_t dyn_vaddr = 0, dyn_sz = 0;
 	int have_text = 0;
@@ -830,6 +850,7 @@ int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t regio
 			if (filesz != memsz)
 				return LXP_ERR_INVALID_PARAM;
 			text_sz = memsz;
+			text_off = off;
 			have_text = 1;
 		} else {
 			uint32_t end = vaddr + memsz;
@@ -879,101 +900,55 @@ int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t regio
 	uint32_t max_fd = rel_ent != 0u ? rel_sz / rel_ent : 0u;
 	if (text_a + pool_off + (uint64_t)max_fd * 8u > region_size)
 		return LXP_ERR_NO_MEMORY;
+
+	out->entry = le32(img + 24);
+	out->phoff = phoff;
+	out->phentsize = phentsize;
+	out->phnum = phnum;
+	out->nload = nload;
+	out->text_size = text_sz;
+	out->text_off = text_off;
+	out->rw_lo = rw_lo;
+	out->rw_span = rw_span;
+	out->rw_aligned = rw_a;
+	out->loadmap_size = loadmap_sz;
+	out->text_reserved = (uint32_t)text_a;
+	out->dyn_vaddr = dyn_vaddr;
+	out->dyn_size = dyn_sz;
 	return LXP_OK;
+}
+
+int lxp_loader_validate_fdpic(const void *image, size_t image_size, size_t region_size,
+			      int copy_text)
+{
+	struct fdpic_layout layout;
+	return fdpic_layout_parse(image, image_size, region_size, copy_text, &layout);
 }
 
 int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size, void *region,
 			  size_t region_size, int is_interp, int copy_text)
 {
-	if (!prog || !image || !region || image_size < 52u /* Elf32_Ehdr */)
+	if (!prog || !region)
 		return LXP_ERR_INVALID_PARAM;
-	int vrc = lxp_loader_validate_fdpic(image, image_size, region_size, copy_text);
+	struct fdpic_layout layout;
+	int vrc = fdpic_layout_parse(image, image_size, region_size, copy_text, &layout);
 	if (vrc != LXP_OK)
 		return vrc;
 	const uint8_t *img = (const uint8_t *)image;
-	if (img[0] != 0x7f || img[1] != 'E' || img[2] != 'L' || img[3] != 'F' || img[4] != 1u)
-		return LXP_ERR_INVALID_PARAM; /* not ELF / not ELFCLASS32 */
-	if (le16(img + 16) != ELF_ET_DYN || le16(img + 18) != ELF_EM_ARM)
-		return LXP_ERR_INVALID_PARAM;
-	/* FDPIC marker: EI_OSABI (byte 7) == ELFOSABI_ARM_FDPIC (uClinux-fdpic uses this);
-	 * some toolchains also set EF_ARM_FDPIC in e_flags. */
-	if (img[7] != ELF_OSABI_ARM_FDPIC && !(le32(img + 36) & ELF_EF_ARM_FDPIC))
-		return LXP_ERR_NOT_SUPPORTED; /* not an FDPIC image */
-	if (lxp_loader_abi_incompatible(image, image_size))
-		return LXP_ERR_NOT_SUPPORTED; /* hard-float image: the soft-float guest can't run it */
-
-	uint32_t e_entry = le32(img + 24);
-	uint32_t e_phoff = le32(img + 28);
-	uint16_t e_phentsize = le16(img + 42);
-	uint16_t e_phnum = le16(img + 44);
-	if (e_phentsize <
-	    32) /* a valid Elf32_Phdr is 32B; a smaller entry lets the ph+N reads spill */
-		return LXP_ERR_INVALID_PARAM;
-	if ((uint64_t)e_phoff + (uint64_t)e_phnum * e_phentsize > image_size)
-		return LXP_ERR_INVALID_PARAM;
-
-	/* Pass 1: classify the PT_LOADs. The single executable segment is shared IN-PLACE from
-	 * the image (the cpio); the RW segment(s) are packed into the per-process region. Also
-	 * locate the dynamic table. PT_INTERP is ignored (we never run a nested loader). */
-	uint32_t text_sz = 0, text_off = 0;
-	int have_text = 0;
-	uint32_t rw_lo = 0xffffffffu, rw_hi = 0;
-	uint32_t dyn_off = 0, dyn_sz = 0;
-	int nload = 0;
-	for (uint16_t i = 0; i < e_phnum; i++) {
-		const uint8_t *ph = img + e_phoff + (size_t)i * e_phentsize;
-		uint32_t p_type = le32(ph);
-		if (p_type == ELF_PT_DYNAMIC) {
-			dyn_off = le32(ph + 8); /* p_vaddr of the dynamic table */
-			dyn_sz = le32(ph + 20); /* p_memsz */
-		}
-		if (p_type != ELF_PT_LOAD)
-			continue;
-		nload++;
-		uint32_t p_off = le32(ph + 4), v = le32(ph + 8), msz = le32(ph + 20);
-		if (le32(ph + 24) & ELF_PF_X) {
-			/* the RO/executable segment — shared in-place from the image (or, for a
-			 * copy_text load, copied into the region so it can run from RAM) */
-			text_sz = msz;
-			text_off = p_off;
-			have_text = 1;
-		} else {
-			/* Compute the extent in 64-bit: a hostile p_vaddr+p_memsz must not wrap
-			 * uint32 and understate rw_hi (which would send pass-2's RW memcpy past the
-			 * region). Clamp to 4 GiB — an over-large span is rejected against the region
-			 * just below regardless. */
-			uint64_t end = (uint64_t)v + msz;
-			if (v < rw_lo)
-				rw_lo = v;
-			if (end > rw_hi)
-				rw_hi = (end > 0xffffffffu) ? 0xffffffffu : (uint32_t)end;
-		}
-	}
-	if (!have_text || nload < 1)
-		return LXP_ERR_INVALID_PARAM;
-	uint32_t rw_span = (rw_hi > rw_lo) ? (rw_hi - rw_lo) : 0;
-	/* Bound the RW span to the region before deriving anything from it: a ~4 GiB span
-	 * makes the (rw_span + 3) alignment below wrap uint32 to a tiny value that slips the
-	 * region_size check, turning memset(base, 0, rw_span) into a wild write (found by the
-	 * fdpic fuzzer). The aligned block is re-checked with the loadmap at the NO_MEMORY
-	 * guard below; this catches the span itself first. */
-	if (rw_span > region_size)
-		return LXP_ERR_NO_MEMORY;
-	/* Reject a dynamic table whose (attacker-influenced) p_vaddr/p_memsz escapes the RW region;
-	 * its runtime address + dyn_sz is walked below and would otherwise read OOB. */
-	if (dyn_off && (dyn_off < rw_lo || (uint64_t)dyn_off + dyn_sz > rw_hi))
-		dyn_off = 0;
-	uint32_t rw_a = (rw_span + 3u) & ~3u; /* the loadmap follows the RW block, 4-aligned */
-	uint32_t loadmap_sz = 4u + (uint32_t)nload * 12u;
+	uint32_t e_entry = layout.entry;
+	uint32_t e_phoff = layout.phoff;
+	uint16_t e_phentsize = layout.phentsize;
+	uint16_t e_phnum = layout.phnum;
+	int nload = (int)layout.nload;
+	uint32_t text_sz = layout.text_size, text_off = layout.text_off;
+	uint32_t rw_lo = layout.rw_lo, rw_span = layout.rw_span;
+	uint32_t rw_a = layout.rw_aligned;
+	uint32_t loadmap_sz = layout.loadmap_size;
+	uint32_t dyn_off = layout.dyn_vaddr, dyn_sz = layout.dyn_size;
 	/* A copy_text load reserves the lower half for RO+X text and leaves the upper half for
 	 * disjoint RW+XN process state. A normal load leaves text shared in-place from the image
-	 * (text_a = 0). Compute in 64-bit so hostile sizes cannot wrap the bound. */
-	uint64_t text_a64 = copy_text ? copied_text_map_size(text_sz, region_size) : 0;
-	if (copy_text && text_a64 == 0u)
-		return LXP_ERR_NO_MEMORY;
-	if (text_a64 + rw_a + loadmap_sz > region_size)
-		return LXP_ERR_NO_MEMORY;
-	uint32_t text_a = (uint32_t)text_a64;
+	 * (text_a = 0). */
+	uint32_t text_a = layout.text_reserved;
 	if (copy_text)
 		memset(region, 0, text_a);
 
@@ -1005,20 +980,11 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 		uint32_t p_off = le32(ph + 4), p_vaddr = le32(ph + 8);
 		uint32_t p_filesz = le32(ph + 16), p_memsz = le32(ph + 20);
 		uint32_t p_flags = le32(ph + 24);
-		if (p_filesz >
-		    p_memsz) /* the copy is p_filesz bytes into a p_memsz-sized region slot */
-			return LXP_ERR_INVALID_PARAM;
-		if ((uint64_t)p_off + p_filesz > image_size)
-			return LXP_ERR_INVALID_PARAM;
+		/* The layout parse bounded every segment: p_filesz <= p_memsz, the file bytes lie
+		 * within the image, and executable segments have p_filesz == p_memsz, so a
+		 * read-resolution through text cannot run past the image. */
 		uint32_t seg_addr;
 		if (p_flags & ELF_PF_X) {
-			/* An executable segment is code + rodata — no bss — so a valid one has
-			 * p_filesz == p_memsz. Enforcing it keeps the loadmap's p_memsz (the segment's
-			 * runtime read-extent) bounded to the in-image p_filesz, so a read-resolution
-			 * through text (fdpic_rt_n: the dyn table, rel entries, symbols) cannot run past
-			 * the image on a malformed p_memsz. */
-			if (p_filesz != p_memsz)
-				return LXP_ERR_INVALID_PARAM;
 			if (copy_text) {
 				/* copy the text into the region head (region[0], reserved above) so it
 				 * runs from RAM — the image is a RAM staging buffer, not the XIP window. */
@@ -1075,7 +1041,9 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	/* DT_RELENT is the stride of the reloc walk below. A REL entry is exactly 8 bytes on
 	 * ARM; reject a smaller (attacker-supplied) stride: rel_ent == 0 never advances the
 	 * cursor (an infinite loop, since o + 0 <= rel_sz stays true), and 0 < rel_ent < 8
-	 * reads each 8-byte entry past the declared table. */
+	 * reads each 8-byte entry past the declared table. The layout parse checked the file's
+	 * copy of the table; these values come from the loaded copy, which a later overlapping
+	 * RW segment may have overwritten, so they are bounded again here. */
 	if (rel_sz && rel_ent < 8)
 		return LXP_ERR_INVALID_PARAM;
 
