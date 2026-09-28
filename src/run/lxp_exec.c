@@ -30,9 +30,23 @@ LXP_EXEC_TXN_LINKAGE void exec_txn_init(struct exec_txn *tx, int slot)
 	tx->new_ref = lxp_slot_ref_none();
 }
 
+/* Validate the image before reserving anything, so an image that can never load
+ * fails with ENOEXEC regardless of region pressure. */
+LXP_EXEC_TXN_LINKAGE int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
+						 size_t image_size, int remote_exec)
+{
+	if (tx->phase != EXEC_TXN_EMPTY || !image)
+		return -LXP_ENOEXEC;
+	if (lxp_loader_validate_fdpic(image, image_size, LXP_PROG_REGION_SIZE, remote_exec) !=
+	    LXP_OK)
+		return -LXP_ENOEXEC;
+	tx->phase = EXEC_TXN_VALIDATED;
+	return lifecycle_failpoint(LXP_FAIL_EXEC_IMAGE_VALIDATED) ? -LXP_ENOEXEC : LXP_OK;
+}
+
 LXP_EXEC_TXN_LINKAGE int exec_txn_reserve(struct exec_txn *tx)
 {
-	if (tx->phase != EXEC_TXN_EMPTY || !lxp_slot_ref_is_current(tx->old_ref))
+	if (tx->phase != EXEC_TXN_VALIDATED || !lxp_slot_ref_is_current(tx->old_ref))
 		return -LXP_EINVAL;
 
 	if (tx->old->snapshot.index >= 0) {
@@ -67,18 +81,6 @@ LXP_EXEC_TXN_LINKAGE int exec_txn_reserve(struct exec_txn *tx)
 	return lifecycle_failpoint(LXP_FAIL_EXEC_REGION_ACQUIRED) ? -LXP_ENOMEM : LXP_OK;
 }
 
-LXP_EXEC_TXN_LINKAGE int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
-						 size_t image_size, int remote_exec)
-{
-	if (tx->phase != EXEC_TXN_RESERVED || !image)
-		return -LXP_ENOEXEC;
-	if (lxp_loader_validate_fdpic(image, image_size, LXP_PROG_REGION_SIZE, remote_exec) !=
-	    LXP_OK)
-		return -LXP_ENOEXEC;
-	tx->phase = EXEC_TXN_VALIDATED;
-	return lifecycle_failpoint(LXP_FAIL_EXEC_IMAGE_VALIDATED) ? -LXP_ENOEXEC : LXP_OK;
-}
-
 /* Transfer the old image's process objects to the transaction after its native
  * task has stopped. No later path may release them through tx->old. */
 static void exec_txn_detach_old(struct exec_txn *tx)
@@ -105,7 +107,7 @@ static void exec_txn_detach_old(struct exec_txn *tx)
 
 LXP_EXEC_TXN_LINKAGE int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng)
 {
-	if (tx->phase != EXEC_TXN_VALIDATED)
+	if (tx->phase != EXEC_TXN_RESERVED)
 		return -LXP_EINVAL;
 
 	/* Everything below is the image-replacement commit boundary. Failures no
@@ -314,9 +316,9 @@ void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int s
 		image_size = cfg->rootfs[tx.image_index].size;
 	}
 
-	int rc = exec_txn_reserve(&tx);
+	int rc = exec_txn_validate_image(&tx, image, image_size, remote_exec);
 	if (rc == LXP_OK)
-		rc = exec_txn_validate_image(&tx, image, image_size, remote_exec);
+		rc = exec_txn_reserve(&tx);
 	if (rc != LXP_OK) {
 		exec_txn_abort(&tx, eng, rc, LXP_EXIT_REASON_EXEC_RESOURCE);
 		return;

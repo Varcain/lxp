@@ -13,8 +13,8 @@
 
 enum exec_txn_phase {
 	EXEC_TXN_EMPTY,
-	EXEC_TXN_RESERVED,
 	EXEC_TXN_VALIDATED,
+	EXEC_TXN_RESERVED,
 	EXEC_TXN_COMMITTED,
 	EXEC_TXN_IMAGE_READY,
 	EXEC_TXN_PUBLISHED,
@@ -58,9 +58,9 @@ struct exec_txn {
 #endif
 
 LXP_EXEC_TXN_LINKAGE void exec_txn_init(struct exec_txn *tx, int slot);
-LXP_EXEC_TXN_LINKAGE int exec_txn_reserve(struct exec_txn *tx);
 LXP_EXEC_TXN_LINKAGE int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
 						 size_t image_size, int remote_exec);
+LXP_EXEC_TXN_LINKAGE int exec_txn_reserve(struct exec_txn *tx);
 LXP_EXEC_TXN_LINKAGE int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng);
 LXP_EXEC_TXN_LINKAGE void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long error,
 					 int reason);

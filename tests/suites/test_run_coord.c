@@ -1176,6 +1176,7 @@ static void test_exec_precommit_failpoints_preserve_old_image(void **state)
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
 	struct exec_txn tx;
 	exec_txn_init(&tx, 0);
+	assert_int_equal(exec_txn_validate_image(&tx, image, image_size, 0), LXP_OK);
 	g_lifecycle_failpoint = LXP_FAIL_EXEC_REGION_ACQUIRED;
 	assert_true(exec_txn_reserve(&tx) < 0);
 	exec_txn_abort(&tx, &g_mock_eng, -LXP_ENOMEM, LXP_EXIT_REASON_EXEC_RESOURCE);
@@ -1192,7 +1193,6 @@ static void test_exec_precommit_failpoints_preserve_old_image(void **state)
 
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
 	exec_txn_init(&tx, 0);
-	assert_int_equal(exec_txn_reserve(&tx), LXP_OK);
 	g_lifecycle_failpoint = LXP_FAIL_EXEC_IMAGE_VALIDATED;
 	assert_true(exec_txn_validate_image(&tx, image, image_size, 0) < 0);
 	exec_txn_abort(&tx, &g_mock_eng, -LXP_ENOEXEC, LXP_EXIT_REASON_EXEC_LOAD);
@@ -1204,6 +1204,38 @@ static void test_exec_precommit_failpoints_preserve_old_image(void **state)
 	assert_ptr_equal(old->sighand, sighand);
 	assert_ptr_equal(old->group, group);
 	assert_true(old->alive);
+	assert_int_equal(lxp_validate_world(&error), LXP_OK);
+}
+
+/* An image that can never load is refused as ENOEXEC even when no program
+ * region is free: exec must not report resource pressure for a bad image. */
+static void test_exec_rejects_unloadable_image_without_free_region(void **state)
+{
+	(void)state;
+	for (int s = 0; s < LXP_NREG; s++)
+		make_valid_running_slot(s, s);
+	for (int r = 0; r < LXP_NREG; r++)
+		assert_false(region_free(r));
+
+	static const uint8_t passwd[] = "root:x:0:0:root:/root:/bin/sh\n";
+	const lxp_file_t rootfs[] = {{"/etc/passwd", passwd, sizeof(passwd) - 1, 0100644}};
+	lxp_run_config_t cfg = {.rootfs = rootfs, .rootfs_count = 1};
+	lxp_proc_t *proc = &g_lxp_slots[0].proc;
+	memset(&g_mock_exec_captures[0], 0, sizeof(g_mock_exec_captures[0]));
+	lxp_proc_bind_exec_capture(proc, &g_mock_exec_captures[0]);
+	proc->exec_file_idx = 0;
+	assert_int_equal(lxp_intent_begin(proc, &(lxp_intent_t){.kind = LXP_INTENT_EXEC}), 0);
+	lxp_mm_t *mm = proc->mm;
+
+	lxp_handle_exec(&g_mock_eng, &cfg, 0);
+
+	assert_int_equal(g_mock.resume_calls, 1);
+	assert_int_equal(g_mock.resume_sidx, 0);
+	assert_int_equal(g_mock.resume_r0, -LXP_ENOEXEC);
+	assert_true(proc->alive);
+	assert_ptr_equal(proc->mm, mm);
+	assert_int_equal(g_lxp_slots[0].host_state, SLOT_RUNNING);
+	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 }
 
@@ -1236,8 +1268,10 @@ static void test_exec_stale_snapshot_contains_vfork_pair(void **state)
 	/* Corrupt only the child's stored capability. The guarded reservation is
 	 * still valid and must be released by containment without copying it. */
 	g_lxp_slots[1].proc.snapshot.generation++;
+	uint8_t image[128];
 	struct exec_txn exec;
 	exec_txn_init(&exec, 1);
+	assert_int_equal(exec_txn_validate_image(&exec, image, build_coord_fdpic(image), 0), LXP_OK);
 	assert_int_equal(exec_txn_reserve(&exec), -LXP_EIO);
 	assert_true(exec.terminal);
 	exec_txn_abort(&exec, &g_mock_eng, -LXP_EIO, LXP_EXIT_REASON_EXEC_RESOURCE);
@@ -1266,8 +1300,8 @@ static void test_exec_commit_failure_contains_only_transitioning_guest(void **st
 	assert_int_equal(coordinator_park_slot(&g_mock_eng, 0), LXP_OK);
 	struct exec_txn tx;
 	exec_txn_init(&tx, 0);
-	assert_int_equal(exec_txn_reserve(&tx), LXP_OK);
 	assert_int_equal(exec_txn_validate_image(&tx, image, image_size, 0), LXP_OK);
+	assert_int_equal(exec_txn_reserve(&tx), LXP_OK);
 	g_lifecycle_failpoint = LXP_FAIL_EXEC_COMMITTED;
 	assert_true(exec_txn_commit(&tx, &g_mock_eng) < 0);
 	exec_txn_abort(&tx, &g_mock_eng, -LXP_EIO, LXP_EXIT_REASON_EXEC_RESOURCE);
@@ -3906,8 +3940,8 @@ static void test_exec_commit_discards_older_deferred_request(void **state)
 	uint8_t image[128];
 	struct exec_txn tx;
 	exec_txn_init(&tx, 0);
-	assert_int_equal(exec_txn_reserve(&tx), LXP_OK);
 	assert_int_equal(exec_txn_validate_image(&tx, image, build_coord_fdpic(image), 0), LXP_OK);
+	assert_int_equal(exec_txn_reserve(&tx), LXP_OK);
 	assert_int_equal(exec_txn_commit(&tx, &g_mock_eng), LXP_OK);
 	assert_false(lxp_slot_ref_equal(stale_owner, slot_ref_at(0)));
 	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
@@ -4719,6 +4753,8 @@ int main(void)
 		cmocka_unit_test_setup(test_fork_build_abort_restores_world, reset_state),
 		cmocka_unit_test_setup(test_fork_transaction_failpoints_restore_world, reset_state),
 		cmocka_unit_test_setup(test_exec_precommit_failpoints_preserve_old_image,
+				       reset_state),
+		cmocka_unit_test_setup(test_exec_rejects_unloadable_image_without_free_region,
 				       reset_state),
 		cmocka_unit_test_setup(test_exec_stale_snapshot_contains_vfork_pair, reset_state),
 		cmocka_unit_test_setup(test_exec_commit_failure_contains_only_transitioning_guest,
