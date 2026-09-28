@@ -113,6 +113,7 @@ add_executable(lxp_host_test
 )
 target_include_directories(lxp_host_test PRIVATE
   "${LXP_ROOT}/include"
+  "${LXP_ROOT}/src"
   "${cmocka_SOURCE_DIR}/include"
 )
 target_compile_options(lxp_host_test PRIVATE -Wall -Wextra -Werror)

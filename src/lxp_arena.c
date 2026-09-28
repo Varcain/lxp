@@ -8,7 +8,7 @@
 
 #include "lxp/lxp_config.h"
 
-#include "lxp/lxp_arena.h"
+#include "lxp_arena.h"
 
 #include <string.h>
 

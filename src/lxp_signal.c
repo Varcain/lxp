@@ -12,8 +12,8 @@
  */
 #include "lxp_run_internal.h"
 
-#include "lxp/lxp_guest.h"
-#include "lxp/lxp_proc.h"
+#include "lxp_guest.h"
+#include "proc/lxp_proc.h"
 #include "lxp/lxp_seam.h"
 
 /* ---- signal delivery (over the uniform frame) ------------------------------ */

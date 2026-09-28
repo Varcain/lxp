@@ -20,7 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "lxp/lxp_proc.h" /* LXP_PATH_MAX */
+#include "proc/lxp_proc.h" /* LXP_PATH_MAX */
 
 #define LXP_NWNODE 32
 

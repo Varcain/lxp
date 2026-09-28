@@ -12,7 +12,7 @@
  * with the host <elf.h> (ABI-identical to what the loader parses byte-for-byte).
  */
 #include "../framework/lxp_test.h"
-#include "lxp/lxp_loader.h"
+#include "lxp_loader.h"
 
 #include <elf.h>
 #include <stddef.h>

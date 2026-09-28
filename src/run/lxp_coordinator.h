@@ -11,11 +11,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "lxp/lxp_arena.h"
+#include "lxp_arena.h"
 #include "lxp/lxp_diag.h"
-#include "lxp/lxp_guest.h"
+#include "lxp_guest.h"
 #include "lxp/lxp_latency.h"
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 #include "lxp/lxp_seam.h"
 
 struct lxp_dbg_s;

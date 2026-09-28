@@ -19,8 +19,8 @@
 
 /* The suites assert against OVE_OK; in lxp that is LXP_OK (0). */
 #include "lxp/lxp_types.h"
-#include "lxp/lxp_arena.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_arena.h"
+#include "lxp_syscall.h"
 #ifndef OVE_OK
 #define OVE_OK LXP_OK
 #endif

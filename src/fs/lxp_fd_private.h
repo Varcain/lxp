@@ -9,7 +9,7 @@
 #ifndef LXP_FD_PRIVATE_H
 #define LXP_FD_PRIVATE_H
 
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 
 /** Allocate the lowest descriptor and its open-file description. */
 int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset);

@@ -1,6 +1,6 @@
 # Disposition manifest for the lxp syscall surface — the classification the coverage
 # guard (scripts/syscalls/check-syscalls.sh) freezes against drift. Every LXP_NR_* in
-# include/lxp/lxp_linux_uapi.h must have exactly one row here; adding a syscall without
+# src/lxp_linux_uapi.h must have exactly one row here; adding a syscall without
 # classifying it fails CI. The guard also proves each row still matches the source:
 #
 #   implemented | benign-stub | refused-eopnotsupp  -> must be a `case LXP_NR_x` in src/lxp_syscall.c

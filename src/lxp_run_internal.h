@@ -14,7 +14,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_seam.h" /* struct lxp_frame, LXP_NSLOT */
-#include "lxp/lxp_proc.h" /* lxp_proc_t, LXP_SIG_* */
+#include "proc/lxp_proc.h" /* lxp_proc_t, LXP_SIG_* */
 
 /* Context saved at signal delivery and restored at rt_sigreturn. */
 struct sig_save_s {

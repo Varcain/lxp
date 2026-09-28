@@ -9,21 +9,21 @@
 #include "lxp_internal.h"
 #include "lxp_run_internal.h"
 #include "lxp/lxp_run.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_syscall.h"
 #if LXP_ENABLE_DEV
-#include "lxp/lxp_dev.h"
+#include "dev/lxp_dev.h"
 #endif
 #if LXP_ENABLE_NET
-#include "lxp/lxp_net.h"
+#include "net/lxp_net.h"
 #endif
 #if LXP_ENABLE_NETFS
-#include "lxp/lxp_netfs.h"
+#include "netfs/lxp_netfs.h"
 #endif
 #if LXP_ENABLE_FS
 #include "fs/lxp_hostfs.h"
 #endif
 #if LXP_ENABLE_PTY
-#include "lxp/lxp_pty.h"
+#include "pty/lxp_pty.h"
 #endif
 
 enum lxp_service_class {

@@ -23,11 +23,11 @@
 
 #if LXP_ENABLE_NETFS
 
-#include "lxp/lxp_netfs.h"
-#include "lxp/lxp_guest.h"
-#include "lxp/lxp_loader.h"
+#include "netfs/lxp_netfs.h"
+#include "lxp_guest.h"
+#include "lxp_loader.h"
 #include "lxp/lxp_net_ops.h"
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 #include "lxp/lxp_types.h"
 #include "lxp_provider.h"
 

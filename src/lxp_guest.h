@@ -11,7 +11,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_identity.h"
-#include "lxp/lxp_proc_fwd.h"
+#include "proc/lxp_proc_fwd.h"
 
 #ifdef __cplusplus
 extern "C" {

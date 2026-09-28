@@ -8,7 +8,7 @@
 #ifndef LXP_IMAGE_H
 #define LXP_IMAGE_H
 
-#include "lxp/lxp_loader.h"
+#include "lxp_loader.h"
 #include "lxp/lxp_run.h"
 #include "run/lxp_runtime_store.h"
 

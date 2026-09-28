@@ -12,7 +12,7 @@
 #include "proc/lxp_procfs.h"
 
 #include "lxp/lxp_config.h"
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 #include "lxp/lxp_stats.h"
 #include "lxp_internal.h"
 #include "lxp_text.h"
@@ -24,7 +24,7 @@
 #include "lxp_provider.h"
 #endif
 #if LXP_ENABLE_NET
-#include "lxp/lxp_net.h"
+#include "net/lxp_net.h"
 #endif
 
 #include <string.h>

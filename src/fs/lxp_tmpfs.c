@@ -16,7 +16,7 @@
 
 #include <string.h>
 
-#include "lxp/lxp_arena.h"
+#include "lxp_arena.h"
 
 /* Board-relocatable BSS section (default: normal .bss). A consumer whose on-chip SRAM is tight can
  * point this at a far region (STM32 Zephyr: SDRAM1) so the tmpfs pool — and thus a large /tmp file

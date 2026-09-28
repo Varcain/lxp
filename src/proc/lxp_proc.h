@@ -28,10 +28,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "lxp/lxp_arena.h"
+#include "lxp_arena.h"
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_identity.h"
-#include "lxp/lxp_linux_uapi.h"
+#include "lxp_linux_uapi.h"
 #include "lxp/lxp_program.h"
 #include "lxp/lxp_types.h"
 

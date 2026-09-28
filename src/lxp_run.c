@@ -22,28 +22,28 @@
 
 #include <string.h>
 
-#include "lxp/lxp_arena.h"
+#include "lxp_arena.h"
 #include "lxp/lxp_diag.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_syscall.h"
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_seam.h"
 #include "lxp/lxp_latency.h"
 #include "lxp/lxp_run.h"
 #include "lxp/lxp_stats.h"
 #if LXP_ENABLE_DEV
-#include "lxp/lxp_dev.h" /* device-layer park/retry + autoreg + tick + kick */
+#include "dev/lxp_dev.h" /* device-layer park/retry + autoreg + tick + kick */
 #include "lxp/lxp_display_ops.h"
 #include "dev/lxp_dev_input.h"
 #endif
 #if LXP_ENABLE_NET
-#include "lxp/lxp_net.h" /* socket-layer park/retry + fork/exit fd lifecycle */
+#include "net/lxp_net.h" /* socket-layer park/retry + fork/exit fd lifecycle */
 #include "lxp/lxp_net_ops.h"
 #endif
 #if LXP_ENABLE_NETFS
-#include "lxp/lxp_netfs.h" /* remote-fs park/retry + init/pump + fork/exit lifecycle */
+#include "netfs/lxp_netfs.h" /* remote-fs park/retry + init/pump + fork/exit lifecycle */
 #endif
 #if LXP_ENABLE_PTY
-#include "lxp/lxp_pty.h" /* pty-layer park/retry (lxp_pty_retry) */
+#include "pty/lxp_pty.h" /* pty-layer park/retry (lxp_pty_retry) */
 #endif
 
 #include "lxp_internal.h" /* lxp_encode_wstatus (shared with sys_wait4) */

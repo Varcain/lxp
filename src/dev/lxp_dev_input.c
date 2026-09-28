@@ -16,10 +16,10 @@
 
 #if LXP_ENABLE_DEV_INPUT
 
-#include "lxp/lxp_dev.h"
+#include "dev/lxp_dev.h"
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_display_ops.h"
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 #include "dev/lxp_dev_input.h"
 #include "lxp_uapi.h"
 #include "lxp_provider.h"

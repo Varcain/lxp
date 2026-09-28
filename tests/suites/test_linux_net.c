@@ -14,9 +14,9 @@
  */
 
 #include "../framework/lxp_test.h"
-#include "lxp/lxp_arena.h"
-#include "lxp/lxp_net.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_arena.h"
+#include "net/lxp_net.h"
+#include "lxp_syscall.h"
 #include "lxp_provider.h"
 /* The POSIX reference port provides the synthetic netif bound for one run. */
 lxp_netif_t lxp_posix_netif(void);

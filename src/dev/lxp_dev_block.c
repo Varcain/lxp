@@ -12,8 +12,8 @@
 
 #include "dev/lxp_dev_block.h"
 #include "lxp/lxp_block_ops.h"
-#include "lxp/lxp_dev.h"
-#include "lxp/lxp_proc.h"
+#include "dev/lxp_dev.h"
+#include "proc/lxp_proc.h"
 #include "lxp_provider.h"
 #include "lxp_text.h"
 

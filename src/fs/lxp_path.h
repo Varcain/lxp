@@ -13,7 +13,7 @@
 
 #include <stddef.h>
 
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 
 /* Resolve user path `in` against p->fs_context->cwd into out[outlen] as a normalized absolute
  * path. Returns 0, or a negative errno (-EFAULT / -ENAMETOOLONG).

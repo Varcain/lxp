@@ -21,8 +21,8 @@
 
 #include <cmocka.h>
 
-#include "lxp/lxp_syscall.h"
-#include "lxp/lxp_pty.h"
+#include "lxp_syscall.h"
+#include "pty/lxp_pty.h"
 #include "lxp/lxp_port_posix.h"
 #include "fs/lxp_pipe.h"
 #include "lxp_internal.h"

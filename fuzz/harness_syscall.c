@@ -21,8 +21,8 @@
  */
 #include "fuzz_common.h"
 
-#include "lxp/lxp_arena.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_arena.h"
+#include "lxp_syscall.h"
 
 #include <stdint.h>
 #include <string.h>

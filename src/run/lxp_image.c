@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "lxp/lxp_bootstrap.h"
-#include "lxp/lxp_loader.h"
+#include "lxp_loader.h"
 #include "run/lxp_coordinator.h"
 #include "run/lxp_image.h"
 

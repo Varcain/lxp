@@ -24,7 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "lxp/lxp_proc_fwd.h"
+#include "proc/lxp_proc_fwd.h"
 
 /* Parked-op codes stored in lxp_proc.wait.op for LXP_WAIT_PTY. */
 #define LXP_PTYW_SREAD 1  /* slave  read  (shell reads input)  — m2s empty, master open */

@@ -11,7 +11,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_latency.h"
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 #include "lxp/lxp_seam.h"
 
 struct deferred_req {

@@ -14,7 +14,7 @@
  * harness happens to reach behaves predictably (single-slot, no real parking).
  */
 #include "lxp/lxp_seam.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_syscall.h"
 #include "lxp_run_internal.h" /* signal-save stack + LXP_NSLOT */
 
 #include <stdint.h>
@@ -34,7 +34,7 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 }
 
 #if LXP_ENABLE_NETFS_EXEC
-#include "lxp/lxp_netfs.h"
+#include "netfs/lxp_netfs.h"
 /* Engine staging buffer for a fetched remote ELF (on target the STM32 backend puts
  * this in SDRAM). The 9P exec-fetch path stages into it; give it real backing so the
  * netfs harness can drive a fetch without the coordinator. */

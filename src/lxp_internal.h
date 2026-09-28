@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "lxp/lxp_guest.h"
+#include "lxp_guest.h"
 #include "lxp/lxp_program.h"
 
 struct lxp_mem_stats;

@@ -10,7 +10,7 @@
  * host a non-"linux_" suite.
  */
 #include "../framework/lxp_test.h"
-#include "lxp/lxp_arena.h"
+#include "lxp_arena.h"
 
 #include <stdint.h>
 #include <string.h>

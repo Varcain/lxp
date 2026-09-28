@@ -17,7 +17,7 @@
  * a guard page one byte past image_size/region_size still faults a genuine OOB.
  */
 #include "fuzz_common.h"
-#include "lxp/lxp_loader.h"
+#include "lxp_loader.h"
 
 #include <stddef.h>
 #include <stdint.h>

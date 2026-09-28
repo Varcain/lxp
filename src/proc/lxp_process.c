@@ -10,7 +10,7 @@
 
 #if LXP_ENABLE_LINUX
 
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 
 #include "fs/lxp_fd_private.h"
 

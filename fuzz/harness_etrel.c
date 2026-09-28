@@ -13,7 +13,7 @@
  * global — a missing e_shoff / section-extent / r_offset bound reads or writes OOB
  * and aborts here. Exercises the Stage-3 ld_oob + sec_size[] r_offset guards.
  */
-#include "lxp/lxp_loader.h"
+#include "lxp_loader.h"
 
 #include <stddef.h>
 #include <stdint.h>

@@ -35,9 +35,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "lxp/lxp_guest.h"
+#include "lxp_guest.h"
 #include "lxp/lxp_port.h"
-#include "lxp/lxp_proc_fwd.h"
+#include "proc/lxp_proc_fwd.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -11,8 +11,8 @@
 
 #include "lxp/lxp_fs_ops.h"
 #include "lxp/lxp_block_ops.h"
-#include "lxp/lxp_guest.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_guest.h"
+#include "lxp_syscall.h"
 #include "fs/lxp_hostfs.h"
 #include "lxp_provider.h"
 #include "proc/lxp_procfs.h"

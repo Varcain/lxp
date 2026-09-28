@@ -17,9 +17,9 @@
  */
 #include "fuzz_common.h"
 
-#include "lxp/lxp_arena.h"
-#include "lxp/lxp_netfs.h" /* LXP_NETFSW_* */
-#include "lxp/lxp_syscall.h"
+#include "lxp_arena.h"
+#include "netfs/lxp_netfs.h" /* LXP_NETFSW_* */
+#include "lxp_syscall.h"
 
 #include <stdint.h>
 

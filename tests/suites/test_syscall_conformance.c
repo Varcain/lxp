@@ -22,7 +22,7 @@
 #include "../framework/lxp_test.h"
 #include "../framework/lxp_proc_fixture.h"
 
-#include "lxp/lxp_dev.h" /* lxp_guest_access_ok: assert the host canary is outside the guest ranges */
+#include "dev/lxp_dev.h" /* lxp_guest_access_ok: assert the host canary is outside the guest ranges */
 
 #include <stdint.h>
 #include <string.h>

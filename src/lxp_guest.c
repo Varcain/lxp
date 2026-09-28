@@ -5,8 +5,8 @@
 
 #include <string.h>
 
-#include "lxp/lxp_guest.h"
-#include "lxp/lxp_proc.h"
+#include "lxp_guest.h"
+#include "proc/lxp_proc.h"
 
 /* Supplied by the run loop. The host-only syscall tests intentionally have no
  * shared executable window. */

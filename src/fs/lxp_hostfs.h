@@ -15,7 +15,7 @@
 #if LXP_ENABLE_FS
 
 #include "lxp/lxp_fs_ops.h"
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 
 #define LXP_HOSTFS_DEFAULT_MOUNT "/data"
 

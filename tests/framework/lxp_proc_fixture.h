@@ -33,8 +33,8 @@
 
 #include "fuzz_common.h" /* fuzz_lowbuf_map / fuzz_lowbuf_t — via -I fuzz */
 
-#include "lxp/lxp_arena.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_arena.h"
+#include "lxp_syscall.h"
 
 #define LXP_CONF_SCRATCH (64u * 1024u)	/* guest buffers + path strings the suite hands to syscalls */
 #define LXP_CONF_ARENA (512u * 1024u)	/* backs brk + anonymous mmap */

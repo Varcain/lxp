@@ -4,7 +4,7 @@
  */
 
 #include "../framework/lxp_test.h"
-#include "lxp/lxp_linux_uapi.h"
+#include "lxp_linux_uapi.h"
 #include "lxp/lxp_rt_metrics.h"
 
 static void test_svc_window_and_lifetime_are_owned_by_lxp(void **state)

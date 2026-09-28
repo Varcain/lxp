@@ -13,7 +13,7 @@
  */
 #include "../framework/lxp_test.h"
 #include "lxp/lxp_seam.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_syscall.h"
 #include "lxp_run_internal.h" /* struct sig_save_s + the lxp_signal.c prototypes */
 
 #include <string.h>

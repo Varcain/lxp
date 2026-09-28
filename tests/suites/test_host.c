@@ -16,7 +16,7 @@
 
 #include "lxp/lxp_host.h"
 #include "lxp/lxp_observe.h"
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 
 static struct {
 	unsigned rootfs_window_calls;

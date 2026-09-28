@@ -7,12 +7,12 @@
  */
 
 #include "lxp/lxp_config.h"
-#include "lxp/lxp_loader.h" /* lxp_loader_abi_incompatible — refuse a wrong-ABI execve up front */
+#include "lxp_loader.h" /* lxp_loader_abi_incompatible — refuse a wrong-ABI execve up front */
 
 #if LXP_ENABLE_LINUX
 
 #include "lxp/lxp_stats.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_syscall.h"
 #include "lxp/lxp_types.h"
 
 #include "lxp_internal.h" /* lxp_guest_access_ok / lxp_guest_strnlen / file_mode / lxp_encode_wstatus */
@@ -29,16 +29,16 @@
 #include "proc/lxp_procfs.h" /* synthetic /proc content generation (FD_PROC) */
 #include "proc/lxp_script.h" /* bounded #! parsing shared with initial launch */
 #if LXP_ENABLE_DEV
-#include "lxp/lxp_dev.h" /* /dev character-device routing (FD_DEV) */
+#include "dev/lxp_dev.h" /* /dev character-device routing (FD_DEV) */
 #endif
 #if LXP_ENABLE_NET
-#include "lxp/lxp_net.h" /* socket routing (FD_SOCKET) */
+#include "net/lxp_net.h" /* socket routing (FD_SOCKET) */
 #endif
 #if LXP_ENABLE_NETFS
-#include "lxp/lxp_netfs.h" /* remote-fs routing (FD_NET, /mnt/pi) */
+#include "netfs/lxp_netfs.h" /* remote-fs routing (FD_NET, /mnt/pi) */
 #endif
 #if LXP_ENABLE_PTY
-#include "lxp/lxp_pty.h" /* pseudo-terminal routing (FD_PTY) */
+#include "pty/lxp_pty.h" /* pseudo-terminal routing (FD_PTY) */
 #endif
 
 #include <limits.h>

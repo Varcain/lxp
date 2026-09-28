@@ -5,7 +5,7 @@
 
 Every syscall the lxp personality answers, cross-checked against the ARM EABI reference
 (`scripts/syscalls/arm-eabi.tbl`) and classified in `scripts/syscalls/dispositions.tsv`.
-Numbers come from `include/lxp/lxp_linux_uapi.h`; dispositions are proved against the
+Numbers come from `src/lxp_linux_uapi.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/lxp_run.c` by the coverage guard.
 
 Surface: 144 LXP_NR_* — 106 implemented, 27 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.

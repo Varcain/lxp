@@ -19,8 +19,8 @@
  * drive @c lxp_syscall() directly.
  */
 
-#include "lxp/lxp_linux_uapi.h"
-#include "lxp/lxp_proc.h"
+#include "lxp_linux_uapi.h"
+#include "proc/lxp_proc.h"
 
 #ifdef __cplusplus
 extern "C" {

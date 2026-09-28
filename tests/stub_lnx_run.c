@@ -10,7 +10,7 @@
  * clock_gettime and make the cache/flush hooks no-ops (a coherent host has no cache
  * maintenance to do).
  */
-#include "lxp/lxp_syscall.h"
+#include "lxp_syscall.h"
 #include "lxp_internal.h"
 
 #include <stdint.h>

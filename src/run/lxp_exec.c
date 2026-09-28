@@ -11,7 +11,7 @@
 #include "run/lxp_exec_private.h"
 
 #if LXP_ENABLE_NETFS_EXEC
-#include "lxp/lxp_netfs.h"
+#include "netfs/lxp_netfs.h"
 #endif
 
 LXP_EXEC_TXN_LINKAGE void exec_txn_init(struct exec_txn *tx, int slot)

@@ -13,7 +13,7 @@
 #define _GNU_SOURCE /* MAP_32BIT (low-4GiB region) via fuzz_common.h */
 
 #include "../framework/lxp_test.h"
-#include "lxp/lxp_loader.h"
+#include "lxp_loader.h"
 #include "lxp/lxp_types.h"
 
 #include "fuzz_common.h" /* fuzz_lowbuf_map: a low-4GiB region so loadmap u32 addrs deref */

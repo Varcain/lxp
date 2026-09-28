@@ -9,7 +9,7 @@
 
 #include <string.h>
 
-#include "lxp/lxp_proc.h" /* lxp_random_fill */
+#include "proc/lxp_proc.h" /* lxp_random_fill */
 #include "lxp/lxp_types.h"
 
 static uint32_t cpio_hex(const char *s)

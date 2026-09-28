@@ -19,7 +19,7 @@
 
 #include <stddef.h>
 
-#include "lxp/lxp_proc.h" /* lxp_proc_t, lxp_ofd_t */
+#include "proc/lxp_proc.h" /* lxp_proc_t, lxp_ofd_t */
 
 struct lxp_file_ops {
 	/** read up to @p len bytes into @p buf (the kernel WRITES buf): bytes read,

@@ -14,7 +14,7 @@
 #include "fs/lxp_pipe.h"
 #include "lxp/lxp_port_posix.h"
 #if LXP_ENABLE_PTY
-#include "lxp/lxp_pty.h"
+#include "pty/lxp_pty.h"
 #endif
 #include "lxp_provider.h"
 

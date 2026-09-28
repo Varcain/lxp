@@ -8,7 +8,7 @@
 
 #include "lxp/lxp_config.h"
 
-#include "lxp/lxp_loader.h"
+#include "lxp_loader.h"
 
 #include <string.h>
 

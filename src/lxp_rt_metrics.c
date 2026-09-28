@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_config.h"
-#include "lxp/lxp_linux_uapi.h"
+#include "lxp_linux_uapi.h"
 #include "lxp/lxp_rt_metrics.h"
 
 #if LXP_ENABLE_RT_METRICS

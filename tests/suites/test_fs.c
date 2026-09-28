@@ -16,8 +16,8 @@
  * The syscall suite drives these through lxp_syscall(); here they are exercised directly.
  */
 #include "../framework/lxp_test.h"
-#include "lxp/lxp_arena.h"
-#include "lxp/lxp_syscall.h"
+#include "lxp_arena.h"
+#include "lxp_syscall.h"
 
 #include "fs/lxp_path.h"
 #include "fs/lxp_pipe.h"

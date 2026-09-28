@@ -16,7 +16,7 @@
 
 #include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read/write */
 #include "lxp/lxp_config.h"
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 
 #include <stddef.h>
 #include <stdint.h>

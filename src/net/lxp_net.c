@@ -22,9 +22,9 @@
 
 #if LXP_ENABLE_NET
 
-#include "lxp/lxp_net.h"
+#include "net/lxp_net.h"
 #include "lxp/lxp_net_ops.h"
-#include "lxp/lxp_proc.h"
+#include "proc/lxp_proc.h"
 #include "lxp_provider.h"
 
 #include <string.h>
