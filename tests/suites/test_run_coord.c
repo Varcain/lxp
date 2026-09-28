@@ -46,7 +46,6 @@
 #define g_diag_native_present (TEST_RUNTIME->diag_native_present)
 #define g_diag_lifecycle_epoch (*TEST_RUNTIME->diag_lifecycle_epoch)
 #define g_diag_native_epoch (*TEST_RUNTIME->diag_native_epoch)
-#define g_pending_sig (*TEST_RUNTIME->pending_signal)
 #define g_tty_isig (*TEST_RUNTIME->tty_isig)
 #define g_tty_icrnl (*TEST_RUNTIME->tty_icrnl)
 #define g_lifecycle_failpoint (*TEST_RUNTIME->lifecycle_failpoint)
@@ -726,7 +725,6 @@ static int reset_state(void **state)
 	g_cfg = NULL;
 	g_lifecycle_failpoint = LXP_FAIL_NONE;
 	lxp_trap_publish(0);
-	g_pending_sig = 0;
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
 	lxp_console_typeahead_reset();

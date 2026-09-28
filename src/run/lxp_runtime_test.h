@@ -29,7 +29,6 @@ struct lxp_runtime_test_fixture {
 	uint8_t *diag_native_present;
 	uint32_t *diag_lifecycle_epoch;
 	uint32_t *diag_native_epoch;
-	volatile int *pending_signal;
 	volatile int *tty_isig;
 	volatile int *tty_icrnl;
 #if defined(LXP_TEST_FAILPOINTS)

@@ -33,6 +33,7 @@
 #if LXP_ENABLE_DEV
 #include "lxp/lxp_dev.h" /* device-layer park/retry + autoreg + tick + kick */
 #include "lxp/lxp_display_ops.h"
+#include "dev/lxp_dev_input.h"
 #endif
 #if LXP_ENABLE_NET
 #include "lxp/lxp_net.h" /* socket-layer park/retry + fork/exit fd lifecycle */
@@ -1058,7 +1059,6 @@ static volatile int g_tty_isig = 1;
  * tty's ICRNL conversion here, after the byte enters the personality and only
  * while the guest has that flag enabled. */
 static volatile int g_tty_icrnl = 1;
-static volatile int g_pending_sig;
 /* The console tty's foreground process group (job control): the pgid the shell put
  * in the foreground via tcsetpgrp(TIOCSPGRP). A console ^C (VINTR in cooked mode)
  * raises SIGINT on exactly this group — the shell (a different group) and background
@@ -1068,12 +1068,6 @@ static volatile int g_console_fg_pgrp;
 int lxp_tty_isig(void)
 {
 	return g_tty_isig;
-}
-
-void lxp_post_signal(int sig)
-{
-	if (sig > 0 && sig < LXP_NSIG)
-		g_pending_sig = sig;
 }
 
 void lxp_console_set_fg_pgrp(int pgrp)
@@ -1474,15 +1468,6 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 	if (psig) {
 		proc->pending_sigs &= ~lxp_sig_bit(psig);
 		deliver_signal(f, proc, psig, r);
-		return;
-	}
-	/* A console ^C latched a signal during this syscall (e.g. a read): deliver
-	 * it now, resuming the syscall with its result (-EINTR) — the Linux
-	 * at-the-boundary async-delivery model. Deferred while the proc blocks it. */
-	if (g_pending_sig && !lxp_sig_blocked(proc, g_pending_sig)) {
-		int sig = g_pending_sig;
-		g_pending_sig = 0;
-		deliver_signal(f, proc, sig, r);
 		return;
 	}
 	f->r[0] = (uint32_t)r;
@@ -2060,13 +2045,6 @@ void execute_deferred(const lxp_os_ops_t *eng, int slot)
 		lxp_guest_view_end(&view);
 		return;
 	}
-	if (g_pending_sig && !lxp_sig_blocked(proc, g_pending_sig)) {
-		int sig = g_pending_sig;
-		g_pending_sig = 0;
-		deliver_signal_parked(eng, slot, proc, sig, r);
-		lxp_guest_view_end(&view);
-		return;
-	}
 	lxp_guest_view_end(&view);
 	(void)coordinator_complete_slot(eng, slot_ref_at(slot), r);
 }
@@ -2459,7 +2437,6 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
 	for (int i = 0; i < LXP_NSLOT; i++)
 		fork_child_guard_reset(i);
-	g_pending_sig = 0;
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
 	g_console_fg_pgrp = 0;
@@ -2936,7 +2913,6 @@ struct lxp_runtime_test_fixture *lxp_runtime_test_fixture(void)
 		.diag_native_present = g_diag_native_present,
 		.diag_lifecycle_epoch = &g_diag_lifecycle_epoch,
 		.diag_native_epoch = &g_diag_native_epoch,
-		.pending_signal = &g_pending_sig,
 		.tty_isig = &g_tty_isig,
 		.tty_icrnl = &g_tty_icrnl,
 #if defined(LXP_TEST_FAILPOINTS)

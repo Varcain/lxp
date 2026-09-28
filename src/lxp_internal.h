@@ -27,6 +27,9 @@ uint32_t file_mode(const lxp_file_t *f);
  * delivery. Coordinator-owned (defined in lxp_run.c), like the tty ISIG state. */
 void lxp_console_set_fg_pgrp(int pgrp);
 int lxp_console_fg_pgrp(void);
+/* Whether the console tty has ISIG set (tracked from TCSETS): ^C/^Z raise
+ * SIGINT/SIGTSTP instead of being delivered as bytes. */
+int lxp_tty_isig(void);
 /* Latch @p sig on every live member of @p pgid and wake the coordinator.
  * The process table remains owned by the run core; tty subsystems use this
  * narrow operation instead of enumerating tasks. Returns recipients signalled. */

@@ -167,20 +167,6 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const char *const argv[]);
 
 /**
- * Whether the tty is in ISIG (canonical) mode. A @c read_fn consults this to
- * decide whether a console ^C is the interrupt key (raise SIGINT) or a literal
- * byte (the shell's raw line editor turns ISIG off). Tracked from TCSETS.
- */
-int lxp_tty_isig(void);
-
-/**
- * Latch an asynchronous signal (e.g. SIGINT from a console ^C) for delivery to
- * the running program at the next syscall boundary (the Linux async-delivery
- * model). Typically called by a @c read_fn that is returning @c -LXP_EINTR.
- */
-void lxp_post_signal(int sig);
-
-/**
  * A read-only snapshot of coordinator liveness, for a host watchdog.
  *
  * @c coord_iters counts iterations of the coordinator's dispatch loop. The loop

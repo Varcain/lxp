@@ -18,6 +18,7 @@
 #include "lxp/lxp_display_ops.h"
 #include "lxp/lxp_port.h" /* LXP_MAP_NC */
 #include "lxp/lxp_syscall.h"
+#include "../../src/dev/lxp_dev_input.h"
 #include "../../src/dev/lxp_uapi.h" /* struct lxp_dma2d_submit + LXP_DMA2D_* */
 #include "../../src/lxp_provider.h"
 

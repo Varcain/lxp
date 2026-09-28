@@ -8,8 +8,8 @@
  * The display/input port for the Linux personality. The /dev/fb0 and
  * /dev/input/event0 class drivers reach the panel + touch controller only through
  * these ops, so the personality carries no direct dependency on a particular
- * framebuffer / touch HAL. Display geometry is run-scoped policy injected
- * through lxp_display_set_geometry().
+ * framebuffer / touch HAL. Display geometry is run-scoped policy taken from
+ * lxp_run_config_t (display_width / display_height).
  */
 
 #ifndef LXP_DISPLAY_OPS_H
@@ -64,11 +64,6 @@ typedef struct lxp_display_ops {
 	int (*touch_read)(int *x, int *y, int *pressed);
 	void (*touch_deinit)(void);
 } lxp_display_ops_t;
-
-/* Set the display geometry used to clamp / report touch coordinates.
- * Non-positive dimensions reset to the 480x272 default independently.
- * lxp_run() seeds it from lxp_run_config_t. */
-void lxp_display_set_geometry(int width, int height);
 
 #ifdef __cplusplus
 }
