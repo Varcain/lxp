@@ -11,8 +11,7 @@
  *
  * The module is single-instance (one run at a time). The ops are plain vtables
  * with no per-call context pointer: a port keeps whatever state it needs in its
- * own file-scope storage, exactly as an embedded host naturally would. (This
- * mirrors the proven per-engine vtable the personality has always used.)
+ * own file-scope storage, exactly as an embedded host naturally would.
  */
 
 #ifndef LXP_PORT_H
@@ -216,13 +215,11 @@ typedef struct lxp_os_ops {
 	 * runs on the privileged coordinator task, must have a finite host-defined
 	 * deadline, and returns LXP_OK only when the entire buffer is valid. A port
 	 * without trustworthy entropy leaves this NULL; the guest then fails closed
-	 * instead of receiving a predictable in-core fallback. Kept at the end so
-	 * extending the source-level vtable does not move existing members. */
+	 * instead of receiving a predictable in-core fallback. */
 	int (*random_fill)(void *buf, size_t len);
 
 	/* Host system-heap snapshot for sysinfo(2) and /proc/meminfo. NULL reports
-	 * zero memory rather than inventing a fixed total. Kept at the end so source
-	 * initializers for older ports remain valid. */
+	 * zero memory rather than inventing a fixed total. */
 	int (*mem_stats)(struct lxp_mem_stats *out);
 
 	/* Immutable host identity for the utsname.version field and /proc/version,
@@ -252,9 +249,7 @@ typedef struct lxp_os_ops {
 	 * spawn_resume(..., LXP_SPAWN_RESUME_PARKED, ...) restores and resumes that
 	 * same task. A captured fork child instead uses
 	 * LXP_SPAWN_RESUME_START. Both callbacks are required: deleting and
-	 * recreating a task on every blocking syscall is not a supported lifecycle.
-	 * Kept at the end for source-level compatibility with older designated
-	 * initializers. */
+	 * recreating a task on every blocking syscall is not a supported lifecycle. */
 	void (*park_entry)(void *token);
 	void *(*park_prepare)(int sidx, uint32_t generation,
 			      const struct lxp_resume_ctx *c);

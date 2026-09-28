@@ -8,10 +8,9 @@
  * Bounded coordinator latency instrumentation — measurement only, no policy.
  *
  * The design bounds a guest's influence on the coordinator (a parked guest
- * cannot submit again; a mailbox collision fails closed) but nothing measured
- * how long the coordinator actually holds an event, so "no unbounded
- * guest-controlled path" was an argument rather than a number. This records the
- * two quantities that argument rests on:
+ * cannot submit again; a mailbox collision fails closed). This measures how long
+ * the coordinator actually holds an event, recording the two quantities that
+ * bound rests on:
  *
  *   service  — how long the coordinator spends dispatching one event. A guest
  *              picks the class (a 64K file copy and a getpid are both one
@@ -42,8 +41,8 @@
  * Declared here rather than beside the dispatch switch so that the enum, the
  * counter array's bound and the names a port prints all expand from one list:
  * adding an event class cannot leave a stats row unlabelled or the array one
- * short. lxp_run.c builds its dispatch enum from this, so the list is needed
- * whether or not the counters are compiled in — keep it outside the gate.
+ * short. The coordinator's event-class enum is built from this, so the list is
+ * needed whether or not the counters are compiled in — keep it outside the gate.
  */
 #define LXP_LAT_CLASS_LIST(X)                                                  \
 	X(EXIT)                                                                \

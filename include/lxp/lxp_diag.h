@@ -44,7 +44,7 @@ typedef enum lxp_diag_task_status {
 	LXP_DIAG_TASK_COUNT,
 } lxp_diag_task_status_t;
 
-/** Pending coordinator intent. More than one bit is an invariant violation. */
+/** Pending coordinator intent, reported as one bit (all bits for an invalid kind). */
 enum lxp_diag_intent {
 	LXP_DIAG_INTENT_NONE = 0,
 	LXP_DIAG_INTENT_DEFERRED_SYSCALL = 1u << 0,
@@ -53,7 +53,7 @@ enum lxp_diag_intent {
 	LXP_DIAG_INTENT_EXIT = 1u << 3,
 };
 
-/** Current blocking reason. More than one bit is an invariant violation. */
+/** Current blocking reason, reported as one bit (all bits for an invalid kind). */
 enum lxp_diag_wait {
 	LXP_DIAG_WAIT_NONE = 0,
 	LXP_DIAG_WAIT_TIMER = 1u << 0,
@@ -198,9 +198,8 @@ typedef struct lxp_diag_health {
  * Snapshot one slot or region without changing it.
  *
  * Call these from coordinator context while a run is active, or after
- * @ref lxp_run has returned. The records deliberately expose the current
- * parallel state so later structural iterations can be compared with this
- * baseline.
+ * @ref lxp_run has returned. The records expose the coordinator's per-slot and
+ * per-region state for diagnostics and tests.
  */
 int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out);
 int lxp_diag_region_snapshot(int region, lxp_diag_region_t *out);

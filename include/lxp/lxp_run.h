@@ -54,15 +54,13 @@ typedef long (*lxp_rt_scope_read_fn)(void *ctx, char *buf, size_t cap);
  * @brief Engine-agnostic public API for running a Linux program under the
  *        lxp Linux personality.
  *
- * The engine-agnostic core (@ref lxp_syscall) translates the Linux ABI through
- * explicit OS, network, filesystem, and display provider contracts; a per-engine port binds
- * those contracts to a concrete RTOS engine —
- * trapping the unprivileged program's syscalls, running each loaded FDPIC program in its
- * own isolated memory domain, and implementing the NOMMU process model
- * (sequentialised vfork/exec/wait, signal delivery, the run loop). This header
- * is the public contract a host application uses; the port provides the
- * implementation (for example the FreeRTOS and NuttX ports, the remaining
- * Zephyr host seam, or the bundled QEMU / POSIX reference ports).
+ * The engine-agnostic core translates the Linux ABI through explicit OS, network,
+ * filesystem, block and display provider contracts and implements the NOMMU process
+ * model (vfork/exec/wait, signals, the run loop). A per-engine port binds the OS
+ * contract to a concrete RTOS: it traps the unprivileged program's syscalls, runs each
+ * loaded FDPIC program in its own memory domain and manages its task. This header is
+ * the public contract a host application uses; the FreeRTOS, NuttX and Zephyr ports
+ * live under ports/, with the POSIX and QEMU ports as reference integrations.
  *
  * A host supplies a parsed rootfs and console callbacks, then calls
  * @ref lxp_run with an init program.

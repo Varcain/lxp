@@ -120,7 +120,7 @@
 /* Host-owned signal contexts retained per guest thread. Different signals may
  * interrupt an active handler, so one save area is not sufficient. Keep the
  * default at two levels: it covers one nested handler while adding about 2.2K
- * across the STM32F746 build's twelve slots when full VFP state is enabled.
+ * across twelve slots when full VFP state is enabled.
  * A target with more deterministic RAM may raise this bound. Exceeding it
  * terminates only the affected guest instead of overwriting an older frame. */
 #ifndef LXP_SIGNAL_NEST_MAX
@@ -133,10 +133,10 @@
 #error "LXP_SIGNAL_NEST_MAX must fit the signal-stack depth field"
 #endif
 
-/* ---- sizing / placement knobs (were the CONFIG_OVE_RTOS_* #if blocks) ------ */
+/* ---- sizing / placement knobs ---------------------------------------------- */
 /* Per-process program region: a dynamic FDPIC proc XIPs its text from the rootfs,
  * so the region holds only the main exec's RW + ld.so RW + stack. 256K is the
- * default (Zephyr used 512K for roomy PSRAM). */
+ * default; targets with more RAM may raise it. */
 #ifndef LXP_PROG_REGION_SIZE
 #define LXP_PROG_REGION_SIZE 0x40000u /* 256K */
 #endif
@@ -214,16 +214,16 @@
 #if LXP_WFS_POOL < 512u || (LXP_WFS_POOL & 15u) != 0u
 #error "LXP_WFS_POOL must be at least 512 bytes and 16-byte aligned"
 #endif
-/* Pipe pool: count + per-pipe ring size. The STM32F746 consumer bumps NPIPE to
- * 12 (SSH pipelines) and relocates the pool via LXP_FAR_BSS; Zephyr shrinks the
- * ring to 2048. Defaults are the safe minimum. */
+/* Pipe pool: count + per-pipe ring size. Defaults are the safe minimum; an SSH
+ * session running pipelines needs about 12 pipes, and LXP_FAR_BSS can place a
+ * larger pool in external RAM. */
 #ifndef LXP_NPIPE
 #define LXP_NPIPE 4
 #endif
 #ifndef LXP_PIPE_BUF
 #define LXP_PIPE_BUF 4096
 #endif
-/* PTY line buffer. Zephyr used 512; default 1024. */
+/* Per-direction pty ring size. */
 #ifndef LXP_PTY_BUF
 #define LXP_PTY_BUF 1024
 #endif
@@ -237,9 +237,9 @@
 #error "LXP_CONSOLE_TYPEAHEAD must be in [1, 4096]"
 #endif
 
-/* Section attribute for large "far" pools (the pipe ring on the STM32 lives in
- * external SDRAM). Empty default => ordinary .bss. The STM32 consumer defines
- * this to __attribute__((section(".sdram_bss"))). */
+/* Section attribute for large "far" pools such as the pipe rings, e.g.
+ * __attribute__((section(".sdram_bss"))) to place them in external RAM. Empty
+ * default => ordinary .bss. */
 #ifndef LXP_FAR_BSS
 #define LXP_FAR_BSS
 #endif

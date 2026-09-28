@@ -67,9 +67,9 @@ struct lxp_resume_ctx {
 	/* r1..r3 at the parked svc. The Linux syscall ABI preserves r1-r14 across a
 	 * syscall (only r0 is the return); a parking syscall that resumes must therefore
 	 * restore them, or a guest that (validly) reuses an arg register after the call
-	 * sees garbage. Appended after pc so a seam prog_tramp that predates this still
-	 * reads r4_11/r12/lr/sp/pc at the same offsets. r0 is delivered separately (the
-	 * resume value). */
+	 * sees garbage. Placed after pc because the ports' assembly trampolines read
+	 * r4_11/r12/lr/sp/pc at fixed offsets. r0 is delivered separately (the resume
+	 * value). */
 	uint32_t r1;
 	uint32_t r2;
 	uint32_t r3;
@@ -78,8 +78,8 @@ struct lxp_resume_ctx {
 	 * NZCVQ just as the immediate hardware exception return would. */
 	uint32_t xpsr;
 #if LXP_ENABLE_FPU_CONTEXT
-	/* Appended to retain all legacy core-register offsets used by assembly
-	 * trampolines. A port enabling this feature must restore it on spawn_resume. */
+	/* Placed after the core registers so their trampoline offsets stay fixed. A
+	 * port enabling this feature must restore it on spawn_resume. */
 	struct lxp_fp_context fp;
 #endif
 };
