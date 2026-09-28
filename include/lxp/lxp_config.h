@@ -30,15 +30,9 @@
  * gate is defined here — to 0 (off) by default — and the code tests its VALUE. So
  * -DLXP_ENABLE_NET=1 enables and -DLXP_ENABLE_NET=0 (or leaving it unset) disables.
  * There is no footgun where "-DLXP_ENABLE_NET=0" still enables the subsystem. The
- * core (the personality itself + the FDPIC loader) is always on; the optional
- * subsystems are OPT-IN — a consumer sets the ones it wants to 1 through CMake,
- * lxp_config_user.h, or the compiler command line. */
-#ifndef LXP_ENABLE_LINUX
-#define LXP_ENABLE_LINUX 1
-#endif
-#ifndef LXP_ENABLE_LOADER
-#define LXP_ENABLE_LOADER 1 /* the FDPIC loader is core; always on */
-#endif
+ * core (the personality itself + the FDPIC loader) is always built and has no gate;
+ * the optional subsystems are OPT-IN — a consumer sets the ones it wants to 1
+ * through CMake, lxp_config_user.h, or the compiler command line. */
 /* Optional subsystems — default OFF; a consumer sets the ones it wants to 1. */
 #ifndef LXP_ENABLE_NET
 #define LXP_ENABLE_NET 0

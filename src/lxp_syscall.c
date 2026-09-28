@@ -9,8 +9,6 @@
 #include "lxp/lxp_config.h"
 #include "lxp_loader.h" /* lxp_loader_abi_incompatible — refuse a wrong-ABI execve up front */
 
-#if LXP_ENABLE_LINUX
-
 #include "lxp/lxp_stats.h"
 #include "lxp_syscall.h"
 #include "lxp/lxp_types.h"
@@ -4376,5 +4374,3 @@ long lxp_poll_retry(lxp_proc_t *proc)
 	return -LXP_EAGAIN; /* still waiting */
 }
 #endif /* LXP_ENABLE_NET */
-
-#endif /* LXP_ENABLE_LINUX */

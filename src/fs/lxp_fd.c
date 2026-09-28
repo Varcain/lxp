@@ -8,8 +8,6 @@
 
 #include "lxp/lxp_config.h"
 
-#if LXP_ENABLE_LINUX
-
 #include "fs/lxp_fd_private.h"
 
 #include "lxp_vfs.h"
@@ -221,5 +219,3 @@ int lxp_fd_dup_min(lxp_proc_t *proc, int oldfd, int minfd, int cloexec)
 	}
 	return -LXP_EMFILE;
 }
-
-#endif /* LXP_ENABLE_LINUX */

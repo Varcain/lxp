@@ -8,7 +8,7 @@
  */
 #include "lxp/lxp_config.h"
 
-#if LXP_ENABLE_LINUX && LXP_ENABLE_FS
+#if LXP_ENABLE_FS
 
 #include "fs/lxp_hostfs.h"
 
@@ -580,4 +580,4 @@ void lxp_hostfs_runtime_reset(void)
 		g_hostfs_run_generation = 1u;
 }
 
-#endif /* LXP_ENABLE_LINUX && LXP_ENABLE_FS */
+#endif /* LXP_ENABLE_FS */

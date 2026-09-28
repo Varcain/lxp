@@ -20,8 +20,6 @@
  * NOMMU address space. RTOS seams do not include this mutable representation;
  * they consume generation-qualified identities and immutable memory-policy
  * snapshots through narrower contracts.
- *
- * @note Requires @c LXP_ENABLE_LINUX.
  * @{
  */
 
@@ -433,7 +431,6 @@ long lxp_pipe_retry(lxp_proc_t *p);
 
 /**
  * @brief Attach a read-only in-memory rootfs the program can @c open / @c read.
- * @note Requires @c LXP_ENABLE_LINUX.
  */
 void lxp_proc_set_rootfs(lxp_proc_t *proc, const lxp_file_t *files, int count);
 
@@ -469,7 +466,6 @@ long lxp_rootfs_resolve(const lxp_file_t *fs, int count, const char *abspath, co
  *
  * @return LXP_OK; LXP_ERR_INVALID_PARAM on bad arguments;
  *         LXP_ERR_NO_MEMORY if the arena cannot satisfy @p brk_bytes.
- * @note Requires @c LXP_ENABLE_LINUX.
  */
 int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes);
 

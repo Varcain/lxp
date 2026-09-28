@@ -8,8 +8,6 @@
 
 #include "lxp/lxp_config.h"
 
-#if LXP_ENABLE_LINUX
-
 #include "proc/lxp_proc.h"
 
 #include "fs/lxp_fd_private.h"
@@ -523,5 +521,3 @@ void lxp_proc_set_rootfs(lxp_proc_t *proc, const lxp_file_t *files, int count)
 	proc->fs = files;
 	proc->fs_count = (files && count > 0) ? count : 0;
 }
-
-#endif /* LXP_ENABLE_LINUX */
