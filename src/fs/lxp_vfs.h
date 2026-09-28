@@ -21,6 +21,7 @@
 #define LXP_FS_VFS_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "lxp/lxp_config.h"
 #include "proc/lxp_proc.h" /* lxp_proc_t, lxp_ofd_t */
@@ -32,6 +33,13 @@ struct lxp_file_ops {
 	/** write @p len bytes from @p buf (the kernel READS buf): bytes written,
 	 *  a negated errno, or 0 after parking the proc. */
 	long (*write)(lxp_proc_t *p, lxp_ofd_t *f, const void *buf, size_t len);
+	/** pread64(2): read at @p off without moving the fd offset: bytes read, 0 (EOF),
+	 *  or a negated errno. NULL means the kind is a stream (the syscall returns
+	 *  -ESPIPE). */
+	long (*pread)(lxp_proc_t *p, lxp_ofd_t *f, void *buf, size_t len, uint64_t off);
+	/** pwrite64(2): write at @p off without moving the fd offset: bytes written or a
+	 *  negated errno. NULL means the kind is not positioned-writable (-ESPIPE). */
+	long (*pwrite)(lxp_proc_t *p, lxp_ofd_t *f, const void *buf, size_t len, uint64_t off);
 	/** reposition the fd offset (lseek/_llseek): the new absolute offset, or a
 	 *  negated errno. NULL means the kind is not seekable (the syscall returns
 	 *  -ESPIPE). */
@@ -87,6 +95,11 @@ extern const lxp_file_ops_t lxp_hostfs_fops;
 #if LXP_ENABLE_PTY
 extern const lxp_file_ops_t lxp_pty_fops;
 #endif
+
+/** Copy up to @p len bytes of the in-memory object @p data[0, @p size) starting at @p off
+ *  to guest @p buf: bytes copied, 0 at or past the end, or -EFAULT. */
+long lxp_vfs_read_mem(lxp_proc_t *p, const void *data, size_t size, void *buf, size_t len,
+		      uint64_t off);
 
 /** SEEK_SET/CUR/END arithmetic for @p ofd over an object of logical size @p end:
  *  stores and returns the new offset, or -EINVAL. */

@@ -593,6 +593,23 @@ static long fop_write_hostfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_
 	return lxp_hostfs_write(p, s->file_idx, buf, len);
 }
 
+static long fop_pread_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len, uint64_t off)
+{
+	if (s->accmode == LXP_O_WRONLY)
+		return -LXP_EBADF;
+	return lxp_hostfs_pread(p, s->file_idx, buf, len, off);
+}
+
+static long fop_pwrite_hostfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len,
+			      uint64_t off)
+{
+	if (s->accmode == LXP_O_RDONLY)
+		return -LXP_EBADF;
+	if (len)
+		lxp_cache_clean(buf, len);
+	return lxp_hostfs_pwrite(p, s->file_idx, buf, len, off);
+}
+
 static long fop_lseek_hostfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 {
 	long position = lxp_hostfs_seek(p, s->file_idx, off, whence);
@@ -622,6 +639,8 @@ static void fop_close_hostfs(lxp_proc_t *p, lxp_ofd_t *s)
 const lxp_file_ops_t lxp_hostfs_fops = {
 	.read = fop_read_hostfs,
 	.write = fop_write_hostfs,
+	.pread = fop_pread_hostfs,
+	.pwrite = fop_pwrite_hostfs,
 	.lseek = fop_lseek_hostfs,
 	.fstat = fop_fstat_hostfs,
 	.close = fop_close_hostfs,

@@ -322,8 +322,8 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
 /*
  * pread64(fd, buf, count, offset): a positioned read that does NOT move the fd offset.
  * ld.so uses it to pull each PT_LOAD of a .so out of the rootfs into the anonymous memory
- * it mapped (the NOMMU path: MAP_FIXED-file mmap fails, so it mmaps anon + preads). Only
- * regular (seekable) files are supported — console/pipe return ESPIPE.
+ * it mapped (the NOMMU path: MAP_FIXED-file mmap fails, so it mmaps anon + preads). Kinds
+ * without a pread file operation are streams and return ESPIPE.
  */
 static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint64_t off)
 {
@@ -332,58 +332,17 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint64_t off
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, buf, len, 1))
 		return -LXP_EFAULT;
-
-#if LXP_ENABLE_DEV
-	if (s->kind == LXP_FD_DEV)
-		return lxp_dev_pread(p, s->file_idx, buf, len, off);
-#endif
-#if LXP_ENABLE_FS
-	if (s->kind == LXP_FD_HOSTFS) {
-		if (s->accmode == LXP_O_WRONLY)
-			return -LXP_EBADF;
-		return lxp_hostfs_pread(p, s->file_idx, buf, len, off);
-	}
-#endif
-	const uint8_t *data;
-	size_t size;
-	if (s->kind == LXP_FD_TMPFS) {
-		lxp_wnode_t *t = wnode_at(s->file_idx);
-		if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
-			return -LXP_EISDIR;
-		data = (const uint8_t *)t->data;
-		size = t->size;
-	} else if (s->kind == LXP_FD_PROC) {
-		const char *content;
-		long rc = lxp_procfs_content(s->file_idx, &content, &size);
-		if (rc < 0)
-			return rc;
-		data = (const uint8_t *)content;
-	} else if (s->kind == LXP_FD_FILE) {
-		const lxp_file_t *f = &p->fs[s->file_idx];
-		if ((file_mode(f) & LXP_S_IFMT) == LXP_S_IFDIR)
-			return -LXP_EISDIR;
-		data = (const uint8_t *)f->data;
-		size = f->size;
-	} else {
-		/* Console, pipe, eventfd, socket and pty descriptors are streams; 9P files
-		 * have no positioned-read path. Their backing index is not a rootfs index. */
-		return -LXP_ESPIPE;
-	}
-	if (off >= size)
-		return 0; /* EOF */
-	size_t n = size - (size_t)off;
-	if (n > len)
-		n = len;
-	if (lxp_copy_to_guest(p, (uintptr_t)buf, data + (size_t)off, n) != 0)
-		return -LXP_EFAULT;
-	return (long)n;
+	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+	if (!ops || !ops->pread)
+		return -LXP_ESPIPE; /* a stream: console, pipe, eventfd, socket, pty, 9P */
+	return ops->pread(p, s, buf, len, off);
 }
 
 /*
  * pwrite64(fd, buf, count, offset): a positioned write that does NOT move the fd offset.
  * LVGL's fbdev driver (LV_LINUX_FBDEV_MMAP=0) writes each framebuffer scanline this way.
- * Device fds route to the driver; the writable overlay writes at the offset; the read-only
- * rootfs and console/pipe are not positioned-writable (ESPIPE).
+ * Device fds route to the driver; the writable overlay writes at the offset; kinds
+ * without a pwrite file operation (streams, the read-only rootfs) return ESPIPE.
  */
 static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint64_t off)
 {
@@ -392,40 +351,10 @@ static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint6
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, buf, len, 0))
 		return -LXP_EFAULT;
-#if LXP_ENABLE_DEV
-	if (s->kind == LXP_FD_DEV)
-		return lxp_dev_pwrite(p, s->file_idx, buf, len, off);
-#endif
-#if LXP_ENABLE_FS
-	if (s->kind == LXP_FD_HOSTFS) {
-		if (s->accmode == LXP_O_RDONLY)
-			return -LXP_EBADF;
-		if (len)
-			lxp_cache_clean(buf, len);
-		return lxp_hostfs_pwrite(p, s->file_idx, buf, len, off);
-	}
-#endif
-	if (s->kind == LXP_FD_TMPFS) {
-		if (off > SIZE_MAX)
-			return -LXP_EFBIG;
-		size_t local_off = (size_t)off;
-		lxp_wnode_t *t = wnode_at(s->file_idx);
-		if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
-			return -LXP_EBADF;
-		if (local_off + len <
-		    len) /* off+len wrapped a 32-bit size_t → tiny reserve, OOB write */
-			return -LXP_EINVAL;
-		if (wfs_reserve(s->file_idx, local_off + len) != 0)
-			return -LXP_EFBIG;
-		if (local_off > t->size) /* zero the sparse hole (else it leaks stale pool bytes) */
-			memset(t->data + t->size, 0, local_off - t->size);
-		if (lxp_copy_from_guest(p, t->data + local_off, (uintptr_t)buf, len) != 0)
-			return -LXP_EFAULT;
-		if (local_off + len > t->size)
-			t->size = local_off + len;
-		return (long)len;
-	}
-	return -LXP_ESPIPE; /* console / pipe / read-only rootfs */
+	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+	if (!ops || !ops->pwrite)
+		return -LXP_ESPIPE; /* a stream, or the read-only rootfs */
+	return ops->pwrite(p, s, buf, len, off);
 }
 
 /*

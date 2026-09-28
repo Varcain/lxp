@@ -246,6 +246,50 @@ static void assert_positioned_io_rejected(lxp_proc_t *p, long fd, uint8_t *buf, 
 			 -LXP_ESPIPE);
 }
 
+/* Positioned I/O on the in-memory file kinds: rootfs and /proc read at an absolute
+ * offset without moving the fd, directories report EISDIR, and the read-only rootfs is
+ * not positioned-writable. */
+static void test_conf_pread_files(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+	uint8_t *buf = lxp_conf_alloc(fx, 64);
+	uint8_t *seq = lxp_conf_alloc(fx, 64);
+
+	long motd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/etc/motd"),
+		       LXP_O_RDONLY, 0, 0, 0);
+	assert_true(motd >= 3);
+	assert_int_equal(SC(&p, LXP_NR_pwrite64, motd, (long)(uintptr_t)buf, 1, 0, 0, 0),
+			 -LXP_ESPIPE);
+	assert_int_equal(SC(&p, LXP_NR_pread64, motd, (long)(uintptr_t)buf, 4, 0, 64, 0), 0);
+
+	long etc = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/etc"),
+		      LXP_O_RDONLY | LXP_O_DIRECTORY, 0, 0, 0);
+	assert_true(etc >= 3);
+	assert_int_equal(SC(&p, LXP_NR_pread64, etc, (long)(uintptr_t)buf, 4, 0, 0, 0),
+			 -LXP_EISDIR);
+
+	long ver = SC(&p, LXP_NR_openat, LXP_AT_FDCWD,
+		      (long)(uintptr_t)lxp_conf_str(fx, "/proc/version"), LXP_O_RDONLY, 0, 0, 0);
+	assert_true(ver >= 3);
+	assert_int_equal(SC(&p, LXP_NR_read, ver, (long)(uintptr_t)seq, 8, 0, 0, 0), 8);
+	assert_int_equal(SC(&p, LXP_NR_pread64, ver, (long)(uintptr_t)buf, 4, 0, 1, 0), 4);
+	assert_memory_equal(buf, seq + 1, 4);
+	/* The fd offset is still 8: the next sequential read matches a pread at 8. */
+	assert_int_equal(SC(&p, LXP_NR_pread64, ver, (long)(uintptr_t)buf, 4, 0, 8, 0), 4);
+	assert_int_equal(SC(&p, LXP_NR_read, ver, (long)(uintptr_t)seq, 4, 0, 0, 0), 4);
+	assert_memory_equal(buf, seq, 4);
+	assert_int_equal(SC(&p, LXP_NR_pwrite64, ver, (long)(uintptr_t)buf, 1, 0, 0, 0),
+			 -LXP_ESPIPE);
+
+	long proc = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/proc"),
+		       LXP_O_RDONLY | LXP_O_DIRECTORY, 0, 0, 0);
+	assert_true(proc >= 3);
+	assert_int_equal(SC(&p, LXP_NR_pread64, proc, (long)(uintptr_t)buf, 4, 0, 0, 0),
+			 -LXP_EISDIR);
+}
+
 static void test_conf_pread_streams(void **state)
 {
 	(void)state;
@@ -1066,6 +1110,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_numbers),
 		cmocka_unit_test(test_conf_fileio),
 		cmocka_unit_test(test_conf_fileio_streams),
+		cmocka_unit_test(test_conf_pread_files),
 		cmocka_unit_test(test_conf_pread_streams),
 		cmocka_unit_test(test_conf_mem),
 		cmocka_unit_test(test_conf_stat),

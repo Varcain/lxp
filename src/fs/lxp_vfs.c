@@ -4,10 +4,12 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * The fd-kind → file-operation table and the seek arithmetic kinds share.
+ * The fd-kind → file-operation table and the helpers the kinds share (in-memory
+ * reads, seek arithmetic).
  */
 #include "fs/lxp_vfs.h"
 
+#include "lxp_guest.h"
 #include "lxp_linux_uapi.h"
 
 const lxp_file_ops_t *const g_lxp_file_ops[LXP_FD_KIND_COUNT] = {
@@ -30,6 +32,19 @@ const lxp_file_ops_t *const g_lxp_file_ops[LXP_FD_KIND_COUNT] = {
 	[LXP_FD_PTY] = &lxp_pty_fops,
 #endif
 };
+
+long lxp_vfs_read_mem(lxp_proc_t *p, const void *data, size_t size, void *buf, size_t len,
+		      uint64_t off)
+{
+	if (off >= size)
+		return 0; /* EOF */
+	size_t n = size - (size_t)off;
+	if (n > len)
+		n = len;
+	if (lxp_copy_to_guest(p, (uintptr_t)buf, (const uint8_t *)data + (size_t)off, n) != 0)
+		return -LXP_EFAULT;
+	return (long)n;
+}
 
 long lxp_vfs_seek(lxp_ofd_t *ofd, long end, long off, int whence)
 {

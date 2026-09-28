@@ -481,30 +481,21 @@ const char *lxp_procfs_dir_path(int idx)
 	return g_procf[idx].is_dir ? g_procf[idx].path : NULL;
 }
 
-long lxp_procfs_content(int idx, const char **data, size_t *len)
-{
-	if (g_procf[idx].is_dir)
-		return -LXP_EISDIR;
-	*data = g_procf[idx].buf;
-	*len = g_procf[idx].len;
-	return 0;
-}
-
 /* A /proc file read returns bytes from the content generated at open. */
-static long fop_read_proc(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+static long fop_pread_proc(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len, uint64_t off)
 {
 	if (g_procf[s->file_idx].is_dir)
 		return -LXP_EISDIR;
-	size_t plen = g_procf[s->file_idx].len;
-	if ((size_t)s->offset >= plen)
-		return 0; /* EOF */
-	size_t n = plen - s->offset;
-	if (n > len)
-		n = len;
-	if (lxp_copy_to_guest(p, (uintptr_t)buf, g_procf[s->file_idx].buf + s->offset, n) != 0)
-		return -LXP_EFAULT;
-	s->offset += n;
-	return (long)n;
+	return lxp_vfs_read_mem(p, g_procf[s->file_idx].buf, g_procf[s->file_idx].len, buf, len,
+				off);
+}
+
+static long fop_read_proc(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+{
+	long n = fop_pread_proc(p, s, buf, len, s->offset);
+	if (n > 0)
+		s->offset += (size_t)n;
+	return n;
 }
 
 static long fop_fstat_proc(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
@@ -524,6 +515,7 @@ static void fop_close_proc(lxp_proc_t *p, lxp_ofd_t *s)
 
 const lxp_file_ops_t lxp_procfs_fops = {
 	.read = fop_read_proc,
+	.pread = fop_pread_proc,
 	.fstat = fop_fstat_proc,
 	.close = fop_close_proc,
 };

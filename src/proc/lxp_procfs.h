@@ -43,7 +43,4 @@ long lxp_procfs_open(lxp_proc_t *p, const char *abs);
 /* The path of FD_PROC backing `idx` if it is a directory, else NULL. */
 const char *lxp_procfs_dir_path(int idx);
 
-/* The generated content of FD_PROC backing `idx`: 0, or -EISDIR for a directory. */
-long lxp_procfs_content(int idx, const char **data, size_t *len);
-
 #endif /* LXP_PROC_PROCFS_H */

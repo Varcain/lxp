@@ -14,6 +14,7 @@
  */
 #include "fs/lxp_tmpfs.h"
 
+#include <stdint.h>
 #include <string.h>
 
 #include "fs/lxp_stat.h"
@@ -150,40 +151,52 @@ void wfs_free(int i)
 		wfs_reclaim(i);
 }
 
-/* A writable-node file read returns bytes from its buffer at the fd offset. */
-static long fop_read_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+/* A writable-node file read returns bytes from its buffer at @p off. */
+static long fop_pread_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len, uint64_t off)
 {
 	lxp_wnode_t *t = wnode_at(s->file_idx);
 	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 		return -LXP_EISDIR;
-	if (s->offset >= t->size)
-		return 0; /* EOF */
-	size_t n = t->size - s->offset;
-	if (n > len)
-		n = len;
-	if (lxp_copy_to_guest(p, (uintptr_t)buf, t->data + s->offset, n) != 0)
-		return -LXP_EFAULT;
-	s->offset += n;
-	return (long)n;
+	return lxp_vfs_read_mem(p, t->data, t->size, buf, len, off);
 }
 
-/* A writable-node file write copies into its (growable) buffer at the offset. */
-static long fop_write_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
+static long fop_read_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
+	long n = fop_pread_tmpfs(p, s, buf, len, s->offset);
+	if (n > 0)
+		s->offset += (size_t)n;
+	return n;
+}
+
+/* A writable-node file write copies into its (growable) buffer at @p off. */
+static long fop_pwrite_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len,
+			     uint64_t off)
+{
+	if (off > SIZE_MAX)
+		return -LXP_EFBIG;
+	size_t local_off = (size_t)off;
 	lxp_wnode_t *t = wnode_at(s->file_idx);
 	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 		return -LXP_EBADF;
-	if (wfs_reserve(s->file_idx, s->offset + len) != 0)
+	if (local_off + len < len) /* off+len wrapped a 32-bit size_t → tiny reserve, OOB write */
+		return -LXP_EINVAL;
+	if (wfs_reserve(s->file_idx, local_off + len) != 0)
 		return -LXP_EFBIG; /* writable-fs pool exhausted */
-	if (s->offset >
-	    t->size) /* zero the hole of a sparse write (else it leaks stale pool bytes) */
-		memset(t->data + t->size, 0, s->offset - t->size);
-	if (lxp_copy_from_guest(p, t->data + s->offset, (uintptr_t)buf, len) != 0)
+	if (local_off > t->size) /* zero the sparse hole (else it leaks stale pool bytes) */
+		memset(t->data + t->size, 0, local_off - t->size);
+	if (lxp_copy_from_guest(p, t->data + local_off, (uintptr_t)buf, len) != 0)
 		return -LXP_EFAULT;
-	s->offset += len;
-	if (s->offset > t->size)
-		t->size = s->offset;
+	if (local_off + len > t->size)
+		t->size = local_off + len;
 	return (long)len;
+}
+
+static long fop_write_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
+{
+	long n = fop_pwrite_tmpfs(p, s, buf, len, s->offset);
+	if (n > 0)
+		s->offset += (size_t)n;
+	return n;
 }
 
 static long fop_lseek_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
@@ -211,6 +224,8 @@ static void fop_close_tmpfs(lxp_proc_t *p, lxp_ofd_t *s)
 const lxp_file_ops_t lxp_tmpfs_fops = {
 	.read = fop_read_tmpfs,
 	.write = fop_write_tmpfs,
+	.pread = fop_pread_tmpfs,
+	.pwrite = fop_pwrite_tmpfs,
 	.lseek = fop_lseek_tmpfs,
 	.fstat = fop_fstat_tmpfs,
 	.close = fop_close_tmpfs,

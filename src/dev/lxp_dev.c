@@ -609,6 +609,17 @@ static long fop_write_dev(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t l
 	return lxp_dev_write(p, s->file_idx, buf, len);
 }
 
+static long fop_pread_dev(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len, uint64_t off)
+{
+	return lxp_dev_pread(p, s->file_idx, buf, len, off);
+}
+
+static long fop_pwrite_dev(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len,
+			   uint64_t off)
+{
+	return lxp_dev_pwrite(p, s->file_idx, buf, len, off);
+}
+
 static long fop_lseek_dev(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 {
 	(void)p;
@@ -646,6 +657,8 @@ static unsigned fop_poll_dev(lxp_proc_t *p, lxp_ofd_t *s)
 const lxp_file_ops_t lxp_dev_fops = {
 	.read = fop_read_dev,
 	.write = fop_write_dev,
+	.pread = fop_pread_dev,
+	.pwrite = fop_pwrite_dev,
 	.lseek = fop_lseek_dev,
 	.fstat = fop_fstat_dev,
 	.close = fop_close_dev,
