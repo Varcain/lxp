@@ -7,7 +7,7 @@
 #   BR_TARGET=/path/to/buildroot/output/target bash mkrootfs_m3.sh
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
-BR_TARGET="${BR_TARGET:-$HOME/projects/private/hIRoic/buildroot/output/target}"
+BR_TARGET="${BR_TARGET:?set BR_TARGET to a Buildroot FDPIC output/target tree}"
 [ -x "$BR_TARGET/bin/busybox" ] || { echo "busybox not found under BR_TARGET=$BR_TARGET"; exit 1; }
 
 W="$HERE/m3root"

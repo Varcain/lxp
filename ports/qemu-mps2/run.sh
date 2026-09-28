@@ -10,12 +10,13 @@
 #
 # Static-fixture milestones embed a small cpio in flash (pinned guest/rootfs.cpio; CI needs only
 # arm-none-eabi-gcc + qemu). M3 XIPs a big dynamic-FDPIC busybox cpio from PSRAM
-# @0x60000000 via `-device loader`; M3_CPIO points at it (default: the Buildroot
-# image). Set REGEN_GUEST=1 to rebuild the pinned fixture from guest/*.c (FDPIC gcc).
+# @0x60000000 via `-device loader`; M3_CPIO points at it (default: the pinned
+# guest/rootfs_m3.cpio). Set REGEN_GUEST=1 to rebuild the pinned fixture from guest/*.c.
+# M7, M8 and REGEN_GUEST=1 compile guests and need FDCC=/path/to/an FDPIC gcc.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
-FDCC="${FDCC:-$HOME/projects/private/hIRoic/buildroot/output/host/bin/arm-buildroot-uclinuxfdpiceabi-gcc}"
+FDCC="${FDCC:-}"
 QEMU="${QEMU:-/usr/bin/qemu-system-arm}"
 
 # Force the AN500's Cortex-M7 to its real 16 MPU regions. QEMU modelled the AN500 M7 with the
@@ -49,7 +50,7 @@ if [ "$M" != 3 ] && [ "$M" != 6 ]; then
     GUESTS="hello init child syscheck spin futex schedtest"
     CPIO_IMAGE="guest/rootfs.cpio"
     if [ "$M" = 7 ]; then
-        [ -x "$FDCC" ] || { echo "M7 needs an FDPIC gcc: $FDCC"; exit 1; }
+        [ -x "$FDCC" ] || { echo "M7 needs an FDPIC gcc: set FDCC=/path/to/arm-buildroot-uclinuxfdpiceabi-gcc"; exit 1; }
         M7_ROOT="$HERE/build/m7-root"
         rm -rf "$M7_ROOT"
         mkdir -p "$M7_ROOT"
@@ -61,7 +62,7 @@ if [ "$M" != 3 ] && [ "$M" != 6 ]; then
     elif [ "$M" = 8 ]; then
         # vfork + failed-exec regression: built standalone at run time (soft-float, like the
         # pinned fixture guests) so CI needs only the FDPIC gcc, no fixture regeneration.
-        [ -x "$FDCC" ] || { echo "M8 needs an FDPIC gcc: $FDCC"; exit 1; }
+        [ -x "$FDCC" ] || { echo "M8 needs an FDPIC gcc: set FDCC=/path/to/arm-buildroot-uclinuxfdpiceabi-gcc"; exit 1; }
         M8_ROOT="$HERE/build/m8-root"
         rm -rf "$M8_ROOT"; mkdir -p "$M8_ROOT"
         "$FDCC" -mfdpic -static -nostdlib -Os -ffreestanding -e _start -Iguest \
@@ -69,7 +70,7 @@ if [ "$M" != 3 ] && [ "$M" != 6 ]; then
         ( cd "$M8_ROOT" && printf '%s\n' vforkx | cpio -o -H newc 2>/dev/null > ../m8-rootfs.cpio )
         CPIO_IMAGE="$HERE/build/m8-rootfs.cpio"
     elif [ "${REGEN_GUEST:-0}" = 1 ]; then
-        [ -x "$FDCC" ] || { echo "REGEN_GUEST=1 but FDPIC gcc not found: $FDCC"; exit 1; }
+        [ -x "$FDCC" ] || { echo "REGEN_GUEST=1 needs an FDPIC gcc: set FDCC=/path/to/arm-buildroot-uclinuxfdpiceabi-gcc"; exit 1; }
         ( cd guest
           rm -rf root && mkdir root
           for g in $GUESTS; do

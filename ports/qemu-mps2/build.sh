@@ -4,7 +4,11 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
-ARMCC="${ARMCC:-$HOME/projects/private/hIRoic/oveRTOS/output/toolchains/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-gcc}"
+ARMCC="${ARMCC:-arm-none-eabi-gcc}"
+command -v "$ARMCC" >/dev/null 2>&1 || {
+    echo "error: arm-none-eabi-gcc not found: put it on PATH or set ARMCC=/path/to/arm-none-eabi-gcc" >&2
+    exit 1
+}
 LXP_ROOT="$HERE/../.."
 FRT="$HERE/vendor/FreeRTOS-Kernel"
 # ARM_CM4_MPU (ARMv7-M + PMSAv7 MPU) on the CM7: guests run unprivileged behind per-task

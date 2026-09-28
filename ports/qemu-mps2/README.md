@@ -35,10 +35,13 @@ dependency on any OS, so `scripts/check-decoupled.sh` still passes.
 
 - `qemu-system-arm` (mps2-an500 machine)
 - `arm-none-eabi-gcc` (bare-metal, for the firmware)
-- **only for `REGEN_GUEST=1`:** a uClinux FDPIC toolchain
-  (`arm-buildroot-uclinuxfdpiceabi-gcc`) to rebuild `guest/rootfs.cpio` from source
+- **only for M7, M8 and `REGEN_GUEST=1`:** a uClinux FDPIC toolchain
+  (`arm-buildroot-uclinuxfdpiceabi-gcc`) to compile guests from `guest/*.c`
 
-Override tool paths via env: `ARMCC`, `QEMU`, `FDCC`.
+Tool paths come from the environment: `ARMCC` (default: `arm-none-eabi-gcc` on `PATH`),
+`QEMU` (default: `/usr/bin/qemu-system-arm`) and `FDCC` (no default; required only for the
+guest-compiling milestones above). `guest/mkrootfs_m3.sh` requires `BR_TARGET`, a Buildroot
+FDPIC `output/target` tree.
 
 ## Usage
 
