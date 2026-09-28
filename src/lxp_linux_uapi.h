@@ -215,10 +215,14 @@
 #define LXP_S_IFCHR 0x2000u
 #define LXP_S_IFLNK 0xa000u
 #define LXP_S_IFSOCK 0xc000u
+#define LXP_S_IFIFO 0x1000u
+#define LXP_DT_FIFO 1
 #define LXP_DT_CHR 2
 #define LXP_DT_DIR 4
 #define LXP_DT_BLK 6
 #define LXP_DT_REG 8
+#define LXP_DT_LNK 10
+#define LXP_DT_SOCK 12
 
 /* termios and Unix98 pty ioctls used by the personality. */
 #define LXP_TCGETS 0x5401

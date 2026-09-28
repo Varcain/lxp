@@ -690,7 +690,7 @@ static uint8_t dtype_from_qid(uint8_t qt)
 	if (qt & P9_QTDIR)
 		return LXP_DT_DIR;
 	if (qt & 0x02u /* QTSYMLINK */)
-		return 10 /* DT_LNK */;
+		return LXP_DT_LNK;
 	return LXP_DT_REG;
 }
 

@@ -453,13 +453,14 @@ static void test_conf_dirent(void **state)
 	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
 	uint8_t *dbuf = lxp_conf_alloc(fx, 512);
 
-	/* getdents64 on /etc: the regular files show as DT_REG, the symlink as DT_LNK-or-REG. */
+	/* getdents64 on /etc: the regular files show as DT_REG, the symlink as DT_LNK. */
 	long fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/etc"),
 		     LXP_O_RDONLY, 0, 0, 0);
 	assert_true(fd >= 3);
 	long n = SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 512, 0, 0, 0);
 	assert_true(n > 0);
 	assert_int_equal(lxp_conf_dirent_type(dbuf, n, "motd"), LXP_DT_REG);
+	assert_int_equal(lxp_conf_dirent_type(dbuf, n, "self"), LXP_DT_LNK);
 	assert_int_equal(SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 512, 0, 0, 0),
 			 0); /* drained */
 	assert_int_equal(SC(&p, LXP_NR_read, fd, (long)(uintptr_t)dbuf, 4, 0, 0, 0), -LXP_EISDIR);
@@ -527,7 +528,7 @@ static void test_conf_dirent_records(void **state)
 	assert_int_equal(SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 512, 0, 0, 0), 80);
 	size_t o = check_dirent(dbuf, 1, 3, 1, 24, LXP_DT_REG, "motd");
 	o += check_dirent(dbuf + o, 1, 4, 2, 32, LXP_DT_REG, "hostname");
-	o += check_dirent(dbuf + o, 1, 5, 3, 24, LXP_DT_REG, "self");
+	o += check_dirent(dbuf + o, 1, 5, 3, 24, LXP_DT_LNK, "self");
 	assert_int_equal(o, 80);
 	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 
@@ -536,7 +537,7 @@ static void test_conf_dirent_records(void **state)
 	assert_int_equal(SC(&p, LXP_NR_getdents, fd, (long)(uintptr_t)dbuf, 512, 0, 0, 0), 56);
 	o = check_dirent(dbuf, 0, 3, 1, 16, LXP_DT_REG, "motd");
 	o += check_dirent(dbuf + o, 0, 4, 2, 24, LXP_DT_REG, "hostname");
-	o += check_dirent(dbuf + o, 0, 5, 3, 16, LXP_DT_REG, "self");
+	o += check_dirent(dbuf + o, 0, 5, 3, 16, LXP_DT_LNK, "self");
 	assert_int_equal(o, 56);
 	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 
@@ -544,7 +545,7 @@ static void test_conf_dirent_records(void **state)
 	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)etc, LXP_O_RDONLY, 0, 0, 0);
 	assert_int_equal(SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 56, 0, 0, 0), 56);
 	assert_int_equal(SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 512, 0, 0, 0), 24);
-	check_dirent(dbuf, 1, 5, 3, 24, LXP_DT_REG, "self");
+	check_dirent(dbuf, 1, 5, 3, 24, LXP_DT_LNK, "self");
 	assert_int_equal(SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 512, 0, 0, 0), 0);
 	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 

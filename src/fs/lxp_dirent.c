@@ -70,6 +70,12 @@ uint8_t lxp_dirent_type(uint32_t mode)
 		return LXP_DT_CHR;
 	case LXP_S_IFBLK:
 		return LXP_DT_BLK;
+	case LXP_S_IFLNK:
+		return LXP_DT_LNK;
+	case LXP_S_IFIFO:
+		return LXP_DT_FIFO;
+	case LXP_S_IFSOCK:
+		return LXP_DT_SOCK;
 	default:
 		return LXP_DT_REG;
 	}
