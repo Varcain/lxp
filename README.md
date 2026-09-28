@@ -134,7 +134,7 @@ via a drop-in `lxp_config_user.h`.
 ## Building and testing
 
 - **Standalone** (bundled POSIX port): `cmake -S . -B build -DLXP_PORT_POSIX=ON && cmake --build build`
-- **Host unit tests** (cmocka, fetched at configure time): `cmake -S . -B build -DLXP_BUILD_TESTS=ON && ctest --test-dir build -R lxp_unit` — the OS-agnostic sources drive `lxp_syscall()` and the arena directly on x86-64, no emulator.
+- **Host unit tests** (cmocka, fetched at configure time): `cmake -S . -B build -DLXP_BUILD_TESTS=ON && cmake --build build --target lxp_tests && ctest --test-dir build -L lxp` — the OS-agnostic sources drive `lxp_syscall()` and the arena directly on x86-64, no emulator.
 - **QEMU end-to-end** (Cortex-M7): `ports/qemu-mps2/` runs static and dynamic (busybox) FDPIC guests on `qemu-system-arm -M mps2-an500` under FreeRTOS, unprivileged behind the MPU — see its README.
 - **Port ownership**: [docs/port-ownership.md](docs/port-ownership.md) defines which integration code belongs in lxp and which remains owned by a consuming host or board.
 

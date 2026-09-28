@@ -16,7 +16,7 @@ FetchContent_Declare(
 )
 set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(UNIT_TESTING ON CACHE BOOL "" FORCE) # builds cmocka-static; also registers cmocka's own
-FetchContent_MakeAvailable(cmocka) #   self-tests in CTest — filter ours with `ctest -R lxp_unit`.
+FetchContent_MakeAvailable(cmocka) #   self-tests in CTest — select ours with `ctest -L lxp`.
 
 set(LXP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 include("${LXP_ROOT}/cmake/lxp_sources.cmake")
@@ -80,15 +80,6 @@ target_link_libraries(lxp_test_stub PRIVATE cmocka-static pthread rt m)
 # fetched separately, is not held to this).
 target_compile_options(lxp_test_stub PRIVATE -Wall -Wextra -Werror)
 
-# Opt-in ASan+UBSan (-DLXP_SANITIZE=ON): the CI "sanitizers" job builds with these so the
-# 32-bit-overflow / OOB bugs the Stage-2 fixes target are caught at runtime on the host.
-option(LXP_SANITIZE "Build the host tests with AddressSanitizer + UBSan" OFF)
-if(LXP_SANITIZE)
-  target_compile_options(lxp_test_stub PRIVATE
-    -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
-  target_link_options(lxp_test_stub PRIVATE -fsanitize=address,undefined)
-endif()
-
 add_test(NAME lxp_unit COMMAND lxp_test_stub)
 add_test(NAME lxp_guest_memory_boundary
   COMMAND sh "${LXP_ROOT}/scripts/check-guest-memory.sh")
@@ -133,10 +124,9 @@ target_link_libraries(lxp_host_test PRIVATE cmocka-static)
 add_test(NAME lxp_unit_host COMMAND lxp_host_test)
 
 # ---- coordinator (src/lxp_run.c) unit tests -------------------------------------
-# The coordinator is deliberately absent from lxp_test_stub above: its 32-bit-target
-# pointer casts warn on a 64-bit host, and the OS-service symbols it defines would clash
-# with tests/stub_lnx_run.c. So it has only ever run end-to-end on QEMU. This dedicated
-# binary tests its process-bookkeeping state machine on the host. The real
+# The coordinator is deliberately absent from lxp_test_stub above: the OS-service
+# symbols it defines would clash with tests/stub_lnx_run.c. This dedicated binary
+# tests its process-bookkeeping state machine on the host. The real
 # coordinator is linked as a production translation unit; a test-only fixture
 # bridge exposes the white-box state required by the protocol suite.
 add_executable(lxp_coord_test
@@ -168,10 +158,32 @@ target_compile_definitions(lxp_coord_test PRIVATE
   LXP_TEST_INTERNALS=1
 )
 target_link_libraries(lxp_coord_test PRIVATE cmocka-static pthread rt m)
+add_test(NAME lxp_unit_coord COMMAND lxp_coord_test)
+
+# ---- suite-wide settings ---------------------------------------------------------
+# One target builds every test executable: `cmake --build build --target lxp_tests`.
+add_custom_target(lxp_tests
+  DEPENDS lxp_test_stub lxp_async_gate_test lxp_host_test lxp_coord_test)
+
+# Opt-in ASan+UBSan (-DLXP_SANITIZE=ON) for every test executable, so the CI
+# sanitizer job covers the same binaries as the plain host job.
+option(LXP_SANITIZE "Build the host tests with AddressSanitizer + UBSan" OFF)
 if(LXP_SANITIZE)
-  target_compile_options(lxp_coord_test PRIVATE
-    -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
-  target_link_options(lxp_coord_test PRIVATE -fsanitize=address,undefined)
+  foreach(target lxp_test_stub lxp_async_gate_test lxp_host_test lxp_coord_test)
+    target_compile_options(${target} PRIVATE
+      -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+  endforeach()
 endif()
 
-add_test(NAME lxp_unit_coord COMMAND lxp_coord_test)
+# Label every lxp test so `ctest -L lxp` selects exactly this suite; cmocka's own
+# self-tests are registered in the same CTest tree (UNIT_TESTING above).
+set_tests_properties(
+  lxp_unit
+  lxp_guest_memory_boundary
+  lxp_unit_config_contract
+  lxp_unit_header_contract
+  lxp_unit_async_gate
+  lxp_unit_host
+  lxp_unit_coord
+  PROPERTIES LABELS lxp)
