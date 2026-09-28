@@ -477,17 +477,13 @@ static int lxp_blocked_retry_console(const lxp_os_ops_t *eng, int slot, lxp_proc
 				     struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_CONSOLE || slot_runnable_load(slot) ||
-	    !proc->console_poll || !proc->console_poll(proc->io_ctx))
+	    !proc->console_poll || !lxp_console_input_ready(proc))
 		return 0;
 
 	uintptr_t buffer = proc->wait.data.io.buffer;
 	size_t length = proc->wait.data.io.length;
-	long rc = proc->read_fn ? proc->read_fn(proc->io_ctx, 0, (void *)buffer, length) : 0;
+	long rc = lxp_console_read(proc, 0, (void *)buffer, length);
 	uint8_t ch = rc == 1 ? ((const volatile uint8_t *)(uintptr_t)buffer)[0] : 0;
-	if (rc == 1) {
-		ch = lxp_console_input_xlate(ch);
-		((volatile uint8_t *)(uintptr_t)buffer)[0] = ch;
-	}
 	if (rc == 1 && lxp_tty_isig() && ch == 26) {
 		console_signal_fg(LXP_SIGTSTP);
 		scan->progress = 1;
@@ -602,15 +598,9 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 	if (selected >= 0 && !scan.progress)
 		g_service_slot_cursor[selected] = (uint8_t)((start_slot + 1) % LXP_NSLOT);
 
-	/* Async ^C/^Z for a foreground program that never reads stdin. */
-	if (lxp_tty_isig() && !(scan.wait_policy & LXP_BLOCKED_WAIT_CONSOLE) && cfg &&
-	    cfg->console_poll && cfg->console_poll(cfg->io_ctx)) {
-		uint8_t ch = 0;
-		long rc = cfg->read_fn ? cfg->read_fn(cfg->io_ctx, 0, &ch, 1) : 0;
-		if (rc == 1 && (ch == 3 || ch == 26)) {
-			console_signal_fg(ch == 3 ? LXP_SIGINT : LXP_SIGTSTP);
-			scan.progress = 1;
-		}
-	}
+	/* Async ^C/^Z for a foreground program that is not reading stdin; other
+	 * input read by the check is kept as typeahead for the next console read. */
+	if (!(scan.wait_policy & LXP_BLOCKED_WAIT_CONSOLE) && lxp_console_poll_interrupts(cfg))
+		scan.progress = 1;
 	return scan;
 }

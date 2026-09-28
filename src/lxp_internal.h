@@ -32,10 +32,25 @@ int lxp_console_fg_pgrp(void);
  * narrow operation instead of enumerating tasks. Returns recipients signalled. */
 int lxp_signal_process_group(int pgid, int sig);
 
-/* Apply the console tty's currently tracked input-character translations.  Both
- * immediate reads in lxp_syscall.c and coordinator-resumed reads must pass bytes
- * through the same discipline. */
+/* Apply the console tty's currently tracked input-character translations.
+ * lxp_console_read() applies it to every console byte it returns. */
 uint8_t lxp_console_input_xlate(uint8_t ch);
+
+/* Console input discipline. The coordinator's ^C/^Z check reads input while no
+ * guest is reading the console; ordinary bytes it reads are kept as typeahead and
+ * delivered, in order, before any further transport input. */
+struct lxp_run_config;
+/* Whether a console read would return data now (typeahead or transport input). */
+int lxp_console_input_ready(const lxp_proc_t *proc);
+/* Read console input for @p proc: typeahead first, then the transport's read_fn,
+ * with the tracked input translation applied to a single-byte result. */
+long lxp_console_read(lxp_proc_t *proc, int fd, void *buf, size_t len);
+/* With ISIG on, read one pending byte: ^C/^Z signal the foreground group, anything
+ * else is queued as typeahead. Does not read while the queue is full. Returns
+ * nonzero when a signal was raised. */
+int lxp_console_poll_interrupts(const struct lxp_run_config *cfg);
+/* Discard queued typeahead (run start). */
+void lxp_console_typeahead_reset(void);
 
 /* Snapshot the host allocator through lxp_os_ops.mem_stats.  On failure `out`
  * is zeroed, so procfs/sysinfo never fall back to fabricated memory totals. */

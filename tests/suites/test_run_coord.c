@@ -412,6 +412,36 @@ static int mock_console_poll(void *ctx)
 	return 0;
 }
 
+/* A console transport that delivers a fixed byte script, one byte per read. */
+static struct {
+	const uint8_t *data;
+	size_t len;
+	size_t pos;
+} g_console_script;
+
+static void console_script(const char *data, size_t len)
+{
+	g_console_script.data = (const uint8_t *)data;
+	g_console_script.len = len;
+	g_console_script.pos = 0;
+}
+
+static long script_console_read(void *ctx, int fd, void *buf, size_t len)
+{
+	(void)ctx;
+	(void)fd;
+	if (len == 0 || g_console_script.pos >= g_console_script.len)
+		return 0;
+	*(uint8_t *)buf = g_console_script.data[g_console_script.pos++];
+	return 1;
+}
+
+static int script_console_poll(void *ctx)
+{
+	(void)ctx;
+	return g_console_script.pos < g_console_script.len;
+}
+
 /* The coordinator suite enables the writable-filesystem path so its blocked
  * completion semantics are compiled exactly as in firmware. Most tests never
  * perform storage I/O; this complete provider keeps lxp_run() validation and
@@ -699,6 +729,7 @@ static int reset_state(void **state)
 	g_pending_sig = 0;
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
+	lxp_console_typeahead_reset();
 	lxp_providers_publish(g_test_net_ops, NULL, NULL, NULL);
 	return 0;
 }
@@ -2143,6 +2174,86 @@ static void test_initial_launch_resolves_scripts_and_symlinks(void **state)
 			 -LXP_ENOEXEC);
 	assert_int_equal(lxp_initial_resolve(&cfg, "/missing", 1, direct_argv, &image),
 			 -LXP_ENOENT);
+}
+
+/* A foreground guest that reads the console from a mock-region buffer. */
+static lxp_proc_t *make_console_reader(int slot, uint8_t **buf)
+{
+	make_valid_running_slot(slot, slot);
+	lxp_proc_t *p = &g_lxp_slots[slot].proc;
+	p->mm->region_lo = (uintptr_t)g_mock_regions[slot];
+	p->mm->region_hi = (uintptr_t)g_mock_regions[slot] + sizeof(g_mock_regions[slot]);
+	p->read_fn = script_console_read;
+	p->console_poll = script_console_poll;
+	p->group->pgid = p->pid;
+	lxp_console_set_fg_pgrp(p->pid);
+	*buf = g_mock_regions[slot];
+	return p;
+}
+
+/* With ISIG on and no guest parked in a console read, the coordinator polls the
+ * console for ^C/^Z. Bytes it reads that are not interrupts are typeahead: the next
+ * console reads must receive them in order instead of losing them. */
+static void test_console_interrupt_poll_keeps_typeahead(void **state)
+{
+	(void)state;
+	uint8_t *buf;
+	lxp_proc_t *p = make_console_reader(2, &buf);
+	const lxp_run_config_t cfg = {.read_fn = script_console_read,
+				      .console_poll = script_console_poll};
+	console_script("ro\003t\r", 5);
+
+	for (int i = 0; i < 5; i++)
+		(void)lxp_scan_blocked(&g_mock_eng, &cfg, 1);
+	assert_int_equal(g_console_script.pos, 5);
+	assert_true(p->pending_sigs & lxp_sig_bit(LXP_SIGINT));
+
+	const char expected[] = {'r', 'o', 't', '\n'}; /* ^C consumed; ICRNL maps CR */
+	for (size_t i = 0; i < sizeof(expected); i++) {
+		buf[0] = 0;
+		assert_int_equal(lxp_syscall(p, LXP_NR_read, 0, (long)(uintptr_t)buf, 1, 0, 0, 0), 1);
+		assert_int_equal(buf[0], (uint8_t)expected[i]);
+	}
+	assert_int_equal(p->wait.kind, LXP_WAIT_NONE);
+}
+
+/* A full typeahead queue stops the interrupt poll; later bytes stay with the
+ * console transport instead of being read and dropped. */
+static void test_console_interrupt_poll_backpressure(void **state)
+{
+	(void)state;
+	uint8_t *buf;
+	(void)make_console_reader(2, &buf);
+	const lxp_run_config_t cfg = {.read_fn = script_console_read,
+				      .console_poll = script_console_poll};
+	static char input[LXP_CONSOLE_TYPEAHEAD + 8];
+	memset(input, 'x', sizeof(input));
+	console_script(input, sizeof(input));
+
+	for (size_t i = 0; i < sizeof(input); i++)
+		(void)lxp_scan_blocked(&g_mock_eng, &cfg, 1);
+	assert_int_equal(g_console_script.pos, LXP_CONSOLE_TYPEAHEAD);
+}
+
+/* poll(2) must report a console fd readable while typeahead is queued, even when
+ * the transport itself has nothing pending. */
+static void test_console_poll_reports_queued_typeahead(void **state)
+{
+	(void)state;
+	uint8_t *buf;
+	lxp_proc_t *p = make_console_reader(2, &buf);
+	const lxp_run_config_t cfg = {.read_fn = script_console_read,
+				      .console_poll = script_console_poll};
+	console_script("k", 1);
+	(void)lxp_scan_blocked(&g_mock_eng, &cfg, 1);
+	assert_false(script_console_poll(NULL));
+
+	lxp_pollfd *pfd = (lxp_pollfd *)(void *)(buf + 64);
+	pfd->fd = 0;
+	pfd->events = LXP_POLLIN;
+	pfd->revents = 0;
+	assert_int_equal(lxp_syscall(p, LXP_NR_poll, (long)(uintptr_t)pfd, 1, 0, 0, 0, 0), 1);
+	assert_int_equal(pfd->revents, LXP_POLLIN);
 }
 
 static void test_console_readiness_lifecycle_is_run_scoped(void **state)
@@ -4659,6 +4770,9 @@ int main(void)
 		cmocka_unit_test_setup(test_failed_prepare_is_rolled_back, reset_state),
 		cmocka_unit_test_setup(test_initial_launch_resolves_scripts_and_symlinks,
 				       reset_state),
+		cmocka_unit_test_setup(test_console_interrupt_poll_keeps_typeahead, reset_state),
+		cmocka_unit_test_setup(test_console_interrupt_poll_backpressure, reset_state),
+		cmocka_unit_test_setup(test_console_poll_reports_queued_typeahead, reset_state),
 		cmocka_unit_test_setup(test_console_readiness_lifecycle_is_run_scoped,
 				       reset_state),
 		cmocka_unit_test_setup(test_rootfs_requires_one_explicit_trusted_window,

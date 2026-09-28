@@ -233,6 +233,15 @@
 #ifndef LXP_PTY_BUF
 #define LXP_PTY_BUF 1024
 #endif
+/* Console typeahead: bytes the coordinator reads while checking for ^C/^Z when no
+ * guest is reading the console. They wait here for the next console read; when the
+ * queue is full the check stops reading, leaving input with the host transport. */
+#ifndef LXP_CONSOLE_TYPEAHEAD
+#define LXP_CONSOLE_TYPEAHEAD 64
+#endif
+#if LXP_CONSOLE_TYPEAHEAD < 1 || LXP_CONSOLE_TYPEAHEAD > 4096
+#error "LXP_CONSOLE_TYPEAHEAD must be in [1, 4096]"
+#endif
 
 /* Section attribute for large "far" pools (the pipe ring on the STM32 lives in
  * external SDRAM). Empty default => ordinary .bss. The STM32 consumer defines

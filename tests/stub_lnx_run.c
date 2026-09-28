@@ -126,9 +126,15 @@ int lxp_console_fg_pgrp(void)
 {
 	return g_stub_console_fg_pgrp;
 }
-uint8_t lxp_console_input_xlate(uint8_t ch)
+/* Console input without the coordinator: no ^C/^Z check runs, so there is never
+ * typeahead and reads go straight to the transport. */
+int lxp_console_input_ready(const lxp_proc_t *proc)
 {
-	return ch;
+	return proc && proc->console_poll && proc->console_poll(proc->io_ctx) > 0;
+}
+long lxp_console_read(lxp_proc_t *proc, int fd, void *buf, size_t len)
+{
+	return proc->read_fn ? proc->read_fn(proc->io_ctx, fd, buf, len) : 0;
 }
 
 #if LXP_ENABLE_DEV_FB

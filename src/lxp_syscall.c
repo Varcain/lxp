@@ -340,7 +340,7 @@ static long fop_read_console(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 	 * half returns to its coordinator loop instead of pinning it in read_fn. This
 	 * lets other slots and background work progress. Without a poll hook, retain
 	 * the legacy blocking-read fallback for host integrations that need it. */
-	if (p->console_poll && p->console_poll(p->io_ctx) == 0) {
+	if (p->console_poll && !lxp_console_input_ready(p)) {
 		lxp_wait_t wait = {
 			.kind = LXP_WAIT_CONSOLE,
 			.data.io.buffer = (uintptr_t)buf,
@@ -350,12 +350,7 @@ static long fop_read_console(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 			return -LXP_EAGAIN;
 		return 0; /* parked; the coordinator resumes it when a key arrives */
 	}
-	long r = p->read_fn(p->io_ctx, s->file_idx, buf, len);
-	/* A byte that was already ready bypasses the coordinator's parked-read path,
-	 * so apply the same tty input translation here as that path does. */
-	if (r == 1)
-		((uint8_t *)buf)[0] = lxp_console_input_xlate(((const uint8_t *)buf)[0]);
-	return r;
+	return lxp_console_read(p, s->file_idx, buf, len);
 }
 
 /* A pipe read end drains the shared ring; blocks while empty + a writer is open,
@@ -893,7 +888,7 @@ static long fop_ioctl_pty(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsign
 static unsigned fop_poll_console(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)s;
-	int key = (p->console_poll && p->console_poll(p->io_ctx) > 0);
+	int key = lxp_console_input_ready(p);
 	return (unsigned)((p->console_poll ? (key ? LXP_POLLIN : 0) : LXP_POLLIN) | LXP_POLLOUT);
 }
 
@@ -3247,7 +3242,7 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 		 * not-ready (no read-ahead), and a longer/blocking poll reports ready so the
 		 * caller blocks in read() for the byte. */
 	int probe = (tmo_ms >= 0 && tmo_ms <= 100);
-	int key = (proc->console_poll && proc->console_poll(proc->io_ctx) > 0);
+	int key = lxp_console_input_ready(proc);
 	int ready = 0;
 #if LXP_ENABLE_NET
 	int has_socket = 0, has_eventfd = 0, has_pty = 0;

@@ -1930,6 +1930,58 @@ uint8_t lxp_console_input_xlate(uint8_t ch)
 	return (g_tty_icrnl && ch == '\r') ? '\n' : ch;
 }
 
+/* Console bytes read by the ^C/^Z check while no guest was reading the console.
+ * Coordinator-owned: every producer and consumer runs in coordinator context. */
+static uint8_t g_console_typeahead[LXP_CONSOLE_TYPEAHEAD];
+static unsigned g_console_typeahead_head;
+static unsigned g_console_typeahead_count;
+
+void lxp_console_typeahead_reset(void)
+{
+	g_console_typeahead_head = 0;
+	g_console_typeahead_count = 0;
+}
+
+int lxp_console_input_ready(const lxp_proc_t *proc)
+{
+	return g_console_typeahead_count != 0 ||
+	       (proc && proc->console_poll && proc->console_poll(proc->io_ctx) > 0);
+}
+
+long lxp_console_read(lxp_proc_t *proc, int fd, void *buf, size_t len)
+{
+	long rc;
+	if (len != 0 && g_console_typeahead_count != 0) {
+		((uint8_t *)buf)[0] = g_console_typeahead[g_console_typeahead_head];
+		g_console_typeahead_head = (g_console_typeahead_head + 1u) % LXP_CONSOLE_TYPEAHEAD;
+		g_console_typeahead_count--;
+		rc = 1;
+	} else {
+		rc = proc->read_fn ? proc->read_fn(proc->io_ctx, fd, buf, len) : 0;
+	}
+	if (rc == 1)
+		((uint8_t *)buf)[0] = lxp_console_input_xlate(((const uint8_t *)buf)[0]);
+	return rc;
+}
+
+int lxp_console_poll_interrupts(const lxp_run_config_t *cfg)
+{
+	if (!g_tty_isig || !cfg || !cfg->read_fn || !cfg->console_poll ||
+	    g_console_typeahead_count == LXP_CONSOLE_TYPEAHEAD || !cfg->console_poll(cfg->io_ctx))
+		return 0;
+	uint8_t ch = 0;
+	if (cfg->read_fn(cfg->io_ctx, 0, &ch, 1) != 1)
+		return 0;
+	if (ch == 3 || ch == 26) {
+		console_signal_fg(ch == 3 ? LXP_SIGINT : LXP_SIGTSTP);
+		return 1;
+	}
+	unsigned tail = (g_console_typeahead_head + g_console_typeahead_count) % LXP_CONSOLE_TYPEAHEAD;
+	g_console_typeahead[tail] = ch;
+	g_console_typeahead_count++;
+	return 0;
+}
+
 /* Execute one READY mailbox in privileged task context. The lower-priority guest
  * is suspended before its host syscall runs; immediate completion resumes that
  * same task, while a blocking syscall leaves it parked for the established wait
@@ -2411,6 +2463,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	g_tty_isig = 1;
 	g_tty_icrnl = 1;
 	g_console_fg_pgrp = 0;
+	lxp_console_typeahead_reset();
 	lxp_stats_reset();
 	for (int i = 0; i < LXP_NSLOT; i++)
 		g_sig_save[i].depth = 0;
