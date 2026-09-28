@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Linux personality /dev device-layer tests: register a mock character device
  * and drive lxp_syscall() (no hardware SVC, no run loop) to check the
@@ -180,8 +180,8 @@ static const lxp_file_t g_fs[] = {
 
 static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 {
-	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), OVE_OK);
-	assert_int_equal(lxp_proc_init(p, arena, 4096), OVE_OK);
+	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), LXP_OK);
+	assert_int_equal(lxp_proc_init(p, arena, 4096), LXP_OK);
 	/* All-permitting access_ok range except NULL (region_lo = 1), matching the
 	 * syscall-suite harness; a NULL ioctl arg still fails lxp_guest_access_ok → -EFAULT. */
 	p->mm->region_lo = 1;

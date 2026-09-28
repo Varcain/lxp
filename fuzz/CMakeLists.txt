@@ -15,8 +15,8 @@
 #                         (configure with -DCMAKE_C_COMPILER=afl-clang-lto).
 #
 # The harnesses build the SAME module TUs as the host suite (src/*.c minus the
-# coordinator src/lxp_run.c), so they add no new module TU and stay off oveRTOS's
-# source lists — a fuzz change is a pin-bump at most.
+# coordinator src/lxp_run.c), so they add no module TU that an embedding build
+# would have to list.
 
 set(LXP_FUZZ_ENGINE "libfuzzer" CACHE STRING "Fuzz driver: libfuzzer | replay | afl")
 set_property(CACHE LXP_FUZZ_ENGINE PROPERTY STRINGS libfuzzer replay afl)

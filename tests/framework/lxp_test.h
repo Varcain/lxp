@@ -4,7 +4,7 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Minimal cmocka harness for the host unit-test suites (migrated from oveRTOS).
+ * Minimal cmocka harness for the host unit-test suites.
  * Each suite builds its own CMUnitTest[] and calls cmocka_run_group_tests; the
  * dispatcher (stub_main.c) invokes every registered test_<suite>_run().
  */
@@ -17,13 +17,9 @@
 #include <setjmp.h>
 #include <cmocka.h>
 
-/* The suites assert against OVE_OK; in lxp that is LXP_OK (0). */
 #include "lxp/lxp_types.h"
 #include "lxp_arena.h"
 #include "lxp_syscall.h"
-#ifndef OVE_OK
-#define OVE_OK LXP_OK
-#endif
 
 /* Controls for tests/stub_lnx_run.c's deterministic entropy provider. */
 extern int g_lxp_test_random_result;

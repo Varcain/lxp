@@ -3,11 +3,11 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Linux personality syscall-dispatch tests: drive lxp_syscall() directly
  * (no hardware SVC) against an arena-backed process context, checking the
- * minimal Phase-A syscall set translates to the right oveRTOS behaviour.
+ * core syscall set against the Linux behaviour guests expect.
  */
 
 #include "../framework/lxp_test.h"
@@ -48,8 +48,8 @@ static uint8_t g_pool[8192] __attribute__((aligned(16)));
 
 static void setup_proc(lxp_proc_t *p, lxp_arena_t *arena)
 {
-	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), OVE_OK);
-	assert_int_equal(lxp_test_proc_init(p, arena, 4096), OVE_OK);
+	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), LXP_OK);
+	assert_int_equal(lxp_test_proc_init(p, arena, 4096), LXP_OK);
 	/* The host test uses ordinary host buffers, not a bounded program region, so give this proc an
 	 * all-permitting access_ok range (NULL is still rejected via region_lo=1). On-target the run loop
 	 * restricts region_lo/hi to the real image region. */

@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * This file is part of oveRTOS.
+ * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Linux personality remote-fs (9P2000.L) tests: drive lxp_syscall() (no
  * hardware SVC, no run loop) against an in-process mock 9P server on a host
@@ -389,8 +389,8 @@ static uint8_t g_pool[8192] __attribute__((aligned(16)));
 
 static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 {
-	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), OVE_OK);
-	assert_int_equal(lxp_test_proc_init(p, arena, 4096), OVE_OK);
+	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), LXP_OK);
+	assert_int_equal(lxp_test_proc_init(p, arena, 4096), LXP_OK);
 	p->mm->region = (lxp_region_ref_t){.index = 0, .generation = 1};
 	p->mm->region_lo = 1;
 	p->mm->region_hi = UINTPTR_MAX;
