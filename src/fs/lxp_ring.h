@@ -4,11 +4,9 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Byte-ring primitive: the two-memcpy-across-wrap read/write the pipe used, factored
- * out so the pipe and the pty (both byte rings for stream data) share one wrap-correct
- * implementation instead of hand-rolling it — and so the pty's drain stops copying byte
- * by byte. Header-only static inline (no new TU): it operates on the caller's own buffer
- * + cursors, so each backend keeps its existing struct layout.
+ * Byte-ring primitive shared by the pipe and pty stream rings: a wrap-correct read and
+ * write using at most two memcpys each. Header-only static inline: it operates on the
+ * caller's own buffer and cursors, so each backend keeps its own struct layout.
  *
  * (The evdev input ring is a fixed-slot ELEMENT ring keyed by a monotonic head, and the
  * 9P netfs g_tx/g_rx are linear message buffers, not byte rings — neither uses this.)

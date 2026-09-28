@@ -76,10 +76,8 @@ int lxp_dev_register(const struct lxp_dev *dev)
 	return 0;
 }
 
-/* Register a coordinator-tick callback (fb flush @ ~30 Hz, FT5336 poll @ ~60 Hz).
- * Called from a class driver's autoreg. Non-public helper (declared in the class
- * drivers via this prototype). */
-void lxp_dev_tick_register(void (*fn)(uint64_t now_us));
+/* Register a coordinator-tick callback (fb flush @ ~30 Hz, touch poll @ ~60 Hz).
+ * Called from a class driver's autoreg. */
 void lxp_dev_tick_register(void (*fn)(uint64_t now_us))
 {
 	if (!fn)

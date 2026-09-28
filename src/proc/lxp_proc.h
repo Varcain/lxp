@@ -50,16 +50,14 @@ extern "C" {
 /** Refcounted open-file description shared by dup() and inherited descriptors. */
 typedef struct lxp_ofd {
 	uint16_t refs;	  /**< Number of descriptor-table entries referring to this object. */
-	uint8_t kind;	  /**< 0 = free, 1 = console, 2 = rootfs file, 3 = pipe, 4 = tmpfs,
-			*   5 = /proc, 6 = device (values 4-6 are private to the syscall +
-			*   device layers; only FD_DEV is exported below). */
+	uint8_t kind;	  /**< Descriptor kind, one of the LXP_FD_* values below. */
 	uint8_t rw;	  /**< pipe end: 0 = read, 1 = write (kind == pipe). */
 	uint8_t nonblock; /**< O_NONBLOCK: a pipe read/write returns -EAGAIN instead of parking
 			   *   (dropbear's SIGCHLD self-pipe is drained with a non-blocking read
 			   *   loop; without this the final empty read parks forever). */
 	uint8_t accmode; /**< O_RDONLY/O_WRONLY/O_RDWR for regular provider-backed files. */
-	int file_idx;  /**< rootfs index (file) / pipe index (pipe) / open-pool index (device). */
-	size_t offset; /**< Read cursor (kind == file). */
+	int file_idx;  /**< Backing object in the pool of its kind (see LXP_FD_*). */
+	size_t offset; /**< File position of a seekable kind. */
 } lxp_ofd_t;
 
 /** One descriptor-table entry: descriptor-local flags plus an open-file description. */
@@ -69,7 +67,7 @@ typedef struct lxp_fd {
 	uint8_t _pad;
 } lxp_fd_t;
 
-/* fd kinds (lxp_fd_t.kind). Shared across the syscall dispatcher + the subsystem TUs
+/* fd kinds (lxp_ofd_t.kind). Shared across the syscall dispatcher + the subsystem TUs
  * (pipe/tmpfs/proc/dev/socket/pty/netfs) that own the backing objects. */
 #define LXP_FD_FREE 0	 /**< unused slot */
 #define LXP_FD_CONSOLE 1 /**< stdio console (host write_fn/read_fn) */

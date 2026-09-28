@@ -182,7 +182,8 @@ int lxp_dev_getfl(int oi);
 long lxp_dev_read(lxp_proc_t *p, int oi, void *buf, size_t len);
 long lxp_dev_write(lxp_proc_t *p, int oi, const void *buf, size_t len);
 /** Positioned read/write at @p off without moving the fd cursor (pread/pwrite;
- *  LVGL's fbdev writes scanlines this way). Does not park (fb is inline). */
+ *  LVGL's fbdev writes scanlines this way). An asynchronous device parks the
+ *  caller like read/write, retaining @p off for the retry. */
 long lxp_dev_pread(lxp_proc_t *p, int oi, void *buf, size_t len, uint64_t off);
 long lxp_dev_pwrite(lxp_proc_t *p, int oi, const void *buf, size_t len, uint64_t off);
 long lxp_dev_ioctl(lxp_proc_t *p, int oi, unsigned long cmd, unsigned long arg);

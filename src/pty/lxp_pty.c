@@ -31,17 +31,11 @@
 #include "dev/lxp_dev.h" /* lxp_guest_access_ok() (confused-deputy guard for ioctl arg pointers) */
 #include "proc/lxp_proc.h"
 
-/* One pty pair = 2 concurrent SSH logins' worth on this tier (each login holds a
- * master + a slave). Rings are small — a terminal is interactive, not bulk; the s2m
- * output ring applies backpressure (the shell's write parks) when the server is slow
- * to drain, so a modest ring never drops output. Zephyr's per-program K_USER domains
- * eat SRAM, so halve it there (same rationale as the pipe ring). */
+/* Each login holds one pty pair (a master + a slave), so two pairs allow two
+ * concurrent SSH logins. The rings (LXP_PTY_BUF, lxp_config.h) are small — a terminal
+ * is interactive, not bulk: the s2m OUTPUT ring applies backpressure (the shell's write
+ * parks) when the server is slow to drain, so a burst is paced, never dropped. */
 #define LXP_NPTY 2
-/* Rings are small — a login terminal is interactive, not bulk. The s2m OUTPUT ring
- * applies backpressure (the shell's write parks) when the server is slow to drain, so a
- * burst is paced, never dropped. 1 KB keeps 2 ptys' .bss (~4.6 KB) inside internal SRAM
- * (the guest program/heap pools already own the external SDRAM); Zephyr's per-program
- * K_USER domains eat SRAM, so halve it there. */
 #define LXP_PTY_CANON 256 /* max in-progress canonical line before it must end */
 
 typedef struct {

@@ -19,7 +19,7 @@
  * server (diod on a Raspberry Pi). The guest browses it transparently — the
  * FD_NET branches of the syscall handlers route open/read/lseek/close/stat/
  * getdents on a /mnt/pi path to this layer, which speaks 9P2000.L and returns
- * Linux-ABI results. It mirrors the socket layer (linux/net/lxp_net.c): a
+ * Linux-ABI results. It mirrors the socket layer (src/net/lxp_net.c): a
  * refcounted per-open pool (each = a 9P fid + cursor), fork/dup share an open,
  * and the last close clunks the fid.
  *

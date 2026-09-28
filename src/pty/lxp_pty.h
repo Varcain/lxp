@@ -10,8 +10,8 @@
  *
  * A pty is a pair of in-memory rings (master↔slave) plus a minimal in-kernel line
  * discipline (echo / canonical line editing / ICRNL / ONLCR / ISIG ^C→SIGINT),
- * modeled on the two-ended pipe (@ref lxp_pipe_retry) — recompute-open-ends
- * lifecycle, no per-fd refcount. An SSH server (dropbear) opens @c /dev/ptmx (the
+ * modeled on the two-ended pipe (@ref lxp_pipe_retry): master/slave endpoint counts
+ * follow open-file-description lifetime. An SSH server (dropbear) opens @c /dev/ptmx (the
  * master) + @c /dev/pts/N (the slave, the login shell's controlling tty) and shuttles
  * bytes between the master and the SSH channel; the shell reads/writes the slave.
  *

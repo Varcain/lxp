@@ -177,7 +177,7 @@ struct netfs_req {
 	uint64_t off;	      /* read / readdir offset. */
 	uintptr_t ubuf;	      /* guest buffer (read/getdents) or stat-out. */
 	size_t ulen;	      /* length / capacity. */
-	int flags;	      /* open flags / statkind / is64. */
+	int flags;	      /* open flags. */
 	int statkind;
 	int is64;
 	char path[LXP_PATH_MAX]; /* remote path (open/stat). */
@@ -1544,8 +1544,8 @@ int lxp_netfs_busy(void)
  * The 9P client holds ~20 file-scope statics with no single wholesale-reset entry, so an
  * in-process fuzzer would carry state across inputs. These two hooks let fuzz/harness_9p.c
  * (a) return the module to a known state between inputs and (b) drive one untrusted
- * R-message straight into the reply parser (handle_reply / parse_getattr — the Stage-3
- * hardened spots) without standing up a live connection + transport. */
+ * R-message straight into the reply parser (handle_reply / parse_getattr, which bound
+ * every field of an untrusted reply) without standing up a live connection + transport. */
 void lxp_netfs_fuzz_reset(void)
 {
 	memset(g_fid_bm, 0, sizeof(g_fid_bm));

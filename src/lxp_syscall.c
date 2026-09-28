@@ -73,13 +73,13 @@ LXP_STATIC_ASSERT(sizeof(struct lxp_pollfd) == 8, "pollfd ABI size drifted");
  *
  * Translates the Linux syscall ABI into host-agnostic module primitives. The trap frame is
  * decoded by the per-engine SVC seam, which calls lxp_syscall() with the
- * register arguments; this file owns the syscall table and the process state
- * those syscalls mutate. Pointer arguments are program addresses — in the flat
- * (NOMMU) model the program shares our address space, so they are used
- * directly after a NULL check (a future MMU tier would translate them).
+ * register arguments; this file holds the dispatcher and most syscall handlers.
+ * Pointer arguments are program addresses — in the flat (NOMMU) model the
+ * program shares our address space, so they are used directly once
+ * lxp_guest_access_ok() has checked them against the process's memory.
  */
 
-/* fd-slot kinds (lxp_fd.kind) live in lxp_proc.h and are shared with subsystem TUs. */
+/* fd kinds (lxp_ofd_t.kind) live in lxp_proc.h and are shared with subsystem TUs. */
 
 /* Host entropy adapter (defined with sys_getrandom); random-device reads use it
  * before that point. */
@@ -307,7 +307,7 @@ static void fill_kstat64(struct lxp_kstat64 *st, uint32_t ino, uint32_t mode, ui
  * open fd's kind through a shared per-kind ops table instead of an inline switch — the
  * Linux struct file_operations / gVisor FileDescriptionImpl pattern. A NULL method means
  * the kind does not support that operation. A blocking backend parks the proc
- * (sets the coordinator park state) and returns 0, exactly as before.
+ * (sets the coordinator park state) and returns 0.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* ---- read fops ---- */
@@ -327,8 +327,8 @@ static long fop_read_console(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 		return 0; /* EOF */
 	/* Park until a key is ready (probed via console_poll) so the syscall bottom
 	 * half returns to its coordinator loop instead of pinning it in read_fn. This
-	 * lets other slots and background work progress. Without a poll hook, retain
-	 * the legacy blocking-read fallback for host integrations that need it. */
+	 * lets other slots and background work progress. Without a poll hook, fall
+	 * back to a blocking read for host integrations that need it. */
 	if (p->console_poll && !lxp_console_input_ready(p)) {
 		lxp_wait_t wait = {
 			.kind = LXP_WAIT_CONSOLE,
@@ -1239,8 +1239,10 @@ static long sys_exit(lxp_proc_t *p, int status, int group)
 }
 
 /*
- * Anonymous mmap, backed by the process arena (uClibc's malloc uses it for
- * larger allocations). File mappings need a VFS and are not supported yet.
+ * mmap: anonymous and private file mappings are backed by the process arena
+ * (uClibc's malloc uses anonymous maps for larger allocations; ld.so maps .so
+ * segments). Read-only maps of a rootfs file share the file in place, and a
+ * device with an mmap op maps its own memory.
  */
 static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int flags, int fd,
 		      uint32_t pgoff)
@@ -1315,7 +1317,6 @@ static long sys_munmap(lxp_proc_t *p, uintptr_t addr, size_t len)
 	return lxp_arena_free_tracked(p->mm->arena, (void *)addr, len) ? 0 : -LXP_EINVAL;
 }
 
-/* open a rootfs file read-only; the fs is immutable, so writes are refused. */
 /* Claim the lowest free fd for (kind, idx, off); -EMFILE if the table is full. */
 static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
 {
@@ -1711,8 +1712,8 @@ static long sys_sync_fd(lxp_proc_t *p, int fd)
 	if (s->kind == LXP_FD_DEV)
 		return lxp_dev_sync(p, s->file_idx);
 #endif
-	/* tmpfs/rootfs have no backing write queue. Other open descriptors retain
-	 * the historical benign behavior expected by small libc utilities. */
+	/* tmpfs/rootfs have no backing write queue. Other open descriptors report
+	 * success, which small libc utilities expect. */
 	return 0;
 }
 
@@ -3092,8 +3093,8 @@ static void now_sec_nsec(int clockid, uint64_t *sec, uint32_t *nsec)
 	*sec = (clockid == 0) ? (LXP_BOOT_EPOCH + up) : up;
 }
 
-/* ── Large syscall handlers keep lxp_syscall() a lean router. Raw argument
- *    names mirror the dispatcher ABI and make each handler unit-testable. ── */
+/* ── Larger syscall handlers. Raw argument names mirror the dispatcher ABI
+ *    and make each handler unit-testable. ── */
 static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 {
 	lxp_ofd_t *s = lxp_fd_description(proc, (int)a0);
@@ -3177,9 +3178,9 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 	/* F_GETFL must report a truthful access mode. uClibc's fdopen() validates
 		 * the FILE* mode against it, so answering O_RDONLY (0) for a writable fd
 		 * fails fdopen(fd, "w") with EINVAL — which is how dropbearkey's .pub
-		 * write died while the key itself generated fine. The open flags are not
-		 * stored per fd, so report what the kind can actually do; that is enough
-		 * for fdopen, which only checks the access mode. */
+		 * write died while the key itself generated fine. The remaining kinds do not
+		 * record their open flags, so report what the kind can actually do; that is
+		 * enough for fdopen, which only checks the access mode. */
 	if ((int)a1 == LXP_F_GETFL) {
 		int acc;
 		switch (s->kind) {

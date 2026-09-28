@@ -8,7 +8,7 @@
  * Linux-personality socket core: a pooled per-open socket table backed by the
  * handle-based network provider, and the routing the
  * FD_SOCKET branches of the syscall handlers call into. It mirrors the /dev device
- * layer (linux/dev/lxp_dev.c): the fd's file_idx indexes a refcounted open
+ * layer (src/dev/lxp_dev.c): the fd's file_idx indexes a refcounted open
  * pool; a generic open-file description owns fork/dup aliases, and its last
  * close closes the socket.
  *
@@ -606,7 +606,7 @@ void lxp_sock_run_end(void)
 }
 
 /* Snapshot the registered interface for the /proc/net/{dev,route} generators (which live
- * in the syscall TU). Any out param may be NULL. Returns 0, or -1 if no interface. */
+ * in src/proc/lxp_procfs.c). Any out param may be NULL. Returns 0, or -1 if no interface. */
 int lxp_sock_ifsnapshot(uint8_t ip[4], uint8_t gw[4], uint8_t nm[4], uint8_t mac[6],
 			unsigned *flags)
 {
