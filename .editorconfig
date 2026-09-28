@@ -1,0 +1,23 @@
+# Editor settings for the conventions this tree follows uniformly. Shell and CMake
+# indentation is intentionally unspecified: existing files use more than one style.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,h,S}]
+indent_style = tab
+indent_size = 8
+tab_width = 8
+max_line_length = 100
+
+[*.yml]
+indent_style = space
+indent_size = 2
+
+# Trailing spaces are significant in Markdown (hard line breaks) and patch hunks.
+[*.{md,patch}]
+trim_trailing_whitespace = false
