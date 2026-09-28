@@ -4,10 +4,12 @@
 # lxp — the OS-agnostic Linux personality, as a standalone module.
 #
 # Two ways to consume it:
-#   * Standalone:  cmake -S modules/lxp -B build && cmake --build build
-#                  (pick a port, e.g. -DLXP_PORT_POSIX=ON for the reference port)
-#   * Embedded:    add_subdirectory(modules/lxp) then target_link_libraries(app lxp::lxp)
-#                  and set the LXP_ENABLE_* / sizing defines from your own config.
+#   * Standalone:  cmake -S . -B build && cmake --build build builds liblxp.a
+#                  (pick a port, e.g. -DLXP_PORT_POSIX=ON for the reference port);
+#                  add_subdirectory() it and link lxp::lxp to embed that library.
+#   * Source list: include(cmake/lxp_sources.cmake), compile the LXP_*_SOURCES
+#                  groups you need, and set the LXP_ENABLE_* / sizing defines from
+#                  your own config (this is how oveRTOS consumes lxp).
 
 cmake_minimum_required(VERSION 3.16)
 
@@ -53,44 +55,36 @@ lxp_require(LXP_ENABLE_TOUCH LXP_ENABLE_DEV_INPUT)
 # ---- sources: one feature-grouped inventory shared by every consumer ---------
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/lxp_sources.cmake")
 
-if(LXP_ALL_SOURCES)
-  add_library(lxp STATIC ${LXP_ALL_SOURCES})
-  target_include_directories(lxp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  target_include_directories(lxp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+add_library(lxp STATIC ${LXP_ALL_SOURCES})
+target_include_directories(lxp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_include_directories(lxp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-  # Value-based feature gates: the module tests `#if LXP_ENABLE_X`, so emit an
-  # explicit 0/1 for each (matches lxp_config.h's defaults and keeps the matrix
-  # build -Wundef-clean; -DLXP_ENABLE_X=0 genuinely disables).
-  foreach(feat NET NETFS NETFS_EXEC PTY FS BLOCK DEV DEV_FB DEV_DMA2D DEV_INPUT
-               DEV_INPUT_TESTPAD TOUCH FPU_CONTEXT RT_METRICS)
-    if(LXP_ENABLE_${feat})
-      target_compile_definitions(lxp PUBLIC LXP_ENABLE_${feat}=1)
-    else()
-      target_compile_definitions(lxp PUBLIC LXP_ENABLE_${feat}=0)
-    endif()
-  endforeach()
-
-  if(LXP_PORT_POSIX)
-    target_sources(lxp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ports/posix/lxp_port_posix.c")
+# Value-based feature gates: the module tests `#if LXP_ENABLE_X`, so emit an
+# explicit 0/1 for each (matches lxp_config.h's defaults and keeps the matrix
+# build -Wundef-clean; -DLXP_ENABLE_X=0 genuinely disables).
+foreach(feat NET NETFS NETFS_EXEC PTY FS BLOCK DEV DEV_FB DEV_DMA2D DEV_INPUT
+             DEV_INPUT_TESTPAD TOUCH FPU_CONTEXT RT_METRICS)
+  if(LXP_ENABLE_${feat})
+    target_compile_definitions(lxp PUBLIC LXP_ENABLE_${feat}=1)
+  else()
+    target_compile_definitions(lxp PUBLIC LXP_ENABLE_${feat}=0)
   endif()
-else()
-  # Scaffold state: headers only. A header-only interface target so the module
-  # is add_subdirectory-able before the sources land.
-  add_library(lxp INTERFACE)
-  target_include_directories(lxp INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+endforeach()
+
+if(LXP_PORT_POSIX)
+  target_sources(lxp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ports/posix/lxp_port_posix.c")
 endif()
 
 add_library(lxp::lxp ALIAS lxp)
 
-# ---- host test suite (scaffold: active once tests/ lands) --------------------
-# Enabled with -DLXP_BUILD_TESTS=ON; needs a POSIX port for the net/netfs suites.
-if(LXP_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+# ---- host test suite (opt-in; cmocka) -----------------------------------------
+if(LXP_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
 
 # ---- fuzz harnesses (opt-in; libFuzzer/AFL++/replay over the untrusted parsers) --
-if(LXP_BUILD_FUZZ AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/CMakeLists.txt")
+if(LXP_BUILD_FUZZ)
   enable_testing()
   add_subdirectory(fuzz)
 endif()
