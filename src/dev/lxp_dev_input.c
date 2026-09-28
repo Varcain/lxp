@@ -64,8 +64,7 @@ static void ring_push(uint16_t type, uint16_t code, int32_t value)
 	g_in_head++;
 }
 
-/* Engine-neutral feeder: one single-touch report → 4 events + wake a blocked reader.
- * Strong override of the weak stub in the device core. */
+/* Engine-neutral feeder: one single-touch report → 4 events + wake a blocked reader. */
 void lxp_input_report_touch(int x, int y, int pressed)
 {
 	if (x < 0)

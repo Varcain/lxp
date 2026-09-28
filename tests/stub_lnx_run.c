@@ -126,6 +126,34 @@ int lxp_console_fg_pgrp(void)
 {
 	return g_stub_console_fg_pgrp;
 }
+/* The coordinator's process table is absent: record process-group signal
+ * requests so terminal signal routing can be asserted. */
+int g_lxp_test_signal_calls;
+int g_lxp_test_signal_pgid;
+int g_lxp_test_signal_number;
+int lxp_signal_process_group(int pgid, int sig)
+{
+	g_lxp_test_signal_calls++;
+	g_lxp_test_signal_pgid = pgid;
+	g_lxp_test_signal_number = sig;
+	return 1;
+}
+
+/* No shared executable rootfs window: user pointers must fall in the guest's own
+ * regions. */
+void lxp_rootfs_bounds(uintptr_t *lo, uintptr_t *hi)
+{
+	*lo = 0;
+	*hi = 0;
+}
+
+#if LXP_ENABLE_DEV
+/* No run loop to wake. */
+void lxp_dev_kick(void)
+{
+}
+#endif
+
 /* Console input without the coordinator: no ^C/^Z check runs, so there is never
  * typeahead and reads go straight to the transport. */
 int lxp_console_input_ready(const lxp_proc_t *proc)

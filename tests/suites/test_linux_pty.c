@@ -25,20 +25,6 @@
 static uint8_t g_pool[8192] __attribute__((aligned(16)));
 static lxp_proc_t g_proc;
 static lxp_arena_t g_arena;
-static int g_signal_calls;
-static int g_signal_pgid;
-static int g_signal_number;
-
-/* Host syscall tests do not link the coordinator's process-group service. Capture
- * the narrow request here so terminal signal routing is asserted without exposing
- * the coordinator process table to the PTY layer. */
-int lxp_signal_process_group(int pgid, int sig)
-{
-	g_signal_calls++;
-	g_signal_pgid = pgid;
-	g_signal_number = sig;
-	return 1;
-}
 
 #define O_RDWR_NB (LXP_O_RDWR | LXP_O_NONBLOCK)
 
@@ -53,9 +39,9 @@ static void pty_setup(void)
 	g_proc.mm->region_hi = UINTPTR_MAX;
 	g_proc.mm->pool_lo = g_proc.mm->pool_hi = 0;
 	g_proc.alive = 1;
-	g_signal_calls = 0;
-	g_signal_pgid = 0;
-	g_signal_number = 0;
+	g_lxp_test_signal_calls = 0;
+	g_lxp_test_signal_pgid = 0;
+	g_lxp_test_signal_number = 0;
 }
 
 static long sc(long nr, long a0, long a1, long a2)
@@ -192,9 +178,9 @@ static void test_pty_foreground_signal(void **st)
 	assert_int_equal(sc(LXP_NR_ioctl, sfd, LXP_TIOCSPGRP, (long)(uintptr_t)&pgid), 0);
 	char intr = 3;
 	assert_int_equal(sc(LXP_NR_write, mfd, (long)(uintptr_t)&intr, 1), 1);
-	assert_int_equal(g_signal_calls, 1);
-	assert_int_equal(g_signal_pgid, 37);
-	assert_int_equal(g_signal_number, LXP_SIGINT);
+	assert_int_equal(g_lxp_test_signal_calls, 1);
+	assert_int_equal(g_lxp_test_signal_pgid, 37);
+	assert_int_equal(g_lxp_test_signal_number, LXP_SIGINT);
 }
 
 /* TIOCSWINSZ then TIOCGWINSZ round-trips the terminal size (ssh forwards the client's). */

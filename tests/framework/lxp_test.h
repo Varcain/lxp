@@ -31,6 +31,10 @@ extern size_t g_lxp_test_random_calls;
 extern size_t g_lxp_test_random_len;
 extern int g_lxp_test_mem_stats_result;
 extern struct lxp_mem_stats g_lxp_test_mem_stats;
+/* Process-group signal requests recorded by tests/stub_lnx_run.c. */
+extern int g_lxp_test_signal_calls;
+extern int g_lxp_test_signal_pgid;
+extern int g_lxp_test_signal_number;
 
 /* Host tests put process objects on their stack, while production ports own a
  * stable capture per slot. Associate the handful of simultaneously-live test

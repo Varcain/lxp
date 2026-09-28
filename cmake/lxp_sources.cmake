@@ -7,9 +7,6 @@
 # feature groups instead of independently rediscovering or copying the source
 # list. Consumers may deliberately omit a group, but a new source file must be
 # classified here before any LXP CMake build will configure.
-#
-# Preserve the order of each group. Embedded consumers place these objects in a
-# static archive where ordering can decide which weak fallback is extracted.
 
 include_guard(GLOBAL)
 

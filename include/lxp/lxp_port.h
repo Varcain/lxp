@@ -140,7 +140,7 @@ static inline int lxp_range_overlaps(uintptr_t first_base, size_t first_size,
  * a task, take a critical section" primitives the run loop drives on its hot
  * path. The trailing entries are genuine OS services (monotonic time, thread
  * introspection) and optional cache / rootfs / remote-exec hooks (NULL => the
- * feature quietly degrades, matching the old weak-symbol stubs).
+ * feature quietly degrades).
  * ───────────────────────────────────────────────────────────────────────── */
 typedef struct lxp_os_ops {
 	uint32_t abi_version; /**< Must be LXP_OS_OPS_ABI_VERSION. */

@@ -46,6 +46,9 @@ int lxp_guest_range_ok(const lxp_mm_t *mm, uintptr_t address, size_t length,
 		       lxp_guest_access_t access);
 /** Compatibility-shaped range validation: @p write is zero for read, nonzero for write. */
 int lxp_guest_access_ok(const lxp_proc_t *proc, const void *address, size_t length, int write);
+/** Shared read-only rootfs span a guest may read from, published by the coordinator
+ * (an empty span when no executable rootfs window exists). */
+void lxp_rootfs_bounds(uintptr_t *lo, uintptr_t *hi);
 
 /** Bind one already-mapped SVC/coordinator dispatch to @p proc. */
 int lxp_guest_view_begin(lxp_proc_t *proc, lxp_slot_ref_t slot, const uint32_t *slot_generation,

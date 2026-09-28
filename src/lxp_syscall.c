@@ -100,15 +100,6 @@ static long sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwf
 /* The pipe subsystem (ring buffer + read/write/poll ops) lives in src/fs/lxp_pipe.c;
  * this dispatcher calls it via fs/lxp_pipe.h. */
 
-/* Host syscall/fuzz tests do not link the coordinator process table. Production
- * overrides this narrow process-group service in lxp_run.c. */
-__attribute__((weak)) int lxp_signal_process_group(int pgid, int sig)
-{
-	(void)pgid;
-	(void)sig;
-	return 0;
-}
-
 /* Synthetic /proc fd backing (content generated on open; see proc_* below). */
 #define LXP_NPROCF 12
 #define LXP_PROCBUF 1024

@@ -8,14 +8,6 @@
 #include "lxp_guest.h"
 #include "proc/lxp_proc.h"
 
-/* Supplied by the run loop. The host-only syscall tests intentionally have no
- * shared executable window. */
-__attribute__((weak)) void lxp_rootfs_bounds(uintptr_t *lo, uintptr_t *hi)
-{
-	*lo = 0;
-	*hi = 0;
-}
-
 static uintptr_t guest_range_hi(const lxp_mm_t *mm, uintptr_t address, lxp_guest_access_t access)
 {
 	if (!mm)

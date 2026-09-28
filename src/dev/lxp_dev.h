@@ -149,7 +149,7 @@ int lxp_dev_register(const struct lxp_dev *dev);
  *
  * Called from a driver's data-ready path (uart rx, input feeder, audio period)
  * so a parked reader resumes at once instead of at the next poll interval.
- * Defined by the run loop (posts its coordinator event); weak no-op otherwise.
+ * Defined by the run loop (posts its coordinator event).
  */
 void lxp_dev_kick(void);
 
@@ -157,8 +157,8 @@ void lxp_dev_kick(void);
  * @brief Engine-neutral touch-input feeder.
  *
  * A touch driver (FT5336) or a test injector calls this from the coordinator
- * tick; the evdev class turns it into /dev/input/event0 events. Weak no-op
- * until the input class is registered.
+ * tick; the evdev class turns it into /dev/input/event0 events. Defined by the
+ * input class (LXP_ENABLE_DEV_INPUT).
  */
 void lxp_input_report_touch(int x, int y, int pressed);
 

@@ -598,19 +598,4 @@ void lxp_dev_autoreg_all(void)
 #endif
 }
 
-/* Weak input feeder so the core links before the evdev class defines it. */
-__attribute__((weak)) void lxp_input_report_touch(int x, int y, int pressed)
-{
-	(void)x;
-	(void)y;
-	(void)pressed;
-}
-
-/* Weak coordinator kick: the run loop provides the strong version (posts its
- * event). The host cmocka test links the core without the run loop, so this
- * no-op keeps a driver's lxp_dev_kick() call resolvable there. */
-__attribute__((weak)) void lxp_dev_kick(void)
-{
-}
-
 #endif /* LXP_ENABLE_DEV */

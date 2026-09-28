@@ -385,9 +385,8 @@ int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actua
 static const uint8_t *g_lxp_rootfs_lo;
 static const uint8_t *g_lxp_rootfs_hi;
 
-/* access_ok (lxp_syscall.c) asks for the shared read-only rootfs span so a read-source user
- * pointer may point into a program's .rodata (shared in-place from the cpio). Strong override of the
- * weak stub in the syscall layer. */
+/* access_ok (lxp_guest.c) asks for the shared read-only rootfs span so a read-source user
+ * pointer may point into a program's .rodata (shared in-place from the cpio). */
 void lxp_rootfs_bounds(uintptr_t *lo, uintptr_t *hi)
 {
 	*lo = (uintptr_t)g_lxp_rootfs_lo;
@@ -403,8 +402,7 @@ lxp_proc_t *lxp_slot_proc(int slot)
 
 #if LXP_ENABLE_DEV
 /* Wake the coordinator so it retries parked device I/O at once (a driver calls this
- * from its data-ready path). Strong override of the weak no-op in the device core
- * — that stub is used only by the host test, which links no run loop. */
+ * from its data-ready path). */
 void lxp_dev_kick(void)
 {
 	if (g_eng && g_eng->event_post)
