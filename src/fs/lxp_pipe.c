@@ -15,6 +15,7 @@
 #include "fs/lxp_pipe.h"
 
 #include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read/write */
+#include "fs/lxp_vfs.h"
 #include "lxp/lxp_config.h"
 #include "proc/lxp_proc.h"
 
@@ -119,3 +120,76 @@ unsigned pipe_poll(int pi, int rw)
 		return (pp->count > 0 || pp->writers == 0) ? LXP_POLLIN : 0u;
 	return (pp->count < LXP_PIPE_BUF || pp->readers == 0) ? LXP_POLLOUT : 0u;
 }
+
+/* A pipe read end drains the shared ring; blocks while empty + a writer is open,
+ * EOF (0) once all writers have closed. */
+static long fop_read_pipe(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+{
+	if (s->rw != 0)
+		return -LXP_EBADF;
+	long r = pipe_try_read(s->file_idx, buf, len);
+	if (r == -LXP_EAGAIN) { /* empty but a writer is open */
+		if (s->nonblock)
+			return -LXP_EAGAIN; /* O_NONBLOCK: don't park (self-pipe drain) */
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_PIPE,
+			.op = 1,
+			.data.io.object = s->file_idx,
+			.data.io.buffer = (uintptr_t)buf,
+			.data.io.length = len,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
+		return 0;
+	}
+	return r; /* bytes read, or 0 (EOF) */
+}
+
+/* A pipe write end appends to the shared ring; blocks when full (reader open). */
+static long fop_write_pipe(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
+{
+	if (s->rw != 1)
+		return -LXP_EBADF;
+	long r = pipe_try_write(s->file_idx, buf, len);
+	if (r == -LXP_EAGAIN) { /* full but a reader is open */
+		if (s->nonblock)
+			return -LXP_EAGAIN; /* O_NONBLOCK: don't park */
+		lxp_wait_t wait = {
+			.kind = LXP_WAIT_PIPE,
+			.op = 2,
+			.data.io.object = s->file_idx,
+			.data.io.buffer = (uintptr_t)buf,
+			.data.io.length = len,
+		};
+		if (lxp_wait_begin(p, &wait) != 0)
+			return -LXP_EAGAIN;
+		return 0; /* dispatch parks; coordinator completes via lxp_pipe_retry */
+	}
+	if (r == -LXP_EPIPE && /* no readers: SIGPIPE — default terminates the writer */
+	    lxp_sig_handler_get(p, LXP_SIGPIPE) != LXP_SIG_IGN) {
+		(void)lxp_intent_exit(p, 0);
+		p->exit_status = 128 + LXP_SIGPIPE;
+		p->exit_reason = LXP_EXIT_REASON_SIGNAL;
+		p->exit_signal = LXP_SIGPIPE;
+	}
+	return r; /* bytes written, or -EPIPE (no readers; writer exits unless it ignores it) */
+}
+
+static void fop_close_pipe(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	lxp_pipe_end_close(s->file_idx, s->rw);
+}
+
+static unsigned fop_poll_pipe(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	return (unsigned)pipe_poll(s->file_idx, s->rw); /* real readiness (empty self-pipe!) */
+}
+
+const lxp_file_ops_t lxp_pipe_fops = {
+	.read = fop_read_pipe,
+	.write = fop_write_pipe,
+	.close = fop_close_pipe,
+	.poll = fop_poll_pipe,
+};

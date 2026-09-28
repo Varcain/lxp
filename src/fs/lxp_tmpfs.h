@@ -11,8 +11,8 @@
  * managed by the arena allocator, so a node's block is reclaimed on growth and on
  * removal (ENOSPC only when the live set truly exhausts the pool).
  *
- * The node objects + pool live in src/fs/lxp_tmpfs.c; the syscall dispatcher owns the
- * FD_TMPFS read/write/stat/getdents integration and reaches a node via wnode_at().
+ * The node objects, pool and FD_TMPFS file operations live in src/fs/lxp_tmpfs.c; the
+ * path syscalls and getdents reach a node via wnode_at().
  */
 #ifndef LXP_FS_TMPFS_H
 #define LXP_FS_TMPFS_H

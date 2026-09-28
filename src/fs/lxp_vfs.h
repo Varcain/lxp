@@ -12,13 +12,17 @@
  * and the syscall returns the kind's conventional errno (e.g. EBADF for a
  * wrong-direction read/write on a read-only kind). A blocking backend parks the
  * proc, sets the coordinator wait state, and returns 0 for deferred completion.
+ *
+ * Each fd kind's table is defined by the subsystem that owns the kind;
+ * src/fs/lxp_vfs.c indexes them by kind.
  */
 
-#ifndef LXP_VFS_H
-#define LXP_VFS_H
+#ifndef LXP_FS_VFS_H
+#define LXP_FS_VFS_H
 
 #include <stddef.h>
 
+#include "lxp/lxp_config.h"
 #include "proc/lxp_proc.h" /* lxp_proc_t, lxp_ofd_t */
 
 struct lxp_file_ops {
@@ -61,4 +65,31 @@ static inline const lxp_file_ops_t *lxp_vfs_ops(const lxp_ofd_t *ofd)
 	return ofd && ofd->kind < LXP_FD_KIND_COUNT ? g_lxp_file_ops[ofd->kind] : NULL;
 }
 
-#endif /* LXP_VFS_H */
+/* Per-kind operation tables. */
+extern const lxp_file_ops_t lxp_console_fops;
+extern const lxp_file_ops_t lxp_rootfs_fops;
+extern const lxp_file_ops_t lxp_pipe_fops;
+extern const lxp_file_ops_t lxp_tmpfs_fops;
+extern const lxp_file_ops_t lxp_procfs_fops;
+extern const lxp_file_ops_t lxp_eventfd_fops;
+#if LXP_ENABLE_DEV
+extern const lxp_file_ops_t lxp_dev_fops;
+#endif
+#if LXP_ENABLE_NET
+extern const lxp_file_ops_t lxp_socket_fops;
+#endif
+#if LXP_ENABLE_NETFS
+extern const lxp_file_ops_t lxp_netfs_fops;
+#endif
+#if LXP_ENABLE_FS
+extern const lxp_file_ops_t lxp_hostfs_fops;
+#endif
+#if LXP_ENABLE_PTY
+extern const lxp_file_ops_t lxp_pty_fops;
+#endif
+
+/** SEEK_SET/CUR/END arithmetic for @p ofd over an object of logical size @p end:
+ *  stores and returns the new offset, or -EINVAL. */
+long lxp_vfs_seek(lxp_ofd_t *ofd, long end, long off, int whence);
+
+#endif /* LXP_FS_VFS_H */

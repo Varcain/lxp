@@ -10,7 +10,7 @@
 
 #include "fs/lxp_fd_private.h"
 
-#include "lxp_vfs.h"
+#include "fs/lxp_vfs.h"
 #if LXP_ENABLE_FS
 #include "fs/lxp_hostfs.h"
 #endif

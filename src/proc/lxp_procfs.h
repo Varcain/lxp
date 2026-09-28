@@ -4,8 +4,8 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Private interface of the synthetic /proc content generator (src/proc/lxp_procfs.c),
- * used by the syscall dispatcher's open/stat glue.
+ * Private interface of the synthetic /proc filesystem (src/proc/lxp_procfs.c): the
+ * content generator used by the path syscalls and the FD_PROC descriptors.
  */
 #ifndef LXP_PROC_PROCFS_H
 #define LXP_PROC_PROCFS_H
@@ -35,5 +35,15 @@ int proc_pid_known(const lxp_proc_t *p, int pid);
 
 /* NULL-terminated list of top-level /proc file names (for the /proc dir listing). */
 extern const char *const g_proc_files[];
+
+/* Open /proc node `abs` (already resolved): a generated-content file fd, or a
+ * directory fd for getdents. Returns the fd or a negative errno. */
+long lxp_procfs_open(lxp_proc_t *p, const char *abs);
+
+/* The path of FD_PROC backing `idx` if it is a directory, else NULL. */
+const char *lxp_procfs_dir_path(int idx);
+
+/* The generated content of FD_PROC backing `idx`: 0, or -EISDIR for a directory. */
+long lxp_procfs_content(int idx, const char **data, size_t *len);
 
 #endif /* LXP_PROC_PROCFS_H */

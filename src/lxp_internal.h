@@ -22,6 +22,10 @@ struct lxp_mem_stats;
 /* The stat mode (S_IF* | perms) of a rootfs file entry. */
 uint32_t file_mode(const lxp_file_t *f);
 
+/* Fill guest memory from the host entropy provider (getrandom, /dev/urandom):
+ * @p count, or a negated errno (-@p unavailable_errno without a provider). */
+long lxp_random_fill_guest(void *buf, size_t count, int unavailable_errno);
+
 /* The console tty's foreground process group (job control). Set from tcsetpgrp
  * (TIOCSPGRP) on a console fd; read by TIOCGPGRP and the coordinator's console ^C
  * delivery. Coordinator-owned (defined in lxp_run.c), like the tty ISIG state. */

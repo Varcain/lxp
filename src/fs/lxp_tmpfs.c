@@ -4,9 +4,9 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Writable VFS (tmpfs) node storage + pool. See fs/lxp_tmpfs.h for the model; the
- * syscall dispatcher owns the FD_TMPFS operation handlers and reaches nodes via
- * wnode_at() / wfs_find() / wfs_create() / wfs_reserve() / wfs_free().
+ * Writable VFS (tmpfs) node storage + pool and the FD_TMPFS file operations. See
+ * fs/lxp_tmpfs.h for the model; the path syscalls reach nodes via wnode_at() /
+ * wfs_find() / wfs_create() / wfs_reserve() / wfs_free().
  *
  * File bytes come from a fixed pool managed by the module's arena allocator
  * (first-fit + boundary coalescing), so a node's block is reclaimed when the file
@@ -16,7 +16,10 @@
 
 #include <string.h>
 
+#include "fs/lxp_stat.h"
+#include "fs/lxp_vfs.h"
 #include "lxp_arena.h"
+#include "lxp_guest.h"
 
 /* Board-relocatable BSS section (default: normal .bss). A consumer whose on-chip SRAM is tight can
  * point this at a far region (STM32 Zephyr: SDRAM1) so the tmpfs pool — and thus a large /tmp file
@@ -146,3 +149,69 @@ void wfs_free(int i)
 	if (g_wnodes[i].open_refs == 0)
 		wfs_reclaim(i);
 }
+
+/* A writable-node file read returns bytes from its buffer at the fd offset. */
+static long fop_read_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
+{
+	lxp_wnode_t *t = wnode_at(s->file_idx);
+	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
+		return -LXP_EISDIR;
+	if (s->offset >= t->size)
+		return 0; /* EOF */
+	size_t n = t->size - s->offset;
+	if (n > len)
+		n = len;
+	if (lxp_copy_to_guest(p, (uintptr_t)buf, t->data + s->offset, n) != 0)
+		return -LXP_EFAULT;
+	s->offset += n;
+	return (long)n;
+}
+
+/* A writable-node file write copies into its (growable) buffer at the offset. */
+static long fop_write_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
+{
+	lxp_wnode_t *t = wnode_at(s->file_idx);
+	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
+		return -LXP_EBADF;
+	if (wfs_reserve(s->file_idx, s->offset + len) != 0)
+		return -LXP_EFBIG; /* writable-fs pool exhausted */
+	if (s->offset >
+	    t->size) /* zero the hole of a sparse write (else it leaks stale pool bytes) */
+		memset(t->data + t->size, 0, s->offset - t->size);
+	if (lxp_copy_from_guest(p, t->data + s->offset, (uintptr_t)buf, len) != 0)
+		return -LXP_EFAULT;
+	s->offset += len;
+	if (s->offset > t->size)
+		t->size = s->offset;
+	return (long)len;
+}
+
+static long fop_lseek_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
+{
+	(void)p;
+	return lxp_vfs_seek(s, (long)wnode_at(s->file_idx)->size, off, whence);
+}
+
+static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+{
+	(void)p;
+	lxp_wnode_t *node = wnode_at(s->file_idx);
+	lxp_fill_kstat64(statbuf, 0x100000u + (uint32_t)s->file_idx, node->mode, node->size);
+	if (!node->linked)
+		((struct lxp_kstat64 *)statbuf)->st_nlink = 0;
+	return 0;
+}
+
+static void fop_close_tmpfs(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	wfs_close(s->file_idx);
+}
+
+const lxp_file_ops_t lxp_tmpfs_fops = {
+	.read = fop_read_tmpfs,
+	.write = fop_write_tmpfs,
+	.lseek = fop_lseek_tmpfs,
+	.fstat = fop_fstat_tmpfs,
+	.close = fop_close_tmpfs,
+};

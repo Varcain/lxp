@@ -15,14 +15,16 @@
 
 #include "lxp_internal.h" /* lxp_guest_access_ok / lxp_guest_strnlen / file_mode / lxp_encode_wstatus */
 #include "lxp_text.h"	  /* bounded text construction for synthetic names */
-#include "lxp_vfs.h"	  /* per-fd-kind file-operation vtable (dispatch by kind) */
+#include "fs/lxp_vfs.h"	  /* per-fd-kind file-operation vtable (dispatch by kind) */
 
+#include "fs/lxp_eventfd.h"     /* eventfd2(2) counters (FD_EVENTFD) */
 #include "fs/lxp_fd_private.h" /* descriptor-table reference transaction */
 #if LXP_ENABLE_FS
 #include "fs/lxp_hostfs.h" /* writable host mount (FD_HOSTFS, /data) */
 #endif
 #include "fs/lxp_path.h"     /* path resolution (resolve_path / fs_lookup / fs_follow) */
 #include "fs/lxp_pipe.h"     /* pipe ring ops (FD_PIPE) */
+#include "fs/lxp_stat.h"     /* ARM struct stat64 record */
 #include "fs/lxp_tmpfs.h"    /* writable VFS overlay nodes (FD_TMPFS) */
 #include "proc/lxp_procfs.h" /* synthetic /proc content generation (FD_PROC) */
 #include "proc/lxp_script.h" /* bounded #! parsing shared with initial launch */
@@ -81,10 +83,6 @@ LXP_STATIC_ASSERT(sizeof(struct lxp_pollfd) == 8, "pollfd ABI size drifted");
 
 /* fd kinds (lxp_ofd_t.kind) live in lxp_proc.h and are shared with subsystem TUs. */
 
-/* Host entropy adapter (defined with sys_getrandom); random-device reads use it
- * before that point. */
-static long random_fill(void *buf, size_t count, int unavailable_errno);
-
 static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off);
 
 #if LXP_ENABLE_NET
@@ -98,58 +96,9 @@ static long sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwf
 /* The pipe subsystem (ring buffer + read/write/poll ops) lives in src/fs/lxp_pipe.c;
  * this dispatcher calls it via fs/lxp_pipe.h. */
 
-/* Synthetic /proc fd backing (content generated on open; see proc_* below). */
-#define LXP_NPROCF 12
-#define LXP_PROCBUF 1024
-#define LXP_PROCPATH 64 /* /proc paths are short ("/proc/<pid>/status"); not LXP_PATH_MAX */
-static struct {
-	char path[LXP_PROCPATH];
-	char buf[LXP_PROCBUF];
-	size_t len;
-	int is_dir;
-	int used;
-} g_procf[LXP_NPROCF];
-
-/*
- * ARM kernel struct stat64. Spelled with fixed-width types (the kernel's
- * `unsigned long` is 32-bit on ARM but 64-bit on the x86-64 host) so the binary
- * layout is identical on target and in host tests.
- */
-struct lxp_kstat64 {
-	uint64_t st_dev;
-	uint8_t __pad0[4];
-	uint32_t __st_ino;
-	uint32_t st_mode;
-	uint32_t st_nlink;
-	uint32_t st_uid;
-	uint32_t st_gid;
-	uint64_t st_rdev;
-	uint8_t __pad3[4];
-	int64_t st_size;
-	uint32_t st_blksize;
-	uint64_t st_blocks;
-	uint32_t st_atime;
-	uint32_t st_atime_nsec;
-	uint32_t st_mtime;
-	uint32_t st_mtime_nsec;
-	uint32_t st_ctime;
-	uint32_t st_ctime_nsec;
-	uint64_t st_ino;
-};
 #define LXP_HOSTFS_DEV_MAJOR 179u
 #define LXP_HOSTFS_DEV_MINOR 0u
 #define LXP_HOSTFS_DEV ((uint64_t)((LXP_HOSTFS_DEV_MAJOR << 8) | LXP_HOSTFS_DEV_MINOR))
-/* ABI pins: the ARM-EABI struct stat64 layout uClibc-ng expects. A field-order or
- * type drift (which would silently corrupt every stat/fstat) fails the build. The
- * struct uses fixed-width fields, so these hold on the 32-bit target and the 64-bit
- * host test build alike. */
-LXP_STATIC_ASSERT(sizeof(struct lxp_kstat64) == 104, "stat64 ABI size drifted");
-LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_mode) == 16, "stat64 st_mode offset drifted");
-LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_rdev) == 32, "stat64 st_rdev offset drifted");
-LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_size) == 48, "stat64 st_size offset drifted");
-LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_blocks) == 64, "stat64 st_blocks offset drifted");
-LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_ino) == 96, "stat64 st_ino offset drifted");
-
 /* getdents64 record: fixed 19-byte head (d_ino..d_type) then a NUL-terminated name. */
 struct lxp_dirent64 {
 	uint64_t d_ino;
@@ -159,12 +108,6 @@ struct lxp_dirent64 {
 	char d_name[];
 };
 LXP_STATIC_ASSERT(offsetof(struct lxp_dirent64, d_name) == 19, "dirent64 head size drifted");
-
-/* Effective st_mode for a rootfs node (0 in the table means a regular file). */
-uint32_t file_mode(const lxp_file_t *f)
-{
-	return f->mode ? f->mode : (LXP_S_IFREG | 0644u);
-}
 
 /* If @p path names an entry exactly one component below directory @p dir, return
  * that child's name; otherwise NULL. */
@@ -291,136 +234,13 @@ static long sys_recvmsg(lxp_proc_t *p, int oi, lxp_msghdr *umsg, int flags)
 }
 #endif
 
-/* eventfd counter read/write (defined below fd_alloc); sys_read/sys_write route to them. */
-static long efd_read(lxp_proc_t *p, int ei, void *buf, size_t len);
-static long efd_write(lxp_proc_t *p, int ei, const void *buf, size_t len);
-static void efd_close(int ei); /* release an eventfd pool slot (defined with efd_new). */
-static int
-efd_readable(int ei); /* eventfd counter nonzero? (poll readiness; defined with efd_new). */
-
-/* Fill an ARM kstat64 (defined below with sys_fstat64); the fstat fops use it. */
-struct lxp_kstat64;
-static void fill_kstat64(struct lxp_kstat64 *st, uint32_t ino, uint32_t mode, uint64_t size);
-
 /* ─────────────────────────────────────────────────────────────────────────
- * VFS file-operation vtable (src/lxp_vfs.h). The fd syscalls dispatch on the
- * open fd's kind through a shared per-kind ops table instead of an inline switch — the
- * Linux struct file_operations / gVisor FileDescriptionImpl pattern. A NULL method means
- * the kind does not support that operation. A blocking backend parks the proc
- * (sets the coordinator park state) and returns 0.
+ * VFS file operations of the optional fd kinds (src/fs/lxp_vfs.h). The fd syscalls
+ * dispatch on the open fd's kind through a shared per-kind ops table instead of an
+ * inline switch — the Linux struct file_operations / gVisor FileDescriptionImpl
+ * pattern. A NULL method means the kind does not support that operation. A blocking
+ * backend parks the proc (sets the coordinator park state) and returns 0.
  * ───────────────────────────────────────────────────────────────────────── */
-
-/* ---- read fops ---- */
-static long fop_read_console(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
-{
-	if (s->file_idx == 1) /* output consoles (stdout/stderr) are not readable */
-		return -LXP_EBADF;
-	if (s->file_idx == 3)	/* /dev/null */
-		return 0;	/* EOF */
-	if (s->file_idx == 5) { /* /dev/zero: an all-zero fill */
-		memset(buf, 0, len);
-		return (long)len;
-	}
-	if (s->file_idx == 4) /* /dev/urandom + /dev/random: host entropy */
-		return random_fill(buf, len, LXP_EIO);
-	if (!p->read_fn)
-		return 0; /* EOF */
-	/* Park until a key is ready (probed via console_poll) so the syscall bottom
-	 * half returns to its coordinator loop instead of pinning it in read_fn. This
-	 * lets other slots and background work progress. Without a poll hook, fall
-	 * back to a blocking read for host integrations that need it. */
-	if (p->console_poll && !lxp_console_input_ready(p)) {
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_CONSOLE,
-			.data.io.buffer = (uintptr_t)buf,
-			.data.io.length = len,
-		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* parked; the coordinator resumes it when a key arrives */
-	}
-	return lxp_console_read(p, s->file_idx, buf, len);
-}
-
-/* A pipe read end drains the shared ring; blocks while empty + a writer is open,
- * EOF (0) once all writers have closed. */
-static long fop_read_pipe(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
-{
-	if (s->rw != 0)
-		return -LXP_EBADF;
-	long r = pipe_try_read(s->file_idx, buf, len);
-	if (r == -LXP_EAGAIN) { /* empty but a writer is open */
-		if (s->nonblock)
-			return -LXP_EAGAIN; /* O_NONBLOCK: don't park (self-pipe drain) */
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_PIPE,
-			.op = 1,
-			.data.io.object = s->file_idx,
-			.data.io.buffer = (uintptr_t)buf,
-			.data.io.length = len,
-		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0;
-	}
-	return r; /* bytes read, or 0 (EOF) */
-}
-
-/* A writable-node file read returns bytes from its buffer at the fd offset. */
-static long fop_read_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
-{
-	lxp_wnode_t *t = wnode_at(s->file_idx);
-	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
-		return -LXP_EISDIR;
-	if (s->offset >= t->size)
-		return 0; /* EOF */
-	size_t n = t->size - s->offset;
-	if (n > len)
-		n = len;
-	if (lxp_copy_to_guest(p, (uintptr_t)buf, t->data + s->offset, n) != 0)
-		return -LXP_EFAULT;
-	s->offset += n;
-	return (long)n;
-}
-
-/* A /proc file read returns bytes from the content generated at open. */
-static long fop_read_proc(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
-{
-	if (g_procf[s->file_idx].is_dir)
-		return -LXP_EISDIR;
-	size_t plen = g_procf[s->file_idx].len;
-	if ((size_t)s->offset >= plen)
-		return 0; /* EOF */
-	size_t n = plen - s->offset;
-	if (n > len)
-		n = len;
-	if (lxp_copy_to_guest(p, (uintptr_t)buf, g_procf[s->file_idx].buf + s->offset, n) != 0)
-		return -LXP_EFAULT;
-	s->offset += n;
-	return (long)n;
-}
-
-/* Read from a read-only rootfs file at the current offset. */
-static long fop_read_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
-{
-	const lxp_file_t *f = &p->fs[s->file_idx];
-	if ((file_mode(f) & LXP_S_IFMT) == LXP_S_IFDIR)
-		return -LXP_EISDIR;
-	if (s->offset >= f->size)
-		return 0; /* EOF */
-	size_t n = f->size - s->offset;
-	if (n > len)
-		n = len;
-	if (lxp_copy_to_guest(p, (uintptr_t)buf, f->data + s->offset, n) != 0)
-		return -LXP_EFAULT;
-	s->offset += n;
-	return (long)n;
-}
-
-static long fop_read_eventfd(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
-{
-	return efd_read(p, s->file_idx, buf, len);
-}
 
 #if LXP_ENABLE_DEV
 static long fop_read_dev(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
@@ -467,70 +287,6 @@ static long fop_read_pty(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 	return r; /* bytes read, 0 (EOF), or -EAGAIN (O_NONBLOCK) */
 }
 #endif
-
-/* ---- write fops ---- */
-static long fop_write_console(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
-{
-	if (s->file_idx == 3 || s->file_idx == 4 || s->file_idx == 5)
-		return (long)len; /* /dev/null + /dev/urandom + /dev/zero: discard writes */
-	if (s->file_idx == 0 || !p->write_fn) /* stdin is not writable; no sink → EBADF */
-		return -LXP_EBADF;
-	return p->write_fn(p->io_ctx, s->file_idx, buf, len);
-}
-
-/* A pipe write end appends to the shared ring; blocks when full (reader open). */
-static long fop_write_pipe(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
-{
-	if (s->rw != 1)
-		return -LXP_EBADF;
-	long r = pipe_try_write(s->file_idx, buf, len);
-	if (r == -LXP_EAGAIN) { /* full but a reader is open */
-		if (s->nonblock)
-			return -LXP_EAGAIN; /* O_NONBLOCK: don't park */
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_PIPE,
-			.op = 2,
-			.data.io.object = s->file_idx,
-			.data.io.buffer = (uintptr_t)buf,
-			.data.io.length = len,
-		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* dispatch parks; coordinator completes via lxp_pipe_retry */
-	}
-	if (r == -LXP_EPIPE && /* no readers: SIGPIPE — default terminates the writer */
-	    lxp_sig_handler_get(p, LXP_SIGPIPE) != LXP_SIG_IGN) {
-		(void)lxp_intent_exit(p, 0);
-		p->exit_status = 128 + LXP_SIGPIPE;
-		p->exit_reason = LXP_EXIT_REASON_SIGNAL;
-		p->exit_signal = LXP_SIGPIPE;
-	}
-	return r; /* bytes written, or -EPIPE (no readers; writer exits unless it ignores it) */
-}
-
-/* A writable-node file write copies into its (growable) buffer at the offset. */
-static long fop_write_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
-{
-	lxp_wnode_t *t = wnode_at(s->file_idx);
-	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
-		return -LXP_EBADF;
-	if (wfs_reserve(s->file_idx, s->offset + len) != 0)
-		return -LXP_EFBIG; /* writable-fs pool exhausted */
-	if (s->offset >
-	    t->size) /* zero the hole of a sparse write (else it leaks stale pool bytes) */
-		memset(t->data + t->size, 0, s->offset - t->size);
-	if (lxp_copy_from_guest(p, t->data + s->offset, (uintptr_t)buf, len) != 0)
-		return -LXP_EFAULT;
-	s->offset += len;
-	if (s->offset > t->size)
-		t->size = s->offset;
-	return (long)len;
-}
-
-static long fop_write_eventfd(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
-{
-	return efd_write(p, s->file_idx, buf, len);
-}
 
 #if LXP_ENABLE_DEV
 static long fop_write_dev(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
@@ -583,42 +339,6 @@ static long fop_write_pty(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t l
 }
 #endif
 
-/* ---- lseek fops ---- */
-/* Shared SEEK_SET/CUR/END arithmetic against a file of logical size @p end. */
-static long lseek_within(lxp_ofd_t *s, long end, long off, int whence)
-{
-	long base;
-	switch (whence) {
-	case LXP_SEEK_SET:
-		base = 0;
-		break;
-	case LXP_SEEK_CUR:
-		base = (long)s->offset;
-		break;
-	case LXP_SEEK_END:
-		base = end;
-		break;
-	default:
-		return -LXP_EINVAL;
-	}
-	long pos = base + off;
-	if (pos < 0)
-		return -LXP_EINVAL;
-	s->offset = (size_t)pos;
-	return pos;
-}
-
-static long fop_lseek_rootfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
-{
-	return lseek_within(s, (long)p->fs[s->file_idx].size, off, whence);
-}
-
-static long fop_lseek_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
-{
-	(void)p;
-	return lseek_within(s, (long)wnode_at(s->file_idx)->size, off, whence);
-}
-
 #if LXP_ENABLE_DEV
 static long fop_lseek_dev(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 {
@@ -643,33 +363,6 @@ static long fop_lseek_hostfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 }
 #endif
 
-/* ---- fstat fops (each kind reports its own mode/size + a unique inode base) ---- */
-static long fop_fstat_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
-{
-	fill_kstat64(statbuf, 1u + (uint32_t)s->file_idx, file_mode(&p->fs[s->file_idx]),
-		     p->fs[s->file_idx].size);
-	return 0;
-}
-
-static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
-{
-	(void)p;
-	lxp_wnode_t *node = wnode_at(s->file_idx);
-	fill_kstat64(statbuf, 0x100000u + (uint32_t)s->file_idx, node->mode, node->size);
-	if (!node->linked)
-		((struct lxp_kstat64 *)statbuf)->st_nlink = 0;
-	return 0;
-}
-
-static long fop_fstat_proc(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
-{
-	(void)p;
-	fill_kstat64(statbuf, 0x200000u + (uint32_t)s->file_idx,
-		     g_procf[s->file_idx].is_dir ? (LXP_S_IFDIR | 0555u) : (LXP_S_IFREG | 0444u),
-		     g_procf[s->file_idx].len);
-	return 0;
-}
-
 #if LXP_ENABLE_DEV
 static long fop_fstat_dev(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 {
@@ -677,7 +370,7 @@ static long fop_fstat_dev(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 	uint32_t mode;
 	uint64_t rdev, size;
 	lxp_dev_fstat(s->file_idx, &mode, &rdev, &size);
-	fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, mode, size);
+	lxp_fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, mode, size);
 	((struct lxp_kstat64 *)statbuf)->st_rdev = rdev;
 	return 0;
 }
@@ -689,7 +382,7 @@ static long fop_fstat_socket(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 	uint32_t mode;
 	uint64_t size;
 	lxp_sock_fstat(s->file_idx, &mode, &size);
-	fill_kstat64(statbuf, 0x400000u + (uint32_t)s->file_idx, mode, size);
+	lxp_fill_kstat64(statbuf, 0x400000u + (uint32_t)s->file_idx, mode, size);
 	return 0;
 }
 #endif
@@ -715,7 +408,7 @@ static long fop_fstat_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 	long rc = lxp_hostfs_stat(p, s->file_idx, &stat);
 	if (rc < 0)
 		return rc;
-	fill_kstat64(statbuf, lxp_hostfs_inode(s->file_idx), hostfs_mode(&stat), stat.size);
+	lxp_fill_kstat64(statbuf, lxp_hostfs_inode(s->file_idx), hostfs_mode(&stat), stat.size);
 	((struct lxp_kstat64 *)statbuf)->st_dev = LXP_HOSTFS_DEV;
 	((struct lxp_kstat64 *)statbuf)->st_mtime = (uint32_t)stat.mtime_sec;
 	return 0;
@@ -728,35 +421,10 @@ static long fop_fstat_pty(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 	uint32_t mode;
 	uint64_t size;
 	lxp_pty_fstat(&mode, &size); /* S_IFCHR so isatty() → interactive shell */
-	fill_kstat64(statbuf, 0x500000u + (uint32_t)s->file_idx, mode, size);
+	lxp_fill_kstat64(statbuf, 0x500000u + (uint32_t)s->file_idx, mode, size);
 	return 0;
 }
 #endif
-
-/* ---- close fops (release the backing object; kinds with no backing omit it) ---- */
-static void fop_close_tmpfs(lxp_proc_t *p, lxp_ofd_t *s)
-{
-	(void)p;
-	wfs_close(s->file_idx);
-}
-
-static void fop_close_pipe(lxp_proc_t *p, lxp_ofd_t *s)
-{
-	(void)p;
-	lxp_pipe_end_close(s->file_idx, s->rw);
-}
-
-static void fop_close_proc(lxp_proc_t *p, lxp_ofd_t *s)
-{
-	(void)p;
-	g_procf[s->file_idx].used = 0; /* release the generated-content slot */
-}
-
-static void fop_close_eventfd(lxp_proc_t *p, lxp_ofd_t *s)
-{
-	(void)p;
-	efd_close(s->file_idx); /* called only after the final descriptor alias closes */
-}
 
 #if LXP_ENABLE_DEV
 static void fop_close_dev(lxp_proc_t *p, lxp_ofd_t *s)
@@ -794,65 +462,6 @@ static void fop_close_pty(lxp_proc_t *p, lxp_ofd_t *s)
 }
 #endif
 
-/* ---- ioctl fops (dev/socket/pty delegate to their layers; console is the tty) ---- */
-static long fop_ioctl_console(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsigned long arg)
-{
-	/* Make the console fds look like a tty so the shell goes interactive
-	 * (isatty → prompt + line editing). */
-	(void)s;
-	void *ua = (void *)(uintptr_t)arg;
-	switch (cmd) {
-	case LXP_TCGETS: {
-		lxp_termios t = {0};
-		t.c_iflag = LXP_ICRNL;
-		t.c_oflag = LXP_OPOST | LXP_ONLCR;
-		t.c_cflag = LXP_CS8 | LXP_CREAD;
-		t.c_lflag = LXP_ICANON | LXP_ECHO | LXP_ISIG;
-		t.c_cc[LXP_VINTR] = 3;	   /* ^C */
-		t.c_cc[LXP_VERASE] = 0x7f; /* DEL */
-		t.c_cc[LXP_VEOF] = 4;	   /* ^D */
-		t.c_cc[LXP_VSUSP] = 26;	   /* ^Z */
-		t.c_cc[LXP_VMIN] = 1;
-		return lxp_copy_to_guest(p, (uintptr_t)ua, &t, sizeof(t));
-	}
-	case LXP_TCSETS:
-	case LXP_TCSETSW:
-	case LXP_TCSETSF:
-		if (!lxp_guest_access_ok(p, ua, sizeof(lxp_termios), 0))
-			return -LXP_EFAULT;
-		return 0; /* accept mode changes; the console echo is the engine's job */
-	case LXP_TIOCGWINSZ: {
-		const lxp_winsize w = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0};
-		return lxp_copy_to_guest(p, (uintptr_t)ua, &w, sizeof(w));
-	}
-	case LXP_TIOCSCTTY: /* getty/login: become/drop/set the tty session */
-	case LXP_TIOCNOTTY:
-		return 0;
-	case LXP_TIOCSPGRP: {
-		/* tcsetpgrp(): the shell (HUSH_JOB) records which process group is in the
-		 * foreground of the console. A console ^C then raises SIGINT on exactly that
-		 * group (see console_signal_fg). Runs in coordinator context (ioctl defers),
-		 * so writing the shared fg-pgrp state here is safe. */
-		uint32_t pgrp;
-		if (lxp_guest_get_u32(p, (uintptr_t)ua, &pgrp) != 0)
-			return -LXP_EFAULT;
-		lxp_console_set_fg_pgrp((int)pgrp);
-		return 0;
-	}
-	case LXP_TIOCGPGRP: {
-		/* Report the tracked foreground group once set; before the shell's first
-		 * tcsetpgrp, fall back to the caller's pid so tcgetpgrp() returns non-zero
-		 * and the shell enables job control at startup. */
-		int pgrp = lxp_console_fg_pgrp();
-		if (pgrp <= 0)
-			pgrp = p->pid;
-		return lxp_guest_put_u32(p, (uintptr_t)ua, (uint32_t)pgrp);
-	}
-	default:
-		return -LXP_ENOTTY;
-	}
-}
-
 #if LXP_ENABLE_DEV
 static long fop_ioctl_dev(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsigned long arg)
 {
@@ -872,26 +481,6 @@ static long fop_ioctl_pty(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsign
 	return lxp_pty_ioctl(p, s->file_idx, s->rw, cmd, arg);
 }
 #endif
-
-/* ---- poll fops (readiness bits; a kind with no poll fop is always ready) ---- */
-static unsigned fop_poll_console(lxp_proc_t *p, lxp_ofd_t *s)
-{
-	(void)s;
-	int key = lxp_console_input_ready(p);
-	return (unsigned)((p->console_poll ? (key ? LXP_POLLIN : 0) : LXP_POLLIN) | LXP_POLLOUT);
-}
-
-static unsigned fop_poll_eventfd(lxp_proc_t *p, lxp_ofd_t *s)
-{
-	(void)p;
-	return (unsigned)LXP_POLLOUT | (efd_readable(s->file_idx) ? (unsigned)LXP_POLLIN : 0u);
-}
-
-static unsigned fop_poll_pipe(lxp_proc_t *p, lxp_ofd_t *s)
-{
-	(void)p;
-	return (unsigned)pipe_poll(s->file_idx, s->rw); /* real readiness (empty self-pipe!) */
-}
 
 #if LXP_ENABLE_DEV
 static unsigned fop_poll_dev(lxp_proc_t *p, lxp_ofd_t *s)
@@ -915,94 +504,48 @@ static unsigned fop_poll_pty(lxp_proc_t *p, lxp_ofd_t *s)
 }
 #endif
 
-/* ---- per-kind ops tables + kind→ops resolver ----
- * A NULL read/write means the kind rejects that direction: the syscall entry
- * returns -EBADF for rootfs/proc and a wrong-direction console. netfs is the
- * exception — its write returns -EROFS,
- * so it supplies an explicit write fop rather than a NULL. */
-static const lxp_file_ops_t console_fops = {.read = fop_read_console,
-					    .write = fop_write_console,
-					    .ioctl = fop_ioctl_console,
-					    .poll = fop_poll_console};
-static const lxp_file_ops_t rootfs_fops = {.read = fop_read_rootfs, /* read-only → write EBADF */
-					   .lseek = fop_lseek_rootfs,
-					   .fstat = fop_fstat_rootfs};
-static const lxp_file_ops_t tmpfs_fops = {.read = fop_read_tmpfs,
-					  .write = fop_write_tmpfs,
-					  .lseek = fop_lseek_tmpfs,
-					  .fstat = fop_fstat_tmpfs,
-					  .close = fop_close_tmpfs};
-static const lxp_file_ops_t pipe_fops = {.read = fop_read_pipe,
-					 .write = fop_write_pipe,
-					 .close = fop_close_pipe,
-					 .poll = fop_poll_pipe};
-static const lxp_file_ops_t proc_fops = {.read = fop_read_proc, /* read-only → write EBADF */
-					 .fstat = fop_fstat_proc,
-					 .close = fop_close_proc};
-static const lxp_file_ops_t eventfd_fops = {.read = fop_read_eventfd,
-					    .write = fop_write_eventfd,
-					    .close = fop_close_eventfd,
-					    .poll = fop_poll_eventfd};
+/* ---- per-kind ops tables for the optional kinds (indexed in fs/lxp_vfs.c) ----
+ * A NULL read/write means the kind rejects that direction (-EBADF). netfs is the
+ * exception — its write returns -EROFS, so it supplies an explicit write fop. */
 #if LXP_ENABLE_DEV
-static const lxp_file_ops_t dev_fops = {.read = fop_read_dev,
-					.write = fop_write_dev,
-					.lseek = fop_lseek_dev,
-					.fstat = fop_fstat_dev,
-					.close = fop_close_dev,
-					.ioctl = fop_ioctl_dev,
-					.poll = fop_poll_dev};
+const lxp_file_ops_t lxp_dev_fops = {.read = fop_read_dev,
+				     .write = fop_write_dev,
+				     .lseek = fop_lseek_dev,
+				     .fstat = fop_fstat_dev,
+				     .close = fop_close_dev,
+				     .ioctl = fop_ioctl_dev,
+				     .poll = fop_poll_dev};
 #endif
 #if LXP_ENABLE_NET
-static const lxp_file_ops_t socket_fops = {.read = fop_read_socket,
-					   .write = fop_write_socket,
-					   .fstat = fop_fstat_socket,
-					   .close = fop_close_socket,
-					   .ioctl = fop_ioctl_socket,
-					   .poll = fop_poll_socket};
+const lxp_file_ops_t lxp_socket_fops = {.read = fop_read_socket,
+					.write = fop_write_socket,
+					.fstat = fop_fstat_socket,
+					.close = fop_close_socket,
+					.ioctl = fop_ioctl_socket,
+					.poll = fop_poll_socket};
 #endif
 #if LXP_ENABLE_NETFS
-static const lxp_file_ops_t netfs_fops = {.read = fop_read_netfs,
-					  .write = fop_write_netfs,
-					  .lseek = fop_lseek_netfs,
-					  .fstat = fop_fstat_netfs,
-					  .close = fop_close_netfs};
+const lxp_file_ops_t lxp_netfs_fops = {.read = fop_read_netfs,
+				       .write = fop_write_netfs,
+				       .lseek = fop_lseek_netfs,
+				       .fstat = fop_fstat_netfs,
+				       .close = fop_close_netfs};
 #endif
 #if LXP_ENABLE_FS
-static const lxp_file_ops_t hostfs_fops = {.read = fop_read_hostfs,
-					   .write = fop_write_hostfs,
-					   .lseek = fop_lseek_hostfs,
-					   .fstat = fop_fstat_hostfs,
-					   .close = fop_close_hostfs};
+const lxp_file_ops_t lxp_hostfs_fops = {.read = fop_read_hostfs,
+					.write = fop_write_hostfs,
+					.lseek = fop_lseek_hostfs,
+					.fstat = fop_fstat_hostfs,
+					.close = fop_close_hostfs};
 #endif
 #if LXP_ENABLE_PTY
-static const lxp_file_ops_t pty_fops = {.read = fop_read_pty,
-					.write = fop_write_pty,
-					.fstat = fop_fstat_pty,
-					.close = fop_close_pty,
-					.ioctl = fop_ioctl_pty,
-					.poll = fop_poll_pty};
+const lxp_file_ops_t lxp_pty_fops = {.read = fop_read_pty,
+				     .write = fop_write_pty,
+				     .fstat = fop_fstat_pty,
+				     .close = fop_close_pty,
+				     .ioctl = fop_ioctl_pty,
+				     .poll = fop_poll_pty};
 #endif
-
-const lxp_file_ops_t *const g_lxp_file_ops[LXP_FD_KIND_COUNT] = {
-	[LXP_FD_CONSOLE] = &console_fops, [LXP_FD_FILE] = &rootfs_fops,
-	[LXP_FD_PIPE] = &pipe_fops,	  [LXP_FD_TMPFS] = &tmpfs_fops,
-	[LXP_FD_PROC] = &proc_fops,	  [LXP_FD_EVENTFD] = &eventfd_fops,
-#if LXP_ENABLE_DEV
-	[LXP_FD_DEV] = &dev_fops,
-#endif
-#if LXP_ENABLE_NET
-	[LXP_FD_SOCKET] = &socket_fops,
-#endif
-#if LXP_ENABLE_NETFS
-	[LXP_FD_NET] = &netfs_fops,
-#endif
-#if LXP_ENABLE_FS
-	[LXP_FD_HOSTFS] = &hostfs_fops,
-#endif
-#if LXP_ENABLE_PTY
-	[LXP_FD_PTY] = &pty_fops,
-#endif
-};
 
 static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 {
@@ -1126,10 +669,11 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint64_t off
 		data = (const uint8_t *)t->data;
 		size = t->size;
 	} else if (s->kind == LXP_FD_PROC) {
-		if (g_procf[s->file_idx].is_dir)
-			return -LXP_EISDIR;
-		data = (const uint8_t *)g_procf[s->file_idx].buf;
-		size = g_procf[s->file_idx].len;
+		const char *content;
+		long rc = lxp_procfs_content(s->file_idx, &content, &size);
+		if (rc < 0)
+			return rc;
+		data = (const uint8_t *)content;
 	} else if (s->kind == LXP_FD_FILE) {
 		const lxp_file_t *f = &p->fs[s->file_idx];
 		if ((file_mode(f) & LXP_S_IFMT) == LXP_S_IFDIR)
@@ -1338,99 +882,6 @@ int lxp_fd_install(lxp_proc_t *p, uint8_t kind, int idx)
 /* eventfd(2): a 64-bit counter fd used to wake a poller from another thread — curl's
  * threaded resolver (AsynchDNS) writes it when a name resolves. Descriptor aliases
  * share the refcounted open-file description and counter pool index. */
-#define LXP_NEVENTFD 8
-static struct {
-	uint64_t ctr;
-	uint16_t flags;
-	uint8_t used;
-} g_efd[LXP_NEVENTFD];
-
-static long efd_new(unsigned initval, int flags)
-{
-	for (int i = 0; i < LXP_NEVENTFD; i++)
-		if (!g_efd[i].used) {
-			g_efd[i].used = 1;
-			g_efd[i].ctr = initval;
-			g_efd[i].flags = (uint16_t)flags;
-			return i;
-		}
-	return -LXP_EMFILE;
-}
-
-/* Release an eventfd pool slot after the open-file description's last close. */
-static void efd_close(int ei)
-{
-	if (ei >= 0 && ei < LXP_NEVENTFD)
-		g_efd[ei].used = 0;
-}
-
-static int efd_readable(int ei)
-{
-	return (ei >= 0 && ei < LXP_NEVENTFD && g_efd[ei].ctr) ? 1 : 0;
-}
-
-/* eventfd read/write: 8-byte counter. read returns (and clears, or decrements in
- * SEMAPHORE mode) the counter, EAGAIN when zero (the caller polls first); write adds. */
-static long efd_read(lxp_proc_t *p, int ei, void *buf, size_t len)
-{
-	if (ei < 0 || ei >= LXP_NEVENTFD || !g_efd[ei].used)
-		return -LXP_EBADF;
-	if (len < 8)
-		return -LXP_EINVAL;
-	if (g_efd[ei].ctr == 0)
-		return -LXP_EAGAIN; /* counter empty; the poller re-checks on the tick */
-	uint64_t v = (g_efd[ei].flags & LXP_EFD_SEMAPHORE) ? 1u : g_efd[ei].ctr;
-	if (lxp_copy_to_guest(p, (uintptr_t)buf, &v, sizeof(v)) != 0)
-		return -LXP_EFAULT;
-	g_efd[ei].ctr -= v;
-	return 8;
-}
-
-static long efd_write(lxp_proc_t *p, int ei, const void *buf, size_t len)
-{
-	if (ei < 0 || ei >= LXP_NEVENTFD || !g_efd[ei].used)
-		return -LXP_EBADF;
-	if (len < 8)
-		return -LXP_EINVAL;
-	uint64_t v;
-	if (lxp_copy_from_guest(p, &v, (uintptr_t)buf, sizeof(v)) != 0)
-		return -LXP_EFAULT;
-	if (v == UINT64_MAX) /* -1 is reserved */
-		return -LXP_EINVAL;
-	if (UINT64_MAX - g_efd[ei].ctr - 1 < v) /* would overflow past max-1 */
-		g_efd[ei].ctr = UINT64_MAX - 1;
-	else
-		g_efd[ei].ctr += v;
-	return 8;
-}
-
-/* Open a /proc node: a generated-content file fd, or a directory fd for
- * getdents. Returns an fd, or a negative errno (caller already resolved `abs`). */
-static long proc_open(lxp_proc_t *p, const char *abs)
-{
-	uint32_t m = proc_mode(abs, p);
-	if (m == 0 || (m & LXP_S_IFMT) == LXP_S_IFLNK)
-		return -LXP_ENOENT;	 /* /proc/self resolves via readlink, not open */
-	if (strlen(abs) >= LXP_PROCPATH) /* the cached path buffer is /proc-sized, not PATH_MAX */
-		return -LXP_ENOENT;
-	int dir = (m & LXP_S_IFMT) == LXP_S_IFDIR;
-	for (int i = 0; i < LXP_NPROCF; i++) {
-		if (g_procf[i].used)
-			continue;
-		long n = dir ? 0 : proc_gen(abs, p, g_procf[i].buf, LXP_PROCBUF);
-		if (n < 0)
-			return -LXP_ENOENT;
-		strcpy(g_procf[i].path, abs);
-		g_procf[i].len = (size_t)n;
-		g_procf[i].is_dir = dir;
-		g_procf[i].used = 1;
-		int fd = fd_alloc(p, LXP_FD_PROC, i, 0);
-		if (fd < 0)
-			g_procf[i].used = 0; /* no fd installed → release the content slot */
-		return fd;
-	}
-	return -LXP_EMFILE;
-}
 
 static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 {
@@ -1443,7 +894,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 		return rr;
 	path = abspath;
 	if (proc_is(path)) /* synthetic /proc shadows everything */
-		return proc_open(p, path);
+		return lxp_procfs_open(p, path);
 #if LXP_ENABLE_FS
 	/* The mount boundary is exact: /data and descendants route to the host
 	 * provider, while /database remains part of the ordinary rootfs/tmpfs. */
@@ -1877,23 +1328,6 @@ static long sys_umount(lxp_proc_t *p, const char *target, int flags)
 	return -LXP_EINVAL;
 }
 
-/* Fill an ARM kstat64 from a node's inode + mode + size. */
-static void fill_kstat64(struct lxp_kstat64 *st, uint32_t ino, uint32_t mode, uint64_t size)
-{
-	memset(st, 0, sizeof(*st));
-	st->st_nlink = 1;
-	/* A UNIQUE, non-zero inode per node: ld.so dedups loaded objects by (st_dev, st_ino),
-	 * so a zero inode makes every .so look already-loaded — libc.so would be skipped and
-	 * its symbols never resolve. */
-	st->__st_ino = ino;
-	st->st_ino = ino;
-	st->st_mode = mode;
-	st->st_size = (int64_t)size;
-	/* A character device blksize makes uClibc block-buffer stdio. */
-	st->st_blksize = ((mode & LXP_S_IFMT) == LXP_S_IFCHR) ? 1024u : 512u;
-	st->st_blocks = (uint64_t)((size + 511u) / 512u);
-}
-
 static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 {
 	lxp_ofd_t *s = lxp_fd_description(p, fd);
@@ -1905,7 +1339,7 @@ static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 	if (ops && ops->fstat)
 		return ops->fstat(p, s, statbuf);
 	/* console/pipe/eventfd: a bare character device (S_IFCHR) so isatty()/stdio behaves. */
-	fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, LXP_S_IFCHR | 0620u, 0);
+	lxp_fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, LXP_S_IFCHR | 0620u, 0);
 	return 0;
 }
 
@@ -2001,7 +1435,7 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 #endif
 	if (source < 0)
 		return source;
-	fill_kstat64(statbuf, stat.inode, stat.mode, stat.size);
+	lxp_fill_kstat64(statbuf, stat.inode, stat.mode, stat.size);
 	struct lxp_kstat64 *out = statbuf;
 	out->st_rdev = stat.rdev;
 	out->st_dev = ((uint64_t)stat.dev_major << 8) | stat.dev_minor;
@@ -2338,7 +1772,7 @@ static long sys_utimensat(lxp_proc_t *p, const char *path)
  * is all-or-error: it returns LXP_OK only after writing every requested byte.
  * Missing entropy is ENOSYS for getrandom(2), but an already-open random device
  * reports EIO. A transient non-blocking provider maps to EAGAIN. */
-static long random_fill(void *buf, size_t count, int unavailable_errno)
+long lxp_random_fill_guest(void *buf, size_t count, int unavailable_errno)
 {
 	if (count == 0u)
 		return 0;
@@ -2372,7 +1806,7 @@ static long sys_getrandom(lxp_proc_t *p, void *buf, size_t count, unsigned flags
 		return 0;
 	if (!lxp_guest_access_ok(p, buf, count, 1))
 		return -LXP_EFAULT;
-	return random_fill(buf, count, LXP_ENOSYS);
+	return lxp_random_fill_guest(buf, count, LXP_ENOSYS);
 }
 
 /* ARM-EABI statfs64. Mounted host volumes use provider allocation data; the
@@ -2561,9 +1995,9 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 			return -LXP_ENOTDIR;
 		dirpath = wnode_at(s->file_idx)->path;
 	} else if (s->kind == LXP_FD_PROC) {
-		if (!g_procf[s->file_idx].is_dir)
+		dirpath = lxp_procfs_dir_path(s->file_idx);
+		if (!dirpath)
 			return -LXP_ENOTDIR;
-		dirpath = g_procf[s->file_idx].path;
 #if LXP_ENABLE_NETFS
 	} else if (s->kind == LXP_FD_NET) {
 		/* Remote dir: a Treaddir round-trip → the netfs layer emits the records. Parks. */
@@ -2870,7 +2304,7 @@ long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t 
 	if (!lxp_guest_access_ok(p, (void *)ustat, sizeof(struct lxp_kstat64), 1))
 		return -LXP_EFAULT;
 	struct lxp_kstat64 *st = (struct lxp_kstat64 *)ustat;
-	fill_kstat64(st, nino, mode, size);
+	lxp_fill_kstat64(st, nino, mode, size);
 	st->st_dev = 0xfeu;
 	st->st_mtime = (uint32_t)mtime;
 	return 0;
@@ -3268,11 +2702,7 @@ static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
 			/* Readable once the counter is non-zero (the resolver thread
 				 * wrote it); always writable. Park like a socket poll so the
 				 * coordinator re-checks on its tick. */
-			unsigned pb = LXP_POLLOUT |
-				      ((s->file_idx >= 0 && s->file_idx < LXP_NEVENTFD &&
-					g_efd[s->file_idx].ctr)
-					       ? LXP_POLLIN
-					       : 0u);
+			unsigned pb = lxp_vfs_ops(s)->poll(proc, s);
 			pfds[i].revents = (short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
 			if (pfds[i].revents)
 				ready++;
@@ -3550,17 +2980,8 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return sys_fstatfs(proc, (int)a0, (size_t)a1, (void *)(uintptr_t)a2);
 	case LXP_NR_getrandom: /* (buf, count, flags) */
 		return sys_getrandom(proc, (void *)(uintptr_t)a0, (size_t)a1, (unsigned)a2);
-	case LXP_NR_eventfd2: { /* (initval, flags) — curl's threaded-resolver wakeup */
-		long ei = efd_new((unsigned)a0, (int)a1);
-		if (ei < 0)
-			return ei;
-		int fd = fd_alloc(proc, LXP_FD_EVENTFD, (int)ei, 0);
-		if (fd < 0) {
-			g_efd[ei].used = 0;
-			return -LXP_EMFILE;
-		}
-		return fd;
-	}
+	case LXP_NR_eventfd2: /* (initval, flags) — curl's threaded-resolver wakeup */
+		return lxp_eventfd_open(proc, (unsigned)a0, (int)a1);
 	case LXP_NR_sysinfo: { /* uptime + ram totals (uptime/free read this) */
 		struct lxp_sysinfo {
 			int32_t uptime;
