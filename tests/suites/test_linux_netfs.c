@@ -618,6 +618,13 @@ static void test_netfs_browse(void **state)
 	assert_int_equal(got, 6);
 	assert_memory_equal(rb, "world\n", 6);
 
+	/* Positioned reads are not implemented for 9P files: fail explicitly rather than
+	 * treating the netfs open index as a rootfs index. */
+	memset(rb, 0xa5, sizeof(rb));
+	assert_int_equal(lxp_syscall(&p, LXP_NR_pread64, fd, (long)(uintptr_t)rb, 4, 0, 0, 0),
+			 -LXP_ESPIPE);
+	assert_int_equal((uint8_t)rb[0], 0xa5);
+
 	/* dup shares the open (same file_idx); closing one keeps it. */
 	long fd2 = lxp_syscall(&p, LXP_NR_dup, fd, 0, 0, 0, 0, 0);
 	assert_true(fd2 >= 3 && fd2 != fd);

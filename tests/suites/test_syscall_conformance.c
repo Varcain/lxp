@@ -231,6 +231,58 @@ static void test_conf_fileio_streams(void **state)
 	assert_int_equal(pf->revents, LXP_POLLIN);
 }
 
+/* Positioned I/O is only defined for seekable files. A stream descriptor's backing index
+ * names a pipe/eventfd/pty pool entry, never a rootfs file, so pread/pwrite must fail with
+ * ESPIPE and leave the guest buffer untouched instead of reading whichever rootfs entry
+ * shares that index. */
+static void assert_positioned_io_rejected(lxp_proc_t *p, long fd, uint8_t *buf, size_t len)
+{
+	memset(buf, 0xa5, len);
+	assert_int_equal(SC(p, LXP_NR_pread64, fd, (long)(uintptr_t)buf, (long)len, 0, 0, 0),
+			 -LXP_ESPIPE);
+	for (size_t i = 0; i < len; i++)
+		assert_int_equal(buf[i], 0xa5);
+	assert_int_equal(SC(p, LXP_NR_pwrite64, fd, (long)(uintptr_t)buf, (long)len, 0, 0, 0),
+			 -LXP_ESPIPE);
+}
+
+static void test_conf_pread_streams(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	/* A populated rootfs, so a stream index misread as a rootfs index names real files. */
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+	uint8_t *buf = lxp_conf_alloc(fx, 16);
+
+	assert_positioned_io_rejected(&p, 0, buf, 16); /* console */
+
+	int *fds = lxp_conf_alloc(fx, 2 * sizeof(int));
+	assert_int_equal(SC(&p, LXP_NR_pipe2, (long)(uintptr_t)fds, 0, 0, 0, 0, 0), 0);
+	assert_positioned_io_rejected(&p, fds[0], buf, 16);
+	assert_positioned_io_rejected(&p, fds[1], buf, 16);
+
+	/* Several eventfds, so at least one pool index lands on a regular rootfs file. */
+	long efd[4];
+	for (int i = 0; i < 4; i++) {
+		efd[i] = SC(&p, LXP_NR_eventfd2, 0, 0, 0, 0, 0, 0);
+		assert_true(efd[i] >= 3);
+		assert_int_equal(lxp_fd_kind(&p, (int)efd[i]), LXP_FD_EVENTFD);
+		assert_positioned_io_rejected(&p, efd[i], buf, 16);
+	}
+
+	long ptm = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/dev/ptmx"),
+		      LXP_O_RDWR, 0, 0, 0);
+	assert_true(ptm >= 3);
+	assert_int_equal(lxp_fd_kind(&p, (int)ptm), LXP_FD_PTY);
+	assert_positioned_io_rejected(&p, ptm, buf, 16);
+
+	assert_int_equal(SC(&p, LXP_NR_close, ptm, 0, 0, 0, 0, 0), 0);
+	for (int i = 0; i < 4; i++)
+		assert_int_equal(SC(&p, LXP_NR_close, efd[i], 0, 0, 0, 0, 0), 0);
+	assert_int_equal(SC(&p, LXP_NR_close, fds[0], 0, 0, 0, 0, 0), 0);
+	assert_int_equal(SC(&p, LXP_NR_close, fds[1], 0, 0, 0, 0, 0), 0);
+}
+
 /* =============================== memory: brk / mmap ==================================== */
 
 static void test_conf_mem(void **state)
@@ -1014,6 +1066,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_numbers),
 		cmocka_unit_test(test_conf_fileio),
 		cmocka_unit_test(test_conf_fileio_streams),
+		cmocka_unit_test(test_conf_pread_streams),
 		cmocka_unit_test(test_conf_mem),
 		cmocka_unit_test(test_conf_stat),
 		cmocka_unit_test(test_conf_dirent),

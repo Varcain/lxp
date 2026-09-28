@@ -1146,14 +1146,16 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint64_t off
 			return -LXP_EISDIR;
 		data = (const uint8_t *)g_procf[s->file_idx].buf;
 		size = g_procf[s->file_idx].len;
-	} else if (s->kind == LXP_FD_CONSOLE || s->kind == LXP_FD_PIPE) {
-		return -LXP_ESPIPE; /* not seekable */
-	} else {
+	} else if (s->kind == LXP_FD_FILE) {
 		const lxp_file_t *f = &p->fs[s->file_idx];
 		if ((file_mode(f) & LXP_S_IFMT) == LXP_S_IFDIR)
 			return -LXP_EISDIR;
 		data = (const uint8_t *)f->data;
 		size = f->size;
+	} else {
+		/* Console, pipe, eventfd, socket and pty descriptors are streams; 9P files
+		 * have no positioned-read path. Their backing index is not a rootfs index. */
+		return -LXP_ESPIPE;
 	}
 	if (off >= size)
 		return 0; /* EOF */
