@@ -24,6 +24,7 @@
 #if LXP_ENABLE_NETFS
 
 #include "netfs/lxp_netfs.h"
+#include "fs/lxp_dirent.h"
 #include "fs/lxp_vfs.h"
 #include "lxp_guest.h"
 #include "lxp_loader.h"
@@ -683,41 +684,6 @@ static long req_build(struct netfs_req *r)
 	}
 }
 
-/* ---- dirent emit ----------------------------------------------------------- */
-/* Write one directory record to ubuf+off in either the getdents64 layout (is64:
- * d_ino[8] d_off[8] d_reclen[2] d_type[1] name[]\0) or the legacy 32-bit getdents
- * layout (d_ino[4] d_off[4] d_reclen[2] name[]\0 ... d_type at reclen-1). Returns
- * the record length, or 0 if it does not fit. */
-static long dirent_emit_rec(lxp_proc_t *proc, int is64, uintptr_t ubuf, size_t cap, size_t off,
-			    uint64_t ino, uint64_t doff, uint8_t type, const char *name,
-			    size_t nlen)
-{
-	size_t head = is64 ? 19 : 10;
-	size_t reclen = (head + nlen + 1 + (is64 ? 0 : 1) + 7) & ~(size_t)7;
-	uint8_t record[LXP_PATH_MAX + 32];
-	if (off + reclen > cap || reclen > sizeof(record))
-		return 0;
-	size_t p = 0;
-	int inobytes = is64 ? 8 : 4;
-	for (int i = 0; i < inobytes; i++)
-		record[p++] = (uint8_t)(ino >> (8 * i));
-	for (int i = 0; i < inobytes; i++)
-		record[p++] = (uint8_t)(doff >> (8 * i));
-	record[p++] = (uint8_t)reclen;
-	record[p++] = (uint8_t)(reclen >> 8);
-	if (is64)
-		record[p++] = type;
-	memcpy(record + p, name, nlen);
-	p += nlen;
-	while (p < reclen)
-		record[p++] = 0;
-	if (!is64)
-		record[reclen - 1] = type; /* 32-bit getdents d_type hack */
-	if (lxp_copy_to_guest(proc, ubuf + off, record, reclen) != 0)
-		return -LXP_EFAULT;
-	return (long)reclen;
-}
-
 /* Map a 9P readdir entry type (a qid.type byte) to a Linux d_type. */
 static uint8_t dtype_from_qid(uint8_t qt)
 {
@@ -922,7 +888,8 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type, c
 	case LXP_NETFSW_GETDENTS: {
 		uint32_t cnt = reply_data_count(body, blen, &o);
 		size_t end = o + cnt;
-		size_t filled = 0;
+		lxp_dirent_sink_t sink = {
+			.proc = owner, .ubuf = r->ubuf, .cap = r->ulen, .is64 = r->is64};
 		struct netfs_open *op = open_slot(r->oi);
 		uint64_t last_off = op ? op->dir_off : 0;
 		while (o < end && o + 13 + 8 + 1 + 2 <= blen) {
@@ -940,20 +907,18 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type, c
 			const char *nm = (const char *)(body + o);
 			o += nlen;
 			uint8_t dtype = dt9 ? dt9 : dtype_from_qid(qt);
-			long emitted = dirent_emit_rec(owner, r->is64, r->ubuf, r->ulen, filled,
-						       qpath, doff, dtype, nm, nlen);
-			if (emitted < 0) {
-				req_complete(r, emitted);
-				return;
+			if (!lxp_dirent_put(&sink, qpath, doff, dtype, nm, nlen)) {
+				if (sink.error) {
+					req_complete(r, sink.error);
+					return;
+				}
+				break; /* record didn't fit; resume here next call */
 			}
-			if (emitted == 0) /* record didn't fit; resume here next call */
-				break;
-			filled += (size_t)emitted;
 			last_off = doff;
 		}
 		if (op)
 			op->dir_off = last_off; /* resume cursor (EOF when cnt==0 → filled 0) */
-		req_complete(r, (long)filled);
+		req_complete(r, (long)sink.filled);
 		return;
 	}
 	case LXP_NETFSW_STAT:

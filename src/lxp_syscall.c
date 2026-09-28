@@ -17,6 +17,7 @@
 #include "lxp_text.h"	  /* bounded text construction for synthetic names */
 #include "fs/lxp_vfs.h"	  /* per-fd-kind file-operation vtable (dispatch by kind) */
 
+#include "fs/lxp_dirent.h"      /* getdents record output */
 #include "fs/lxp_eventfd.h"     /* eventfd2(2) counters (FD_EVENTFD) */
 #include "fs/lxp_fd_private.h" /* descriptor-table reference transaction */
 #if LXP_ENABLE_FS
@@ -95,16 +96,6 @@ static long sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwf
 
 /* The pipe subsystem (ring buffer + read/write/poll ops) lives in src/fs/lxp_pipe.c;
  * this dispatcher calls it via fs/lxp_pipe.h. */
-
-/* getdents64 record: fixed 19-byte head (d_ino..d_type) then a NUL-terminated name. */
-struct lxp_dirent64 {
-	uint64_t d_ino;
-	int64_t d_off;
-	uint16_t d_reclen;
-	uint8_t d_type;
-	char d_name[];
-};
-LXP_STATIC_ASSERT(offsetof(struct lxp_dirent64, d_name) == 19, "dirent64 head size drifted");
 
 /* If @p path names an entry exactly one component below directory @p dir, return
  * that child's name; otherwise NULL. */
@@ -1531,56 +1522,19 @@ static long sys_fstatfs(lxp_proc_t *p, int fd, size_t size, void *buf)
 	return statfs_copy(p, size, buf, &st);
 }
 
-/* Directory-entry format for the in-progress getdents: 1 = linux_dirent64 (getdents64),
- * 0 = the 32-bit linux_dirent (getdents). Set by the two entry points; the walk is single
- * threaded (the coordinator runs one syscall at a time), so a file-static is safe here. */
-static int s_dirent_is64 = 1;
-
-/* Append one dirent record in the s_dirent_is64 format (the 32-bit linux_dirent puts d_type
- * as a trailing byte at d_reclen-1). Skips entries already emitted (pos < s->offset);
- * returns 0 if the record does not fit, else 1 (and advances). */
-static int dirent_emit(uint8_t *out, size_t count, size_t *filled, long *pos, lxp_ofd_t *s,
-		       uint64_t ino, const char *name, uint32_t mode)
+/* Emit one entry of a merged directory listing into @p sink, skipping the entries an
+ * earlier call already returned (index < s->offset); the resume cookie is the entry's
+ * index + 1. Returns 0 once the buffer is full, else 1 (and advances). */
+static int dirent_emit(lxp_dirent_sink_t *sink, long *pos, lxp_ofd_t *s, uint64_t ino,
+		       const char *name, uint32_t mode)
 {
-	int is64 = s_dirent_is64;
 	if (*pos < (long)s->offset) {
 		(*pos)++;
 		return 1; /* already returned by an earlier getdents call */
 	}
-	size_t namelen = strlen(name);
-	uint8_t dtype = ((mode & LXP_S_IFMT) == LXP_S_IFDIR)   ? LXP_DT_DIR
-			: ((mode & LXP_S_IFMT) == LXP_S_IFCHR) ? LXP_DT_CHR
-			: ((mode & LXP_S_IFMT) == LXP_S_IFBLK) ? LXP_DT_BLK
-							       : LXP_DT_REG;
-	if (is64) {
-		size_t reclen = (offsetof(struct lxp_dirent64, d_name) + namelen + 1 + 7u) &
-				~(size_t)7u;
-		if (*filled + reclen > count)
-			return 0;
-		struct lxp_dirent64 *de = (struct lxp_dirent64 *)(out + *filled);
-		de->d_ino = ino;
-		de->d_off = *pos + 1;
-		de->d_reclen = (uint16_t)reclen;
-		de->d_type = dtype;
-		memcpy(de->d_name, name, namelen + 1);
-		*filled += reclen;
-	} else {
-		/* 32-bit linux_dirent: [d_ino:4][d_off:4][d_reclen:2][name+NUL][pad][d_type:1]. */
-		size_t reclen = (8u + 2u + namelen + 1u + 1u + 7u) & ~(size_t)7u;
-		if (*filled + reclen > count)
-			return 0;
-		uint8_t *r = out + *filled;
-		uint32_t di = (uint32_t)ino, doff = (uint32_t)(*pos + 1);
-		uint16_t rl = (uint16_t)reclen;
-		memcpy(r, &di, 4);
-		memcpy(r + 4, &doff, 4);
-		memcpy(r + 8, &rl, 2);
-		memcpy(r + 10, name, namelen + 1);
-		for (size_t k = 10 + namelen + 1; k < reclen - 1; k++)
-			r[k] = 0;
-		r[reclen - 1] = dtype;
-		*filled += reclen;
-	}
+	if (!lxp_dirent_put(sink, ino, (uint64_t)(*pos + 1), lxp_dirent_type(mode), name,
+			    strlen(name)))
+		return 0;
 	(*pos)++;
 	s->offset++;
 	return 1;
@@ -1592,7 +1546,6 @@ static int dirent_emit(uint8_t *out, size_t count, size_t *filled, long *pos, lx
  * dropbear's pty session setup), so both are supported. */
 static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int is64)
 {
-	s_dirent_is64 = is64;
 	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
@@ -1620,8 +1573,7 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 	} else if (s->kind == LXP_FD_HOSTFS) {
 		if (!lxp_hostfs_is_dir(s->file_idx))
 			return -LXP_ENOTDIR;
-		uint8_t *out = (uint8_t *)buf;
-		size_t filled = 0;
+		lxp_dirent_sink_t sink = {.proc = p, .ubuf = (uintptr_t)buf, .cap = count, .is64 = is64};
 		long pos = (long)s->offset;
 		/* One provider entry per syscall keeps an async retry idempotent: no
 		 * earlier directory entries are consumed before a later read parks. */
@@ -1630,18 +1582,16 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 		if (rc <= 0)
 			return rc;
 		uint32_t mode = entry->type == LXP_FS_TYPE_DIR ? LXP_S_IFDIR : LXP_S_IFREG;
-		if (!dirent_emit(out, count, &filled, &pos, s, 0x700001u + (uint64_t)s->offset,
-				 entry->name, mode))
-			return -LXP_EINVAL;
+		if (!dirent_emit(&sink, &pos, s, 0x700001u + (uint64_t)s->offset, entry->name, mode))
+			return sink.error ? sink.error : -LXP_EINVAL;
 		lxp_hostfs_dir_consume(s->file_idx);
-		return (long)filled;
+		return (long)sink.filled;
 #endif
 	} else {
 		return -LXP_ENOTDIR;
 	}
 
-	uint8_t *out = (uint8_t *)buf;
-	size_t filled = 0;
+	lxp_dirent_sink_t sink = {.proc = p, .ubuf = (uintptr_t)buf, .cap = count, .is64 = is64};
 	long pos = 0; /* running child index across both sources; s->offset = emitted */
 	int full = 0;
 	/* rootfs children (a writable node of the same path shadows the rootfs one) */
@@ -1656,7 +1606,7 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 #endif
 		)
 			continue;
-		if (!dirent_emit(out, count, &filled, &pos, s, (uint64_t)(i + 1), name,
+		if (!dirent_emit(&sink, &pos, s, (uint64_t)(i + 1), name,
 				 file_mode(&p->fs[i])))
 			full = 1;
 	}
@@ -1671,7 +1621,7 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 		const char *name = child_name(dirpath, wnode_at(i)->path);
 		if (!name)
 			continue;
-		if (!dirent_emit(out, count, &filled, &pos, s, (uint64_t)(100000 + i), name,
+		if (!dirent_emit(&sink, &pos, s, (uint64_t)(100000 + i), name,
 				 wnode_at(i)->mode))
 			full = 1;
 	}
@@ -1680,7 +1630,7 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 	 * synthetic default /data directory when the rootfs has none. */
 	const char *mount_name = child_name(dirpath, host_mount);
 	if (!full && mount_name &&
-	    !dirent_emit(out, count, &filled, &pos, s, lxp_hostfs_path_inode(host_mount),
+	    !dirent_emit(&sink, &pos, s, lxp_hostfs_path_inode(host_mount),
 			 mount_name, LXP_S_IFDIR))
 		full = 1;
 #endif
@@ -1692,7 +1642,7 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 		const char *name = dp ? child_name(dirpath, dp) : NULL;
 		if (!name)
 			continue;
-		if (!dirent_emit(out, count, &filled, &pos, s, (uint64_t)(0x300000 + i), name,
+		if (!dirent_emit(&sink, &pos, s, (uint64_t)(0x300000 + i), name,
 				 dmode))
 			full = 1;
 	}
@@ -1704,11 +1654,11 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 		if (strcmp(dirpath, "/proc") == 0) {
 			uint64_t ino = 200000;
 			for (int i = 0; g_proc_files[i] && !full; i++)
-				if (!dirent_emit(out, count, &filled, &pos, s, ino++,
+				if (!dirent_emit(&sink, &pos, s, ino++,
 						 g_proc_files[i], LXP_S_IFREG))
 					full = 1;
 			if (!full &&
-			    !dirent_emit(out, count, &filled, &pos, s, ino++, "self", LXP_S_IFLNK))
+			    !dirent_emit(&sink, &pos, s, ino++, "self", LXP_S_IFLNK))
 				full = 1;
 			/* every live process + kernel thread from the ps/top snapshot */
 			int np = lxp_pent_count(), seen1 = 0, seenself = 0;
@@ -1723,13 +1673,13 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 				pidstr[k] = '\0';
 				seen1 |= (e->pid == 1);
 				seenself |= (e->pid == p->pid);
-				if (!dirent_emit(out, count, &filled, &pos, s, ino++, pidstr,
+				if (!dirent_emit(&sink, &pos, s, ino++, pidstr,
 						 LXP_S_IFDIR))
 					full = 1;
 			}
 			/* fallbacks before the first snapshot refresh populates the table */
 			if (!full && !seen1 &&
-			    !dirent_emit(out, count, &filled, &pos, s, ino++, "1", LXP_S_IFDIR))
+			    !dirent_emit(&sink, &pos, s, ino++, "1", LXP_S_IFDIR))
 				full = 1;
 			if (!full && !seenself && p->pid != 1) {
 				char pidstr[12];
@@ -1737,7 +1687,7 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 				lxp_text_u64(&pid_text, (uint64_t)p->pid);
 				size_t k = pid_text.length;
 				pidstr[k] = '\0';
-				if (!dirent_emit(out, count, &filled, &pos, s, ino++, pidstr,
+				if (!dirent_emit(&sink, &pos, s, ino++, pidstr,
 						 LXP_S_IFDIR))
 					full = 1;
 			}
@@ -1745,14 +1695,16 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 			static const char *const pf[] = {"stat", "cmdline", "status", "comm", NULL};
 			uint64_t ino = 300000;
 			for (int i = 0; pf[i] && !full; i++)
-				if (!dirent_emit(out, count, &filled, &pos, s, ino++, pf[i],
+				if (!dirent_emit(&sink, &pos, s, ino++, pf[i],
 						 LXP_S_IFREG))
 					full = 1;
 		}
 	}
-	if (full && filled == 0)
+	if (sink.error)
+		return sink.error;
+	if (full && sink.filled == 0)
 		return -LXP_EINVAL; /* buffer too small for even one entry */
-	return (long)filled;
+	return (long)sink.filled;
 }
 
 /* Modern struct statx (256 bytes); fixed-width so host tests match the target. */
