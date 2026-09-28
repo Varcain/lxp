@@ -30,6 +30,8 @@ dependency on any OS, so `scripts/check-decoupled.sh` still passes.
 | `guest/rootfs.cpio` | **M1/M2 pinned fixture** — the built hand-written guests (embedded in flash) |
 | `guest/mkrootfs_m3.sh` | rebuilds the minimal busybox rootfs from a Buildroot FDPIC target tree |
 | `guest/rootfs_m3.cpio` | **M3 pinned fixture** — minimal dynamic-FDPIC busybox (busybox + ld.so + libc, ~620 KiB) |
+| `guest/SOURCES.md` | contents, licenses and corresponding source of both pinned fixtures |
+| `guest/buildroot/` | the Buildroot defconfig and BusyBox config the M3 fixture was built with |
 
 ## Prerequisites
 
