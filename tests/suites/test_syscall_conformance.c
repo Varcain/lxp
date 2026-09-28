@@ -480,6 +480,80 @@ static void test_conf_dirent(void **state)
 			 -LXP_ENOTDIR);
 }
 
+/* Check one directory record's fields at @p rec (padding excluded): the 64-bit layout
+ * is d_ino[8] d_off[8] d_reclen[2] d_type[1] name; the 32-bit one is d_ino[4] d_off[4]
+ * d_reclen[2] name ... d_type at d_reclen-1. Returns the record length. */
+static size_t check_dirent(const uint8_t *rec, int is64, uint64_t ino, uint64_t off,
+			   size_t reclen, uint8_t type, const char *name)
+{
+	uint64_t v64 = 0;
+	uint32_t v32 = 0;
+	uint16_t rl = 0;
+	if (is64) {
+		memcpy(&v64, rec, 8);
+		assert_int_equal(v64, ino);
+		memcpy(&v64, rec + 8, 8);
+		assert_int_equal(v64, off);
+		memcpy(&rl, rec + 16, 2);
+		assert_int_equal(rl, reclen);
+		assert_int_equal(rec[18], type);
+		assert_string_equal((const char *)rec + 19, name);
+	} else {
+		memcpy(&v32, rec, 4);
+		assert_int_equal(v32, ino);
+		memcpy(&v32, rec + 4, 4);
+		assert_int_equal(v32, off);
+		memcpy(&rl, rec + 8, 2);
+		assert_int_equal(rl, reclen);
+		assert_string_equal((const char *)rec + 10, name);
+		assert_int_equal(rec[reclen - 1], type);
+	}
+	return reclen;
+}
+
+/* Pin the exact directory records both getdents variants produce for /etc, how a
+ * directory cursor resumes after a short buffer, and the too-small-buffer error. */
+static void test_conf_dirent_records(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+	uint8_t *dbuf = lxp_conf_alloc(fx, 512);
+	char *etc = lxp_conf_str(fx, "/etc");
+
+	/* getdents64: rootfs entries in table order, inode = rootfs index + 1. */
+	long fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)etc, LXP_O_RDONLY, 0, 0, 0);
+	assert_true(fd >= 3);
+	assert_int_equal(SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 512, 0, 0, 0), 80);
+	size_t o = check_dirent(dbuf, 1, 3, 1, 24, LXP_DT_REG, "motd");
+	o += check_dirent(dbuf + o, 1, 4, 2, 32, LXP_DT_REG, "hostname");
+	o += check_dirent(dbuf + o, 1, 5, 3, 24, LXP_DT_REG, "self");
+	assert_int_equal(o, 80);
+	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+
+	/* getdents: the 32-bit layout of the same entries. */
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)etc, LXP_O_RDONLY, 0, 0, 0);
+	assert_int_equal(SC(&p, LXP_NR_getdents, fd, (long)(uintptr_t)dbuf, 512, 0, 0, 0), 56);
+	o = check_dirent(dbuf, 0, 3, 1, 16, LXP_DT_REG, "motd");
+	o += check_dirent(dbuf + o, 0, 4, 2, 24, LXP_DT_REG, "hostname");
+	o += check_dirent(dbuf + o, 0, 5, 3, 16, LXP_DT_REG, "self");
+	assert_int_equal(o, 56);
+	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+
+	/* A buffer holding two records returns them; the next call resumes at the third. */
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)etc, LXP_O_RDONLY, 0, 0, 0);
+	assert_int_equal(SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 56, 0, 0, 0), 56);
+	assert_int_equal(SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 512, 0, 0, 0), 24);
+	check_dirent(dbuf, 1, 5, 3, 24, LXP_DT_REG, "self");
+	assert_int_equal(SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 512, 0, 0, 0), 0);
+	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+
+	/* A buffer too small for the first record is EINVAL. */
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)etc, LXP_O_RDONLY, 0, 0, 0);
+	assert_int_equal(SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 23, 0, 0, 0),
+			 -LXP_EINVAL);
+}
+
 /* =============================== path metadata ======================================== */
 
 static void test_conf_pathmeta(void **state)
@@ -1115,6 +1189,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_mem),
 		cmocka_unit_test(test_conf_stat),
 		cmocka_unit_test(test_conf_dirent),
+		cmocka_unit_test(test_conf_dirent_records),
 		cmocka_unit_test(test_conf_pathmeta),
 		cmocka_unit_test(test_conf_fsmutate),
 		cmocka_unit_test(test_conf_tmpfs_sparse_hole_zeroed),
