@@ -122,4 +122,7 @@ long lxp_sys_rt_sigprocmask(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_rt_sigsuspend(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_rt_sigtimedwait_time64(lxp_proc_t *proc, const long a[6]);
 
+/* ---- exec (src/sys/lxp_sys_exec.c) ---- */
+long lxp_sys_execve(lxp_proc_t *proc, const long a[6]);
+
 #endif /* LXP_SYS_H */
