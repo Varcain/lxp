@@ -196,6 +196,53 @@ void lxp_sock_close(int oi)
 
 /* ---- connect / send / recv (with deferred-block park) ---------------------- */
 
+/* Each attempt below is run by the call itself and again by lxp_sock_retry() while the
+ * call is parked, so a retry repeats exactly what blocked. -EAGAIN: it would still block. */
+
+/* An in-flight connect: 0 once it completed, else its error. */
+static long sock_connect_poll(struct sock_open *o)
+{
+	unsigned rev = 0;
+	g_lxp_net_ops->sock_poll(o->sock, LXP_SOCK_POLLOUT, &rev, 0);
+	if (!(rev & (LXP_SOCK_POLLOUT | LXP_SOCK_POLLERR | LXP_SOCK_POLLHUP)))
+		return -LXP_EAGAIN; /* still connecting */
+	int se = g_lxp_net_ops->sock_get_error(o->sock);
+	o->connecting = 0;
+	return se == LXP_OK ? 0 : net_errno_to_lnx(se);
+}
+
+/* Send @p len bytes (to @p dest when set): the bytes sent, or a negated errno. */
+static long sock_try_send(struct sock_open *o, const void *buf, size_t len,
+			  const lxp_sockaddr_t *dest)
+{
+	size_t sent = 0;
+	int r = dest ? g_lxp_net_ops->sock_sendto(o->sock, buf, len, &sent, dest)
+		     : g_lxp_net_ops->sock_send(o->sock, buf, len, &sent);
+	if (r == LXP_OK)
+		return (long)sent;
+	return r == LXP_ERR_TIMEOUT ? -LXP_EAGAIN : net_errno_to_lnx(r);
+}
+
+/* Receive up to @p len bytes, filling the guest's source address when @p usrc is set:
+ * the bytes received, 0 at the peer's orderly shutdown, or a negated errno. */
+static long sock_try_recv(lxp_proc_t *p, struct sock_open *o, void *buf, size_t len,
+			  void *usrc, void *usrclen)
+{
+	size_t got = 0;
+	lxp_sockaddr_t src;
+	int r = usrc ? g_lxp_net_ops->sock_recvfrom(o->sock, buf, len, &got, &src,
+						    LXP_WAIT_FOREVER)
+		     : g_lxp_net_ops->sock_recv(o->sock, buf, len, &got, LXP_WAIT_FOREVER);
+	if (r == LXP_OK) {
+		if (usrc)
+			(void)copy_sockaddr_out(p, usrc, usrclen, &src);
+		return (long)got;
+	}
+	if (r == LXP_ERR_NET_CLOSED)
+		return 0;
+	return r == LXP_ERR_TIMEOUT ? -LXP_EAGAIN : net_errno_to_lnx(r);
+}
+
 long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen)
 {
 	struct sock_open *o = open_slot(oi);
@@ -206,9 +253,8 @@ long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen
 	 * connect() again to poll for completion): report via SO_ERROR, don't
 	 * re-initiate. */
 	if (o->connecting) {
-		unsigned rev = 0;
-		g_lxp_net_ops->sock_poll(o->sock, LXP_SOCK_POLLOUT, &rev, 0);
-		if (!(rev & (LXP_SOCK_POLLOUT | LXP_SOCK_POLLERR | LXP_SOCK_POLLHUP))) {
+		long r = sock_connect_poll(o);
+		if (r == -LXP_EAGAIN) {
 			if (o->oflags & LXP_O_NONBLOCK)
 				return -LXP_EALREADY;
 			lxp_wait_t wait = {
@@ -218,9 +264,7 @@ long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen
 			};
 			return lxp_wait_park(p, &wait);
 		}
-		int se = g_lxp_net_ops->sock_get_error(o->sock);
-		o->connecting = 0;
-		return se == LXP_OK ? -LXP_EISCONN : net_errno_to_lnx(se);
+		return r == 0 ? -LXP_EISCONN : r;
 	}
 
 	lxp_sockaddr_in sin;
@@ -351,8 +395,6 @@ long lxp_sock_send(lxp_proc_t *p, int oi, const void *ubuf, size_t len, int flag
 	if (len && (!ubuf || !lxp_guest_access_ok(p, ubuf, len, 0)))
 		return -LXP_EFAULT;
 
-	size_t sent = 0;
-	int r;
 	lxp_sockaddr_t oa;
 	if (udest) {
 		lxp_sockaddr_in sin;
@@ -365,13 +407,8 @@ long lxp_sock_send(lxp_proc_t *p, int oi, const void *ubuf, size_t len, int flag
 	 * buffer from physical memory through an uncached view; flush the guest's dirty D-cache lines
 	 * first so it does not copy stale bytes (a no-op except on the D-cache-on STM32F746). */
 	lxp_cache_clean(ubuf, len);
-	if (udest)
-		r = g_lxp_net_ops->sock_sendto(o->sock, ubuf, len, &sent, &oa);
-	else
-		r = g_lxp_net_ops->sock_send(o->sock, ubuf, len, &sent);
-	if (r == LXP_OK)
-		return (long)sent;
-	if (r == LXP_ERR_TIMEOUT) {
+	long r = sock_try_send(o, ubuf, len, udest ? &oa : NULL);
+	if (r == -LXP_EAGAIN) {
 		/* A blocked stream send parks; a datagram sendto returns EAGAIN (the
 		 * park would need to remember its dest — added when needed). */
 		if (udest || (o->oflags & LXP_O_NONBLOCK) || (flags & LXP_MSG_DONTWAIT))
@@ -385,7 +422,7 @@ long lxp_sock_send(lxp_proc_t *p, int oi, const void *ubuf, size_t len, int flag
 		};
 		return lxp_wait_park(p, &wait); /* parked */
 	}
-	return net_errno_to_lnx(r);
+	return r;
 }
 
 /* sendmsg on a datagram socket: gather all iovec segments into ONE datagram and send it as a
@@ -443,24 +480,12 @@ long lxp_sock_recv(lxp_proc_t *p, int oi, void *ubuf, size_t len, int flags, voi
 	if (len && (!ubuf || !lxp_guest_access_ok(p, ubuf, len, 1)))
 		return -LXP_EFAULT;
 
-	size_t got = 0;
-	lxp_sockaddr_t src;
-	int r;
-	if (usrc)
-		r = g_lxp_net_ops->sock_recvfrom(o->sock, ubuf, len, &got, &src, LXP_WAIT_FOREVER);
-	else
-		r = g_lxp_net_ops->sock_recv(o->sock, ubuf, len, &got, LXP_WAIT_FOREVER);
-
-	if (r == LXP_OK) {
-		if (usrc)
-			(void)copy_sockaddr_out(p, usrc, usrclen, &src);
-		return (long)got;
-	}
-	if (r == LXP_ERR_NET_CLOSED)
-		return 0; /* EOF: peer performed an orderly shutdown */
-	if (r == LXP_ERR_TIMEOUT) {
+	long r = sock_try_recv(p, o, ubuf, len, usrc, usrclen);
+	if (r == -LXP_EAGAIN) {
 		if ((o->oflags & LXP_O_NONBLOCK) || (flags & LXP_MSG_DONTWAIT))
 			return -LXP_EAGAIN;
+		o->rx_src = (uintptr_t)usrc; /* non-zero => recvfrom on the retry */
+		o->rx_srclen = (uintptr_t)usrclen;
 		lxp_wait_t wait = {
 			.kind = LXP_WAIT_SOCKET,
 			.op = LXP_SOCKW_RECV,
@@ -468,13 +493,9 @@ long lxp_sock_recv(lxp_proc_t *p, int oi, void *ubuf, size_t len, int flags, voi
 			.data.socket.buffer = (uintptr_t)ubuf,
 			.data.socket.length = len,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		o->rx_src = (uintptr_t)usrc; /* non-zero => recvfrom on the retry */
-		o->rx_srclen = (uintptr_t)usrclen;
-		return 0; /* parked */
+		return lxp_wait_park(p, &wait); /* parked */
 	}
-	return net_errno_to_lnx(r);
+	return r; /* bytes, 0 at the peer's orderly shutdown, or an error */
 }
 
 long lxp_sock_shutdown(int oi, int how)
@@ -778,50 +799,15 @@ long lxp_sock_retry(lxp_proc_t *p)
 	if (!o)
 		return -LXP_EBADF;
 	switch (p->wait.op) {
-	case LXP_SOCKW_CONNECT: {
-		unsigned rev = 0;
-		g_lxp_net_ops->sock_poll(o->sock, LXP_SOCK_POLLOUT, &rev, 0);
-		if (!(rev & (LXP_SOCK_POLLOUT | LXP_SOCK_POLLERR | LXP_SOCK_POLLHUP)))
-			return -LXP_EAGAIN; /* still connecting */
-		int se = g_lxp_net_ops->sock_get_error(o->sock);
-		o->connecting = 0;
-		return se == LXP_OK ? 0 : net_errno_to_lnx(se);
-	}
-	case LXP_SOCKW_SEND: {
-		size_t sent = 0;
-		int r = g_lxp_net_ops->sock_send(o->sock, (const void *)p->wait.data.socket.buffer,
-						 p->wait.data.socket.length, &sent);
-		if (r == LXP_OK)
-			return (long)sent;
-		if (r == LXP_ERR_TIMEOUT)
-			return -LXP_EAGAIN;
-		return net_errno_to_lnx(r);
-	}
-	case LXP_SOCKW_RECV: {
-		size_t got = 0;
-		lxp_sockaddr_t src;
-		int r;
-		if (o->rx_src)
-			r = g_lxp_net_ops->sock_recvfrom(o->sock,
-							 (void *)p->wait.data.socket.buffer,
-							 p->wait.data.socket.length, &got, &src,
-							 LXP_WAIT_FOREVER);
-		else
-			r = g_lxp_net_ops->sock_recv(o->sock, (void *)p->wait.data.socket.buffer,
-						     p->wait.data.socket.length, &got,
-						     LXP_WAIT_FOREVER);
-		if (r == LXP_OK) {
-			if (o->rx_src)
-				(void)copy_sockaddr_out(p, (void *)o->rx_src, (void *)o->rx_srclen,
-							&src);
-			return (long)got;
-		}
-		if (r == LXP_ERR_NET_CLOSED)
-			return 0;
-		if (r == LXP_ERR_TIMEOUT)
-			return -LXP_EAGAIN;
-		return net_errno_to_lnx(r);
-	}
+	case LXP_SOCKW_CONNECT:
+		return sock_connect_poll(o);
+	case LXP_SOCKW_SEND:
+		return sock_try_send(o, (const void *)p->wait.data.socket.buffer,
+				     p->wait.data.socket.length, NULL);
+	case LXP_SOCKW_RECV:
+		return sock_try_recv(p, o, (void *)p->wait.data.socket.buffer,
+				     p->wait.data.socket.length, (void *)o->rx_src,
+				     (void *)o->rx_srclen);
 	case LXP_SOCKW_ACCEPT:
 		/* Re-run the mint: a new fd when a client is now pending, -EAGAIN to stay
 		 * parked, or a negative errno. The wait payload holds the user addr/len. */
