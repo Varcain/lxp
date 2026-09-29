@@ -412,13 +412,7 @@ static long sys_rename(lxp_proc_t *p, const char *oldp, const char *newp, unsign
 	int wi = wfs_find(oldabs);
 	if (wi < 0)
 		return (fs_lookup(p, oldabs) >= 0) ? -LXP_EROFS : -LXP_ENOENT;
-	if (strlen(newabs) >= LXP_PATH_MAX)
-		return -LXP_ENAMETOOLONG;
-	int di = wfs_find(newabs); /* replace an existing destination node */
-	if (di >= 0 && di != wi)
-		wfs_free(di); /* reclaim the replaced destination's bytes */
-	strcpy(wnode_at(wi)->path, newabs);
-	return 0;
+	return wfs_rename(wi, newabs);
 }
 
 static long sys_symlink(lxp_proc_t *p, const char *target, const char *linkp)

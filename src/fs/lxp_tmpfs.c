@@ -18,10 +18,12 @@
 #include <string.h>
 
 #include "fs/lxp_dir.h"
+#include "fs/lxp_path.h"
 #include "fs/lxp_stat.h"
 #include "fs/lxp_vfs.h"
 #include "lxp_arena.h"
 #include "lxp_guest.h"
+#include "lxp_linux_uapi.h"
 
 /* Board-relocatable BSS section (default: normal .bss). A consumer whose on-chip SRAM is tight can
  * point this at a far region (STM32 Zephyr: SDRAM1) so the tmpfs pool — and thus a large /tmp file
@@ -135,6 +137,52 @@ void wfs_close(int i)
 		return;
 	if (--g_wnodes[i].open_refs == 0 && !g_wnodes[i].linked)
 		wfs_reclaim(i);
+}
+
+/* Whether a linked node lies strictly below directory path @p dir. */
+static int wfs_has_descendant(const char *dir)
+{
+	for (int j = 0; j < LXP_NWNODE; j++)
+		if (g_wnodes[j].used && g_wnodes[j].linked && strcmp(g_wnodes[j].path, dir) != 0 &&
+		    lxp_path_under(g_wnodes[j].path, dir))
+			return 1;
+	return 0;
+}
+
+int wfs_rename(int i, const char *newabs)
+{
+	lxp_wnode_t *node = &g_wnodes[i];
+	size_t old_len = strlen(node->path);
+	size_t new_len = strlen(newabs);
+	if (strcmp(node->path, newabs) == 0)
+		return 0;
+	if (new_len >= LXP_PATH_MAX)
+		return -LXP_ENAMETOOLONG;
+	int is_dir = (node->mode & LXP_S_IFMT) == LXP_S_IFDIR;
+	if (is_dir && lxp_path_under(newabs, node->path))
+		return -LXP_EINVAL;
+	int di = wfs_find(newabs);
+	if (di >= 0 && wfs_has_descendant(newabs))
+		return -LXP_ENOTEMPTY;
+	/* Each descendant keeps its place below the new name: check they all fit first. */
+	for (int j = 0; is_dir && j < LXP_NWNODE; j++)
+		if (j != i && g_wnodes[j].used && g_wnodes[j].linked &&
+		    lxp_path_under(g_wnodes[j].path, node->path) &&
+		    strlen(g_wnodes[j].path) - old_len + new_len >= LXP_PATH_MAX)
+			return -LXP_ENAMETOOLONG;
+	if (di >= 0)
+		wfs_free(di);
+	for (int j = 0; is_dir && j < LXP_NWNODE; j++) {
+		if (j == i || !g_wnodes[j].used || !g_wnodes[j].linked ||
+		    !lxp_path_under(g_wnodes[j].path, node->path))
+			continue;
+		char moved[LXP_PATH_MAX];
+		memcpy(moved, newabs, new_len);
+		strcpy(moved + new_len, g_wnodes[j].path + old_len);
+		strcpy(g_wnodes[j].path, moved);
+	}
+	strcpy(node->path, newabs);
+	return 0;
 }
 
 void wfs_free(int i)

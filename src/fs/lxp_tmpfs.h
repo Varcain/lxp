@@ -53,6 +53,11 @@ int wfs_reserve(int i, size_t need);
 int wfs_open(int i);
 void wfs_close(int i);
 
+/* Rename node i to newabs, replacing an existing node there; a directory carries its
+ * descendants along. 0, or -ENAMETOOLONG, -EINVAL (a directory into its own subtree)
+ * or -ENOTEMPTY (replacing a directory that has entries). */
+int wfs_rename(int i, const char *newabs);
+
 /* Remove node i's directory entry (unlink/rmdir, or rename replacing an
  * existing destination). Its bytes remain accessible to existing open-file
  * descriptions and are reclaimed after the final close. Nodes without open

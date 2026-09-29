@@ -134,6 +134,36 @@ static void test_tmpfs_nodes(void **s)
 	assert_int_equal(wfs_reserve(a, (size_t)LXP_WFS_POOL - LXP_ARENA_ALIGN + 1u), -1);
 }
 
+/* Renaming a directory carries its whole subtree; it cannot move into itself or
+ * replace a directory that still has entries. */
+static void test_tmpfs_rename_moves_children(void **s)
+{
+	(void)s;
+	wfs_reset();
+	int d = wfs_create("/tmp/d", LXP_S_IFDIR | 0755u);
+	int a = wfs_create("/tmp/d/a", LXP_S_IFREG | 0644u);
+	int sub = wfs_create("/tmp/d/s", LXP_S_IFDIR | 0755u);
+	int b = wfs_create("/tmp/d/s/b", LXP_S_IFREG | 0644u);
+	int other = wfs_create("/tmp/dx", LXP_S_IFREG | 0644u); /* shares a prefix, not a parent */
+	assert_true(d >= 0 && a >= 0 && sub >= 0 && b >= 0 && other >= 0);
+
+	assert_int_equal(wfs_rename(d, "/tmp/e"), 0);
+	assert_int_equal(wfs_find("/tmp/e"), d);
+	assert_int_equal(wfs_find("/tmp/e/a"), a);
+	assert_int_equal(wfs_find("/tmp/e/s"), sub);
+	assert_int_equal(wfs_find("/tmp/e/s/b"), b);
+	assert_int_equal(wfs_find("/tmp/d/a"), -1);
+	assert_int_equal(wfs_find("/tmp/dx"), other);
+
+	assert_int_equal(wfs_rename(d, "/tmp/e/s/inner"), -LXP_EINVAL);
+	int target = wfs_create("/tmp/t", LXP_S_IFDIR | 0755u);
+	assert_true(target >= 0);
+	assert_true(wfs_create("/tmp/t/keep", LXP_S_IFREG | 0644u) >= 0);
+	assert_int_equal(wfs_rename(other, "/tmp/t"), -LXP_ENOTEMPTY);
+	assert_int_equal(wfs_rename(other, "/tmp/e/s"), -LXP_ENOTEMPTY);
+	assert_int_equal(wfs_find("/tmp/dx"), other); /* a refused rename changes nothing */
+}
+
 /* The pool reclaims freed blocks (arena-backed, not a leaky bump pool). Both cases
  * below allocate far more than the 64K pool in total; they only pass because each
  * removal / growth frees the prior block. Under the old bump pool they ENOSPC early. */
@@ -280,6 +310,7 @@ int test_fs_run(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_path_normalize), cmocka_unit_test(test_path_rootfs_resolve),
 		cmocka_unit_test(test_tmpfs_nodes),    cmocka_unit_test(test_tmpfs_reclaim),
+		cmocka_unit_test(test_tmpfs_rename_moves_children),
 		cmocka_unit_test(test_pipe_guards),    cmocka_unit_test(test_procfs),
 		cmocka_unit_test(test_user_helpers),
 	};
