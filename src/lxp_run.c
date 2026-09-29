@@ -56,13 +56,14 @@
 #include "run/lxp_coordinator.h"
 #include "run/lxp_image.h"
 #include "run/lxp_initial.h"
+#include "run/lxp_diag.h"
 #include "run/lxp_runtime_store.h"
 #include "run/lxp_validate.h"
 #if defined(LXP_TEST_INTERNALS)
 #include "run/lxp_runtime_test.h"
 #endif
 
-static struct lxp_slot_runtime g_lxp_slots[LXP_NSLOT];
+struct lxp_slot_runtime g_lxp_slots[LXP_NSLOT];
 
 int slot_runnable_load(int slot)
 {
@@ -98,99 +99,6 @@ int lifecycle_failpoint(enum lxp_lifecycle_failpoint point)
 }
 #endif
 
-/* Latest native-task census collected by refresh_stats(). A separate known bit
- * distinguishes a clean "no task" result from an engine without introspection
- * or a truncated kernel-thread list. Diagnostic reads never invoke the engine
- * from an arbitrary caller context. */
-static uint8_t g_diag_native_known;
-static uint8_t g_diag_native_present[LXP_NSLOT];
-static uint32_t g_diag_lifecycle_epoch;
-static uint32_t g_diag_native_epoch;
-
-static uint32_t diag_epoch_next(uint32_t epoch)
-{
-	epoch++;
-	return epoch != 0 ? epoch : 1;
-}
-
-static int diag_native_census_current(void)
-{
-	return g_diag_native_known && g_diag_native_epoch == g_diag_lifecycle_epoch;
-}
-
-/* Rebuild the ps/top snapshot from the live process set + the host kernel threads.
- * Run-loop thread only (the host snapshot may lock its scheduler — unsafe from the svc
- * handler). The seam attaches an explicit slot ID to each guest thread; names
- * remain diagnostic only. The idle thread is folded into /proc/stat idle, not
- * shown as a process (else it crushes top's %CPU math). */
-static void refresh_stats(void)
-{
-	/* Short-lived shell commands must not consume cumulative-CPU slots
-	 * forever. The preceding completed snapshot is the safe liveness set. */
-	lxp_stats_prune();
-
-	struct lxp_thread_info ti[LXP_MAX_KTHREAD];
-	size_t n = 0;
-	int trc = lxp_thread_list(ti, LXP_MAX_KTHREAD, &n);
-	int overflow = trc == LXP_ERR_QUEUE_FULL;
-	if (trc != LXP_OK && trc != LXP_ERR_QUEUE_FULL)
-		n = 0; /* no host introspection: /proc shows only the Linux procs */
-	if (n > LXP_MAX_KTHREAD) {
-		n = LXP_MAX_KTHREAD;
-		overflow = 1;
-	}
-	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
-	g_diag_native_known = trc == LXP_OK;
-	g_diag_native_epoch = g_diag_lifecycle_epoch;
-	for (size_t i = 0; i < n; i++)
-		if (ti[i].lxp_slot >= 0 && ti[i].lxp_slot < LXP_NSLOT)
-			g_diag_native_present[ti[i].lxp_slot] = 1;
-
-	/* 1. Charge each live Linux thread's CPU to its explicitly assigned slot. */
-	uint64_t idle = 0, busy = 0;
-	for (size_t i = 0; i < n; i++) {
-		const char *name = ti[i].name ? ti[i].name : "?";
-		uint64_t rus = (ti[i].valid_fields & LXP_THREAD_INFO_VALID_RUNNING_TIME)
-				       ? ti[i].state_times.running_us
-				       : 0;
-		int cls = lxp_stats_classify(name);
-		if (cls == 1) {
-			idle += rus;
-			continue;
-		}
-		busy += rus;
-		int s = ti[i].lxp_slot;
-		if (s >= 0 && s < LXP_NSLOT && g_lxp_slots[s].proc.alive)
-			lxp_stats_charge(g_lxp_slots[s].proc.pid, rus);
-	}
-	/* 2. Build the snapshot: the live Linux procs, then the kernel threads [name]. */
-	lxp_stats_begin();
-	for (int s = 0; s < LXP_NSLOT; s++) {
-		lxp_proc_t *p = &g_lxp_slots[s].proc;
-		if (!p->alive)
-			continue;
-		char state = (slot_runnable_load(s) && p->wait.kind == LXP_WAIT_NONE) ? 'R' : 'S';
-		if (lxp_stats_add(p->pid, p->group->ppid, p->comm, state, lxp_proc_cpu_us(p->pid),
-				  lxp_proc_nice_get(p), 0) != LXP_OK)
-			overflow = 1;
-	}
-	for (size_t i = 0; i < n; i++) {
-		const char *name = ti[i].name ? ti[i].name : "?";
-		if (lxp_stats_classify(name) != 0 || ti[i].lxp_slot != LXP_THREAD_SLOT_NONE)
-			continue; /* idle or a Linux slot thread */
-		int kpid = lxp_kpid_for(name);
-		uint64_t running_us = (ti[i].valid_fields & LXP_THREAD_INFO_VALID_RUNNING_TIME)
-					      ? ti[i].state_times.running_us
-					      : 0;
-		if (kpid < 0 || lxp_stats_add(kpid, 0, name, 'S', running_us, 0, 1) != LXP_OK)
-			overflow = 1;
-	}
-	if (overflow)
-		(void)lxp_stats_add(LXP_KPID_BASE + LXP_MAX_KTHREAD, 0, "threads-overflow", 'S', 0,
-				    0, 1);
-	lxp_stats_set_cpu(idle, busy);
-}
-
 /* ---- shared state ---------------------------------------------------------- */
 /*
  * Linker-visible only because the FreeRTOS and standalone QEMU naked SVC
@@ -213,17 +121,17 @@ int lxp_trap_active(void)
  * is the wedge signal. volatile + aligned u32 => the cross-task read is atomic
  * without a lock (the reader only needs to observe change, not a precise count). */
 static volatile uint32_t g_coord_iters;
-static lxp_arena_t g_arenas[LXP_NREG];
+lxp_arena_t g_lxp_arenas[LXP_NREG];
 /* Exact region reservations, including address spaces and temporary
  * snapshot/exec leases. A committed region belongs to the lxp_mm_t carrying
  * its generation-bearing reference; lease_owner is populated only until a
  * prepared image/snapshot is either committed or aborted. */
-static struct lxp_region_runtime g_regions[LXP_NREG];
+struct lxp_region_runtime g_lxp_regions[LXP_NREG];
 /* vfork data isolation: a snapshot of the shared arena's allocator metadata, taken when a vfork
  * child is spawned and restored when it execs/exits. The region+dyn_pool bytes and the
  * coordinator-owned allocator metadata all use the same reserved snapshot region: its
- * g_arenas[] entry is otherwise idle until the child either execs into or releases it. */
-static struct vfork_snapshot_guard g_vfork_guard[LXP_NSLOT];
+ * g_lxp_arenas[] entry is otherwise idle until the child either execs into or releases it. */
+struct vfork_snapshot_guard g_lxp_vfork_guard[LXP_NSLOT];
 /* The active run's configuration and engine. */
 static const lxp_run_config_t *g_cfg;
 
@@ -260,7 +168,7 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out)
 
 	unsigned regions_used = 0;
 	for (int r = 0; r < LXP_NREG; r++)
-		if (lxp_trap_active() && g_regions[r].refs != 0)
+		if (lxp_trap_active() && g_lxp_regions[r].refs != 0)
 			regions_used++;
 	out->regions_free = LXP_NREG - regions_used;
 
@@ -422,7 +330,7 @@ struct lxp_dbg_s g_lxp_dbg[LXP_NSLOT];
 
 lxp_arena_t *lxp_region_arena(int region)
 {
-	return region >= 0 && region < LXP_NREG ? &g_arenas[region] : NULL;
+	return region >= 0 && region < LXP_NREG ? &g_lxp_arenas[region] : NULL;
 }
 
 void lxp_slot_signal_reset(int slot)
@@ -556,415 +464,6 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
  * stored because a C handler preserves them; r9 is explicit because FDPIC uses
  * it as the module GOT. Delivery/restore operations live in lxp_signal.c. */
 struct sig_save_stack_s g_sig_save[LXP_NSLOT];
-
-static lxp_diag_health_t g_diag_health;
-static uint32_t diag_intent_mask(int slot)
-{
-	const lxp_proc_t *p = &g_lxp_slots[slot].proc;
-	switch (p->intent.kind) {
-	case LXP_INTENT_NONE:
-		return LXP_DIAG_INTENT_NONE;
-	case LXP_INTENT_DEFERRED_SYSCALL:
-		return LXP_DIAG_INTENT_DEFERRED_SYSCALL;
-	case LXP_INTENT_FORK:
-		return LXP_DIAG_INTENT_FORK;
-	case LXP_INTENT_EXEC:
-		return LXP_DIAG_INTENT_EXEC;
-	case LXP_INTENT_EXIT:
-		return LXP_DIAG_INTENT_EXIT;
-	default:
-		return UINT32_MAX;
-	}
-}
-
-static uint32_t diag_wait_mask(const lxp_proc_t *p)
-{
-	switch (p->wait.kind) {
-	case LXP_WAIT_NONE:
-		return LXP_DIAG_WAIT_NONE;
-	case LXP_WAIT_TIMER:
-		return LXP_DIAG_WAIT_TIMER;
-	case LXP_WAIT_CHILD:
-		return LXP_DIAG_WAIT_CHILD;
-	case LXP_WAIT_FUTEX:
-		return LXP_DIAG_WAIT_FUTEX;
-	case LXP_WAIT_PIPE:
-		return LXP_DIAG_WAIT_PIPE;
-	case LXP_WAIT_CONSOLE:
-		return LXP_DIAG_WAIT_CONSOLE;
-	case LXP_WAIT_DEVICE:
-		return LXP_DIAG_WAIT_DEVICE;
-	case LXP_WAIT_SOCKET:
-		return LXP_DIAG_WAIT_SOCKET;
-	case LXP_WAIT_NETFS:
-		return LXP_DIAG_WAIT_NETFS;
-	case LXP_WAIT_HOSTFS:
-		return LXP_DIAG_WAIT_HOSTFS;
-	case LXP_WAIT_PTY:
-		return LXP_DIAG_WAIT_PTY;
-	case LXP_WAIT_SIGSUSPEND:
-		return LXP_DIAG_WAIT_SIGSUSPEND;
-	case LXP_WAIT_POLL:
-		return LXP_DIAG_WAIT_POLL;
-	default:
-		return UINT32_MAX;
-	}
-}
-
-static uint8_t diag_task_status(const lxp_proc_t *p)
-{
-	if (!p->alive)
-		return LXP_DIAG_TASK_FREE;
-	if (p->intent.kind == LXP_INTENT_EXIT)
-		return LXP_DIAG_TASK_ZOMBIE;
-	if (p->stopped)
-		return LXP_DIAG_TASK_STOPPED;
-	return LXP_DIAG_TASK_LIVE;
-}
-
-int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
-{
-	if (!out || slot < 0 || slot >= LXP_NSLOT)
-		return -LXP_EINVAL;
-	const lxp_proc_t *p = &g_lxp_slots[slot].proc;
-	memset(out, 0, sizeof(*out));
-	out->abi_version = LXP_DIAG_ABI_VERSION;
-	out->struct_size = sizeof(*out);
-	out->slot = slot;
-	out->generation = slot_generation(slot);
-	out->pid = p->pid;
-	out->tgid = p->group ? p->group->tgid : 0;
-	out->ppid = p->group ? p->group->ppid : 0;
-	out->region = p->mm ? p->mm->region.index : -1;
-	out->vfork_parent_slot = p->vfork_parent.index;
-	out->snapshot_region = p->snapshot.index;
-	out->host_state = g_lxp_slots[slot].host_state;
-	out->task_status = diag_task_status(p);
-	out->deferred_state = deferred_state_load(slot);
-	out->runnable = slot_runnable_load(slot);
-	out->primary_pending = primary_slot_pending(slot);
-	out->signal_depth = g_sig_save[slot].depth;
-	out->native_task_known = diag_native_census_current();
-	out->native_task_present = out->native_task_known ? g_diag_native_present[slot] : 0;
-	out->intent_mask = diag_intent_mask(slot);
-	out->wait_mask = diag_wait_mask(p);
-	out->mm_identity = (uintptr_t)p->mm;
-	out->files_identity = (uintptr_t)p->files;
-	out->fs_identity = (uintptr_t)p->fs_context;
-	out->sighand_identity = (uintptr_t)p->sighand;
-	out->group_identity = (uintptr_t)p->group;
-	out->mm_refs = p->mm ? p->mm->refs : 0;
-	out->files_refs = p->files ? p->files->refs : 0;
-	out->fs_refs = p->fs_context ? p->fs_context->refs : 0;
-	out->sighand_refs = p->sighand ? p->sighand->refs : 0;
-	out->group_refs = p->group ? p->group->refs : 0;
-	if (out->region >= 0 && out->region < LXP_NREG) {
-		out->region_generation = g_regions[out->region].generation;
-		out->region_refs = g_regions[out->region].refs;
-	}
-	return LXP_OK;
-}
-
-int lxp_diag_region_snapshot(int region, lxp_diag_region_t *out)
-{
-	if (!out || region < 0 || region >= LXP_NREG)
-		return -LXP_EINVAL;
-	memset(out, 0, sizeof(*out));
-	out->abi_version = LXP_DIAG_ABI_VERSION;
-	out->struct_size = sizeof(*out);
-	out->region = region;
-	/* Kept as owner_slot in diagnostic ABI v1: it now reports only an
-	 * uncommitted transaction lease. -1 means the address space owns it. */
-	out->owner_slot = g_regions[region].lease_owner.index;
-	out->refs = g_regions[region].refs;
-	out->generation = g_regions[region].generation;
-	for (int slot = 0; slot < LXP_NSLOT; slot++)
-		if (g_lxp_slots[slot].proc.alive && g_lxp_slots[slot].proc.mm &&
-		    g_lxp_slots[slot].proc.mm->region.index == region)
-			out->live_users++;
-	return LXP_OK;
-}
-
-static int diag_error(lxp_diag_error_t *error, lxp_diag_issue_t issue, int slot, int region,
-		      uint32_t actual, uint32_t expected)
-{
-	if (error) {
-		memset(error, 0, sizeof(*error));
-		error->abi_version = LXP_DIAG_ABI_VERSION;
-		error->struct_size = sizeof(*error);
-		error->issue = issue;
-		error->slot = slot;
-		error->region = region;
-		error->actual = actual;
-		error->expected = expected;
-	}
-	return -LXP_EINVAL;
-}
-
-static unsigned diag_live_resource_users(const void *identity, int resource)
-{
-	unsigned users = 0;
-	for (int slot = 0; slot < LXP_NSLOT; slot++) {
-		const lxp_proc_t *p = &g_lxp_slots[slot].proc;
-		if (!p->alive)
-			continue;
-		const void *candidate = resource == 0	? (const void *)p->mm
-					: resource == 1 ? (const void *)p->files
-					: resource == 2 ? (const void *)p->fs_context
-					: resource == 3 ? (const void *)p->sighand
-							: (const void *)p->group;
-		if (candidate == identity)
-			users++;
-	}
-	return users;
-}
-
-int lxp_validate_world(lxp_diag_error_t *error)
-{
-	if (error) {
-		memset(error, 0, sizeof(*error));
-		error->abi_version = LXP_DIAG_ABI_VERSION;
-		error->struct_size = sizeof(*error);
-		error->slot = -1;
-		error->region = -1;
-	}
-
-	for (int region = 0; region < LXP_NREG; region++) {
-		lxp_slot_ref_t lease = g_regions[region].lease_owner;
-		int owner = lease.index;
-		uint16_t refs = g_regions[region].refs;
-		unsigned live_users = 0;
-		for (int slot = 0; slot < LXP_NSLOT; slot++)
-			if (g_lxp_slots[slot].proc.alive && g_lxp_slots[slot].proc.mm &&
-			    g_lxp_slots[slot].proc.mm->region.index == region)
-				live_users++;
-		if (refs == 0 && owner != -1)
-			return diag_error(error, LXP_DIAG_REGION_OWNER_WITHOUT_REFS, owner, region,
-					  (uint32_t)owner, UINT32_MAX);
-		if (refs != 0 && g_regions[region].generation == 0)
-			return diag_error(error, LXP_DIAG_REGION_REFS_WITHOUT_GENERATION, owner,
-					  region, 0, 1);
-		if (owner >= 0 && (owner >= LXP_NSLOT || lease.generation == 0 ||
-				   !lxp_slot_ref_equal(lease, slot_ref_at(owner))))
-			return diag_error(
-				error, LXP_DIAG_REGION_LEASE_STALE, owner, region, lease.generation,
-				owner >= 0 && owner < LXP_NSLOT ? slot_generation(owner) : 0);
-		if (refs != 0 && owner < 0 && live_users == 0)
-			return diag_error(error, LXP_DIAG_REGION_REFS_WITHOUT_OWNER, -1, region,
-					  refs, 0);
-	}
-
-	for (int slot = 0; slot < LXP_NSLOT; slot++) {
-		const lxp_proc_t *p = &g_lxp_slots[slot].proc;
-		uint8_t host = g_lxp_slots[slot].host_state;
-		uint8_t deferred = deferred_state_load(slot);
-		uint32_t intents = diag_intent_mask(slot);
-		uint32_t waits = diag_wait_mask(p);
-
-		if (host > SLOT_FAILED)
-			return diag_error(error, LXP_DIAG_BAD_SLOT, slot, -1, host, SLOT_FAILED);
-		if (deferred > DEFER_RUNNING)
-			return diag_error(error, LXP_DIAG_DEFERRED_STATE_INVALID, slot, -1,
-					  deferred, DEFER_RUNNING);
-		if (host != SLOT_FREE && slot_generation(slot) == 0)
-			return diag_error(error, LXP_DIAG_HOST_STATE_WITHOUT_GENERATION, slot, -1,
-					  0, 1);
-		if (p->alive && slot_generation(slot) == 0)
-			return diag_error(error, LXP_DIAG_HOST_STATE_WITHOUT_GENERATION, slot, -1,
-					  0, 1);
-		if (deferred != DEFER_IDLE &&
-		    (!lxp_slot_ref_is_current(g_lxp_slots[slot].deferred.owner) ||
-		     g_lxp_slots[slot].deferred.owner.index != slot))
-			return diag_error(error, LXP_DIAG_DEFERRED_GENERATION_STALE, slot, -1,
-					  g_lxp_slots[slot].deferred.owner.generation,
-					  slot_generation(slot));
-		if (p->intent.kind >= LXP_INTENT_COUNT)
-			return diag_error(error, LXP_DIAG_MULTIPLE_INTENTS, slot, -1, intents, 1);
-		if (p->wait.kind >= LXP_WAIT_COUNT)
-			return diag_error(error, LXP_DIAG_MULTIPLE_WAITS, slot, -1, waits, 1);
-		if (deferred >= DEFER_READY && p->intent.kind != LXP_INTENT_DEFERRED_SYSCALL &&
-		    p->intent.kind != LXP_INTENT_EXIT)
-			return diag_error(error, LXP_DIAG_MULTIPLE_INTENTS, slot, -1, intents,
-					  LXP_DIAG_INTENT_DEFERRED_SYSCALL);
-		if (p->guest_view)
-			return diag_error(error, LXP_DIAG_GUEST_VIEW_LEAKED, slot, -1, 1, 0);
-
-		if (!p->alive) {
-			if (slot_runnable_load(slot))
-				return diag_error(error, LXP_DIAG_FREE_TASK_RUNNABLE, slot, -1, 1,
-						  0);
-			if (diag_native_census_current() && g_diag_native_present[slot] &&
-			    (host == SLOT_FREE || host == SLOT_DEAD))
-				return diag_error(error, LXP_DIAG_NATIVE_TASK_LEAKED, slot, -1,
-						  host, SLOT_FREE);
-			continue;
-		}
-		if (!p->mm || !p->files || !p->fs_context || !p->sighand || !p->group)
-			return diag_error(error, LXP_DIAG_LIVE_TASK_WITHOUT_RESOURCES, slot, -1, 0,
-					  5);
-		int region = p->mm->region.index;
-		if (region < 0 || region >= LXP_NREG)
-			return diag_error(error, LXP_DIAG_LIVE_TASK_BAD_REGION, slot, region,
-					  (uint32_t)region, LXP_NREG);
-		if (g_regions[region].refs == 0)
-			return diag_error(error, LXP_DIAG_LIVE_TASK_WITHOUT_REGION_REF, slot,
-					  region, 0, 1);
-		if (p->mm->region.generation == 0 ||
-		    p->mm->region.generation != g_regions[region].generation)
-			return diag_error(error, LXP_DIAG_LIVE_TASK_STALE_REGION_REF, slot, region,
-					  p->mm->region.generation, g_regions[region].generation);
-		unsigned region_users = 0;
-		for (int peer = 0; peer < LXP_NSLOT; peer++)
-			if (g_lxp_slots[peer].proc.alive && g_lxp_slots[peer].proc.mm &&
-			    g_lxp_slots[peer].proc.mm->region.index == region)
-				region_users++;
-		if (g_regions[region].refs < region_users)
-			return diag_error(error, LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL, slot, region,
-					  g_regions[region].refs, region_users);
-
-#define CHECK_RESOURCE_REFS(member, which)                                                   \
-	do {                                                                                 \
-		unsigned users = diag_live_resource_users(p->member, which);                 \
-		if (p->member->refs < users)                                                 \
-			return diag_error(error, LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL, slot, \
-					  region, p->member->refs, users);                   \
-	} while (0)
-		CHECK_RESOURCE_REFS(mm, 0);
-		CHECK_RESOURCE_REFS(files, 1);
-		CHECK_RESOURCE_REFS(fs_context, 2);
-		CHECK_RESOURCE_REFS(sighand, 3);
-		CHECK_RESOURCE_REFS(group, 4);
-#undef CHECK_RESOURCE_REFS
-
-		if (slot_runnable_load(slot) && host != SLOT_RUNNING && host != SLOT_FAILED &&
-		    host != SLOT_STARTING && host != SLOT_RESUMING)
-			return diag_error(error, LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH, slot,
-					  region, host, SLOT_RUNNING);
-		if (host == SLOT_RUNNING && !slot_runnable_load(slot))
-			return diag_error(error, LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH, slot,
-					  region, 0, 1);
-		if (host == SLOT_PARKED && slot_runnable_load(slot))
-			return diag_error(error, LXP_DIAG_PARKED_TASK_RUNNABLE, slot, region, 1, 0);
-		if (diag_native_census_current() &&
-		    (host == SLOT_RUNNING || host == SLOT_PARKED || host == SLOT_FAILED) &&
-		    !g_diag_native_present[slot])
-			return diag_error(error, LXP_DIAG_NATIVE_TASK_MISSING, slot, region, 0, 1);
-	}
-	return LXP_OK;
-}
-
-void lxp_diag_size_report(lxp_diag_size_report_t *out)
-{
-	if (!out)
-		return;
-	memset(out, 0, sizeof(*out));
-	out->abi_version = LXP_DIAG_ABI_VERSION;
-	out->struct_size = sizeof(*out);
-	out->slots = LXP_NSLOT;
-	out->regions = LXP_NREG;
-	out->proc = sizeof(lxp_proc_t);
-	out->mm = sizeof(lxp_mm_t);
-	out->files = sizeof(lxp_files_t);
-	out->fs = sizeof(lxp_fs_context_t);
-	out->sighand = sizeof(lxp_sighand_t);
-	out->thread_group = sizeof(lxp_thread_group_t);
-	out->arena = sizeof(lxp_arena_t);
-	out->exec_capture = sizeof(lxp_exec_capture_t);
-	out->resume_context = sizeof(struct lxp_resume_ctx);
-	out->deferred_request = sizeof(struct deferred_req);
-	out->signal_save_stack = sizeof(struct sig_save_stack_s);
-	out->vfork_guard = sizeof(struct vfork_snapshot_guard);
-	out->debug_record = sizeof(struct lxp_dbg_s);
-	out->per_slot_core = sizeof(g_lxp_slots[0]) + out->signal_save_stack + out->vfork_guard +
-			     out->debug_record;
-	out->per_region_core = out->arena + sizeof(g_regions[0]);
-	out->slot_table = sizeof(g_lxp_slots);
-	out->coordinator_static = sizeof(g_lxp_slots) + sizeof(g_arenas) + sizeof(g_regions) +
-				  sizeof(g_vfork_guard) + lxp_primary_events_bytes() +
-				  sizeof(g_lxp_dbg) + sizeof(g_sig_save) +
-				  sizeof(g_diag_native_present) + sizeof(g_diag_health);
-}
-
-void lxp_diag_health(lxp_diag_health_t *out)
-{
-	if (out)
-		*out = g_diag_health;
-}
-
-const char *lxp_diag_host_state_name(unsigned state)
-{
-	static const char *const names[LXP_DIAG_HOST_COUNT] = {
-		[LXP_DIAG_HOST_FREE] = "free",	     [LXP_DIAG_HOST_STARTING] = "starting",
-		[LXP_DIAG_HOST_RUNNING] = "running", [LXP_DIAG_HOST_PARKING] = "parking",
-		[LXP_DIAG_HOST_PARKED] = "parked",   [LXP_DIAG_HOST_RESUMING] = "resuming",
-		[LXP_DIAG_HOST_EXITING] = "exiting", [LXP_DIAG_HOST_DEAD] = "dead",
-		[LXP_DIAG_HOST_FAILED] = "failed",
-	};
-	return state < LXP_DIAG_HOST_COUNT && names[state] ? names[state] : "invalid";
-}
-
-const char *lxp_diag_task_status_name(unsigned status)
-{
-	static const char *const names[LXP_DIAG_TASK_COUNT] = {
-		[LXP_DIAG_TASK_FREE] = "free",
-		[LXP_DIAG_TASK_LIVE] = "live",
-		[LXP_DIAG_TASK_STOPPED] = "stopped",
-		[LXP_DIAG_TASK_ZOMBIE] = "zombie",
-	};
-	return status < LXP_DIAG_TASK_COUNT && names[status] ? names[status] : "invalid";
-}
-
-const char *lxp_diag_issue_name(unsigned issue)
-{
-	static const char *const names[LXP_DIAG_ISSUE_COUNT] = {
-		[LXP_DIAG_OK] = "ok",
-		[LXP_DIAG_BAD_SLOT] = "bad-slot",
-		[LXP_DIAG_BAD_REGION] = "bad-region",
-		[LXP_DIAG_REGION_OWNER_WITHOUT_REFS] = "region-owner-without-refs",
-		[LXP_DIAG_REGION_REFS_WITHOUT_OWNER] = "region-refs-without-owner",
-		[LXP_DIAG_REGION_REFS_WITHOUT_GENERATION] = "region-refs-without-generation",
-		[LXP_DIAG_LIVE_TASK_WITHOUT_RESOURCES] = "live-task-without-resources",
-		[LXP_DIAG_LIVE_TASK_BAD_REGION] = "live-task-bad-region",
-		[LXP_DIAG_LIVE_TASK_WITHOUT_REGION_REF] = "live-task-without-region-ref",
-		[LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL] = "resource-refcount-too-small",
-		[LXP_DIAG_FREE_TASK_RUNNABLE] = "free-task-runnable",
-		[LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH] = "runnable-host-state-mismatch",
-		[LXP_DIAG_PARKED_TASK_RUNNABLE] = "parked-task-runnable",
-		[LXP_DIAG_NATIVE_TASK_MISSING] = "native-task-missing",
-		[LXP_DIAG_NATIVE_TASK_LEAKED] = "native-task-leaked",
-		[LXP_DIAG_HOST_STATE_WITHOUT_GENERATION] = "host-state-without-generation",
-		[LXP_DIAG_DEFERRED_STATE_INVALID] = "deferred-state-invalid",
-		[LXP_DIAG_DEFERRED_GENERATION_STALE] = "deferred-generation-stale",
-		[LXP_DIAG_MULTIPLE_INTENTS] = "multiple-intents",
-		[LXP_DIAG_MULTIPLE_WAITS] = "multiple-waits",
-		[LXP_DIAG_REGION_LEASE_STALE] = "region-lease-stale",
-		[LXP_DIAG_LIVE_TASK_STALE_REGION_REF] = "live-task-stale-region-ref",
-		[LXP_DIAG_GUEST_VIEW_LEAKED] = "guest-view-leaked",
-	};
-	return issue < LXP_DIAG_ISSUE_COUNT && names[issue] ? names[issue] : "invalid";
-}
-
-static void lxp_diag_reset_health(void)
-{
-	memset(&g_diag_health, 0, sizeof(g_diag_health));
-	g_diag_health.abi_version = LXP_DIAG_ABI_VERSION;
-	g_diag_health.struct_size = sizeof(g_diag_health);
-	g_diag_health.first_error.slot = -1;
-	g_diag_health.first_error.region = -1;
-	g_diag_health.last_error.slot = -1;
-	g_diag_health.last_error.region = -1;
-}
-
-static void lxp_diag_checkpoint(void)
-{
-	lxp_diag_error_t error;
-	g_diag_health.checks++;
-	if (lxp_validate_world(&error) == LXP_OK)
-		return;
-	if (g_diag_health.failures++ == 0)
-		g_diag_health.first_error = error;
-	g_diag_health.last_error = error;
-}
 
 static volatile int g_tty_isig = 1;
 /* Input translation advertised by the console's canonical termios.  The board
@@ -1374,7 +873,7 @@ void lxp_slot_set_host_state(int slot, uint8_t state)
 {
 	if (slot >= 0 && slot < LXP_NSLOT && g_lxp_slots[slot].host_state != state) {
 		g_lxp_slots[slot].host_state = state;
-		g_diag_lifecycle_epoch = diag_epoch_next(g_diag_lifecycle_epoch);
+		lxp_diag_lifecycle_changed();
 	}
 }
 
@@ -1434,7 +933,7 @@ int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out)
 		return -LXP_ESRCH;
 	lxp_region_ref_t region = g_lxp_slots[ref.index].proc.mm->region;
 	if (region.index < 0 || region.index >= LXP_NREG || region.generation == 0 ||
-	    g_regions[region.index].generation != region.generation)
+	    g_lxp_regions[region.index].generation != region.generation)
 		return -LXP_EINVAL;
 	*out = region;
 	return LXP_OK;
@@ -1482,7 +981,7 @@ int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out)
 		return -LXP_EINVAL;
 	lxp_region_ref_t region = mm->region;
 	if (region.index < 0 || region.index >= LXP_NREG || region.generation == 0 ||
-	    g_regions[region.index].generation != region.generation)
+	    g_lxp_regions[region.index].generation != region.generation)
 		return -LXP_EINVAL;
 
 	*out = (lxp_memory_policy_t){
@@ -1926,7 +1425,7 @@ void execute_deferred(const lxp_os_ops_t *eng, int slot)
  * copying over a live daemon's libc state. */
 int region_free(int r)
 {
-	if (r < 0 || r >= LXP_NREG || g_regions[r].lease_owner.index >= 0 || g_regions[r].refs != 0)
+	if (r < 0 || r >= LXP_NREG || g_lxp_regions[r].lease_owner.index >= 0 || g_lxp_regions[r].refs != 0)
 		return 0;
 	for (int s = 0; s < LXP_NSLOT; s++)
 		if (g_lxp_slots[s].proc.alive && g_lxp_slots[s].proc.mm &&
@@ -1937,18 +1436,18 @@ int region_free(int r)
 
 static uint32_t region_generation_next(int r)
 {
-	uint32_t next = ++g_regions[r].generation;
+	uint32_t next = ++g_lxp_regions[r].generation;
 	if (next == 0) /* reserve zero for never-assigned test/startup state */
-		next = ++g_regions[r].generation;
+		next = ++g_lxp_regions[r].generation;
 	return next;
 }
 
 static lxp_region_ref_t region_ref_at(int r)
 {
-	return (r >= 0 && r < LXP_NREG && g_regions[r].refs != 0)
+	return (r >= 0 && r < LXP_NREG && g_lxp_regions[r].refs != 0)
 		       ? (lxp_region_ref_t){
 				 .index = (int16_t)r,
-				 .generation = g_regions[r].generation,
+				 .generation = g_lxp_regions[r].generation,
 			 }
 		       : lxp_region_ref_none();
 }
@@ -1957,10 +1456,10 @@ lxp_region_ref_t region_reserve(int r, lxp_slot_ref_t owner)
 {
 	if (r < 0 || r >= LXP_NREG || owner.index < 0 || owner.index >= LXP_NSLOT ||
 	    owner.generation == 0 || !lxp_slot_ref_equal(owner, slot_ref_at(owner.index)) ||
-	    g_regions[r].refs != 0)
+	    g_lxp_regions[r].refs != 0)
 		return lxp_region_ref_none();
-	g_regions[r].lease_owner = owner;
-	g_regions[r].refs = 1;
+	g_lxp_regions[r].lease_owner = owner;
+	g_lxp_regions[r].refs = 1;
 	return (lxp_region_ref_t){
 		.index = (int16_t)r,
 		.generation = region_generation_next(r),
@@ -1974,10 +1473,10 @@ int lxp_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_o
 {
 	int r = ref.index;
 	if (r < 0 || r >= LXP_NREG || ref.generation == 0 ||
-	    g_regions[r].generation != ref.generation || g_regions[r].refs == 0 ||
-	    !lxp_slot_ref_equal(g_regions[r].lease_owner, lease_owner))
+	    g_lxp_regions[r].generation != ref.generation || g_lxp_regions[r].refs == 0 ||
+	    !lxp_slot_ref_equal(g_lxp_regions[r].lease_owner, lease_owner))
 		return -1;
-	g_regions[r].lease_owner = lxp_slot_ref_none();
+	g_lxp_regions[r].lease_owner = lxp_slot_ref_none();
 	return 0;
 }
 
@@ -1985,10 +1484,10 @@ int region_get(lxp_region_ref_t ref)
 {
 	int r = ref.index;
 	if (r < 0 || r >= LXP_NREG || ref.generation == 0 ||
-	    g_regions[r].generation != ref.generation || g_regions[r].lease_owner.index >= 0 ||
-	    g_regions[r].refs == 0 || g_regions[r].refs >= LXP_NSLOT)
+	    g_lxp_regions[r].generation != ref.generation || g_lxp_regions[r].lease_owner.index >= 0 ||
+	    g_lxp_regions[r].refs == 0 || g_lxp_regions[r].refs >= LXP_NSLOT)
 		return -1;
-	g_regions[r].refs++;
+	g_lxp_regions[r].refs++;
 	return 0;
 }
 
@@ -1996,10 +1495,10 @@ int region_put(lxp_region_ref_t ref)
 {
 	int r = ref.index;
 	if (r < 0 || r >= LXP_NREG || ref.generation == 0 ||
-	    g_regions[r].generation != ref.generation || g_regions[r].refs == 0)
+	    g_lxp_regions[r].generation != ref.generation || g_lxp_regions[r].refs == 0)
 		return -1;
-	if (--g_regions[r].refs == 0) {
-		g_regions[r].lease_owner = lxp_slot_ref_none();
+	if (--g_lxp_regions[r].refs == 0) {
+		g_lxp_regions[r].lease_owner = lxp_slot_ref_none();
 		(void)region_generation_next(r);
 	}
 	return 0;
@@ -2016,8 +1515,8 @@ void proc_mm_put(lxp_proc_t *p)
 int region_release_if_owned(lxp_region_ref_t region, lxp_slot_ref_t owner)
 {
 	int r = region.index;
-	if (r < 0 || r >= LXP_NREG || !lxp_slot_ref_equal(g_regions[r].lease_owner, owner) ||
-	    g_regions[r].refs != 1 || g_regions[r].generation != region.generation)
+	if (r < 0 || r >= LXP_NREG || !lxp_slot_ref_equal(g_lxp_regions[r].lease_owner, owner) ||
+	    g_lxp_regions[r].refs != 1 || g_lxp_regions[r].generation != region.generation)
 		return -1;
 	return region_put(region);
 }
@@ -2025,9 +1524,9 @@ int region_release_if_owned(lxp_region_ref_t region, lxp_slot_ref_t owner)
 int lxp_region_lease_matches(lxp_region_ref_t region, lxp_slot_ref_t owner, unsigned refs)
 {
 	return region.index >= 0 && region.index < LXP_NREG && region.generation != 0 &&
-	       g_regions[region.index].generation == region.generation &&
-	       g_regions[region.index].refs == refs &&
-	       lxp_slot_ref_equal(g_regions[region.index].lease_owner, owner);
+	       g_lxp_regions[region.index].generation == region.generation &&
+	       g_lxp_regions[region.index].refs == refs &&
+	       lxp_slot_ref_equal(g_lxp_regions[region.index].lease_owner, owner);
 }
 
 int lxp_region_lease_reassign(lxp_region_ref_t region, lxp_slot_ref_t old_owner,
@@ -2035,7 +1534,7 @@ int lxp_region_lease_reassign(lxp_region_ref_t region, lxp_slot_ref_t old_owner,
 {
 	if (!lxp_region_lease_matches(region, old_owner, 1))
 		return -LXP_EINVAL;
-	g_regions[region.index].lease_owner = new_owner;
+	g_lxp_regions[region.index].lease_owner = new_owner;
 	return LXP_OK;
 }
 
@@ -2089,17 +1588,16 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 	/* Contain inconsistent ownership metadata as well as the ordinary
 	 * reference-balanced case above. No guest survives this boundary. */
 	for (int r = 0; r < LXP_NREG; r++) {
-		g_regions[r].refs = 0;
-		g_regions[r].lease_owner = lxp_slot_ref_none();
+		g_lxp_regions[r].refs = 0;
+		g_lxp_regions[r].lease_owner = lxp_slot_ref_none();
 	}
-	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
+	memset(g_lxp_vfork_guard, 0, sizeof(g_lxp_vfork_guard));
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		g_vfork_guard[s].parent = lxp_slot_ref_none();
-		g_vfork_guard[s].parent_region = lxp_region_ref_none();
-		g_vfork_guard[s].snapshot = lxp_region_ref_none();
+		g_lxp_vfork_guard[s].parent = lxp_slot_ref_none();
+		g_lxp_vfork_guard[s].parent_region = lxp_region_ref_none();
+		g_lxp_vfork_guard[s].snapshot = lxp_region_ref_none();
 	}
-	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
-	g_diag_native_known = 0;
+	lxp_diag_forget_natives();
 	lxp_proc_runtime_reset();
 	lxp_fd_runtime_reset();
 	lxp_pipe_runtime_reset();
@@ -2140,7 +1638,7 @@ static void restore_copy_span(void *dst, const void *src, size_t len)
  * into a SPARE region at fork and restore it before the parent resumes. Storage is free: the spare
  * region's own region+dyn_pool exactly mirror the parent's (both LXP_PROG_*), and the child needs
  * that region for its eventual exec anyway. The writable image data [region, stack_lo), active
- * stack [captured_sp, region_hi), and dyn_pool are copied; g_arenas[] allocator metadata is saved
+ * stack [captured_sp, region_hi), and dyn_pool are copied; g_lxp_arenas[] allocator metadata is saved
  * separately. Copying only the active stack bounds the work to live state rather than the full
  * reserved stack, while preserving NOMMU shell re-exec paths that modify vfork caller frames.
  * Returns the reserved scratch-region capability, or an invalid reference if
@@ -2178,9 +1676,9 @@ lxp_region_ref_t vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *par, lxp_sl
 		uint8_t *sdp = eng->dyn_pool(rsnap, NULL);
 		snapshot_copy_span(sdp, pdp, ds);
 	}
-	g_arenas[rsnap] =
-		g_arenas[par->mm->region.index]; /* allocator metadata (coordinator memory) */
-	struct vfork_snapshot_guard *guard = &g_vfork_guard[child.index];
+	g_lxp_arenas[rsnap] =
+		g_lxp_arenas[par->mm->region.index]; /* allocator metadata (coordinator memory) */
+	struct vfork_snapshot_guard *guard = &g_lxp_vfork_guard[child.index];
 	guard->parent = slot_ref_at(parent_slot);
 	guard->parent_region = par->mm->region;
 	guard->snapshot = snapshot;
@@ -2195,15 +1693,15 @@ int vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *par, lxp_region_ref_t sna
 {
 	if (!lxp_slot_ref_is_current(child))
 		return -1;
-	struct vfork_snapshot_guard *guard = &g_vfork_guard[child.index];
+	struct vfork_snapshot_guard *guard = &g_lxp_vfork_guard[child.index];
 	int parent_slot = slot_of(par);
 	int rsnap = snapshot.index;
 	if (parent_slot < 0 || !par->alive || !par->mm ||
 	    !lxp_slot_ref_equal(slot_ref_at(parent_slot), guard->parent) ||
 	    !lxp_region_ref_equal(par->mm->region, guard->parent_region) ||
 	    !lxp_region_ref_equal(snapshot, guard->snapshot) || rsnap < 0 || rsnap >= LXP_NREG ||
-	    !lxp_slot_ref_equal(g_regions[rsnap].lease_owner, child) ||
-	    g_regions[rsnap].refs != 1 || g_regions[rsnap].generation != snapshot.generation)
+	    !lxp_slot_ref_equal(g_lxp_regions[rsnap].lease_owner, child) ||
+	    g_lxp_regions[rsnap].refs != 1 || g_lxp_regions[rsnap].generation != snapshot.generation)
 		return -1;
 	uint8_t *pr = eng->region(par->mm->region.index);
 	size_t dlen = par->stack_lo - (uintptr_t)pr;
@@ -2218,7 +1716,7 @@ int vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *par, lxp_region_ref_t sna
 		uint8_t *pdp = eng->dyn_pool(par->mm->region.index, &ds);
 		restore_copy_span(pdp, eng->dyn_pool(rsnap, NULL), ds);
 	}
-	g_arenas[par->mm->region.index] = g_arenas[rsnap];
+	g_lxp_arenas[par->mm->region.index] = g_lxp_arenas[rsnap];
 	memset(guard, 0, sizeof(*guard));
 	guard->parent = lxp_slot_ref_none();
 	guard->parent_region = lxp_region_ref_none();
@@ -2230,7 +1728,7 @@ static int vfork_parent_is_current(lxp_slot_ref_t child)
 {
 	if (!lxp_slot_ref_is_current(child))
 		return 0;
-	const struct vfork_snapshot_guard *guard = &g_vfork_guard[child.index];
+	const struct vfork_snapshot_guard *guard = &g_lxp_vfork_guard[child.index];
 	int ps = guard->parent.index;
 	return lxp_slot_ref_is_current(guard->parent) && g_lxp_slots[ps].proc.mm &&
 	       lxp_region_ref_equal(g_lxp_slots[ps].proc.mm->region, guard->parent_region);
@@ -2242,7 +1740,7 @@ static int vfork_parent_is_current(lxp_slot_ref_t child)
  * that is still demonstrably ours. */
 void vfork_contain_stale(lxp_slot_ref_t child_ref, lxp_proc_t *child)
 {
-	struct vfork_snapshot_guard *guard = &g_vfork_guard[child_ref.index];
+	struct vfork_snapshot_guard *guard = &g_lxp_vfork_guard[child_ref.index];
 	if (vfork_parent_is_current(child_ref)) {
 		lxp_proc_t *par = &g_lxp_slots[guard->parent.index].proc;
 		par->exit_status = 127;
@@ -2271,10 +1769,10 @@ void vfork_contain_stale(lxp_slot_ref_t child_ref, lxp_proc_t *child)
 /* Clear the generation-qualified snapshot guard before a slot is reused. */
 void fork_child_guard_reset(int child_slot)
 {
-	memset(&g_vfork_guard[child_slot], 0, sizeof(g_vfork_guard[child_slot]));
-	g_vfork_guard[child_slot].parent = lxp_slot_ref_none();
-	g_vfork_guard[child_slot].parent_region = lxp_region_ref_none();
-	g_vfork_guard[child_slot].snapshot = lxp_region_ref_none();
+	memset(&g_lxp_vfork_guard[child_slot], 0, sizeof(g_lxp_vfork_guard[child_slot]));
+	g_lxp_vfork_guard[child_slot].parent = lxp_slot_ref_none();
+	g_lxp_vfork_guard[child_slot].parent_region = lxp_region_ref_none();
+	g_lxp_vfork_guard[child_slot].snapshot = lxp_region_ref_none();
 }
 
 static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
@@ -2299,10 +1797,10 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	}
 	lxp_primary_events_reset();
 	lxp_blocked_fair_reset();
-	memset(g_regions, 0, sizeof(g_regions));
+	memset(g_lxp_regions, 0, sizeof(g_lxp_regions));
 	for (int r = 0; r < LXP_NREG; r++)
-		g_regions[r].lease_owner = lxp_slot_ref_none();
-	memset(g_vfork_guard, 0, sizeof(g_vfork_guard));
+		g_lxp_regions[r].lease_owner = lxp_slot_ref_none();
+	memset(g_lxp_vfork_guard, 0, sizeof(g_lxp_vfork_guard));
 	for (int i = 0; i < LXP_NSLOT; i++)
 		fork_child_guard_reset(i);
 	g_tty_isig = 1;
@@ -2346,7 +1844,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	/* Interpreter scripts name the interpreter's final non-symlink image here,
 	 * so /proc/self/exe keeps re-execing the ELF which actually runs. */
 	g_lxp_slots[0].proc.exec_file_idx = initial.file_index;
-	refresh_stats();
+	lxp_diag_refresh();
 	lxp_diag_checkpoint();
 
 	int rc = LXP_RUN_ETIMEOUT;
@@ -2447,7 +1945,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		}
 		if (now - last_refresh_us >= 200000ull) {
 			last_refresh_us = now;
-			refresh_stats();
+			lxp_diag_refresh();
 			lxp_diag_checkpoint();
 		}
 #if LXP_ENABLE_DEV
@@ -2481,13 +1979,13 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		eng->event_wait(to);
 	}
 	coordinator_teardown_all(eng);
-	refresh_stats();
+	lxp_diag_refresh();
 	lxp_diag_checkpoint();
 	return rc;
 
 launch_failed:
 	coordinator_teardown_all(eng);
-	refresh_stats();
+	lxp_diag_refresh();
 	lxp_diag_checkpoint();
 	return LXP_RUN_ELAUNCH;
 }
@@ -2507,11 +2005,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	int dev_entered = 0;
 	int console_entered = 0;
 	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
-	lxp_diag_reset_health();
-	g_diag_native_known = 0;
-	memset(g_diag_native_present, 0, sizeof(g_diag_native_present));
-	g_diag_lifecycle_epoch = 0;
-	g_diag_native_epoch = 0;
+	lxp_diag_run_begin();
 	if (!lxp_os_ops_valid(os_ops) || !lxp_net_ops_valid(net_ops) ||
 	    !lxp_display_ops_valid(display_ops) || !lxp_fs_ops_valid(fs_ops) ||
 	    !lxp_block_ops_valid(block_ops) || !lxp_run_config_valid(run_config) || !path ||
@@ -2608,16 +2102,16 @@ struct lxp_runtime_test_fixture *lxp_runtime_test_fixture(void)
 {
 	static struct lxp_runtime_test_fixture fixture = {
 		.slots = g_lxp_slots,
-		.regions = g_regions,
-		.vfork_guards = g_vfork_guard,
+		.regions = g_lxp_regions,
+		.vfork_guards = g_lxp_vfork_guard,
 		.config = &g_cfg,
 		.engine = &g_lxp_os_ops,
 		.rootfs_lo = &g_lxp_rootfs_lo,
 		.rootfs_hi = &g_lxp_rootfs_hi,
-		.diag_native_known = &g_diag_native_known,
-		.diag_native_present = g_diag_native_present,
-		.diag_lifecycle_epoch = &g_diag_lifecycle_epoch,
-		.diag_native_epoch = &g_diag_native_epoch,
+		.diag_native_known = &g_lxp_diag.native_known,
+		.diag_native_present = g_lxp_diag.native_present,
+		.diag_lifecycle_epoch = &g_lxp_diag.lifecycle_epoch,
+		.diag_native_epoch = &g_lxp_diag.native_epoch,
 		.tty_isig = &g_tty_isig,
 		.tty_icrnl = &g_tty_icrnl,
 #if defined(LXP_TEST_FAILPOINTS)

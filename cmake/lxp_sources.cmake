@@ -52,6 +52,7 @@ set(LXP_COORDINATOR_SOURCES
     "${LXP_SOURCE_ROOT}/src/lxp_run.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_blocked.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_child.c"
+    "${LXP_SOURCE_ROOT}/src/run/lxp_diag.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_exec.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_exit.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_fork.c"

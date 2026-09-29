@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_latency.h"
+#include "lxp_arena.h"
 #include "proc/lxp_proc.h"
 #include "lxp/lxp_seam.h"
 
@@ -55,5 +56,13 @@ struct lxp_dbg_s {
 	uintptr_t dynamic;
 	uintptr_t interp_base;
 };
+
+/* The coordinator's runtime state (src/lxp_run.c), read by the other run units until it
+ * is gathered into one runtime record. */
+extern struct lxp_slot_runtime g_lxp_slots[LXP_NSLOT];
+extern struct lxp_region_runtime g_lxp_regions[LXP_NREG];
+extern lxp_arena_t g_lxp_arenas[LXP_NREG];
+extern struct vfork_snapshot_guard g_lxp_vfork_guard[LXP_NSLOT];
+extern struct lxp_dbg_s g_lxp_dbg[LXP_NSLOT];
 
 #endif /* LXP_RUNTIME_STORE_H */
