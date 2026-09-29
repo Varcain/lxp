@@ -60,6 +60,7 @@ set(LXP_COORDINATOR_SOURCES
     "${LXP_SOURCE_ROOT}/src/run/lxp_initial.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_lifecycle.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_primary.c"
+    "${LXP_SOURCE_ROOT}/src/run/lxp_validate.c"
 )
 
 set(LXP_POST_COORDINATOR_SOURCES
