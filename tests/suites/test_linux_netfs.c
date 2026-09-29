@@ -15,6 +15,7 @@
  */
 
 #include "../framework/lxp_test.h"
+#include "fs/lxp_fd_private.h" /* lxp_fd_get_cloexec */
 #include "lxp_arena.h"
 #include "lxp_guest.h"
 #include "lxp/lxp_net_ops.h"
@@ -624,6 +625,15 @@ static void test_netfs_browse(void **state)
 	assert_int_equal(lxp_syscall(&p, LXP_NR_pread64, fd, (long)(uintptr_t)rb, 4, 0, 0, 0),
 			 -LXP_ESPIPE);
 	assert_int_equal((uint8_t)rb[0], 0xa5);
+
+	/* O_CLOEXEC reaches the descriptor the completed open installs; the open parks
+	 * and returns 0 first, which must not mark fd 0. */
+	long cfd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/mnt/pi/hello.txt",
+			     LXP_O_RDONLY | LXP_O_CLOEXEC, 0, 0, 0);
+	assert_true(cfd >= 3);
+	assert_int_equal(lxp_fd_get_cloexec(&p, (int)cfd), 1);
+	assert_int_equal(lxp_fd_get_cloexec(&p, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, cfd, 0, 0, 0, 0, 0), 0);
 
 	/* dup shares the open (same file_idx); closing one keeps it. */
 	long fd2 = lxp_syscall(&p, LXP_NR_dup, fd, 0, 0, 0, 0, 0);

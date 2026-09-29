@@ -25,6 +25,7 @@
 
 #include "netfs/lxp_netfs.h"
 #include "fs/lxp_dirent.h"
+#include "fs/lxp_fd_private.h" /* lxp_fd_set_cloexec */
 #include "fs/lxp_stat.h"
 #include "fs/lxp_vfs.h"
 #include "lxp_guest.h"
@@ -1461,6 +1462,7 @@ long lxp_netfs_retry(lxp_proc_t *p)
 	long result = r->result;
 	uint8_t op = r->op;
 	int oi = r->oi;
+	int flags = r->flags;
 	r->state = REQ_FREE;
 	p->wait.data.io.request = -1;
 
@@ -1470,6 +1472,8 @@ long lxp_netfs_retry(lxp_proc_t *p)
 			lxp_netfs_close(oi);
 			return -LXP_EMFILE;
 		}
+		if (flags & LXP_O_CLOEXEC)
+			(void)lxp_fd_set_cloexec(p, fd, 1);
 		return fd;
 	}
 #if LXP_ENABLE_NETFS_EXEC

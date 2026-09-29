@@ -607,6 +607,16 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 	return -LXP_ENOENT;
 }
 
+/* open/openat: apply O_CLOEXEC to the new descriptor. An open that parked (netfs)
+ * returned 0 without one; its completion installs the fd and applies the flag. */
+static long sys_open_cloexec(lxp_proc_t *p, int dirfd, const char *path, int flags)
+{
+	long fd = sys_openat(p, dirfd, path, flags);
+	if (fd >= 0 && p->wait.kind == LXP_WAIT_NONE && (flags & LXP_O_CLOEXEC))
+		(void)lxp_fd_set_cloexec(p, (int)fd, 1);
+	return fd;
+}
+
 static long sys_close(lxp_proc_t *p, int fd)
 {
 	return lxp_fd_close(p, fd);
@@ -2018,21 +2028,13 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	case LXP_NR_pwrite64: /* (fd, buf, count, [pad a3], off_lo a4, off_hi a5) */
 		return sys_pwrite(proc, (int)a0, (const void *)(uintptr_t)a1, (size_t)a2,
 				  (uint64_t)(uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32));
-	case LXP_NR_open: { /* legacy open(path, flags, mode): dirfd = cwd */
-		long f = sys_openat(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a0, (int)a1);
-		if (f >= 0 && ((int)a1 & LXP_O_CLOEXEC))
-			(void)lxp_fd_set_cloexec(proc, (int)f, 1);
-		return f;
-	}
+	case LXP_NR_open: /* legacy open(path, flags, mode): dirfd = cwd */
+		return sys_open_cloexec(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a0, (int)a1);
 	case LXP_NR_execve: /* (path, argv, envp) */
 		return sys_execve(proc, (const char *)(uintptr_t)a0, (char *const *)(uintptr_t)a1,
 				  (char *const *)(uintptr_t)a2);
-	case LXP_NR_openat: {
-		long f = sys_openat(proc, (int)a0, (const char *)(uintptr_t)a1, (int)a2);
-		if (f >= 0 && ((int)a2 & LXP_O_CLOEXEC))
-			(void)lxp_fd_set_cloexec(proc, (int)f, 1);
-		return f;
-	}
+	case LXP_NR_openat:
+		return sys_open_cloexec(proc, (int)a0, (const char *)(uintptr_t)a1, (int)a2);
 	case LXP_NR_close:
 		return sys_close(proc, (int)a0);
 	case LXP_NR_pipe:
