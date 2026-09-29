@@ -90,8 +90,13 @@ if [ "$M" != 3 ] && [ "$M" != 6 ]; then
 
     MILESTONE="$M" bash build.sh > build.log 2>&1 || { echo "BUILD FAILED"; grep -iE 'error|undefined|will not fit' build.log | head; exit 1; }
 
+    # M9 sleeps 2000 guest ticks while its workers spin. QEMU delivers SysTick more slowly
+    # while a guest runs a tight loop, and how much slower moves with code layout (90 to 500
+    # ticks/s observed), so M9 gets the time for 2000 of the slowest ticks.
+    RUN_TIMEOUT=10
+    [ "$M" = 9 ] && RUN_TIMEOUT=90
     echo "=== M$M QEMU run ==="
-    timeout "${TIMEOUT:-10}" "$QEMU" -M mps2-an500 -m 16 -nographic -no-reboot $QEMU_MPU \
+    timeout "${TIMEOUT:-$RUN_TIMEOUT}" "$QEMU" -M mps2-an500 -m 16 -nographic -no-reboot $QEMU_MPU \
         -semihosting-config enable=on -kernel firmware.elf > "$LOG" 2>&1 || true
 else
     # ---- M3: dynamic-FDPIC busybox cpio XIP'd from PSRAM @0x60000000 ---------
