@@ -106,4 +106,14 @@ long lxp_sys_wait4(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_set_tid_address(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_set_robust_list(lxp_proc_t *proc, const long a[6]);
 
+/* ---- time (src/sys/lxp_sys_time.c) ---- */
+long lxp_sys_clock_gettime(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_clock_gettime64(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_gettimeofday(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_nanosleep(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_clock_nanosleep(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_clock_nanosleep_time64(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_setitimer(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_times(lxp_proc_t *proc, const long a[6]);
+
 #endif /* LXP_SYS_H */
