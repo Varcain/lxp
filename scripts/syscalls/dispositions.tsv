@@ -3,9 +3,10 @@
 # src/lxp_linux_uapi.h must have exactly one row here; adding a syscall without
 # classifying it fails CI. The guard also proves each row still matches the source:
 #
-#   implemented | benign-stub | refused-eopnotsupp  -> must be a `case LXP_NR_x` in src/lxp_syscall.c
-#   run-loop-handled                                 -> intercepted in src/lxp_run.c, NOT a dispatch case
-#   deliberately-enosys                              -> deliberately falls to `default: -ENOSYS` (no case)
+#   implemented | benign-stub | refused-eopnotsupp  -> must be a `[LXP_NR_x]` row of the syscall table
+#                                                      in src/lxp_syscall.c
+#   run-loop-handled                                 -> intercepted in src/lxp_run.c, no table row
+#   deliberately-enosys                              -> deliberately has no table row (-ENOSYS)
 #
 # "benign-stub" = accepted and answered with a fixed/inert result on purpose (the tier
 # does not need the real semantics); "implemented" = does the syscall's real work.

@@ -35,7 +35,7 @@ done
 # Sets used by the coverage check + the matrix, extracted once.
 CASES=$(mktemp); RUNLOOP=$(mktemp); ROWS=$(mktemp)
 trap 'rm -f "$CASES" "$RUNLOOP" "$ROWS"' EXIT
-grep -oE 'case LXP_NR_[A-Za-z0-9_]+' "$DISP" | sed 's/case LXP_NR_//' | sort -u > "$CASES"
+grep -oE '^	\[LXP_NR_[A-Za-z0-9_]+\] = \{sc_' "$DISP" | sed 's/^	\[LXP_NR_//; s/\].*//' | sort -u > "$CASES"
 grep -oE 'LXP_NR_[A-Za-z0-9_]+'      "$RUN"  | sed 's/LXP_NR_//'      | sort -u > "$RUNLOOP"
 
 # Rows for the matrix: "<num>\t<name>\t<disposition>\t<note>", sorted by number.
@@ -100,8 +100,8 @@ fi
 
 # ---- 2. Coverage / disposition cross-check -----------------------------------
 # Every LXP_NR_* is classified, and each classification still matches the source:
-# implemented/stub/refused have a dispatch case; run-loop-handled are intercepted in
-# lxp_run.c and are NOT a case; deliberately-enosys have no case. Also flags stale rows.
+# implemented/stub/refused have a syscall-table row; run-loop-handled are intercepted in
+# lxp_run.c and have no row; deliberately-enosys have no row. Also flags stale rows.
 report=$(awk -v tsv="$TSV" -v casesf="$CASES" -v runf="$RUNLOOP" '
 	BEGIN {
 		while ((getline l < tsv) > 0) { if (l ~ /^#/ || l == "") continue;
@@ -114,12 +114,12 @@ report=$(awk -v tsv="$TSV" -v casesf="$CASES" -v runf="$RUNLOOP" '
 		if (!(name in disp)) { printf "UNCLASSIFIED    %-22s no row in dispositions.tsv\n", name; next }
 		d = disp[name]
 		if (d == "implemented" || d == "benign-stub" || d == "refused-eopnotsupp") {
-			if (!(name in C)) printf "MISSING-CASE    %-22s classified %s but no `case LXP_NR_%s:` in lxp_syscall.c\n", name, d, name
+			if (!(name in C)) printf "MISSING-ROW     %-22s classified %s but no `[LXP_NR_%s]` table row in lxp_syscall.c\n", name, d, name
 		} else if (d == "run-loop-handled") {
 			if (!(name in RL)) printf "MISSING-RUNLOOP %-22s classified run-loop-handled but absent from lxp_run.c\n", name
-			if (name in C)     printf "UNEXPECTED-CASE %-22s run-loop-handled but ALSO a dispatch case\n", name
+			if (name in C)     printf "UNEXPECTED-ROW  %-22s run-loop-handled but ALSO a syscall-table row\n", name
 		} else if (d == "deliberately-enosys") {
-			if (name in C)     printf "UNEXPECTED-CASE %-22s deliberately-enosys but has a dispatch case\n", name
+			if (name in C)     printf "UNEXPECTED-ROW  %-22s deliberately-enosys but has a syscall-table row\n", name
 		} else {
 			printf "BAD-DISPOSITION %-22s unknown disposition \"%s\"\n", name, d
 		}

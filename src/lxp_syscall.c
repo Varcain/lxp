@@ -2910,6 +2910,164 @@ static long sc_socketpair(lxp_proc_t *proc, const long a[6])
 
 #endif /* LXP_ENABLE_NET */
 
+/* ---- the syscall table ------------------------------------------------------
+ * One row per syscall the dispatcher answers, indexed by number; a missing row is
+ * ENOSYS. A clamp flag caps a guest-controlled byte count before the handler runs:
+ * each interface permits a short result, and the finite quantum keeps one deferred
+ * request preemptible and bounded. */
+enum {
+	LXP_SYS_CLAMP_A1 = 1u << 0,	 /* a[1] to LXP_SYSCALL_QUANTUM_BYTES */
+	LXP_SYS_CLAMP_A2 = 1u << 1,	 /* a[2] to LXP_SYSCALL_QUANTUM_BYTES */
+	LXP_SYS_CLAMP_A2_FILE = 1u << 2, /* a[2] to LXP_SYSCALL_FILE_QUANTUM_BYTES */
+};
+
+struct lxp_sys_entry {
+	long (*fn)(lxp_proc_t *proc, const long a[6]);
+	uint8_t flags;
+};
+
+/* One past the highest syscall number (faccessat2); a row beyond it fails to compile. */
+#define LXP_SYS_TABLE_SIZE (LXP_NR_faccessat2 + 1)
+
+static const struct lxp_sys_entry g_lxp_sys_table[LXP_SYS_TABLE_SIZE] = {
+	[LXP_NR_read] = {sc_read, LXP_SYS_CLAMP_A2},
+	[LXP_NR_write] = {sc_write, LXP_SYS_CLAMP_A2},
+	[LXP_NR_writev] = {sc_writev, 0},
+	[LXP_NR_brk] = {sc_brk, 0},
+	[LXP_NR_mmap2] = {sc_mmap2, 0},
+	[LXP_NR_munmap] = {sc_munmap, 0},
+	[LXP_NR_mprotect] = {sc_mprotect, 0},
+	[LXP_NR_pread64] = {sc_pread64, LXP_SYS_CLAMP_A2_FILE},
+	[LXP_NR_pwrite64] = {sc_pwrite64, LXP_SYS_CLAMP_A2_FILE},
+	[LXP_NR_open] = {sc_open, 0},
+	[LXP_NR_execve] = {sc_execve, 0},
+	[LXP_NR_openat] = {sc_openat, 0},
+	[LXP_NR_close] = {sc_close, 0},
+	[LXP_NR_pipe] = {sc_pipe, 0},
+	[LXP_NR_pipe2] = {sc_pipe2, 0},
+	[LXP_NR_dup] = {sc_dup, 0},
+	[LXP_NR_dup2] = {sc_dup2, 0},
+	[LXP_NR_dup3] = {sc_dup3, 0},
+	[LXP_NR_lseek] = {sc_lseek, 0},
+	[LXP_NR__llseek] = {sc_llseek, 0},
+	[LXP_NR_ftruncate64] = {sc_ftruncate64, 0},
+	[LXP_NR_fsync] = {sc_fsync, 0},
+	[LXP_NR_fdatasync] = {sc_fsync, 0},
+	[LXP_NR_sync] = {sc_sync, 0},
+	[LXP_NR_syncfs] = {sc_syncfs, 0},
+	[LXP_NR_fstat64] = {sc_fstat64, 0},
+	[LXP_NR_stat64] = {sc_stat64, 0},
+	[LXP_NR_lstat64] = {sc_lstat64, 0},
+	[LXP_NR_fstatat64] = {sc_fstatat64, 0},
+	[LXP_NR_readlink] = {sc_readlink, 0},
+	[LXP_NR_readlinkat] = {sc_readlinkat, 0},
+	[LXP_NR_access] = {sc_access, 0},
+	[LXP_NR_faccessat] = {sc_faccessat, 0},
+	[LXP_NR_faccessat2] = {sc_faccessat, 0},
+	[LXP_NR_mkdir] = {sc_mkdir, 0},
+	[LXP_NR_mkdirat] = {sc_mkdirat, 0},
+	[LXP_NR_rmdir] = {sc_rmdir, 0},
+	[LXP_NR_unlink] = {sc_unlink, 0},
+	[LXP_NR_unlinkat] = {sc_unlinkat, 0},
+	[LXP_NR_rename] = {sc_rename, 0},
+	[LXP_NR_renameat] = {sc_renameat, 0},
+	[LXP_NR_renameat2] = {sc_renameat2, 0},
+	[LXP_NR_symlink] = {sc_symlink, 0},
+	[LXP_NR_symlinkat] = {sc_symlinkat, 0},
+	[LXP_NR_link] = {sc_link, 0},
+	[LXP_NR_linkat] = {sc_linkat, 0},
+	[LXP_NR_chmod] = {sc_chmod, 0},
+	[LXP_NR_fchmodat] = {sc_fchmodat, 0},
+	[LXP_NR_utimensat] = {sc_utimensat, 0},
+	[LXP_NR_utimensat_time64] = {sc_utimensat, 0},
+	[LXP_NR_mount] = {sc_mount, 0},
+	[LXP_NR_umount2] = {sc_umount2, 0},
+	[LXP_NR_statfs64] = {sc_statfs64, 0},
+	[LXP_NR_fstatfs64] = {sc_fstatfs64, 0},
+	[LXP_NR_getrandom] = {sc_getrandom, LXP_SYS_CLAMP_A1},
+	[LXP_NR_eventfd2] = {sc_eventfd2, 0},
+	[LXP_NR_sysinfo] = {sc_sysinfo, 0},
+	[LXP_NR_fcntl] = {sc_fcntl, 0},
+	[LXP_NR_fcntl64] = {sc_fcntl, 0},
+	[LXP_NR_getdents] = {sc_getdents, LXP_SYS_CLAMP_A2},
+	[LXP_NR_getdents64] = {sc_getdents64, LXP_SYS_CLAMP_A2},
+	[LXP_NR_statx] = {sc_statx, 0},
+	[LXP_NR_exit] = {sc_exit, 0},
+	[LXP_NR_exit_group] = {sc_exit_group, 0},
+	[LXP_NR_getpid] = {sc_getpid, 0},
+	[LXP_NR_nice] = {sc_nice, 0},
+	[LXP_NR_getpriority] = {sc_getpriority, 0},
+	[LXP_NR_setpriority] = {sc_setpriority, 0},
+	[LXP_NR_getppid] = {sc_getppid, 0},
+	[LXP_NR_getcwd] = {sc_getcwd, 0},
+	[LXP_NR_chdir] = {sc_chdir, 0},
+	[LXP_NR_umask] = {sc_umask, 0},
+	[LXP_NR_setpgid] = {sc_setpgid, 0},
+	[LXP_NR_prctl] = {sc_inert, 0},
+	[LXP_NR_sched_yield] = {sc_inert, 0},
+	[LXP_NR_fchmod] = {sc_inert, 0},
+	[LXP_NR_fchown32] = {sc_inert, 0},
+	[LXP_NR_chown32] = {sc_inert, 0},
+	[LXP_NR_setgroups32] = {sc_inert, 0},
+	[LXP_NR_setuid32] = {sc_inert, 0},
+	[LXP_NR_setgid32] = {sc_inert, 0},
+	[LXP_NR_setreuid32] = {sc_inert, 0},
+	[LXP_NR_setregid32] = {sc_inert, 0},
+	[LXP_NR_setresuid32] = {sc_inert, 0},
+	[LXP_NR_setresgid32] = {sc_inert, 0},
+	[LXP_NR_getresuid32] = {sc_getresid, 0},
+	[LXP_NR_getresgid32] = {sc_getresid, 0},
+	[LXP_NR_prlimit64] = {sc_prlimit64, 0},
+	[LXP_NR_times] = {sc_times, 0},
+	[LXP_NR_setitimer] = {sc_setitimer, 0},
+	[LXP_NR_getpgrp] = {sc_getpgrp, 0},
+	[LXP_NR_setsid] = {sc_setsid, 0},
+	[LXP_NR_reboot] = {sc_reboot, 0},
+	[LXP_NR_gettid] = {sc_gettid, 0},
+	[LXP_NR_clock_gettime] = {sc_clock_gettime, 0},
+	[LXP_NR_clock_gettime64] = {sc_clock_gettime64, 0},
+	[LXP_NR_gettimeofday] = {sc_gettimeofday, 0},
+	[LXP_NR_nanosleep] = {sc_nanosleep, 0},
+	[LXP_NR_clock_nanosleep] = {sc_clock_nanosleep, 0},
+	[LXP_NR_clock_nanosleep_time64] = {sc_clock_nanosleep_time64, 0},
+	[LXP_NR_uname] = {sc_uname, 0},
+	[LXP_NR_rt_sigaction] = {sc_rt_sigaction, 0},
+	[LXP_NR_pselect6_time64] = {sc_pselect6_time64, 0},
+	[LXP_NR_poll] = {sc_poll, 0},
+	[LXP_NR_ppoll_time64] = {sc_ppoll_time64, 0},
+	[LXP_NR_wait4] = {sc_wait4, 0},
+	[LXP_NR_getuid32] = {sc_getuid_root, 0},
+	[LXP_NR_geteuid32] = {sc_getuid_root, 0},
+	[LXP_NR_getgid32] = {sc_getuid_root, 0},
+	[LXP_NR_getegid32] = {sc_getuid_root, 0},
+	[LXP_NR_ioctl] = {sc_ioctl, 0},
+	[LXP_NR_rt_sigsuspend] = {sc_rt_sigsuspend, 0},
+	[LXP_NR_rt_sigtimedwait_time64] = {sc_rt_sigtimedwait_time64, 0},
+	[LXP_NR_rt_sigprocmask] = {sc_rt_sigprocmask, 0},
+	[LXP_NR_set_tid_address] = {sc_set_tid_address, 0},
+	[LXP_NR_set_robust_list] = {sc_set_robust_list, 0},
+#if LXP_ENABLE_NET
+	[LXP_NR_socket] = {sc_socket, 0},
+	[LXP_NR_connect] = {sc_connect, 0},
+	[LXP_NR_send] = {sc_send, LXP_SYS_CLAMP_A2},
+	[LXP_NR_sendto] = {sc_sendto, LXP_SYS_CLAMP_A2},
+	[LXP_NR_recv] = {sc_recv, LXP_SYS_CLAMP_A2},
+	[LXP_NR_recvfrom] = {sc_recvfrom, LXP_SYS_CLAMP_A2},
+	[LXP_NR_shutdown] = {sc_shutdown, 0},
+	[LXP_NR_getsockname] = {sc_getsockname, 0},
+	[LXP_NR_getpeername] = {sc_getpeername, 0},
+	[LXP_NR_setsockopt] = {sc_setsockopt, 0},
+	[LXP_NR_getsockopt] = {sc_getsockopt, 0},
+	[LXP_NR_bind] = {sc_bind, 0},
+	[LXP_NR_listen] = {sc_listen, 0},
+	[LXP_NR_accept] = {sc_accept, 0},
+	[LXP_NR_accept4] = {sc_accept4, 0},
+	[LXP_NR_sendmsg] = {sc_sendmsg, 0},
+	[LXP_NR_recvmsg] = {sc_recvmsg, 0},
+	[LXP_NR_socketpair] = {sc_socketpair, 0},
+#endif
+};
+
 long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, long a4, long a5)
 {
 #if LXP_ENABLE_FS
@@ -2917,310 +3075,17 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 #endif
 	if (!proc)
 		return -LXP_EINVAL;
-
-	/* A guest controls these byte counts. Normalise them before any pointer-range
-	 * validation or host callback: each interface permits a short result, and the
-	 * finite quantum keeps one deferred request preemptible and bounded. Cast via
-	 * uint32_t because this is the 32-bit ARM syscall ABI even in host tests. */
-	switch (nr) {
-	case LXP_NR_read:
-	case LXP_NR_write:
-	case LXP_NR_getdents:
-	case LXP_NR_getdents64:
-	case LXP_NR_send:
-	case LXP_NR_sendto:
-	case LXP_NR_recv:
-	case LXP_NR_recvfrom:
-		if ((uint32_t)a2 > LXP_SYSCALL_QUANTUM_BYTES)
-			a2 = LXP_SYSCALL_QUANTUM_BYTES;
-		break;
-	case LXP_NR_pread64:
-	case LXP_NR_pwrite64:
-		if ((uint32_t)a2 > LXP_SYSCALL_FILE_QUANTUM_BYTES)
-			a2 = LXP_SYSCALL_FILE_QUANTUM_BYTES;
-		break;
-	case LXP_NR_getrandom:
-		if ((uint32_t)a1 > LXP_SYSCALL_QUANTUM_BYTES)
-			a1 = LXP_SYSCALL_QUANTUM_BYTES;
-		break;
-	default:
-		break;
-	}
-
-	const long a[6] = {a0, a1, a2, a3, a4, a5};
-	switch (nr) {
-	case LXP_NR_read:
-		return sc_read(proc, a);
-	case LXP_NR_write:
-		return sc_write(proc, a);
-	case LXP_NR_writev:
-		return sc_writev(proc, a);
-	case LXP_NR_brk:
-		return sc_brk(proc, a);
-	case LXP_NR_mmap2:
-		return sc_mmap2(proc, a);
-	case LXP_NR_munmap:
-		return sc_munmap(proc, a);
-	case LXP_NR_mprotect:
-		return sc_mprotect(proc, a);
-	case LXP_NR_pread64:
-		return sc_pread64(proc, a);
-	case LXP_NR_pwrite64:
-		return sc_pwrite64(proc, a);
-	case LXP_NR_open:
-		return sc_open(proc, a);
-	case LXP_NR_execve:
-		return sc_execve(proc, a);
-	case LXP_NR_openat:
-		return sc_openat(proc, a);
-	case LXP_NR_close:
-		return sc_close(proc, a);
-	case LXP_NR_pipe:
-		return sc_pipe(proc, a);
-	case LXP_NR_pipe2:
-		return sc_pipe2(proc, a);
-	case LXP_NR_dup:
-		return sc_dup(proc, a);
-	case LXP_NR_dup2:
-		return sc_dup2(proc, a);
-	case LXP_NR_dup3:
-		return sc_dup3(proc, a);
-	case LXP_NR_lseek:
-		return sc_lseek(proc, a);
-	case LXP_NR__llseek:
-		return sc_llseek(proc, a);
-	case LXP_NR_ftruncate64:
-		return sc_ftruncate64(proc, a);
-	case LXP_NR_fsync:
-		return sc_fsync(proc, a);
-	case LXP_NR_fdatasync:
-		return sc_fsync(proc, a);
-	case LXP_NR_sync:
-		return sc_sync(proc, a);
-	case LXP_NR_syncfs:
-		return sc_syncfs(proc, a);
-	case LXP_NR_fstat64:
-		return sc_fstat64(proc, a);
-	case LXP_NR_stat64:
-		return sc_stat64(proc, a);
-	case LXP_NR_lstat64:
-		return sc_lstat64(proc, a);
-	case LXP_NR_fstatat64:
-		return sc_fstatat64(proc, a);
-	case LXP_NR_readlink:
-		return sc_readlink(proc, a);
-	case LXP_NR_readlinkat:
-		return sc_readlinkat(proc, a);
-	case LXP_NR_access:
-		return sc_access(proc, a);
-	case LXP_NR_faccessat:
-		return sc_faccessat(proc, a);
-	case LXP_NR_faccessat2:
-		return sc_faccessat(proc, a);
-	case LXP_NR_mkdir:
-		return sc_mkdir(proc, a);
-	case LXP_NR_mkdirat:
-		return sc_mkdirat(proc, a);
-	case LXP_NR_rmdir:
-		return sc_rmdir(proc, a);
-	case LXP_NR_unlink:
-		return sc_unlink(proc, a);
-	case LXP_NR_unlinkat:
-		return sc_unlinkat(proc, a);
-	case LXP_NR_rename:
-		return sc_rename(proc, a);
-	case LXP_NR_renameat:
-		return sc_renameat(proc, a);
-	case LXP_NR_renameat2:
-		return sc_renameat2(proc, a);
-	case LXP_NR_symlink:
-		return sc_symlink(proc, a);
-	case LXP_NR_symlinkat:
-		return sc_symlinkat(proc, a);
-	case LXP_NR_link:
-		return sc_link(proc, a);
-	case LXP_NR_linkat:
-		return sc_linkat(proc, a);
-	case LXP_NR_chmod:
-		return sc_chmod(proc, a);
-	case LXP_NR_fchmodat:
-		return sc_fchmodat(proc, a);
-	case LXP_NR_utimensat:
-		return sc_utimensat(proc, a);
-	case LXP_NR_utimensat_time64:
-		return sc_utimensat(proc, a);
-	case LXP_NR_mount:
-		return sc_mount(proc, a);
-	case LXP_NR_umount2:
-		return sc_umount2(proc, a);
-	case LXP_NR_statfs64:
-		return sc_statfs64(proc, a);
-	case LXP_NR_fstatfs64:
-		return sc_fstatfs64(proc, a);
-	case LXP_NR_getrandom:
-		return sc_getrandom(proc, a);
-	case LXP_NR_eventfd2:
-		return sc_eventfd2(proc, a);
-	case LXP_NR_sysinfo:
-		return sc_sysinfo(proc, a);
-	case LXP_NR_fcntl:
-		return sc_fcntl(proc, a);
-	case LXP_NR_fcntl64:
-		return sc_fcntl(proc, a);
-	case LXP_NR_getdents:
-		return sc_getdents(proc, a);
-	case LXP_NR_getdents64:
-		return sc_getdents64(proc, a);
-	case LXP_NR_statx:
-		return sc_statx(proc, a);
-	case LXP_NR_exit:
-		return sc_exit(proc, a);
-	case LXP_NR_exit_group:
-		return sc_exit_group(proc, a);
-	case LXP_NR_getpid:
-		return sc_getpid(proc, a);
-	case LXP_NR_nice:
-		return sc_nice(proc, a);
-	case LXP_NR_getpriority:
-		return sc_getpriority(proc, a);
-	case LXP_NR_setpriority:
-		return sc_setpriority(proc, a);
-	case LXP_NR_getppid:
-		return sc_getppid(proc, a);
-	case LXP_NR_getcwd:
-		return sc_getcwd(proc, a);
-	case LXP_NR_chdir:
-		return sc_chdir(proc, a);
-	case LXP_NR_umask:
-		return sc_umask(proc, a);
-	case LXP_NR_setpgid:
-		return sc_setpgid(proc, a);
-	case LXP_NR_prctl:
-		return sc_inert(proc, a);
-	case LXP_NR_sched_yield:
-		return sc_inert(proc, a);
-	case LXP_NR_fchmod:
-		return sc_inert(proc, a);
-	case LXP_NR_fchown32:
-		return sc_inert(proc, a);
-	case LXP_NR_chown32:
-		return sc_inert(proc, a);
-	case LXP_NR_setgroups32:
-		return sc_inert(proc, a);
-	case LXP_NR_setuid32:
-		return sc_inert(proc, a);
-	case LXP_NR_setgid32:
-		return sc_inert(proc, a);
-	case LXP_NR_setreuid32:
-		return sc_inert(proc, a);
-	case LXP_NR_setregid32:
-		return sc_inert(proc, a);
-	case LXP_NR_setresuid32:
-		return sc_inert(proc, a);
-	case LXP_NR_setresgid32:
-		return sc_inert(proc, a);
-	case LXP_NR_getresuid32:
-		return sc_getresid(proc, a);
-	case LXP_NR_getresgid32:
-		return sc_getresid(proc, a);
-	case LXP_NR_prlimit64:
-		return sc_prlimit64(proc, a);
-	case LXP_NR_times:
-		return sc_times(proc, a);
-	case LXP_NR_setitimer:
-		return sc_setitimer(proc, a);
-	case LXP_NR_getpgrp:
-		return sc_getpgrp(proc, a);
-	case LXP_NR_setsid:
-		return sc_setsid(proc, a);
-	case LXP_NR_reboot:
-		return sc_reboot(proc, a);
-	case LXP_NR_gettid:
-		return sc_gettid(proc, a);
-	case LXP_NR_clock_gettime:
-		return sc_clock_gettime(proc, a);
-	case LXP_NR_clock_gettime64:
-		return sc_clock_gettime64(proc, a);
-	case LXP_NR_gettimeofday:
-		return sc_gettimeofday(proc, a);
-	case LXP_NR_nanosleep:
-		return sc_nanosleep(proc, a);
-	case LXP_NR_clock_nanosleep:
-		return sc_clock_nanosleep(proc, a);
-	case LXP_NR_clock_nanosleep_time64:
-		return sc_clock_nanosleep_time64(proc, a);
-	case LXP_NR_uname:
-		return sc_uname(proc, a);
-	case LXP_NR_rt_sigaction:
-		return sc_rt_sigaction(proc, a);
-	case LXP_NR_pselect6_time64:
-		return sc_pselect6_time64(proc, a);
-	case LXP_NR_poll:
-		return sc_poll(proc, a);
-	case LXP_NR_ppoll_time64:
-		return sc_ppoll_time64(proc, a);
-	case LXP_NR_wait4:
-		return sc_wait4(proc, a);
-	case LXP_NR_getuid32:
-		return sc_getuid_root(proc, a);
-	case LXP_NR_geteuid32:
-		return sc_getuid_root(proc, a);
-	case LXP_NR_getgid32:
-		return sc_getuid_root(proc, a);
-	case LXP_NR_getegid32:
-		return sc_getuid_root(proc, a);
-	case LXP_NR_ioctl:
-		return sc_ioctl(proc, a);
-	case LXP_NR_rt_sigsuspend:
-		return sc_rt_sigsuspend(proc, a);
-	case LXP_NR_rt_sigtimedwait_time64:
-		return sc_rt_sigtimedwait_time64(proc, a);
-	case LXP_NR_rt_sigprocmask:
-		return sc_rt_sigprocmask(proc, a);
-	case LXP_NR_set_tid_address:
-		return sc_set_tid_address(proc, a);
-	case LXP_NR_set_robust_list:
-		return sc_set_robust_list(proc, a);
-#if LXP_ENABLE_NET
-	case LXP_NR_socket:
-		return sc_socket(proc, a);
-	case LXP_NR_connect:
-		return sc_connect(proc, a);
-	case LXP_NR_send:
-		return sc_send(proc, a);
-	case LXP_NR_sendto:
-		return sc_sendto(proc, a);
-	case LXP_NR_recv:
-		return sc_recv(proc, a);
-	case LXP_NR_recvfrom:
-		return sc_recvfrom(proc, a);
-	case LXP_NR_shutdown:
-		return sc_shutdown(proc, a);
-	case LXP_NR_getsockname:
-		return sc_getsockname(proc, a);
-	case LXP_NR_getpeername:
-		return sc_getpeername(proc, a);
-	case LXP_NR_setsockopt:
-		return sc_setsockopt(proc, a);
-	case LXP_NR_getsockopt:
-		return sc_getsockopt(proc, a);
-	case LXP_NR_bind:
-		return sc_bind(proc, a);
-	case LXP_NR_listen:
-		return sc_listen(proc, a);
-	case LXP_NR_accept:
-		return sc_accept(proc, a);
-	case LXP_NR_accept4:
-		return sc_accept4(proc, a);
-	case LXP_NR_sendmsg:
-		return sc_sendmsg(proc, a);
-	case LXP_NR_recvmsg:
-		return sc_recvmsg(proc, a);
-	case LXP_NR_socketpair:
-		return sc_socketpair(proc, a);
-#endif
-	default:
+	if (nr < 0 || nr >= LXP_SYS_TABLE_SIZE || !g_lxp_sys_table[nr].fn)
 		return -LXP_ENOSYS;
-	}
+	const struct lxp_sys_entry *e = &g_lxp_sys_table[nr];
+	long a[6] = {a0, a1, a2, a3, a4, a5};
+	/* Cast via uint32_t: this is the 32-bit ARM syscall ABI even in host tests. */
+	if ((e->flags & LXP_SYS_CLAMP_A1) && (uint32_t)a[1] > LXP_SYSCALL_QUANTUM_BYTES)
+		a[1] = LXP_SYSCALL_QUANTUM_BYTES;
+	if ((e->flags & LXP_SYS_CLAMP_A2) && (uint32_t)a[2] > LXP_SYSCALL_QUANTUM_BYTES)
+		a[2] = LXP_SYSCALL_QUANTUM_BYTES;
+	if ((e->flags & LXP_SYS_CLAMP_A2_FILE) && (uint32_t)a[2] > LXP_SYSCALL_FILE_QUANTUM_BYTES)
+		a[2] = LXP_SYSCALL_FILE_QUANTUM_BYTES;
+	return e->fn(proc, a);
 }
 
