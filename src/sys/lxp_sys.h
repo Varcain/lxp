@@ -116,4 +116,10 @@ long lxp_sys_clock_nanosleep_time64(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_setitimer(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_times(lxp_proc_t *proc, const long a[6]);
 
+/* ---- signals (src/sys/lxp_sys_signal.c) ---- */
+long lxp_sys_rt_sigaction(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_rt_sigprocmask(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_rt_sigsuspend(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_rt_sigtimedwait_time64(lxp_proc_t *proc, const long a[6]);
+
 #endif /* LXP_SYS_H */

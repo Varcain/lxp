@@ -391,30 +391,6 @@ static long sc_execve(lxp_proc_t *proc, const long a[6])
 			  (char *const *)(uintptr_t)a[2]);
 }
 
-static long sc_rt_sigaction(lxp_proc_t *proc, const long a[6])
-{
-	/* Record the per-signal disposition; the engine seam delivers it.
-	 * struct sigaction: sa_handler@0, sa_flags@4, sa_restorer@8. */
-	int sig = (int)a[0];
-	if (sig < 1 || sig >= LXP_NSIG)
-		return -LXP_EINVAL;
-	const uint32_t *act = (const uint32_t *)(uintptr_t)a[1];
-	uint32_t *oact = (uint32_t *)(uintptr_t)a[2];
-	if (act && !lxp_guest_access_ok(proc, act, 3 * sizeof(uint32_t), 0))
-		return -LXP_EFAULT;
-	if (oact && !lxp_guest_access_ok(proc, oact, 3 * sizeof(uint32_t), 1))
-		return -LXP_EFAULT;
-	if (oact) {
-		oact[0] = (uint32_t)lxp_sig_handler_get(proc, sig);
-		oact[2] = (uint32_t)lxp_sig_restorer_get(proc);
-	}
-	if (act) {
-		proc->sighand->handler[sig] = act[0];
-		proc->sighand->restorer = act[2];
-	}
-	return 0;
-}
-
 /* (nfds, readfds, writefds, exceptfds, timeout, sigmask) */
 static long sc_pselect6_time64(lxp_proc_t *proc, const long a[6])
 {
@@ -431,123 +407,6 @@ static long sc_ppoll_time64(lxp_proc_t *proc, const long a[6])
 {
 	return lxp_sys_poll(proc, LXP_NR_ppoll_time64, a[0], a[1], a[2]);
 }
-/* (unewset, sigsetsize) */
-static long sc_rt_sigsuspend(lxp_proc_t *proc, const long a[6])
-{
-	/* LinuxThreads suspend(): block until a signal (the restart) is delivered. If one is
-	 * already pending (a restart that beat us here), fall through so the dispatch delivers
-	 * it now; otherwise ask the run loop to park us — the coordinator runs the handler on
-	 * the restart kill() and resumes us. sigsuspend always "returns" -EINTR.
-	 *
-	 * INSTALL the mask arg (POSIX: atomically set the signal mask for the wait): the whole
-	 * point of the restart protocol is that the caller BLOCKS the restart signal normally and
-	 * sigsuspend UNBLOCKS it only while waiting. If we ignore the mask, the restart stays
-	 * blocked, the coordinator's pending_deliverable skips it, and the parked thread is never
-	 * woken (deadlock — curl's LinuxThreads resolver: manager, main, and a sigwait thread all
-	 * stuck). The prior mask is restored when the delivered handler returns (sig_restore). */
-	const uint32_t *uset = (const uint32_t *)(uintptr_t)a[0];
-	size_t sz = (size_t)a[1];
-	if (sz != 8)
-		return -LXP_EINVAL; /* Linux: sigsetsize must equal sizeof(kernel sigset_t) */
-	if (!uset || !lxp_guest_access_ok(proc, uset, sz, 0))
-		return -LXP_EFAULT; /* validate the whole 8-byte mask before reading either word */
-	uint64_t m = (uint64_t)uset[0] | ((uint64_t)uset[1] << 32);
-	m &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP)); /* never blockable */
-	proc->sigsuspend_saved_mask = proc->sig_blocked;
-	proc->sig_blocked = m;
-	proc->sigsuspend_active = 1;
-	/* Park unless a signal that is deliverable UNDER THE NEW MASK is already pending — then
-	 * fall through so the dispatch delivers it now. A signal pending but blocked by the new
-	 * mask must NOT keep us running (it stays pending until the mask is restored). Mirrors
-	 * the run loop's pending_deliverable, which is static there. */
-	int deliverable = 0;
-	for (int sig = 1; sig < LXP_NSIG; sig++)
-		if ((proc->pending_sigs & lxp_sig_bit(sig)) &&
-		    !lxp_sig_blocked(proc, sig)) {
-			deliverable = 1;
-			break;
-		}
-	if (!deliverable) {
-		lxp_wait_t wait = {.kind = LXP_WAIT_SIGSUSPEND};
-		if (lxp_wait_begin(proc, &wait) != 0)
-			return -LXP_EAGAIN;
-	}
-	return -LXP_EINTR;
-}
-
-/* (set, info, timeout, sigsetsize) */
-static long sc_rt_sigtimedwait_time64(lxp_proc_t *proc, const long a[6])
-{
-	/* Poll variant: return a pending signal that is in `set` (dequeuing it), else report
-	 * a timeout. Blocking for the timeout is not modeled — this is enough for libc/shell
-	 * startup, which drains pending signals with sigtimedwait and must see -EAGAIN (not
-	 * -ENOSYS) to finish and continue to the interactive read. */
-	const uint32_t *uset = (const uint32_t *)(uintptr_t)a[0];
-	size_t sz = (size_t)a[3];
-	if (sz > 8)
-		return -LXP_EINVAL;
-	uint64_t set = 0;
-	if (uset) {
-		if (!lxp_guest_access_ok(proc, uset, sz, 0))
-			return -LXP_EFAULT;
-		if (sz >= 4)
-			set |= (uint64_t)uset[0];
-		if (sz >= 8)
-			set |= (uint64_t)uset[1] << 32;
-	}
-	uint64_t ready = proc->pending_sigs & set;
-	if (ready) {
-		int sig = __builtin_ctzll(ready) + 1; /* lowest pending signal in the set */
-		proc->pending_sigs &= ~lxp_sig_bit(sig);
-		(void)a[1]; /* siginfo output omitted; the return value carries the signo */
-		return sig;
-	}
-	return -LXP_EAGAIN;
-}
-
-/* (how, set, oldset, sigsetsize) */
-static long sc_rt_sigprocmask(lxp_proc_t *proc, const long a[6])
-{
-	int how = (int)a[0];
-	const uint32_t *uset = (const uint32_t *)(uintptr_t)a[1];
-	uint32_t *uold = (uint32_t *)(uintptr_t)a[2];
-	size_t sz = (size_t)a[3]; /* bytes of the guest sigset_t (8 for the 64-bit mask) */
-	if (sz > 8)
-		return -LXP_EINVAL;
-	if (uset && !lxp_guest_access_ok(proc, uset, sz, 0))
-		return -LXP_EFAULT;
-	if (uold && !lxp_guest_access_ok(proc, uold, sz, 1))
-		return -LXP_EFAULT;
-	/* Read the new set BEFORE writing oldset — the guest may alias them, the legal
-	 * sigprocmask(SIG_SETMASK, &m, &m) swap — and validate `how` up front so an invalid
-	 * value has no side effects. */
-	uint64_t nv = 0;
-	if (uset) {
-		if (how != LXP_SIG_BLOCK && how != LXP_SIG_UNBLOCK &&
-		    how != LXP_SIG_SETMASK)
-			return -LXP_EINVAL;
-		if (sz >= 4)
-			nv |= (uint64_t)uset[0];
-		if (sz >= 8)
-			nv |= (uint64_t)uset[1] << 32;
-	}
-	uint64_t old = proc->sig_blocked;
-	if (uold) { /* report the previous mask, low word then high, within sigsetsize */
-		if (sz >= 4)
-			uold[0] = (uint32_t)old;
-		if (sz >= 8)
-			uold[1] = (uint32_t)(old >> 32);
-	}
-	if (uset) {
-		proc->sig_blocked = how == LXP_SIG_BLOCK     ? old | nv
-				    : how == LXP_SIG_UNBLOCK ? old & ~nv
-							     : nv; /* LXP_SIG_SETMASK */
-		/* SIGKILL and SIGSTOP can never be blocked. */
-		proc->sig_blocked &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP));
-	}
-	return 0;
-}
-
 /* futex / futex_time64 are intercepted by the coordinator (src/lxp_run.c, lxp_futex):
  * a co-running thread's WAIT parks on the uaddr and a peer's WAKE resumes it. They
  * never reach the dispatcher. */
@@ -847,7 +706,7 @@ static const struct lxp_sys_entry g_lxp_sys_table[LXP_SYS_TABLE_SIZE] = {
 	[LXP_NR_clock_nanosleep] = {lxp_sys_clock_nanosleep, 0},
 	[LXP_NR_clock_nanosleep_time64] = {lxp_sys_clock_nanosleep_time64, 0},
 	[LXP_NR_uname] = {lxp_sys_uname, 0},
-	[LXP_NR_rt_sigaction] = {sc_rt_sigaction, 0},
+	[LXP_NR_rt_sigaction] = {lxp_sys_rt_sigaction, 0},
 	[LXP_NR_pselect6_time64] = {sc_pselect6_time64, 0},
 	[LXP_NR_poll] = {sc_poll, 0},
 	[LXP_NR_ppoll_time64] = {sc_ppoll_time64, 0},
@@ -857,9 +716,9 @@ static const struct lxp_sys_entry g_lxp_sys_table[LXP_SYS_TABLE_SIZE] = {
 	[LXP_NR_getgid32] = {lxp_sys_getuid_root, LXP_SYS_FAST},
 	[LXP_NR_getegid32] = {lxp_sys_getuid_root, LXP_SYS_FAST},
 	[LXP_NR_ioctl] = {lxp_sys_ioctl, 0},
-	[LXP_NR_rt_sigsuspend] = {sc_rt_sigsuspend, 0},
-	[LXP_NR_rt_sigtimedwait_time64] = {sc_rt_sigtimedwait_time64, 0},
-	[LXP_NR_rt_sigprocmask] = {sc_rt_sigprocmask, 0},
+	[LXP_NR_rt_sigsuspend] = {lxp_sys_rt_sigsuspend, 0},
+	[LXP_NR_rt_sigtimedwait_time64] = {lxp_sys_rt_sigtimedwait_time64, 0},
+	[LXP_NR_rt_sigprocmask] = {lxp_sys_rt_sigprocmask, 0},
 	[LXP_NR_set_tid_address] = {lxp_sys_set_tid_address, LXP_SYS_FAST},
 	[LXP_NR_set_robust_list] = {lxp_sys_set_robust_list, LXP_SYS_FAST},
 #if LXP_ENABLE_NET

@@ -37,6 +37,7 @@ set(LXP_RUNTIME_SOURCES
     "${LXP_SOURCE_ROOT}/src/sys/lxp_sys_mm.c"
     "${LXP_SOURCE_ROOT}/src/sys/lxp_sys_path.c"
     "${LXP_SOURCE_ROOT}/src/sys/lxp_sys_proc.c"
+    "${LXP_SOURCE_ROOT}/src/sys/lxp_sys_signal.c"
     "${LXP_SOURCE_ROOT}/src/sys/lxp_sys_time.c"
 )
 

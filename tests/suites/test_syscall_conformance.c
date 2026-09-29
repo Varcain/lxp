@@ -1277,6 +1277,17 @@ static void test_conf_signal(void **state)
 	assert_int_equal(SC(&p, LXP_NR_rt_sigaction, LXP_SIGINT, 0, (long)(uintptr_t)oact, 0, 0, 0),
 			 0);
 	assert_int_equal(oact[0], 0xdeadbeef);
+	/* One struct as both the new and the old action (legal): the new one is read
+	 * before the old one is written back into it. */
+	act[0] = 0x12345678;
+	act[2] = 0x9abcdef0;
+	assert_int_equal(SC(&p, LXP_NR_rt_sigaction, LXP_SIGINT, (long)(uintptr_t)act,
+			    (long)(uintptr_t)act, 0, 0, 0),
+			 0);
+	assert_int_equal(p.sighand->handler[LXP_SIGINT], 0x12345678);
+	assert_int_equal(p.sighand->restorer, 0x9abcdef0);
+	assert_int_equal(act[0], 0xdeadbeef);
+	assert_int_equal(act[2], 0xcafef00d);
 	/* an out-of-range signal is -EINVAL. */
 	assert_int_equal(SC(&p, LXP_NR_rt_sigaction, LXP_NSIG, (long)(uintptr_t)act, 0, 0, 0, 0),
 			 -LXP_EINVAL);
