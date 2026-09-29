@@ -65,16 +65,16 @@
 #include "run/lxp_runtime_test.h"
 #endif
 
-struct lxp_slot_runtime g_lxp_slots[LXP_NSLOT];
+struct lxp_runtime g_lxp_rt;
 
 int slot_runnable_load(int slot)
 {
-	return __atomic_load_n(&g_lxp_slots[slot].runnable, __ATOMIC_ACQUIRE) != 0;
+	return __atomic_load_n(&g_lxp_rt.slots[slot].runnable, __ATOMIC_ACQUIRE) != 0;
 }
 
 void slot_runnable_store(int slot, int runnable)
 {
-	__atomic_store_n(&g_lxp_slots[slot].runnable, runnable != 0, __ATOMIC_RELEASE);
+	__atomic_store_n(&g_lxp_rt.slots[slot].runnable, runnable != 0, __ATOMIC_RELEASE);
 }
 
 /*
@@ -118,30 +118,12 @@ int lxp_trap_active(void)
 {
 	return __atomic_load_n(&g_lxp_trap_gate, __ATOMIC_ACQUIRE) != 0;
 }
-/* Coordinator heartbeat: bumped once per dispatch-loop iteration, read by a host
- * watchdog through lxp_run_health(). Free-running; a stalled value while active
- * is the wedge signal. volatile + aligned u32 => the cross-task read is atomic
- * without a lock (the reader only needs to observe change, not a precise count). */
-static volatile uint32_t g_coord_iters;
-lxp_arena_t g_lxp_arenas[LXP_NREG];
-/* Exact region reservations, including address spaces and temporary
- * snapshot/exec leases. A committed region belongs to the lxp_mm_t carrying
- * its generation-bearing reference; lease_owner is populated only until a
- * prepared image/snapshot is either committed or aborted. */
-struct lxp_region_runtime g_lxp_regions[LXP_NREG];
-/* vfork data isolation: a snapshot of the shared arena's allocator metadata, taken when a vfork
- * child is spawned and restored when it execs/exits. The region+dyn_pool bytes and the
- * coordinator-owned allocator metadata all use the same reserved snapshot region: its
- * g_lxp_arenas[] entry is otherwise idle until the child either execs into or releases it. */
-struct vfork_snapshot_guard g_lxp_vfork_guard[LXP_NSLOT];
-/* The active run's configuration and engine. */
-static const lxp_run_config_t *g_cfg;
 
 long lxp_rt_scope_read(char *buf, size_t cap)
 {
-	if (!buf || !g_cfg || !g_cfg->rt_scope_read)
+	if (!buf || !g_lxp_rt.cfg || !g_lxp_rt.cfg->rt_scope_read)
 		return -1;
-	return g_cfg->rt_scope_read(g_cfg->rt_scope_ctx, buf, cap);
+	return g_lxp_rt.cfg->rt_scope_read(g_lxp_rt.cfg->rt_scope_ctx, buf, cap);
 }
 
 int lxp_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_owner);
@@ -162,14 +144,14 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out)
 
 	unsigned slots_used = 0;
 	for (int s = 0; s < LXP_NSLOT; s++)
-		if (g_lxp_slots[s].proc.alive)
+		if (g_lxp_rt.slots[s].proc.alive)
 			slots_used++;
 	out->slots_free = LXP_NSLOT - slots_used;
 	out->processes = slots_used;
 
 	unsigned regions_used = 0;
 	for (int r = 0; r < LXP_NREG; r++)
-		if (lxp_trap_active() && g_lxp_regions[r].refs != 0)
+		if (lxp_trap_active() && g_lxp_rt.regions[r].refs != 0)
 			regions_used++;
 	out->regions_free = LXP_NREG - regions_used;
 
@@ -191,7 +173,7 @@ static void lxp_coord_map(int ridx)
 
 void guest_view_failure(int slot, int rc)
 {
-	if (slot < 0 || slot >= LXP_NSLOT || !g_lxp_slots[slot].proc.alive)
+	if (slot < 0 || slot >= LXP_NSLOT || !g_lxp_rt.slots[slot].proc.alive)
 		return;
 	coordinator_exit_slot(slot, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION, (uint32_t)(-rc));
 }
@@ -199,32 +181,26 @@ void guest_view_failure(int slot, int rc)
 int coordinator_guest_view_begin(int slot, lxp_guest_view_t *view)
 {
 	lxp_slot_ref_t ref = slot_ref_at(slot);
-	if (!lxp_slot_ref_is_current(ref) || !g_lxp_slots[slot].proc.mm)
+	if (!lxp_slot_ref_is_current(ref) || !g_lxp_rt.slots[slot].proc.mm)
 		return -LXP_ESRCH;
-	lxp_coord_map(g_lxp_slots[slot].proc.mm->region.index);
-	return lxp_guest_view_begin(&g_lxp_slots[slot].proc, ref, &g_lxp_slots[slot].generation,
-				    LXP_GUEST_READ_WRITE, view);
+	lxp_coord_map(g_lxp_rt.slots[slot].proc.mm->region.index);
+	return lxp_guest_view_begin(&g_lxp_rt.slots[slot].proc, ref,
+				    &g_lxp_rt.slots[slot].generation, LXP_GUEST_READ_WRITE, view);
 }
-
-/* The rootfs cpio region [lo, hi). Dynamic FDPIC processes execute busybox.so, ld.so and libc.so
- * text shared in place from this backing store; engine MPU policies grant it user RO+X access.
- * NULL until a run starts. */
-static const uint8_t *g_lxp_rootfs_lo;
-static const uint8_t *g_lxp_rootfs_hi;
 
 /* access_ok (lxp_guest.c) asks for the shared read-only rootfs span so a read-source user
  * pointer may point into a program's .rodata (shared in-place from the cpio). */
 void lxp_rootfs_bounds(uintptr_t *lo, uintptr_t *hi)
 {
-	*lo = (uintptr_t)g_lxp_rootfs_lo;
-	*hi = (uintptr_t)g_lxp_rootfs_hi;
+	*lo = (uintptr_t)g_lxp_rt.rootfs_lo;
+	*hi = (uintptr_t)g_lxp_rt.rootfs_hi;
 }
 
 /* Private coordinator policies address a process through the slot owner
  * without exposing the runtime table to syscall or backing-object layers. */
 lxp_proc_t *lxp_slot_proc(int slot)
 {
-	return slot >= 0 && slot < LXP_NSLOT ? &g_lxp_slots[slot].proc : NULL;
+	return slot >= 0 && slot < LXP_NSLOT ? &g_lxp_rt.slots[slot].proc : NULL;
 }
 
 /* Run-scoped console-provider callback. The provider retains the immutable
@@ -249,11 +225,9 @@ static void lxp_socket_ready(const void *context)
 #endif
 
 #if LXP_ENABLE_FS
-static int g_fs_completion_ready;
-
 void lxp_fs_completion_ready(const void *context)
 {
-	__atomic_store_n(&g_fs_completion_ready, 1, __ATOMIC_RELEASE);
+	__atomic_store_n(&g_lxp_rt.fs_completion_ready, 1, __ATOMIC_RELEASE);
 	const lxp_os_ops_t *eng = context;
 	if (eng && eng->event_post)
 		eng->event_post();
@@ -261,7 +235,7 @@ void lxp_fs_completion_ready(const void *context)
 
 int lxp_fs_completion_hint_take(void)
 {
-	return __atomic_exchange_n(&g_fs_completion_ready, 0, __ATOMIC_ACQ_REL);
+	return __atomic_exchange_n(&g_lxp_rt.fs_completion_ready, 0, __ATOMIC_ACQ_REL);
 }
 #endif
 
@@ -297,20 +271,20 @@ static int coordinator_control_event(int event)
 
 uint8_t deferred_state_load(int slot)
 {
-	return __atomic_load_n(&g_lxp_slots[slot].deferred.state, __ATOMIC_ACQUIRE);
+	return __atomic_load_n(&g_lxp_rt.slots[slot].deferred.state, __ATOMIC_ACQUIRE);
 }
 
 void deferred_state_store(int slot, uint8_t state)
 {
-	__atomic_store_n(&g_lxp_slots[slot].deferred.state, state, __ATOMIC_RELEASE);
+	__atomic_store_n(&g_lxp_rt.slots[slot].deferred.state, state, __ATOMIC_RELEASE);
 }
 
 void deferred_slot_reassign(int slot)
 {
 	deferred_state_store(slot, DEFER_IDLE);
-	uint32_t next = __atomic_add_fetch(&g_lxp_slots[slot].generation, 1u, __ATOMIC_ACQ_REL);
+	uint32_t next = __atomic_add_fetch(&g_lxp_rt.slots[slot].generation, 1u, __ATOMIC_ACQ_REL);
 	if (next == 0) /* reserve zero for the static, never-assigned state */
-		(void)__atomic_add_fetch(&g_lxp_slots[slot].generation, 1u, __ATOMIC_ACQ_REL);
+		(void)__atomic_add_fetch(&g_lxp_rt.slots[slot].generation, 1u, __ATOMIC_ACQ_REL);
 }
 
 /* Per-slot FDPIC runtime load addresses, exported (non-static) for SOURCE-LEVEL GDB DEBUGGING of
@@ -339,7 +313,7 @@ int lxp_slot_publish_image(int slot, lxp_proc_t *image, lxp_exec_capture_t *capt
 {
 	if (slot < 0 || slot >= LXP_NSLOT || !image || !debug)
 		return -LXP_EINVAL;
-	lxp_proc_t *dest = &g_lxp_slots[slot].proc;
+	lxp_proc_t *dest = &g_lxp_rt.slots[slot].proc;
 	if (dest->alive || dest->mm || dest->files || dest->fs_context || dest->sighand ||
 	    dest->group)
 		return -LXP_EINVAL;
@@ -363,15 +337,15 @@ int lxp_slot_publish_image(int slot, lxp_proc_t *image, lxp_exec_capture_t *capt
 int slot_of(const lxp_proc_t *p)
 {
 	uintptr_t a = (uintptr_t)p;
-	uintptr_t base = (uintptr_t)&g_lxp_slots[0];
+	uintptr_t base = (uintptr_t)&g_lxp_rt.slots[0];
 	if (a < base + offsetof(struct lxp_slot_runtime, proc))
 		return -1;
 	uintptr_t record = a - offsetof(struct lxp_slot_runtime, proc);
-	if (record < base || record >= (uintptr_t)&g_lxp_slots[LXP_NSLOT] ||
-	    (record - base) % sizeof(g_lxp_slots[0]) != 0)
+	if (record < base || record >= (uintptr_t)&g_lxp_rt.slots[LXP_NSLOT] ||
+	    (record - base) % sizeof(g_lxp_rt.slots[0]) != 0)
 		return -1;
-	int slot = (int)((record - base) / sizeof(g_lxp_slots[0]));
-	return p == &g_lxp_slots[slot].proc ? slot : -1;
+	int slot = (int)((record - base) / sizeof(g_lxp_rt.slots[0]));
+	return p == &g_lxp_rt.slots[slot].proc ? slot : -1;
 }
 
 /* Bounded per-slot stacks of interrupted signal contexts. LinuxThreads can
@@ -387,7 +361,7 @@ int lxp_signal_process_group(int pgid, int sig)
 		return 0;
 	int recipients = 0;
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		lxp_proc_t *p = &g_lxp_slots[s].proc;
+		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
 		if (p->alive && p->pid > 1 && p->group && p->group->pgid == pgid) {
 			lxp_signal_latch(p, sig);
 			recipients++;
@@ -402,7 +376,7 @@ void lxp_run_health(lxp_run_health_t *out)
 {
 	if (!out)
 		return;
-	out->coord_iters = g_coord_iters;
+	out->coord_iters = g_lxp_rt.coord_iters;
 	out->active = lxp_trap_active();
 }
 
@@ -429,22 +403,22 @@ void flatten_vec(char *buf, const char **ptrs, const char *src_buf, const uint16
  * falls back from (LXP_SYS_QUIET_ENOSYS: socket() without networking). */
 void coordinator_report_enosys(long nr, long result)
 {
-	if (result == -LXP_ENOSYS && g_cfg && g_cfg->on_enosys &&
+	if (result == -LXP_ENOSYS && g_lxp_rt.cfg && g_lxp_rt.cfg->on_enosys &&
 	    !(lxp_syscall_flags(nr) & LXP_SYS_QUIET_ENOSYS))
-		g_cfg->on_enosys(nr);
+		g_lxp_rt.cfg->on_enosys(nr);
 }
 
 uint32_t lxp_guest_sched_weight(int slot)
 {
 	if (slot < 0 || slot >= LXP_NSLOT || !slot_runnable_load(slot))
 		return 0;
-	return lxp_nice_weight(lxp_proc_nice_get(&g_lxp_slots[slot].proc));
+	return lxp_nice_weight(lxp_proc_nice_get(&g_lxp_rt.slots[slot].proc));
 }
 
 /* ---- host task lifecycle --------------------------------------------------- */
 uint32_t slot_generation(int sidx)
 {
-	return __atomic_load_n(&g_lxp_slots[sidx].generation, __ATOMIC_ACQUIRE);
+	return __atomic_load_n(&g_lxp_rt.slots[sidx].generation, __ATOMIC_ACQUIRE);
 }
 
 lxp_slot_ref_t slot_ref_at(int slot)
@@ -459,13 +433,13 @@ lxp_slot_ref_t slot_ref_at(int slot)
 
 uint8_t lxp_slot_host_state(int slot)
 {
-	return slot >= 0 && slot < LXP_NSLOT ? g_lxp_slots[slot].host_state : SLOT_FAILED;
+	return slot >= 0 && slot < LXP_NSLOT ? g_lxp_rt.slots[slot].host_state : SLOT_FAILED;
 }
 
 void lxp_slot_set_host_state(int slot, uint8_t state)
 {
-	if (slot >= 0 && slot < LXP_NSLOT && g_lxp_slots[slot].host_state != state) {
-		g_lxp_slots[slot].host_state = state;
+	if (slot >= 0 && slot < LXP_NSLOT && g_lxp_rt.slots[slot].host_state != state) {
+		g_lxp_rt.slots[slot].host_state = state;
 		lxp_diag_lifecycle_changed();
 	}
 }
@@ -474,9 +448,9 @@ void lxp_slot_proc_reset(int slot)
 {
 	if (slot < 0 || slot >= LXP_NSLOT)
 		return;
-	memset(&g_lxp_slots[slot].proc, 0, sizeof(g_lxp_slots[slot].proc));
-	g_lxp_slots[slot].proc.snapshot = lxp_region_ref_none();
-	g_lxp_slots[slot].proc.vfork_parent = lxp_slot_ref_none();
+	memset(&g_lxp_rt.slots[slot].proc, 0, sizeof(g_lxp_rt.slots[slot].proc));
+	g_lxp_rt.slots[slot].proc.snapshot = lxp_region_ref_none();
+	g_lxp_rt.slots[slot].proc.vfork_parent = lxp_slot_ref_none();
 }
 
 int lxp_slot_ref_current(int slot, lxp_slot_ref_t *out)
@@ -484,7 +458,7 @@ int lxp_slot_ref_current(int slot, lxp_slot_ref_t *out)
 	if (!out || slot < 0 || slot >= LXP_NSLOT)
 		return -LXP_EINVAL;
 	uint32_t generation = slot_generation(slot);
-	if (generation == 0 || !g_lxp_slots[slot].proc.alive)
+	if (generation == 0 || !g_lxp_rt.slots[slot].proc.alive)
 		return -LXP_ESRCH;
 	*out = slot_ref_at(slot);
 	return LXP_OK;
@@ -493,22 +467,22 @@ int lxp_slot_ref_current(int slot, lxp_slot_ref_t *out)
 int lxp_slot_ref_is_current(lxp_slot_ref_t ref)
 {
 	return ref.index >= 0 && ref.index < LXP_NSLOT && ref.generation != 0 &&
-	       slot_generation(ref.index) == ref.generation && g_lxp_slots[ref.index].proc.alive;
+	       slot_generation(ref.index) == ref.generation && g_lxp_rt.slots[ref.index].proc.alive;
 }
 
 const struct lxp_resume_ctx *lxp_slot_resume_view(lxp_slot_ref_t ref)
 {
-	return lxp_slot_ref_is_current(ref) ? &g_lxp_slots[ref.index].resume : NULL;
+	return lxp_slot_ref_is_current(ref) ? &g_lxp_rt.slots[ref.index].resume : NULL;
 }
 
 int lxp_slot_resume_clone_for_fork(lxp_slot_ref_t child, lxp_slot_ref_t parent, uintptr_t child_sp)
 {
 	if (child.index < 0 || child.index >= LXP_NSLOT || child.generation == 0 ||
 	    child.index == parent.index || slot_generation(child.index) != child.generation ||
-	    g_lxp_slots[child.index].proc.alive || !lxp_slot_ref_is_current(parent))
+	    g_lxp_rt.slots[child.index].proc.alive || !lxp_slot_ref_is_current(parent))
 		return -LXP_ESRCH;
-	g_lxp_slots[child.index].resume = g_lxp_slots[parent.index].resume;
-	g_lxp_slots[child.index].resume.sp = child_sp;
+	g_lxp_rt.slots[child.index].resume = g_lxp_rt.slots[parent.index].resume;
+	g_lxp_rt.slots[child.index].resume.sp = child_sp;
 	return LXP_OK;
 }
 
@@ -517,16 +491,16 @@ int lxp_slot_ref_is_runnable(lxp_slot_ref_t ref)
 	if (ref.index < 0 || ref.index >= LXP_NSLOT || ref.generation == 0 ||
 	    !slot_runnable_load(ref.index))
 		return 0;
-	return slot_generation(ref.index) == ref.generation && g_lxp_slots[ref.index].proc.alive;
+	return slot_generation(ref.index) == ref.generation && g_lxp_rt.slots[ref.index].proc.alive;
 }
 
 int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out)
 {
-	if (!out || !lxp_slot_ref_is_current(ref) || !g_lxp_slots[ref.index].proc.mm)
+	if (!out || !lxp_slot_ref_is_current(ref) || !g_lxp_rt.slots[ref.index].proc.mm)
 		return -LXP_ESRCH;
-	lxp_region_ref_t region = g_lxp_slots[ref.index].proc.mm->region;
+	lxp_region_ref_t region = g_lxp_rt.slots[ref.index].proc.mm->region;
 	if (region.index < 0 || region.index >= LXP_NREG || region.generation == 0 ||
-	    g_lxp_regions[region.index].generation != region.generation)
+	    g_lxp_rt.regions[region.index].generation != region.generation)
 		return -LXP_EINVAL;
 	*out = region;
 	return LXP_OK;
@@ -569,12 +543,12 @@ int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out)
 {
 	if (!out || !lxp_slot_ref_is_current(ref))
 		return -LXP_ESRCH;
-	const lxp_mm_t *mm = g_lxp_slots[ref.index].proc.mm;
+	const lxp_mm_t *mm = g_lxp_rt.slots[ref.index].proc.mm;
 	if (!mm || mm->device_generation == 0 || mm->exec_generation == 0)
 		return -LXP_EINVAL;
 	lxp_region_ref_t region = mm->region;
 	if (region.index < 0 || region.index >= LXP_NREG || region.generation == 0 ||
-	    g_lxp_regions[region.index].generation != region.generation)
+	    g_lxp_rt.regions[region.index].generation != region.generation)
 		return -LXP_EINVAL;
 
 	*out = (lxp_memory_policy_t){
@@ -609,7 +583,7 @@ int lxp_slot_report_memory_fault(lxp_slot_ref_t ref, const lxp_guest_fault_t *fa
 {
 	if (!fault || !lxp_slot_ref_is_current(ref))
 		return -LXP_ESRCH;
-	lxp_proc_t *proc = &g_lxp_slots[ref.index].proc;
+	lxp_proc_t *proc = &g_lxp_rt.slots[ref.index].proc;
 	proc->exit_status = 139; /* 128 + SIGSEGV */
 	proc->exit_reason = LXP_EXIT_REASON_MEMORY_FAULT;
 	proc->exit_signal = LXP_SIGSEGV;
@@ -676,11 +650,11 @@ int coordinator_map_mm_range(const lxp_os_ops_t *eng, lxp_mm_t *mm, uintptr_t ad
 	if (!eng->map_device)
 		return -LXP_ENODEV;
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		if (!g_lxp_slots[s].proc.alive || g_lxp_slots[s].proc.mm != mm)
+		if (!g_lxp_rt.slots[s].proc.alive || g_lxp_rt.slots[s].proc.mm != mm)
 			continue;
 		if (eng->map_device(s, addr, len, attrs) != 0) {
 			for (int r = 0; r < LXP_NSLOT; r++)
-				if (g_lxp_slots[r].proc.alive && g_lxp_slots[r].proc.mm == mm)
+				if (g_lxp_rt.slots[r].proc.alive && g_lxp_rt.slots[r].proc.mm == mm)
 					(void)coordinator_restore_mm_maps(eng, r, mm);
 			return -LXP_ENOMEM;
 		}
@@ -694,7 +668,7 @@ int coordinator_map_mm_range(const lxp_os_ops_t *eng, lxp_mm_t *mm, uintptr_t ad
  * it, increment retained counters, or leave it unset for zero runtime cost. */
 void notify_guest_exit(int slot, const lxp_proc_t *proc)
 {
-	if (!g_cfg || !g_cfg->on_guest_exit)
+	if (!g_lxp_rt.cfg || !g_lxp_rt.cfg->on_guest_exit)
 		return;
 	const lxp_guest_exit_info_t info = {
 		.slot = slot,
@@ -707,7 +681,7 @@ void notify_guest_exit(int slot, const lxp_proc_t *proc)
 		.detail = proc->exit_detail,
 		.address = proc->exit_address,
 	};
-	g_cfg->on_guest_exit(g_cfg->guest_exit_ctx, &info);
+	g_lxp_rt.cfg->on_guest_exit(g_lxp_rt.cfg->guest_exit_ctx, &info);
 }
 
 /* A parent's live children and queued zombies share one bounded accounting
@@ -725,7 +699,7 @@ int thread_group_live_count(const lxp_thread_group_t *group)
 {
 	int live = 0;
 	for (int s = 0; s < LXP_NSLOT; s++)
-		if (g_lxp_slots[s].proc.alive && g_lxp_slots[s].proc.group == group)
+		if (g_lxp_rt.slots[s].proc.alive && g_lxp_rt.slots[s].proc.group == group)
 			live++;
 	return live;
 }
@@ -734,13 +708,13 @@ void thread_group_request_exit(int source_slot, int status)
 {
 	if (source_slot < 0 || source_slot >= LXP_NSLOT)
 		return;
-	lxp_thread_group_t *group = g_lxp_slots[source_slot].proc.group;
+	lxp_thread_group_t *group = g_lxp_rt.slots[source_slot].proc.group;
 	if (!group)
 		return;
 	group->exiting = 1;
 	group->exit_status = status & 0xff;
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		lxp_proc_t *p = &g_lxp_slots[s].proc;
+		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
 		if (!p->alive || p->group != group)
 			continue;
 		coordinator_exit_slot(s, 1, status & 0xff, LXP_EXIT_REASON_NORMAL, 0);
@@ -753,10 +727,10 @@ void thread_group_request_exit(int source_slot, int status)
  * releases per-task references on subsequent coordinator passes. */
 int thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slot, int failure_status)
 {
-	lxp_thread_group_t *group = g_lxp_slots[source_slot].proc.group;
+	lxp_thread_group_t *group = g_lxp_rt.slots[source_slot].proc.group;
 	int rc = LXP_OK;
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		lxp_proc_t *p = &g_lxp_slots[s].proc;
+		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
 		if (s == source_slot || !p->alive || p->group != group)
 			continue;
 		if (coordinator_abort_slot(eng, s) != LXP_OK)
@@ -767,10 +741,11 @@ int thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slot, int f
 }
 
 /* Deliver `sig` to a proc PARKED in rt_sigsuspend (the LinuxThreads restart). There is no live
- * frame — the interrupted context is the captured g_lxp_slots[slot].resume. Save that as the slot's sigreturn
- * frame (to resume with `ret` = -EINTR), then resume the proc INTO its handler; the handler's
- * sa_restorer -> rt_sigreturn restores the saved frame and the syscall returns -EINTR. SIG_IGN
- * just resumes with `ret`; SIG_DFL terminates (the LXP_EV_EXIT pass reaps it). */
+ * frame — the interrupted context is the slot's captured resume context. Save that as the
+ * slot's sigreturn frame (to resume with `ret` = -EINTR), then resume the proc INTO its
+ * handler; the handler's sa_restorer -> rt_sigreturn restores the saved frame and the syscall
+ * returns -EINTR. SIG_IGN just resumes with `ret`; SIG_DFL terminates (the LXP_EV_EXIT pass
+ * reaps it). */
 void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, int sig, long ret)
 {
 	struct lxp_signal_delivery delivery;
@@ -798,32 +773,28 @@ void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, 
 	}
 	if (action != LXP_SIGNAL_HANDLER)
 		return;
+	struct lxp_resume_ctx *resume = &g_lxp_rt.slots[slot].resume;
 	struct sig_save_s *sv = delivery.save;
 	sv->r0 = (uint32_t)ret;
-	sv->r1 = g_lxp_slots[slot].resume.r1;
-	sv->r2 = g_lxp_slots[slot].resume.r2;
-	sv->r3 = g_lxp_slots[slot].resume.r3;
-	sv->r9 =
-		g_lxp_slots[slot]
-			.resume
-			.r4_11[5]; /* FDPIC GOT of the parked code — clobbered below (r4_11[5]=r9) */
-	sv->r12 = g_lxp_slots[slot].resume.r12;
-	sv->lr = g_lxp_slots[slot].resume.lr;
-	sv->pc = g_lxp_slots[slot].resume.pc;		       /* the rt_sigsuspend resume point */
-	sv->xpsr = g_lxp_slots[slot].resume.xpsr | (1u << 24); /* preserve APSR flags + Thumb */
+	sv->r1 = resume->r1;
+	sv->r2 = resume->r2;
+	sv->r3 = resume->r3;
+	sv->r9 = resume->r4_11[5]; /* FDPIC GOT of the parked code — clobbered below (r4_11[5]=r9) */
+	sv->r12 = resume->r12;
+	sv->lr = resume->lr;
+	sv->pc = resume->pc;		      /* the rt_sigsuspend resume point */
+	sv->xpsr = resume->xpsr | (1u << 24); /* preserve APSR flags + Thumb */
 #if LXP_ENABLE_FPU_CONTEXT
-	sv->fp = g_lxp_slots[slot].resume.fp;
+	sv->fp = resume->fp;
 #endif
 	/* Reuse the slot ctx as the handler-entry frame; sp + r4-r11 stay = the thread's, except r9
 	 * (the handler's own GOT for FDPIC — resolve_handler derefs the {entry,GOT} funcdescs; the
 	 * restart handler lives in libpthread, a different module than the interrupted libc). */
 	if (proc->is_fdpic)
-		g_lxp_slots[slot].resume.r4_11[5] = delivery.got; /* r9 = handler's GOT */
-	g_lxp_slots[slot].resume.lr = delivery.restorer |
-				      1u; /* return -> sa_restorer entry -> sigreturn */
-	g_lxp_slots[slot].resume.pc = delivery.entry | 1u; /* enter the handler (Thumb) */
-	coordinator_resume_slot(eng, slot, proc->mm->region.index, &g_lxp_slots[slot].resume,
-				sig); /* r0 = signo */
+		resume->r4_11[5] = delivery.got;      /* r9 = handler's GOT */
+	resume->lr = delivery.restorer | 1u;	      /* return -> sa_restorer entry -> sigreturn */
+	resume->pc = delivery.entry | 1u;	      /* enter the handler (Thumb) */
+	coordinator_resume_slot(eng, slot, proc->mm->region.index, resume, sig); /* r0 = signo */
 }
 
 /* Execute one READY mailbox in privileged task context. The lower-priority guest
@@ -833,11 +804,11 @@ void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, 
 void execute_deferred(const lxp_os_ops_t *eng, int slot)
 {
 	uint8_t expected = DEFER_READY;
-	if (!__atomic_compare_exchange_n(&g_lxp_slots[slot].deferred.state, &expected,
+	if (!__atomic_compare_exchange_n(&g_lxp_rt.slots[slot].deferred.state, &expected,
 					 DEFER_RUNNING, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
 		return;
-	struct deferred_req *req = &g_lxp_slots[slot].deferred;
-	lxp_proc_t *proc = &g_lxp_slots[slot].proc;
+	struct deferred_req *req = &g_lxp_rt.slots[slot].deferred;
+	lxp_proc_t *proc = &g_lxp_rt.slots[slot].proc;
 	if (!proc->alive || !lxp_slot_ref_equal(req->owner, slot_ref_at(slot))) {
 		deferred_state_store(slot, DEFER_IDLE);
 		if (proc->intent.kind == LXP_INTENT_DEFERRED_SYSCALL)
@@ -873,13 +844,13 @@ void execute_deferred(const lxp_os_ops_t *eng, int slot)
 	 * blocks it sets a wait flag and the event loop delivers the pending signal against the
 	 * parked op (with -EINTR, the correct restart point); if it completes, the tail below
 	 * delivers the signal with the syscall's ACTUAL result. */
-	long nr = (long)(int32_t)g_lxp_slots[slot].resume.r4_11[3]; /* captured r7 */
+	long nr = (long)(int32_t)g_lxp_rt.slots[slot].resume.r4_11[3]; /* captured r7 */
 	long a0 = (long)(int32_t)req->a0;
-	long a1 = (long)(int32_t)g_lxp_slots[slot].resume.r1;
-	long a2 = (long)(int32_t)g_lxp_slots[slot].resume.r2;
-	long a3 = (long)(int32_t)g_lxp_slots[slot].resume.r3;
-	long a4 = (long)(int32_t)g_lxp_slots[slot].resume.r4_11[0];
-	long a5 = (long)(int32_t)g_lxp_slots[slot].resume.r4_11[1];
+	long a1 = (long)(int32_t)g_lxp_rt.slots[slot].resume.r1;
+	long a2 = (long)(int32_t)g_lxp_rt.slots[slot].resume.r2;
+	long a3 = (long)(int32_t)g_lxp_rt.slots[slot].resume.r3;
+	long a4 = (long)(int32_t)g_lxp_rt.slots[slot].resume.r4_11[0];
+	long a5 = (long)(int32_t)g_lxp_rt.slots[slot].resume.r4_11[1];
 	(void)lxp_intent_complete(proc, LXP_INTENT_DEFERRED_SYSCALL);
 	long r = lxp_syscall(proc, nr, a0, a1, a2, a3, a4, a5);
 	coordinator_report_enosys(nr, r);
@@ -943,7 +914,7 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 	coordinator_quiesce_all(eng);
 	lxp_trap_publish(0);
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		lxp_proc_t *p = &g_lxp_slots[s].proc;
+		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
 		deferred_slot_reassign(s);
 		primary_slot_clear(s);
 #if LXP_ENABLE_NETFS
@@ -987,14 +958,14 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	for (int s = 0; s < LXP_NSLOT; s++)
 		if (!eng->exec_capture(s))
 			return LXP_RUN_ELAUNCH;
-	g_cfg = cfg;
+	g_lxp_rt.cfg = cfg;
 	lxp_os_publish(eng);
-	g_lxp_rootfs_lo = cfg->rootfs_image;
-	g_lxp_rootfs_hi = g_lxp_rootfs_lo + cfg->rootfs_image_size;
+	g_lxp_rt.rootfs_lo = cfg->rootfs_image;
+	g_lxp_rt.rootfs_hi = g_lxp_rt.rootfs_lo + cfg->rootfs_image_size;
 	for (int i = 0; i < LXP_NSLOT; i++) {
 		slot_runnable_store(i, 0);
 		lxp_slot_set_host_state(i, SLOT_FREE);
-		g_lxp_slots[i].proc.alive = 0;
+		g_lxp_rt.slots[i].proc.alive = 0;
 		deferred_slot_reassign(i);
 	}
 	lxp_primary_events_reset();
@@ -1021,7 +992,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		goto launch_failed;
 
 	/* Concurrent process model: the run loop COORDINATES the live process SET
-	 * (g_lxp_slots[*].proc.alive). Each live proc owns a region + an RTOS thread for
+	 * (g_lxp_rt.slots[*].proc.alive). Each live proc owns a region + an RTOS thread for
 	 * its lifetime; a vfork parent resumes the instant its child execs into its own
 	 * region (or exits) so the two co-run. The region table holds one reference
 	 * per live task sharing an address space, plus reserved vfork
@@ -1037,7 +1008,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	}
 	/* Interpreter scripts name the interpreter's final non-symlink image here,
 	 * so /proc/self/exe keeps re-execing the ELF which actually runs. */
-	g_lxp_slots[0].proc.exec_file_idx = initial.file_index;
+	g_lxp_rt.slots[0].proc.exec_file_idx = initial.file_index;
 	lxp_diag_refresh();
 	lxp_diag_checkpoint();
 
@@ -1055,7 +1026,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	int lat_cls = 0;
 #endif
 	for (;;) {
-		g_coord_iters++; /* heartbeat: see lxp_run_health() */
+		g_lxp_rt.coord_iters++; /* heartbeat: see lxp_run_health() */
 #if LXP_ENABLE_LATENCY
 		if (lat_cls) {
 			uint64_t t = 0;
@@ -1284,9 +1255,9 @@ out:
 	(void)net_entered;
 #endif
 	lxp_os_publish(NULL);
-	g_cfg = NULL;
-	g_lxp_rootfs_lo = NULL;
-	g_lxp_rootfs_hi = NULL;
+	g_lxp_rt.cfg = NULL;
+	g_lxp_rt.rootfs_lo = NULL;
+	g_lxp_rt.rootfs_hi = NULL;
 	lxp_providers_clear();
 	return rc;
 }
@@ -1295,17 +1266,7 @@ out:
 struct lxp_runtime_test_fixture *lxp_runtime_test_fixture(void)
 {
 	static struct lxp_runtime_test_fixture fixture = {
-		.slots = g_lxp_slots,
-		.regions = g_lxp_regions,
-		.vfork_guards = g_lxp_vfork_guard,
-		.config = &g_cfg,
 		.engine = &g_lxp_os_ops,
-		.rootfs_lo = &g_lxp_rootfs_lo,
-		.rootfs_hi = &g_lxp_rootfs_hi,
-		.diag_native_known = &g_lxp_diag.native_known,
-		.diag_native_present = g_lxp_diag.native_present,
-		.diag_lifecycle_epoch = &g_lxp_diag.lifecycle_epoch,
-		.diag_native_epoch = &g_lxp_diag.native_epoch,
 #if defined(LXP_TEST_FAILPOINTS)
 		.lifecycle_failpoint = &g_lifecycle_failpoint,
 #endif

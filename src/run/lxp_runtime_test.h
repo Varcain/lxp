@@ -18,17 +18,7 @@
 #include "run/lxp_runtime_store.h"
 
 struct lxp_runtime_test_fixture {
-	struct lxp_slot_runtime *slots;
-	struct lxp_region_runtime *regions;
-	struct vfork_snapshot_guard *vfork_guards;
-	const lxp_run_config_t **config;
 	const lxp_os_ops_t **engine;
-	const uint8_t **rootfs_lo;
-	const uint8_t **rootfs_hi;
-	uint8_t *diag_native_known;
-	uint8_t *diag_native_present;
-	uint32_t *diag_lifecycle_epoch;
-	uint32_t *diag_native_epoch;
 #if defined(LXP_TEST_FAILPOINTS)
 	enum lxp_lifecycle_failpoint *lifecycle_failpoint;
 #endif

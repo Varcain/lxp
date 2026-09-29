@@ -25,8 +25,6 @@ struct lxp_diag_state {
 	lxp_diag_health_t health;
 };
 
-extern struct lxp_diag_state g_lxp_diag;
-
 /* Start a run with no census and a clean health record. */
 void lxp_diag_run_begin(void);
 /* Drop the census (the host tasks it described are gone). */

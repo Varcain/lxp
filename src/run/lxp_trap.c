@@ -22,23 +22,23 @@
 static void capture_ctx(int s, const struct lxp_frame *f)
 {
 	for (int i = 0; i < 8; i++)
-		g_lxp_slots[s].resume.r4_11[i] = f->r[4 + i];
-	g_lxp_slots[s].resume.r12 = f->r[12];
-	g_lxp_slots[s].resume.lr = f->r[14];
-	g_lxp_slots[s].resume.sp = f->r[13];	  /* the seam set r[13] = the pre-svc SP */
-	g_lxp_slots[s].resume.pc = f->r[15] | 1u; /* resume after the svc (Thumb) */
+		g_lxp_rt.slots[s].resume.r4_11[i] = f->r[4 + i];
+	g_lxp_rt.slots[s].resume.r12 = f->r[12];
+	g_lxp_rt.slots[s].resume.lr = f->r[14];
+	g_lxp_rt.slots[s].resume.sp = f->r[13];	  /* the seam set r[13] = the pre-svc SP */
+	g_lxp_rt.slots[s].resume.pc = f->r[15] | 1u; /* resume after the svc (Thumb) */
 	/* Preserve r1-r3 across the parking syscall (Linux preserves r1-r14; only r0 is
 	 * the return, supplied by the resume). A guest may reuse an arg register after a
 	 * syscall — so leaving these garbage on resume corrupts it (e.g. wait4's options). */
-	g_lxp_slots[s].resume.r1 = f->r[1];
-	g_lxp_slots[s].resume.r2 = f->r[2];
-	g_lxp_slots[s].resume.r3 = f->r[3];
-	g_lxp_slots[s].resume.xpsr = f->xpsr;
+	g_lxp_rt.slots[s].resume.r1 = f->r[1];
+	g_lxp_rt.slots[s].resume.r2 = f->r[2];
+	g_lxp_rt.slots[s].resume.r3 = f->r[3];
+	g_lxp_rt.slots[s].resume.xpsr = f->xpsr;
 #if LXP_ENABLE_FPU_CONTEXT
 	if (f->fp)
-		g_lxp_slots[s].resume.fp = *f->fp;
+		g_lxp_rt.slots[s].resume.fp = *f->fp;
 	else
-		memset(&g_lxp_slots[s].resume.fp, 0, sizeof(g_lxp_slots[s].resume.fp));
+		memset(&g_lxp_rt.slots[s].resume.fp, 0, sizeof(g_lxp_rt.slots[s].resume.fp));
 #endif
 }
 
@@ -50,7 +50,7 @@ static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 	int slot = slot_of(proc);
 	uint8_t expected = DEFER_IDLE;
 	if (slot < 0 || slot >= LXP_NSLOT ||
-	    !__atomic_compare_exchange_n(&g_lxp_slots[slot].deferred.state, &expected,
+	    !__atomic_compare_exchange_n(&g_lxp_rt.slots[slot].deferred.state, &expected,
 					 DEFER_FILLING, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
 		f->r[0] = (uint32_t)-LXP_EAGAIN;
 		return;
@@ -62,8 +62,8 @@ static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 		f->r[0] = (uint32_t)-LXP_EAGAIN;
 		return;
 	}
-	g_lxp_slots[slot].deferred.a0 = f->r[0];
-	g_lxp_slots[slot].deferred.owner = (lxp_slot_ref_t){
+	g_lxp_rt.slots[slot].deferred.a0 = f->r[0];
+	g_lxp_rt.slots[slot].deferred.owner = (lxp_slot_ref_t){
 		.index = (int16_t)slot,
 		.generation = slot_generation(slot),
 	};
@@ -71,7 +71,7 @@ static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 	{ /* the only timer call on the svc top half, and only when instrumented */
 		uint64_t t = 0;
 		lxp_time_ns(&t);
-		g_lxp_slots[slot].deferred.pub_ns = t;
+		g_lxp_rt.slots[slot].deferred.pub_ns = t;
 	}
 #endif
 	deferred_state_store(slot, DEFER_READY);
@@ -86,7 +86,7 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	int slot = slot_of(proc);
 	capture_ctx(slot, f);
-	void *token = lxp_lifecycle_prepare_park(g_lxp_os_ops, slot, &g_lxp_slots[slot].resume);
+	void *token = lxp_lifecycle_prepare_park(g_lxp_os_ops, slot, &g_lxp_rt.slots[slot].resume);
 	f->r[0] = (uint32_t)(uintptr_t)token;
 	f->r[15] = (uint32_t)((uintptr_t)g_lxp_os_ops->park_entry & ~(uintptr_t)1u);
 	f->xpsr |= (1u << 24);
@@ -143,7 +143,7 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		else if (requested > 19)
 			requested = 19;
 		for (int s = 0; s < LXP_NSLOT; s++) {
-			lxp_proc_t *target = &g_lxp_slots[s].proc;
+			lxp_proc_t *target = &g_lxp_rt.slots[s].proc;
 			if (!target->alive)
 				continue;
 			int match =
@@ -203,7 +203,7 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		 * path above. */
 		f->r[0] = -LXP_ESRCH;
 		for (int t = 0; t < LXP_NSLOT; t++) {
-			lxp_proc_t *tp = &g_lxp_slots[t].proc;
+			lxp_proc_t *tp = &g_lxp_rt.slots[t].proc;
 			if (!tp->alive || tp == proc || tp->pid <= 1)
 				continue;
 			if (target > 0) {
@@ -298,12 +298,12 @@ int lxp_dispatch_slot(lxp_slot_ref_t ref, struct lxp_frame *frame)
 	if (!frame || !lxp_slot_ref_is_runnable(ref))
 		return -LXP_ESRCH;
 	lxp_guest_view_t view;
-	int rc = lxp_guest_view_begin(&g_lxp_slots[ref.index].proc, ref,
-				      &g_lxp_slots[ref.index].generation, LXP_GUEST_READ_WRITE,
+	int rc = lxp_guest_view_begin(&g_lxp_rt.slots[ref.index].proc, ref,
+				      &g_lxp_rt.slots[ref.index].generation, LXP_GUEST_READ_WRITE,
 				      &view);
 	if (rc != LXP_OK)
 		return rc;
-	lxp_trap_dispatch(frame, &g_lxp_slots[ref.index].proc);
+	lxp_trap_dispatch(frame, &g_lxp_rt.slots[ref.index].proc);
 	lxp_guest_view_end(&view);
 	return LXP_OK;
 }

@@ -26,7 +26,7 @@ int lxp_futex_has_corunner(const lxp_proc_t *proc)
 	 * futex would park forever instead of failing with -EAGAIN and making progress. */
 	int vp = proc->vfork_parent.index;
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		const lxp_proc_t *q = &g_lxp_slots[s].proc;
+		const lxp_proc_t *q = &g_lxp_rt.slots[s].proc;
 		if (q != proc && q->alive && q->mm == proc->mm && s != vp)
 			return 1;
 	}
@@ -105,7 +105,7 @@ void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 	if (op == 1 || op == 10) { /* FUTEX_WAKE / FUTEX_WAKE_BITSET */
 		uint32_t woken = 0;
 		for (int s = 0; s < LXP_NSLOT && woken < val; s++) {
-			lxp_proc_t *q = &g_lxp_slots[s].proc;
+			lxp_proc_t *q = &g_lxp_rt.slots[s].proc;
 			/* !woken: a waiter already marked by an earlier WAKE (not yet resumed by
 			 * the coordinator) must not be woken — or counted — twice. */
 			if (q->alive && q->wait.kind == LXP_WAIT_FUTEX &&
