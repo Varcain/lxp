@@ -6,6 +6,7 @@
  */
 
 #include "run/lxp_coordinator.h"
+#include "run/lxp_runtime_store.h"
 #include "lxp_internal.h"
 #include "lxp_run_internal.h"
 #include "lxp/lxp_run.h"
@@ -45,14 +46,13 @@ static const uint8_t g_service_schedule[] = {
 	LXP_SERVICE_SOCKET,  LXP_SERVICE_SOCKET,   LXP_SERVICE_SOCKET, LXP_SERVICE_CONSOLE,
 	LXP_SERVICE_CONSOLE, LXP_SERVICE_ORDINARY,
 };
-static uint8_t g_service_cursor;
-static uint8_t g_service_slot_cursor[LXP_SERVICE_COUNT];
+_Static_assert(LXP_SERVICE_COUNT == LXP_SERVICE_CLASSES, "size lxp_service_fairness per class");
 
 void lxp_blocked_fair_reset(void)
 {
-	g_service_cursor = 0;
+	g_lxp_rt.service.cursor = 0;
 	for (int i = 0; i < LXP_SERVICE_COUNT; i++)
-		g_service_slot_cursor[i] = 0;
+		g_lxp_rt.service.slot_cursor[i] = 0;
 #if LXP_ENABLE_FS
 	(void)lxp_fs_completion_hint_take();
 #endif
@@ -101,9 +101,10 @@ static int lxp_service_select(const uint8_t pending[LXP_SERVICE_COUNT],
 		}
 	}
 
+	struct lxp_service_fairness *fair = &g_lxp_rt.service;
 	for (size_t i = 0; i < sizeof(g_service_schedule); i++) {
-		int cls = g_service_schedule[g_service_cursor];
-		g_service_cursor = (uint8_t)((g_service_cursor + 1u) % sizeof(g_service_schedule));
+		int cls = g_service_schedule[fair->cursor];
+		fair->cursor = (uint8_t)((fair->cursor + 1u) % sizeof(g_service_schedule));
 		if ((any_aged ? aged[cls] : pending[cls]))
 			return cls;
 	}
@@ -540,7 +541,8 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 			oldest[cls] = since;
 	}
 	int selected = lxp_service_select(pending, oldest, now);
-	int start_slot = selected >= 0 ? g_service_slot_cursor[selected] : 0;
+	uint8_t *slot_cursor = g_lxp_rt.service.slot_cursor;
+	int start_slot = selected >= 0 ? slot_cursor[selected] : 0;
 
 	for (int pass = 0; pass < LXP_NSLOT; pass++) {
 		int slot = (start_slot + pass) % LXP_NSLOT;
@@ -609,13 +611,13 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 #endif
 			(void)lxp_blocked_retry_console(eng, slot, proc, &scan);
 			if (scan.progress)
-				g_service_slot_cursor[selected] = (uint8_t)((slot + 1) % LXP_NSLOT);
+				slot_cursor[selected] = (uint8_t)((slot + 1) % LXP_NSLOT);
 		}
 		if (view_active)
 			lxp_guest_view_end(&view);
 	}
 	if (selected >= 0 && !scan.progress)
-		g_service_slot_cursor[selected] = (uint8_t)((start_slot + 1) % LXP_NSLOT);
+		slot_cursor[selected] = (uint8_t)((start_slot + 1) % LXP_NSLOT);
 
 	/* Async ^C/^Z for a foreground program that is not reading stdin; other
 	 * input read by the check is kept as typeahead for the next console read. */

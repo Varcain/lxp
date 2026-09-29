@@ -438,8 +438,8 @@ void lxp_diag_size_report(lxp_diag_size_report_t *out)
 			     out->debug_record;
 	out->per_region_core = out->arena + sizeof(g_lxp_rt.regions[0]);
 	out->slot_table = sizeof(g_lxp_rt.slots);
-	out->coordinator_static = sizeof(g_lxp_rt) + lxp_primary_events_bytes() +
-				  sizeof(g_lxp_dbg) + sizeof(g_sig_save);
+	out->coordinator_static = sizeof(g_lxp_rt) + sizeof(g_lxp_dbg) + sizeof(g_sig_save) +
+				  sizeof(g_lxp_trap_gate);
 }
 
 void lxp_diag_health(lxp_diag_health_t *out)

@@ -6,11 +6,7 @@
  */
 
 #include "run/lxp_coordinator.h"
-
-#define LXP_EVENT_WORD_BITS 32u
-#define LXP_EVENT_WORDS ((LXP_NSLOT + LXP_EVENT_WORD_BITS - 1u) / LXP_EVENT_WORD_BITS)
-
-static uint32_t g_primary_pending[LXP_EVENT_WORDS];
+#include "run/lxp_runtime_store.h"
 
 void primary_slot_mark(int slot)
 {
@@ -18,33 +14,28 @@ void primary_slot_mark(int slot)
 		return;
 	unsigned word = (unsigned)slot / LXP_EVENT_WORD_BITS;
 	uint32_t bit = (uint32_t)1u << ((unsigned)slot % LXP_EVENT_WORD_BITS);
-	__atomic_fetch_or(&g_primary_pending[word], bit, __ATOMIC_RELEASE);
+	__atomic_fetch_or(&g_lxp_rt.primary_pending[word], bit, __ATOMIC_RELEASE);
 }
 
 int primary_slot_pending(int slot)
 {
 	unsigned word = (unsigned)slot / LXP_EVENT_WORD_BITS;
 	uint32_t bit = (uint32_t)1u << ((unsigned)slot % LXP_EVENT_WORD_BITS);
-	return (__atomic_load_n(&g_primary_pending[word], __ATOMIC_ACQUIRE) & bit) != 0;
+	return (__atomic_load_n(&g_lxp_rt.primary_pending[word], __ATOMIC_ACQUIRE) & bit) != 0;
 }
 
 void primary_slot_clear(int slot)
 {
 	unsigned word = (unsigned)slot / LXP_EVENT_WORD_BITS;
 	uint32_t bit = (uint32_t)1u << ((unsigned)slot % LXP_EVENT_WORD_BITS);
-	__atomic_fetch_and(&g_primary_pending[word], ~bit, __ATOMIC_RELAXED);
+	__atomic_fetch_and(&g_lxp_rt.primary_pending[word], ~bit, __ATOMIC_RELAXED);
 }
 
 /* Clear every pending per-slot event (run start). */
 void lxp_primary_events_reset(void)
 {
 	for (unsigned i = 0; i < LXP_EVENT_WORDS; i++)
-		__atomic_store_n(&g_primary_pending[i], 0, __ATOMIC_RELAXED);
-}
-
-size_t lxp_primary_events_bytes(void)
-{
-	return sizeof(g_primary_pending);
+		__atomic_store_n(&g_lxp_rt.primary_pending[i], 0, __ATOMIC_RELAXED);
 }
 
 /* Publish a primary per-slot event and wake the coordinator. Ports use this for

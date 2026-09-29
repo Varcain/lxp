@@ -182,6 +182,8 @@ typedef struct lxp_diag_size_report {
 	size_t per_slot_core;
 	size_t per_region_core;
 	size_t slot_table;
+	/** The coordinator's static RAM: its runtime record, debugger records, signal-save
+	 *  stacks and trap gate. */
 	size_t coordinator_static;
 } lxp_diag_size_report_t;
 

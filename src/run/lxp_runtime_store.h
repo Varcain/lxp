@@ -67,6 +67,34 @@ struct lxp_dbg_s {
 	uintptr_t interp_base;
 };
 
+/* Per-slot primary-event hints, one bit per slot (src/run/lxp_guest_event.c). */
+#define LXP_EVENT_WORD_BITS 32u
+#define LXP_EVENT_WORDS ((LXP_NSLOT + LXP_EVENT_WORD_BITS - 1u) / LXP_EVENT_WORD_BITS)
+
+/* Round-robin state of the blocked-slot service classes (src/run/lxp_blocked.c). */
+#define LXP_SERVICE_CLASSES 4
+struct lxp_service_fairness {
+	uint8_t cursor;				  /* position in the weighted class schedule */
+	uint8_t slot_cursor[LXP_SERVICE_CLASSES]; /* the next slot to scan, per class */
+};
+
+/* Console bytes the ^C/^Z check read while no guest was reading the console
+ * (src/run/lxp_console_input.c). */
+struct lxp_console_typeahead {
+	uint8_t buf[LXP_CONSOLE_TYPEAHEAD];
+	unsigned head;
+	unsigned count;
+};
+
+/* An exec's flattened argument and environment vectors (src/run/lxp_exec.c), too large
+ * for the coordinator's stack. */
+struct lxp_exec_scratch {
+	char args[LXP_EXEC_ARGBUF];
+	const char *argv[LXP_EXEC_MAXARGS + 1];
+	char envs[LXP_EXEC_ENVBUF];
+	const char *envp[LXP_EXEC_MAXENVS + 1];
+};
+
 /* The coordinator's state for one run. It is one global on purpose: the SVC handler has no
  * context pointer, and there is one coordinator. Keeping it in one record makes its size
  * exact (lxp_diag_sizes) and gives tests and debuggers one place to look. Three objects
@@ -84,7 +112,11 @@ struct lxp_runtime {
 	struct lxp_region_runtime regions[LXP_NREG];
 	lxp_arena_t arenas[LXP_NREG]; /* each region's allocator bookkeeping */
 	struct vfork_snapshot_guard vfork_guard[LXP_NSLOT];
-	struct lxp_diag_state diag; /* src/run/lxp_diag.c */
+	struct lxp_diag_state diag;		   /* src/run/lxp_diag.c */
+	uint32_t primary_pending[LXP_EVENT_WORDS]; /* src/run/lxp_guest_event.c */
+	struct lxp_service_fairness service;	   /* src/run/lxp_blocked.c */
+	struct lxp_console_typeahead typeahead;	   /* src/run/lxp_console_input.c */
+	struct lxp_exec_scratch exec;		   /* src/run/lxp_exec.c */
 	/* Heartbeat: bumped once per dispatch-loop iteration and read by a host watchdog
 	 * through lxp_run_health(). Free-running; a stalled value while active is the wedge
 	 * signal. An aligned volatile u32 makes the cross-task read atomic without a lock
@@ -97,5 +129,6 @@ struct lxp_runtime {
 
 extern struct lxp_runtime g_lxp_rt;
 extern struct lxp_dbg_s g_lxp_dbg[LXP_NSLOT];
+extern uint32_t g_lxp_trap_gate;
 
 #endif /* LXP_RUNTIME_STORE_H */

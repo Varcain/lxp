@@ -124,7 +124,6 @@ void primary_slot_mark(int slot);
 int primary_slot_pending(int slot);
 void primary_slot_clear(int slot);
 void lxp_primary_events_reset(void);
-size_t lxp_primary_events_bytes(void);
 int claim_slot_event(int slot);
 void lxp_event_post_slot(const lxp_os_ops_t *eng, int slot);
 struct lxp_claimed_event coordinator_claim_event(const lxp_os_ops_t *eng, unsigned *cursor);

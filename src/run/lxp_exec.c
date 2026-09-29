@@ -10,6 +10,7 @@
 #include "fs/lxp_fd_private.h"
 #include "proc/lxp_exec_stage.h"
 #include "run/lxp_exec_private.h"
+#include "run/lxp_runtime_store.h"
 
 LXP_EXEC_TXN_LINKAGE void exec_txn_init(struct exec_txn *tx, int slot)
 {
@@ -288,12 +289,9 @@ void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int s
 
 	int argc = capture->argc;
 	int envc = capture->envc;
-	static char args[LXP_EXEC_ARGBUF];
-	static const char *argv[LXP_EXEC_MAXARGS + 1];
-	static char envs[LXP_EXEC_ENVBUF];
-	static const char *envp[LXP_EXEC_MAXENVS + 1];
-	flatten_vec(args, argv, capture->argv_buf, capture->argv, argc);
-	flatten_vec(envs, envp, capture->env_buf, capture->env, envc);
+	struct lxp_exec_scratch *scratch = &g_lxp_rt.exec;
+	flatten_vec(scratch->args, scratch->argv, capture->argv_buf, capture->argv, argc);
+	flatten_vec(scratch->envs, scratch->envp, capture->env_buf, capture->env, envc);
 
 	struct exec_txn tx;
 	exec_txn_init(&tx, slot);
@@ -327,7 +325,7 @@ void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int s
 	image_txn_init(&tx.image, slot, tx.region, tx.new_ref);
 	tx.image_initialized = 1;
 	rc = image_txn_prepare(&tx.image, eng, cfg, image, image_size, tx.pid, tx.ppid, argc,
-			       argv, envp, remote_exec);
+			       scratch->argv, scratch->envp, remote_exec);
 	if (rc == LXP_OK && lifecycle_failpoint(LXP_FAIL_EXEC_IMAGE_PREPARED))
 		rc = -LXP_EIO;
 	if (rc != LXP_OK) {
