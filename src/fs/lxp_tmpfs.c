@@ -233,6 +233,8 @@ static long fop_ftruncate_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, uint64_t length)
 	lxp_wnode_t *t = wnode_at(s->file_idx);
 	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
 		return -LXP_EISDIR;
+	if (length > SIZE_MAX)
+		return -LXP_EFBIG;
 	size_t newlen = (size_t)length;
 	if (newlen > t->size) {
 		if (wfs_reserve(s->file_idx, newlen) != 0)

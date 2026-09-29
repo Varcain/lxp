@@ -708,10 +708,12 @@ static long sys_llseek(lxp_proc_t *p, int fd, unsigned long off_hi, unsigned lon
 	return 0;
 }
 
-/* ftruncate64(fd, length): kinds without a truncate file operation (the read-only
- * rootfs, streams) are EINVAL. */
+/* ftruncate64(fd, length): a negative length, and kinds without a truncate file
+ * operation (the read-only rootfs, streams), are EINVAL. */
 static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 {
+	if ((int64_t)length < 0)
+		return -LXP_EINVAL;
 	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;

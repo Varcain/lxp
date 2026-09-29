@@ -606,6 +606,11 @@ static void test_conf_fsmutate(void **state)
 		SC(&p, LXP_NR_write, fd, (long)(uintptr_t)lxp_conf_str(fx, "hi"), 2, 0, 0, 0), 2);
 	/* ftruncate64(fd, [pad a1], len_lo a2, len_hi a3): grow to 5 with zeros. */
 	assert_int_equal(SC(&p, LXP_NR_ftruncate64, fd, 0, 5, 0, 0, 0), 0);
+	/* A negative length is EINVAL and a length past the address space EFBIG (it used
+	 * to wrap to a small size on the 32-bit target); neither changes the file. */
+	assert_int_equal(SC(&p, LXP_NR_ftruncate64, fd, 0, -1, -1, 0, 0), -LXP_EINVAL);
+	assert_int_equal(SC(&p, LXP_NR_ftruncate64, fd, 0, 0, 1, 0, 0), -LXP_EFBIG);
+	assert_int_equal(SC(&p, LXP_NR_lseek, fd, 0, LXP_SEEK_END, 0, 0, 0), 5);
 	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 
 	/* mkdir then getdents shows the new directory. */
