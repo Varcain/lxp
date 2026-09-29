@@ -83,4 +83,27 @@ long lxp_sys_mmap2(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_munmap(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_mprotect(lxp_proc_t *proc, const long a[6]);
 
+/* ---- process and system (src/sys/lxp_sys_proc.c) ---- */
+long lxp_sys_exit(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_exit_group(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_getpid(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_getppid(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_gettid(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_getuid_root(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_getresid(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_nice(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_umask(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_setpgid(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_getpgrp(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_setsid(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_inert(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_prlimit64(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_sysinfo(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_uname(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_getrandom(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_reboot(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_wait4(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_set_tid_address(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_set_robust_list(lxp_proc_t *proc, const long a[6]);
+
 #endif /* LXP_SYS_H */
