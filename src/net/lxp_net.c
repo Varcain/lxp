@@ -216,9 +216,7 @@ long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen
 				.op = LXP_SOCKW_CONNECT,
 				.data.socket.object = oi,
 			};
-			if (lxp_wait_begin(p, &wait) != 0)
-				return -LXP_EAGAIN;
-			return 0;
+			return lxp_wait_park(p, &wait);
 		}
 		int se = g_lxp_net_ops->sock_get_error(o->sock);
 		o->connecting = 0;
@@ -247,9 +245,7 @@ long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen
 			.op = LXP_SOCKW_CONNECT,
 			.data.socket.object = oi,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* parked */
+		return lxp_wait_park(p, &wait); /* parked */
 	}
 	return net_errno_to_lnx(r);
 }
@@ -341,9 +337,7 @@ long lxp_sock_accept(lxp_proc_t *p, int oi, void *uaddr, void *uaddrlen, int fla
 			.data.socket.buffer = (uintptr_t)uaddr,
 			.data.socket.length = (size_t)(uintptr_t)uaddrlen,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* parked */
+		return lxp_wait_park(p, &wait); /* parked */
 	}
 	return r; /* new fd, or a negative errno */
 }
@@ -389,9 +383,7 @@ long lxp_sock_send(lxp_proc_t *p, int oi, const void *ubuf, size_t len, int flag
 			.data.socket.buffer = (uintptr_t)ubuf,
 			.data.socket.length = len,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* parked */
+		return lxp_wait_park(p, &wait); /* parked */
 	}
 	return net_errno_to_lnx(r);
 }

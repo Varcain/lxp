@@ -56,9 +56,7 @@ static long sleep_for(lxp_proc_t *proc, uintptr_t reqp, int time64)
 		.kind = LXP_WAIT_TIMER,
 		.data.timer.deadline_us = now_us + dur_us,
 	};
-	if (lxp_wait_begin(proc, &wait) != 0)
-		return -LXP_EAGAIN;
-	return 0;
+	return lxp_wait_park(proc, &wait);
 }
 
 /* (clockid, struct timespec*) — 32-bit time_t */

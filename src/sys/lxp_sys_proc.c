@@ -344,9 +344,7 @@ long lxp_sys_wait4(lxp_proc_t *proc, const long a[6])
 		.data.child.options = options,
 		.data.child.status = (uintptr_t)a[1],
 	};
-	if (lxp_wait_begin(proc, &wait) != 0)
-		return -LXP_EAGAIN;
-	return 0; /* dispatch parks; the coordinator's resume supplies the real r0 */
+	return lxp_wait_park(proc, &wait); /* dispatch parks; the coordinator's resume supplies the real r0 */
 }
 
 long lxp_sys_set_tid_address(lxp_proc_t *proc, const long a[6])

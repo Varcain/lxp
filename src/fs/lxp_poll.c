@@ -95,9 +95,7 @@ static long poll_park(lxp_proc_t *p, lxp_wait_t *wait, long tmo_ms)
 		lxp_time_us(&now_us);
 		wait->data.poll.deadline_us = now_us + (uint64_t)tmo_ms * 1000ull;
 	}
-	if (lxp_wait_begin(p, wait) != 0)
-		return -LXP_EAGAIN;
-	return 0; /* parked; the coordinator resumes with the ready count or 0 */
+	return lxp_wait_park(p, wait); /* the coordinator resumes with the ready count or 0 */
 }
 
 static int poll_timed_out(const lxp_proc_t *p)

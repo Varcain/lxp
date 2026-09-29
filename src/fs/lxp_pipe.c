@@ -138,9 +138,7 @@ static long fop_read_pipe(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 			.data.io.buffer = (uintptr_t)buf,
 			.data.io.length = len,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0;
+		return lxp_wait_park(p, &wait);
 	}
 	return r; /* bytes read, or 0 (EOF) */
 }
@@ -161,9 +159,7 @@ static long fop_write_pipe(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t 
 			.data.io.buffer = (uintptr_t)buf,
 			.data.io.length = len,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* dispatch parks; coordinator completes via lxp_pipe_retry */
+		return lxp_wait_park(p, &wait); /* dispatch parks; coordinator completes via lxp_pipe_retry */
 	}
 	if (r == -LXP_EPIPE && /* no readers: SIGPIPE — default terminates the writer */
 	    lxp_sig_handler_get(p, LXP_SIGPIPE) != LXP_SIG_IGN) {

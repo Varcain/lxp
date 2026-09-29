@@ -128,6 +128,11 @@ int lxp_wait_begin(lxp_proc_t *proc, const lxp_wait_t *wait)
 	return 0;
 }
 
+long lxp_wait_park(lxp_proc_t *proc, const lxp_wait_t *wait)
+{
+	return lxp_wait_begin(proc, wait) == 0 ? 0 : -LXP_EAGAIN;
+}
+
 static int wait_finish(lxp_proc_t *proc, lxp_wait_kind_t expected)
 {
 	if (!proc || expected <= LXP_WAIT_NONE || expected >= LXP_WAIT_COUNT ||

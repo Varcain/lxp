@@ -448,9 +448,7 @@ static long fop_read_pty(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 			.data.io.buffer = (uintptr_t)buf,
 			.data.io.length = len,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* parked; coordinator retries via lxp_pty_retry */
+		return lxp_wait_park(p, &wait); /* parked; coordinator retries via lxp_pty_retry */
 	}
 	return r; /* bytes read, 0 (EOF), or -EAGAIN (O_NONBLOCK) */
 }
@@ -469,9 +467,7 @@ static long fop_write_pty(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t l
 			.data.io.buffer = (uintptr_t)buf,
 			.data.io.length = len,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* parked; coordinator completes via lxp_pty_retry */
+		return lxp_wait_park(p, &wait); /* parked; coordinator completes via lxp_pty_retry */
 	}
 	return r; /* bytes consumed, or -EAGAIN (O_NONBLOCK) */
 }

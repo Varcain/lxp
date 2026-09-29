@@ -344,6 +344,9 @@ int lxp_intent_begin(lxp_proc_t *proc, const lxp_intent_t *intent);
 int lxp_intent_complete(lxp_proc_t *proc, lxp_intent_kind_t expected);
 int lxp_intent_exit(lxp_proc_t *proc, int group);
 int lxp_wait_begin(lxp_proc_t *proc, const lxp_wait_t *wait);
+/** Park @p proc on @p wait so the coordinator finishes the call: 0 (the dispatch parks
+ *  and the wait kind's retry supplies the result), or -EAGAIN when no wait can begin. */
+long lxp_wait_park(lxp_proc_t *proc, const lxp_wait_t *wait);
 int lxp_wait_complete(lxp_proc_t *proc, lxp_wait_kind_t expected);
 int lxp_wait_interrupt(lxp_proc_t *proc, lxp_wait_kind_t expected);
 int lxp_wait_timeout(lxp_proc_t *proc, lxp_wait_kind_t expected);

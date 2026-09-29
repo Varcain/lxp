@@ -40,9 +40,7 @@ static long fop_read_console(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 			.data.io.buffer = (uintptr_t)buf,
 			.data.io.length = len,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* parked; the coordinator resumes it when a key arrives */
+		return lxp_wait_park(p, &wait); /* parked; the coordinator resumes it when a key arrives */
 	}
 	return lxp_console_read(p, s->file_idx, buf, len);
 }

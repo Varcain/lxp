@@ -192,9 +192,7 @@ long lxp_dev_read(lxp_proc_t *p, int oi, void *buf, size_t len)
 			.data.io.buffer = (uintptr_t)buf,
 			.data.io.length = len,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0;
+		return lxp_wait_park(p, &wait);
 	}
 	return r;
 }
@@ -220,9 +218,7 @@ long lxp_dev_write(lxp_proc_t *p, int oi, const void *buf, size_t len)
 			.data.io.buffer = (uintptr_t)buf,
 			.data.io.length = len,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0;
+		return lxp_wait_park(p, &wait);
 	}
 	return r;
 }
@@ -246,9 +242,7 @@ long lxp_dev_ioctl(lxp_proc_t *p, int oi, unsigned long cmd, unsigned long arg)
 			.data.io.buffer = arg,
 			.data.io.command = cmd,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0;
+		return lxp_wait_park(p, &wait);
 	}
 	return r;
 }
@@ -279,9 +273,7 @@ long lxp_dev_mmap(lxp_proc_t *p, int oi, size_t len, uint32_t pgoff)
 		.data.io.length = len,
 		.data.io.command = attrs,
 	};
-	if (lxp_wait_begin(p, &wait) != 0)
-		return -LXP_EAGAIN;
-	return 0;
+	return lxp_wait_park(p, &wait);
 }
 
 /* Positioned I/O drives the same operation with a temporary cursor. Async
@@ -311,9 +303,7 @@ static long dev_positioned(lxp_proc_t *p, int oi, void *buf, size_t len, uint64_
 			.data.io.length = len,
 			.data.io.offset = off,
 		};
-		if (lxp_wait_begin(p, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0;
+		return lxp_wait_park(p, &wait);
 	}
 	return r;
 }
@@ -394,9 +384,7 @@ long lxp_dev_sync(lxp_proc_t *p, int oi)
 	lxp_wait_t wait = {.kind = LXP_WAIT_DEVICE,
 			   .op = LXP_DEVW_SYNC,
 			   .data.io.object = oi};
-	if (lxp_wait_begin(p, &wait) != 0)
-		return -LXP_EAGAIN;
-	return 0;
+	return lxp_wait_park(p, &wait);
 }
 
 void lxp_dev_cancel(lxp_proc_t *p)
