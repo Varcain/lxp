@@ -5,7 +5,7 @@
 #
 #   implemented | benign-stub | refused-eopnotsupp  -> must be a `[LXP_NR_x]` row of the syscall table
 #                                                      in src/lxp_syscall.c
-#   run-loop-handled                                 -> intercepted in src/lxp_run.c, no table row
+#   run-loop-handled                                 -> intercepted in src/run/lxp_trap.c, no table row
 #   deliberately-enosys                              -> deliberately has no table row (-ENOSYS)
 #
 # "benign-stub" = accepted and answered with a fixed/inert result on purpose (the tier
@@ -152,7 +152,7 @@ set_tid_address	benign-stub	returns a fixed tid
 # ---- refused-eopnotsupp (explicitly declined) --------------------------------
 socketpair	refused-eopnotsupp	NET-gated; fd-passing (SCM_RIGHTS) unsupported
 
-# ---- run-loop-handled (intercepted before dispatch, in src/lxp_run.c) --------
+# ---- run-loop-handled (intercepted before dispatch, in src/run/lxp_trap.c) -
 fork	run-loop-handled	spawns a child sharing the parent region
 vfork	run-loop-handled	parent parks until the child execs/exits
 clone	run-loop-handled	CLONE_VM treated as a co-running thread

@@ -263,7 +263,9 @@
 #define LXP_SIGQUIT 3
 #define LXP_SIGABRT 6
 #define LXP_SIGKILL 9
+#define LXP_SIGUSR1 10
 #define LXP_SIGSEGV 11
+#define LXP_SIGUSR2 12
 #define LXP_SIGPIPE 13
 #define LXP_SIGALRM 14
 #define LXP_SIGTERM 15

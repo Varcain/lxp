@@ -10,7 +10,7 @@
 #   src/lxp_linux_uapi.h     — the LXP_NR_* number definitions
 #   scripts/syscalls/arm-eabi.tbl    — the canonical ARM EABI numbers (the reference)
 #   scripts/syscalls/dispositions.tsv— the frozen implemented/stub/refused/... partition
-#   src/lxp_syscall.c / src/lxp_run.c— where each syscall is actually handled
+#   src/lxp_syscall.c / src/run/lxp_trap.c — where each syscall is actually handled
 # and regenerates docs/syscall-compat.md, failing if the committed copy drifted.
 #
 # POSIX sh + awk only (mawk-safe: no gawk 3-arg match / gensub).
@@ -25,7 +25,7 @@ REF=scripts/syscalls/arm-eabi.tbl
 TSV=scripts/syscalls/dispositions.tsv
 HDR=src/lxp_linux_uapi.h
 DISP=src/lxp_syscall.c
-RUN=src/lxp_run.c
+RUN=src/run/lxp_trap.c
 MATRIX=docs/syscall-compat.md
 
 for f in "$REF" "$TSV" "$HDR" "$DISP" "$RUN"; do
@@ -60,7 +60,7 @@ emit_matrix() {
 Every syscall the lxp personality answers, cross-checked against the ARM EABI reference
 (\`scripts/syscalls/arm-eabi.tbl\`) and classified in \`scripts/syscalls/dispositions.tsv\`.
 Numbers come from \`src/lxp_linux_uapi.h\`; dispositions are proved against the
-handlers in \`src/lxp_syscall.c\` / \`src/lxp_run.c\` by the coverage guard.
+handlers in \`src/lxp_syscall.c\` / \`src/run/lxp_trap.c\` by the coverage guard.
 
 Surface: $total LXP_NR_* — $counts.
 
@@ -101,7 +101,7 @@ fi
 # ---- 2. Coverage / disposition cross-check -----------------------------------
 # Every LXP_NR_* is classified, and each classification still matches the source:
 # implemented/stub/refused have a syscall-table row; run-loop-handled are intercepted in
-# lxp_run.c and have no row; deliberately-enosys have no row. Also flags stale rows.
+# the trap (src/run/lxp_trap.c) and have no row; deliberately-enosys have no row. Also flags stale rows.
 report=$(awk -v tsv="$TSV" -v casesf="$CASES" -v runf="$RUNLOOP" '
 	BEGIN {
 		while ((getline l < tsv) > 0) { if (l ~ /^#/ || l == "") continue;
@@ -116,7 +116,7 @@ report=$(awk -v tsv="$TSV" -v casesf="$CASES" -v runf="$RUNLOOP" '
 		if (d == "implemented" || d == "benign-stub" || d == "refused-eopnotsupp") {
 			if (!(name in C)) printf "MISSING-ROW     %-22s classified %s but no `[LXP_NR_%s]` table row in lxp_syscall.c\n", name, d, name
 		} else if (d == "run-loop-handled") {
-			if (!(name in RL)) printf "MISSING-RUNLOOP %-22s classified run-loop-handled but absent from lxp_run.c\n", name
+			if (!(name in RL)) printf "MISSING-RUNLOOP %-22s classified run-loop-handled but absent from lxp_trap.c\n", name
 			if (name in C)     printf "UNEXPECTED-ROW  %-22s run-loop-handled but ALSO a syscall-table row\n", name
 		} else if (d == "deliberately-enosys") {
 			if (name in C)     printf "UNEXPECTED-ROW  %-22s deliberately-enosys but has a syscall-table row\n", name
