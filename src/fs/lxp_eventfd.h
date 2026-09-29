@@ -16,5 +16,7 @@
 /* eventfd2(2): claim a counter and install a descriptor for it. Returns the fd,
  * or -EMFILE when the counter pool or the descriptor table is full. */
 long lxp_eventfd_open(lxp_proc_t *p, unsigned initval, int flags);
+/* Free every counter (run teardown: no descriptor survives it). */
+void lxp_eventfd_runtime_reset(void);
 
 #endif /* LXP_FS_EVENTFD_H */

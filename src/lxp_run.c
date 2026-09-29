@@ -52,7 +52,9 @@
 #include "lxp_internal.h"
 #include "lxp_provider.h"
 #include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
+#include "fs/lxp_eventfd.h"
 #include "fs/lxp_pipe.h"
+#include "proc/lxp_procfs.h"
 #include "run/lxp_coordinator.h"
 #include "run/lxp_image.h"
 #include "run/lxp_initial.h"
@@ -920,6 +922,22 @@ static void coordinator_quiesce_all(const lxp_os_ops_t *eng)
  * hooks and request cancellation touch state a live guest could otherwise
  * still mutate. This is the common path for normal completion, halt, timeout
  * and launch failure, so a later lxp_run() never inherits the prior run. */
+/* Every pool a process or open descriptor references: regions and vfork guards, process
+ * objects, open-file descriptions (with the host files behind hostfs ones), pipes,
+ * generated /proc contents, eventfd counters and ptys. */
+static void coordinator_reset_pools(void)
+{
+	lxp_region_runtime_reset();
+	lxp_proc_runtime_reset();
+	lxp_fd_runtime_reset();
+	lxp_pipe_runtime_reset();
+	lxp_procfs_runtime_reset();
+	lxp_eventfd_runtime_reset();
+#if LXP_ENABLE_PTY
+	lxp_pty_runtime_reset();
+#endif
+}
+
 static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 {
 	coordinator_quiesce_all(eng);
@@ -952,14 +970,8 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 
 	/* Contain inconsistent ownership metadata as well as the ordinary
 	 * reference-balanced case above. No guest survives this boundary. */
-	lxp_region_runtime_reset();
+	coordinator_reset_pools();
 	lxp_diag_forget_natives();
-	lxp_proc_runtime_reset();
-	lxp_fd_runtime_reset();
-	lxp_pipe_runtime_reset();
-#if LXP_ENABLE_PTY
-	lxp_pty_runtime_reset();
-#endif
 #if LXP_ENABLE_NETFS
 	lxp_netfs_shutdown();
 #endif
@@ -987,12 +999,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	}
 	lxp_primary_events_reset();
 	lxp_blocked_fair_reset();
-	memset(g_lxp_regions, 0, sizeof(g_lxp_regions));
-	for (int r = 0; r < LXP_NREG; r++)
-		g_lxp_regions[r].lease_owner = lxp_slot_ref_none();
-	memset(g_lxp_vfork_guard, 0, sizeof(g_lxp_vfork_guard));
-	for (int i = 0; i < LXP_NSLOT; i++)
-		lxp_vfork_guard_reset(i);
+	lxp_region_runtime_reset(); /* generations persist, so no earlier run's ref matches */
 	lxp_console_reset();
 	lxp_stats_reset();
 	for (int i = 0; i < LXP_NSLOT; i++)

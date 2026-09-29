@@ -4245,6 +4245,54 @@ static void test_console_icrnl_immediate_read(void **state)
 	assert_int_equal(ch, '\r');
 }
 
+/* A process outside the slot table, the way a stale record looks to teardown: nothing
+ * closes its descriptors, so only the pool reset can free what they hold. */
+static void orphan_proc_init(lxp_proc_t *p, lxp_arena_t *arena)
+{
+	assert_int_equal(lxp_arena_init(arena, g_mock_regions[1], sizeof(g_mock_regions[1])),
+			 LXP_OK);
+	assert_int_equal(lxp_proc_init(p, arena, 0), LXP_OK);
+	p->mm->region_lo = 1;
+	p->mm->region_hi = UINTPTR_MAX;
+}
+
+static long orphan_eventfd(lxp_proc_t *p)
+{
+	return lxp_syscall(p, LXP_NR_eventfd2, 0, 0, 0, 0, 0, 0);
+}
+
+static long orphan_proc_open(lxp_proc_t *p)
+{
+	return lxp_syscall(p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t) "/proc/uptime", 0, 0,
+			   0, 0);
+}
+
+/* Teardown frees every pool a descriptor references, so bookkeeping a run leaves
+ * behind (descriptions nobody closed) cannot exhaust the next run's eventfd counters or
+ * /proc contents. */
+static void test_teardown_resets_descriptor_pools(void **state)
+{
+	(void)state;
+	long (*const opens[])(lxp_proc_t *) = {orphan_eventfd, orphan_proc_open};
+	for (size_t k = 0; k < sizeof(opens) / sizeof(opens[0]); k++) {
+		lxp_arena_t arena;
+		lxp_proc_t holder, probe;
+		orphan_proc_init(&holder, &arena);
+		int held = 0;
+		while (held < LXP_MAX_FDS && opens[k](&holder) >= 0)
+			held++;
+		assert_true(held > 0 && held < LXP_MAX_FDS - 3); /* the pool ran out, not the table */
+		orphan_proc_init(&probe, &arena);
+		assert_int_equal(opens[k](&probe), -LXP_EMFILE);
+
+		coordinator_teardown_all(&g_mock_eng);
+
+		orphan_proc_init(&probe, &arena);
+		assert_true(opens[k](&probe) >= 0);
+		coordinator_teardown_all(&g_mock_eng);
+	}
+}
+
 /* Blocking handlers hand ownership to the existing wait state machine. The
  * coordinator suspends the existing task before executing the host syscall and
  * leaves it parked when the syscall establishes a wait condition. */
@@ -4922,6 +4970,7 @@ int main(void)
 		cmocka_unit_test_setup(test_encode_wstatus, reset_state),
 		cmocka_unit_test_setup(test_dispatch_rejects_bad_tcsets_pointer, reset_state),
 		cmocka_unit_test_setup(test_console_icrnl_translation, reset_state),
+		cmocka_unit_test_setup(test_teardown_resets_descriptor_pools, reset_state),
 		cmocka_unit_test_setup(test_dispatch_class_defaults_deferred, reset_state),
 		cmocka_unit_test_setup(test_storage_sync_is_deferred, reset_state),
 		cmocka_unit_test_setup(test_deferred_requests_are_per_slot, reset_state),

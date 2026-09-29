@@ -9,6 +9,8 @@
  */
 #include "fs/lxp_eventfd.h"
 
+#include <string.h>
+
 #include "fs/lxp_vfs.h"
 #include "lxp_guest.h"
 #include "lxp_linux_uapi.h"
@@ -45,6 +47,11 @@ long lxp_eventfd_open(lxp_proc_t *p, unsigned initval, int flags)
 		return -LXP_EMFILE;
 	}
 	return fd;
+}
+
+void lxp_eventfd_runtime_reset(void)
+{
+	memset(g_efd, 0, sizeof(g_efd));
 }
 
 /* Release an eventfd pool slot after the open-file description's last close. */

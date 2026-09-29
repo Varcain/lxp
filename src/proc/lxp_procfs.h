@@ -44,5 +44,7 @@ extern const char *const g_proc_files[];
 /* Open /proc node `abs` (already resolved): a generated-content file fd, or a
  * directory fd for getdents. Returns the fd or a negative errno. */
 long lxp_procfs_open(lxp_proc_t *p, const char *abs, int flags);
+/* Free every generated-content slot (run teardown: no descriptor survives it). */
+void lxp_procfs_runtime_reset(void);
 
 #endif /* LXP_PROC_PROCFS_H */

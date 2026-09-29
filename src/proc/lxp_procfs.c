@@ -469,6 +469,11 @@ static struct {
 	int used;
 } g_procf[LXP_NPROCF];
 
+void lxp_procfs_runtime_reset(void)
+{
+	memset(g_procf, 0, sizeof(g_procf));
+}
+
 long lxp_procfs_open(lxp_proc_t *p, const char *abs, int flags)
 {
 	uint32_t m = proc_mode(abs, p);
