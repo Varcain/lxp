@@ -83,6 +83,8 @@ target_compile_options(lxp_test_stub PRIVATE -Wall -Wextra -Werror)
 add_test(NAME lxp_unit COMMAND lxp_test_stub)
 add_test(NAME lxp_guest_memory_boundary
   COMMAND sh "${LXP_ROOT}/scripts/check-guest-memory.sh")
+add_test(NAME lxp_guest_memory_patterns
+  COMMAND sh "${LXP_ROOT}/scripts/check-guest-memory.sh" --self-test)
 add_test(NAME lxp_unit_config_contract
   COMMAND sh "${LXP_ROOT}/scripts/check-config-contract.sh"
           "${CMAKE_C_COMPILER}" "${CMAKE_COMMAND}")
@@ -206,6 +208,7 @@ endif()
 set_tests_properties(
   lxp_unit
   lxp_guest_memory_boundary
+  lxp_guest_memory_patterns
   lxp_unit_config_contract
   lxp_unit_header_contract
   lxp_unit_async_gate

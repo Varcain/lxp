@@ -1860,10 +1860,8 @@ static void deferred_track_tty(lxp_proc_t *proc, long nr, long a0, long a1, long
 	if (fd < 0 || fd >= LXP_MAX_FDS || lxp_fd_kind(proc, fd) != LXP_FD_CONSOLE ||
 	    (cmd != LXP_TCSETS && cmd != LXP_TCSETSW && cmd != LXP_TCSETSF))
 		return;
-	const void *ut = (const void *)(uintptr_t)(uint32_t)a2;
-	if (lxp_guest_access_ok(proc, ut, sizeof(lxp_termios), 0)) {
-		lxp_termios t;
-		memcpy(&t, ut, sizeof(t));
+	lxp_termios t;
+	if (lxp_copy_from_guest(proc, &t, (uintptr_t)(uint32_t)a2, sizeof(t)) == 0) {
 		g_tty_isig = (t.c_lflag & LXP_ISIG) ? 1 : 0;
 		g_tty_icrnl = (t.c_iflag & LXP_ICRNL) ? 1 : 0;
 	}
