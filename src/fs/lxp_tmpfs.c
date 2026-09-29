@@ -299,6 +299,18 @@ static void fop_close_tmpfs(lxp_proc_t *p, lxp_ofd_t *s)
 	wfs_close(s->file_idx);
 }
 
+/* An unlinked directory no longer has a name to resolve against. */
+static long fop_dir_path_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, char *out, size_t cap)
+{
+	(void)p;
+	const lxp_wnode_t *w = wnode_at(s->file_idx);
+	if ((w->mode & LXP_S_IFMT) != LXP_S_IFDIR)
+		return -LXP_ENOTDIR;
+	if (!w->linked)
+		return -LXP_ENOENT;
+	return lxp_vfs_copy_path(w->path, out, cap);
+}
+
 const lxp_file_ops_t lxp_tmpfs_fops = {
 	.read = fop_read_tmpfs,
 	.write = fop_write_tmpfs,
@@ -306,6 +318,7 @@ const lxp_file_ops_t lxp_tmpfs_fops = {
 	.pwrite = fop_pwrite_tmpfs,
 	.lseek = fop_lseek_tmpfs,
 	.getdents = fop_getdents_tmpfs,
+	.dir_path = fop_dir_path_tmpfs,
 	.fstat = fop_fstat_tmpfs,
 	.ftruncate = fop_ftruncate_tmpfs,
 	.close = fop_close_tmpfs,

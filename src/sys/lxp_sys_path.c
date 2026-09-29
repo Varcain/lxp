@@ -40,11 +40,10 @@
 
 static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 {
-	(void)dirfd; /* dirfd is AT_FDCWD; relative paths resolve against p->fs_context->cwd */
 	if (!path)
 		return -LXP_EFAULT;
 	char abspath[LXP_PATH_MAX];
-	long rr = resolve_path(p, path, abspath, sizeof(abspath));
+	long rr = resolve_path_at(p, dirfd, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
 	return lxp_mount_of(p, abspath)->open(p, abspath, flags);
@@ -234,12 +233,13 @@ static long path_stat(lxp_proc_t *p, const char *abspath, int follow, uintptr_t 
 }
 
 /* path-based stat: resolve, optionally follow a trailing symlink, fill kstat64. */
-static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *statbuf)
+static long sys_stat_path(lxp_proc_t *p, int dirfd, const char *path, int follow,
+			  void *statbuf)
 {
 	if (!lxp_guest_access_ok(p, statbuf, sizeof(struct lxp_kstat64), 1))
 		return -LXP_EFAULT; /* path is validated by resolve_path below */
 	char abspath[LXP_PATH_MAX];
-	long rr = resolve_path(p, path, abspath, sizeof(abspath));
+	long rr = resolve_path_at(p, dirfd, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
 	return path_stat(p, abspath, follow, (uintptr_t)statbuf, 0);
@@ -269,13 +269,14 @@ static long name_unsupported(lxp_proc_t *p, const lxp_mount_ops_t *m, const char
 	return change == NAME_ATTR ? 0 : -(long)m->name_errno;
 }
 
-/* Resolve a guest path into abspath[LXP_PATH_MAX]; *mount answers it. */
-static long resolve_in_mount(lxp_proc_t *p, const char *path, char *abspath,
+/* Resolve a guest path (relative to @p dirfd) into abspath[LXP_PATH_MAX]; *mount
+ * answers it. */
+static long resolve_in_mount(lxp_proc_t *p, int dirfd, const char *path, char *abspath,
 			     const lxp_mount_ops_t **mount)
 {
 	if (!path)
 		return -LXP_EFAULT;
-	long rr = resolve_path(p, path, abspath, LXP_PATH_MAX);
+	long rr = resolve_path_at(p, dirfd, path, abspath, LXP_PATH_MAX);
 	if (rr < 0)
 		return rr;
 	*mount = lxp_mount_of(p, abspath);
@@ -283,13 +284,13 @@ static long resolve_in_mount(lxp_proc_t *p, const char *path, char *abspath,
 }
 
 /* readlink: write the symlink target (not NUL-terminated) + return its length. */
-static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufsiz)
+static long sys_readlink(lxp_proc_t *p, int dirfd, const char *path, char *buf, size_t bufsiz)
 {
 	if (!lxp_guest_access_ok(p, buf, bufsiz, 1))
 		return -LXP_EFAULT; /* path is validated by resolve_path below */
 	char abspath[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rr = resolve_in_mount(p, path, abspath, &m);
+	long rr = resolve_in_mount(p, dirfd, path, abspath, &m);
 	if (rr < 0)
 		return rr;
 	char target[LXP_PATH_MAX];
@@ -308,13 +309,13 @@ static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufs
 }
 
 /* access/faccessat: permissions are synthetic, but each mount says what it cannot do. */
-static long sys_access(lxp_proc_t *p, const char *path, int mode)
+static long sys_access(lxp_proc_t *p, int dirfd, const char *path, int mode)
 {
 	if ((mode & ~7) != 0)
 		return -LXP_EINVAL;
 	char abspath[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rr = resolve_in_mount(p, path, abspath, &m);
+	long rr = resolve_in_mount(p, dirfd, path, abspath, &m);
 	if (rr < 0)
 		return rr;
 	if (m->access)
@@ -323,22 +324,22 @@ static long sys_access(lxp_proc_t *p, const char *path, int mode)
 	return m->stat(p, abspath, 1, &st);
 }
 
-static long sys_mkdir(lxp_proc_t *p, const char *path, uint32_t mode)
+static long sys_mkdir(lxp_proc_t *p, int dirfd, const char *path, uint32_t mode)
 {
 	char abspath[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rr = resolve_in_mount(p, path, abspath, &m);
+	long rr = resolve_in_mount(p, dirfd, path, abspath, &m);
 	if (rr < 0)
 		return rr;
 	return m->mkdir ? m->mkdir(p, abspath, mode) : name_unsupported(p, m, abspath, NAME_CREATE);
 }
 
 /* unlink (is_rmdir = 0) or rmdir (is_rmdir = 1). */
-static long sys_unlink(lxp_proc_t *p, const char *path, int is_rmdir)
+static long sys_unlink(lxp_proc_t *p, int dirfd, const char *path, int is_rmdir)
 {
 	char abspath[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rr = resolve_in_mount(p, path, abspath, &m);
+	long rr = resolve_in_mount(p, dirfd, path, abspath, &m);
 	if (rr < 0)
 		return rr;
 	return m->remove ? m->remove(p, abspath, is_rmdir)
@@ -346,24 +347,25 @@ static long sys_unlink(lxp_proc_t *p, const char *path, int is_rmdir)
 }
 
 /* rename and link: resolve both names; a pair that spans two mounts is EXDEV. */
-static long two_names(lxp_proc_t *p, const char *oldp, const char *newp, char *oldabs,
-		      char *newabs, const lxp_mount_ops_t **m)
+static long two_names(lxp_proc_t *p, int olddirfd, const char *oldp, int newdirfd,
+		      const char *newp, char *oldabs, char *newabs, const lxp_mount_ops_t **m)
 {
 	const lxp_mount_ops_t *to;
-	long rr = resolve_in_mount(p, oldp, oldabs, m);
+	long rr = resolve_in_mount(p, olddirfd, oldp, oldabs, m);
 	if (rr < 0)
 		return rr;
-	rr = resolve_in_mount(p, newp, newabs, &to);
+	rr = resolve_in_mount(p, newdirfd, newp, newabs, &to);
 	if (rr < 0)
 		return rr;
 	return *m == to ? 0 : -LXP_EXDEV;
 }
 
-static long sys_rename(lxp_proc_t *p, const char *oldp, const char *newp, unsigned flags)
+static long sys_rename(lxp_proc_t *p, int olddirfd, const char *oldp, int newdirfd,
+		       const char *newp, unsigned flags)
 {
 	char oldabs[LXP_PATH_MAX], newabs[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rr = two_names(p, oldp, newp, oldabs, newabs, &m);
+	long rr = two_names(p, olddirfd, oldp, newdirfd, newp, oldabs, newabs, &m);
 	if (rr == 0 && flags != 0)
 		rr = -LXP_EINVAL;
 	if (rr < 0)
@@ -372,7 +374,7 @@ static long sys_rename(lxp_proc_t *p, const char *oldp, const char *newp, unsign
 			 : name_unsupported(p, m, oldabs, NAME_REMOVE);
 }
 
-static long sys_symlink(lxp_proc_t *p, const char *target, const char *linkp)
+static long sys_symlink(lxp_proc_t *p, const char *target, int dirfd, const char *linkp)
 {
 	if (!target)
 		return -LXP_EFAULT;
@@ -382,40 +384,41 @@ static long sys_symlink(lxp_proc_t *p, const char *target, const char *linkp)
 		return -LXP_EFAULT;
 	char linkabs[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rr = resolve_in_mount(p, linkp, linkabs, &m);
+	long rr = resolve_in_mount(p, dirfd, linkp, linkabs, &m);
 	if (rr < 0)
 		return rr;
 	return m->symlink ? m->symlink(p, tbuf, tl, linkabs)
 			  : name_unsupported(p, m, linkabs, NAME_CREATE);
 }
 
-static long sys_link(lxp_proc_t *p, const char *oldp, const char *newp)
+static long sys_link(lxp_proc_t *p, int olddirfd, const char *oldp, int newdirfd,
+		     const char *newp)
 {
 	char oldabs[LXP_PATH_MAX], newabs[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rr = two_names(p, oldp, newp, oldabs, newabs, &m);
+	long rr = two_names(p, olddirfd, oldp, newdirfd, newp, oldabs, newabs, &m);
 	if (rr < 0)
 		return rr;
 	return m->link ? m->link(p, oldabs, newabs) : name_unsupported(p, m, oldabs, NAME_REMOVE);
 }
 
-static long sys_chmod(lxp_proc_t *p, const char *path, uint32_t mode)
+static long sys_chmod(lxp_proc_t *p, int dirfd, const char *path, uint32_t mode)
 {
 	char abspath[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rr = resolve_in_mount(p, path, abspath, &m);
+	long rr = resolve_in_mount(p, dirfd, path, abspath, &m);
 	if (rr < 0)
 		return rr;
 	return m->chmod ? m->chmod(p, abspath, mode) : name_unsupported(p, m, abspath, NAME_ATTR);
 }
 
-static long sys_utimensat(lxp_proc_t *p, const char *path)
+static long sys_utimensat(lxp_proc_t *p, int dirfd, const char *path)
 {
 	if (!path) /* futimens(fd): operate on the open fd — accept */
 		return 0;
 	char abspath[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rr = resolve_in_mount(p, path, abspath, &m);
+	long rr = resolve_in_mount(p, dirfd, path, abspath, &m);
 	if (rr < 0)
 		return rr;
 	return m->utimens ? m->utimens(p, abspath) : name_unsupported(p, m, abspath, NAME_ATTR);
@@ -450,7 +453,7 @@ static long sys_statfs_path(lxp_proc_t *p, const char *path, size_t size, void *
 		return -LXP_EFAULT;
 	char abspath[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rc = resolve_in_mount(p, path, abspath, &m);
+	long rc = resolve_in_mount(p, LXP_AT_FDCWD, path, abspath, &m);
 	if (rc < 0)
 		return rc;
 	struct lxp_statfs64 st;
@@ -495,7 +498,7 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 		return -LXP_EFAULT;
 	if (plen > 0 && !(flags & LXP_AT_EMPTY_PATH)) {
 		char abspath[LXP_PATH_MAX];
-		long rr = resolve_path(p, path, abspath, sizeof(abspath));
+		long rr = resolve_path_at(p, dirfd, path, abspath, sizeof(abspath));
 		if (rr < 0)
 			return rr;
 		return path_stat(p, abspath, !(flags & LXP_AT_SYMLINK_NOFOLLOW), (uintptr_t)buf, 1);
@@ -527,19 +530,21 @@ long lxp_sys_fstat64(lxp_proc_t *proc, const long a[6])
 /* (path, statbuf) — follows symlinks */
 long lxp_sys_stat64(lxp_proc_t *proc, const long a[6])
 {
-	return sys_stat_path(proc, (const char *)(uintptr_t)a[0], 1, (void *)(uintptr_t)a[1]);
+	return sys_stat_path(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], 1,
+			     (void *)(uintptr_t)a[1]);
 }
 
 /* (path, statbuf) — does NOT follow */
 long lxp_sys_lstat64(lxp_proc_t *proc, const long a[6])
 {
-	return sys_stat_path(proc, (const char *)(uintptr_t)a[0], 0, (void *)(uintptr_t)a[1]);
+	return sys_stat_path(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], 0,
+			     (void *)(uintptr_t)a[1]);
 }
 
 /* (dirfd, path, statbuf, flags) */
 long lxp_sys_fstatat64(lxp_proc_t *proc, const long a[6])
 {
-	return sys_stat_path(proc, (const char *)(uintptr_t)a[1],
+	return sys_stat_path(proc, (int)a[0], (const char *)(uintptr_t)a[1],
 			     !((int)a[3] & LXP_AT_SYMLINK_NOFOLLOW), (void *)(uintptr_t)a[2]);
 }
 
@@ -553,52 +558,51 @@ long lxp_sys_statx(lxp_proc_t *proc, const long a[6])
 /* (path, buf, bufsiz) */
 long lxp_sys_readlink(lxp_proc_t *proc, const long a[6])
 {
-	return sys_readlink(proc, (const char *)(uintptr_t)a[0], (char *)(uintptr_t)a[1],
-			    (size_t)a[2]);
+	return sys_readlink(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0],
+			    (char *)(uintptr_t)a[1], (size_t)a[2]);
 }
 
 /* (dirfd, path, buf, bufsiz) */
 long lxp_sys_readlinkat(lxp_proc_t *proc, const long a[6])
 {
-	return sys_readlink(proc, (const char *)(uintptr_t)a[1], (char *)(uintptr_t)a[2],
+	return sys_readlink(proc, (int)a[0], (const char *)(uintptr_t)a[1], (char *)(uintptr_t)a[2],
 			    (size_t)a[3]);
 }
 
 /* (path, mode) */
 long lxp_sys_access(lxp_proc_t *proc, const long a[6])
 {
-	return sys_access(proc, (const char *)(uintptr_t)a[0], (int)a[1]);
+	return sys_access(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], (int)a[1]);
 }
 
-/* (dirfd, path, mode) */
 /* (dirfd, path, mode, flags) */
 long lxp_sys_faccessat(lxp_proc_t *proc, const long a[6])
 {
-	return sys_access(proc, (const char *)(uintptr_t)a[1], (int)a[2]);
+	return sys_access(proc, (int)a[0], (const char *)(uintptr_t)a[1], (int)a[2]);
 }
 
 /* (path, mode) */
 long lxp_sys_mkdir(lxp_proc_t *proc, const long a[6])
 {
-	return sys_mkdir(proc, (const char *)(uintptr_t)a[0], (uint32_t)a[1]);
+	return sys_mkdir(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], (uint32_t)a[1]);
 }
 
 /* (dirfd, path, mode) */
 long lxp_sys_mkdirat(lxp_proc_t *proc, const long a[6])
 {
-	return sys_mkdir(proc, (const char *)(uintptr_t)a[1], (uint32_t)a[2]);
+	return sys_mkdir(proc, (int)a[0], (const char *)(uintptr_t)a[1], (uint32_t)a[2]);
 }
 
 /* (path) */
 long lxp_sys_rmdir(lxp_proc_t *proc, const long a[6])
 {
-	return sys_unlink(proc, (const char *)(uintptr_t)a[0], 1);
+	return sys_unlink(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], 1);
 }
 
 /* (path) */
 long lxp_sys_unlink(lxp_proc_t *proc, const long a[6])
 {
-	return sys_unlink(proc, (const char *)(uintptr_t)a[0], 0);
+	return sys_unlink(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], 0);
 }
 
 /* (dirfd, path, flags) */
@@ -606,72 +610,76 @@ long lxp_sys_unlinkat(lxp_proc_t *proc, const long a[6])
 {
 	if (((int)a[2] & ~LXP_AT_REMOVEDIR) != 0)
 		return -LXP_EINVAL;
-	return sys_unlink(proc, (const char *)(uintptr_t)a[1],
+	return sys_unlink(proc, (int)a[0], (const char *)(uintptr_t)a[1],
 			  ((int)a[2] & LXP_AT_REMOVEDIR) ? 1 : 0);
 }
 
 /* (oldpath, newpath) */
 long lxp_sys_rename(lxp_proc_t *proc, const long a[6])
 {
-	return sys_rename(proc, (const char *)(uintptr_t)a[0], (const char *)(uintptr_t)a[1],
-			  0);
+	return sys_rename(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], LXP_AT_FDCWD,
+			  (const char *)(uintptr_t)a[1], 0);
 }
 
 /* (olddirfd, old, newdirfd, new) */
 long lxp_sys_renameat(lxp_proc_t *proc, const long a[6])
 {
-	return sys_rename(proc, (const char *)(uintptr_t)a[1], (const char *)(uintptr_t)a[3],
-			  0);
+	return sys_rename(proc, (int)a[0], (const char *)(uintptr_t)a[1], (int)a[2],
+			  (const char *)(uintptr_t)a[3], 0);
 }
 
 /* (olddirfd, old, newdirfd, new, flags) */
 long lxp_sys_renameat2(lxp_proc_t *proc, const long a[6])
 {
-	return sys_rename(proc, (const char *)(uintptr_t)a[1], (const char *)(uintptr_t)a[3],
-			  (unsigned)a[4]);
+	return sys_rename(proc, (int)a[0], (const char *)(uintptr_t)a[1], (int)a[2],
+			  (const char *)(uintptr_t)a[3], (unsigned)a[4]);
 }
 
 /* (target, linkpath) */
 long lxp_sys_symlink(lxp_proc_t *proc, const long a[6])
 {
-	return sys_symlink(proc, (const char *)(uintptr_t)a[0], (const char *)(uintptr_t)a[1]);
+	return sys_symlink(proc, (const char *)(uintptr_t)a[0], LXP_AT_FDCWD,
+			   (const char *)(uintptr_t)a[1]);
 }
 
 /* (target, newdirfd, linkpath) */
 long lxp_sys_symlinkat(lxp_proc_t *proc, const long a[6])
 {
-	return sys_symlink(proc, (const char *)(uintptr_t)a[0], (const char *)(uintptr_t)a[2]);
+	return sys_symlink(proc, (const char *)(uintptr_t)a[0], (int)a[1],
+			   (const char *)(uintptr_t)a[2]);
 }
 
 /* (oldpath, newpath) */
 long lxp_sys_link(lxp_proc_t *proc, const long a[6])
 {
-	return sys_link(proc, (const char *)(uintptr_t)a[0], (const char *)(uintptr_t)a[1]);
+	return sys_link(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], LXP_AT_FDCWD,
+			(const char *)(uintptr_t)a[1]);
 }
 
 /* (olddirfd, oldpath, newdirfd, newpath, flags) */
 long lxp_sys_linkat(lxp_proc_t *proc, const long a[6])
 {
-	return sys_link(proc, (const char *)(uintptr_t)a[1], (const char *)(uintptr_t)a[3]);
+	return sys_link(proc, (int)a[0], (const char *)(uintptr_t)a[1], (int)a[2],
+			(const char *)(uintptr_t)a[3]);
 }
 
 /* (path, mode) */
 long lxp_sys_chmod(lxp_proc_t *proc, const long a[6])
 {
-	return sys_chmod(proc, (const char *)(uintptr_t)a[0], (uint32_t)a[1]);
+	return sys_chmod(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], (uint32_t)a[1]);
 }
 
 /* (dirfd, path, mode) */
 long lxp_sys_fchmodat(lxp_proc_t *proc, const long a[6])
 {
-	return sys_chmod(proc, (const char *)(uintptr_t)a[1], (uint32_t)a[2]);
+	return sys_chmod(proc, (int)a[0], (const char *)(uintptr_t)a[1], (uint32_t)a[2]);
 }
 
-/* (dirfd, path, times, flags) — times not tracked */
-/* time64 variant uClibc-ng issues for touch */
+/* (dirfd, path, times, flags) — times not tracked; the time64 variant uClibc-ng issues
+ * for touch */
 long lxp_sys_utimensat(lxp_proc_t *proc, const long a[6])
 {
-	return sys_utimensat(proc, (const char *)(uintptr_t)a[1]);
+	return sys_utimensat(proc, (int)a[0], (const char *)(uintptr_t)a[1]);
 }
 
 long lxp_sys_mount(lxp_proc_t *proc, const long a[6])
@@ -718,7 +726,7 @@ long lxp_sys_chdir(lxp_proc_t *proc, const long a[6])
 {
 	char abspath[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
-	long rr = resolve_in_mount(proc, (const char *)(uintptr_t)a[0], abspath, &m);
+	long rr = resolve_in_mount(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], abspath, &m);
 	if (rr < 0)
 		return rr;
 	if (m->chdir)

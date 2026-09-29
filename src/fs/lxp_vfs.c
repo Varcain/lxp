@@ -9,8 +9,12 @@
  */
 #include "fs/lxp_vfs.h"
 
+#include "fs/lxp_stat.h"
+
 #include "lxp_guest.h"
 #include "lxp_linux_uapi.h"
+
+#include <string.h>
 
 const lxp_file_ops_t *const g_lxp_file_ops[LXP_FD_KIND_COUNT] = {
 	[LXP_FD_CONSOLE] = &lxp_console_fops, [LXP_FD_FILE] = &lxp_rootfs_fops,
@@ -71,4 +75,28 @@ int64_t lxp_vfs_seek(lxp_ofd_t *ofd, int64_t end, int64_t off, int whence)
 		return -LXP_EOVERFLOW;
 	ofd->offset = (size_t)pos;
 	return pos;
+}
+
+long lxp_vfs_copy_path(const char *path, char *out, size_t cap)
+{
+	size_t n = strlen(path);
+	if (n >= cap)
+		return -LXP_ENAMETOOLONG;
+	memcpy(out, path, n + 1u);
+	return 0;
+}
+
+long lxp_vfs_dir_path(lxp_proc_t *p, int fd, char *out, size_t cap)
+{
+	lxp_ofd_t *ofd = lxp_fd_description(p, fd);
+	if (!ofd)
+		return -LXP_EBADF;
+	const lxp_file_ops_t *ops = lxp_vfs_ops(ofd);
+	if (ops && ops->dir_path)
+		return ops->dir_path(p, ofd, out, cap);
+	struct lxp_stat st;
+	if (ops && ops->fstat && ops->fstat(p, ofd, &st) == 0 &&
+	    (st.mode & LXP_S_IFMT) == LXP_S_IFDIR)
+		return -LXP_EOPNOTSUPP;
+	return -LXP_ENOTDIR;
 }

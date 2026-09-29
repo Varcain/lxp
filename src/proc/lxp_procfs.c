@@ -542,11 +542,20 @@ static void fop_close_proc(lxp_proc_t *p, lxp_ofd_t *s)
 	g_procf[s->file_idx].used = 0; /* release the generated-content slot */
 }
 
+static long fop_dir_path_proc(lxp_proc_t *p, lxp_ofd_t *s, char *out, size_t cap)
+{
+	(void)p;
+	if (!g_procf[s->file_idx].is_dir)
+		return -LXP_ENOTDIR;
+	return lxp_vfs_copy_path(g_procf[s->file_idx].path, out, cap);
+}
+
 const lxp_file_ops_t lxp_procfs_fops = {
 	.read = fop_read_proc,
 	.pread = fop_pread_proc,
 	.lseek = fop_lseek_proc,
 	.getdents = fop_getdents_proc,
+	.dir_path = fop_dir_path_proc,
 	.fstat = fop_fstat_proc,
 	.close = fop_close_proc,
 };

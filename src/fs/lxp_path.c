@@ -11,8 +11,10 @@
  */
 #include "fs/lxp_path.h"
 
-#include "proc/lxp_proc.h"
+#include "fs/lxp_vfs.h"
 #include "lxp_internal.h" /* lxp_guest_strnlen, file_mode */
+#include "lxp_linux_uapi.h"
+#include "proc/lxp_proc.h"
 
 #include <string.h>
 
@@ -59,21 +61,14 @@ static long normalize_abs(const char *in, char *out, size_t outlen)
 	return 0;
 }
 
-/*
- * Resolve `in` (absolute, or relative to the process cwd) into a normalized
- * absolute path in out[outlen]. Returns 0, or -ENAMETOOLONG on overflow.
- */
-long resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen)
+/* Join a relative @p in onto the absolute @p base (an absolute @p in ignores it) and
+ * normalize into out[outlen]. */
+static long resolve_from(const char *base, const char *in, char *out, size_t outlen)
 {
-	/* Every path syscall funnels through here, so one check guards them all: reject a path pointer
-	 * that isn't a NUL-terminated string wholly inside the program's memory (-EFAULT) before any
-	 * deref — else a bad `in` faults the kernel or walks a strlen off the region. */
-	if (lxp_guest_strnlen(p, in, LXP_PATH_MAX) < 0)
-		return -LXP_EFAULT;
 	char joined[LXP_PATH_MAX];
 	size_t jl = 0;
-	if (in[0] != '/') { /* prefix the cwd (which is absolute + normalized) */
-		for (const char *c = p->fs_context->cwd; *c; c++) {
+	if (in[0] != '/') { /* prefix the base (which is absolute + normalized) */
+		for (const char *c = base; *c; c++) {
 			if (jl + 2 >= sizeof(joined))
 				return -LXP_ENAMETOOLONG;
 			joined[jl++] = *c;
@@ -87,6 +82,34 @@ long resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen)
 	}
 	joined[jl] = '\0';
 	return normalize_abs(joined, out, outlen);
+}
+
+/*
+ * Resolve `in` (absolute, or relative to the process cwd) into a normalized
+ * absolute path in out[outlen]. Returns 0, or -ENAMETOOLONG on overflow.
+ */
+long resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen)
+{
+	/* Every path syscall funnels through here, so one check guards them all: reject a
+	 * path pointer that isn't a NUL-terminated string wholly inside the program's memory
+	 * (-EFAULT) before any deref — else a bad `in` faults the kernel or walks a strlen
+	 * off the region. */
+	if (lxp_guest_strnlen(p, in, LXP_PATH_MAX) < 0)
+		return -LXP_EFAULT;
+	return resolve_from(p->fs_context->cwd, in, out, outlen);
+}
+
+long resolve_path_at(lxp_proc_t *p, int dirfd, const char *in, char *out, size_t outlen)
+{
+	if (dirfd == LXP_AT_FDCWD)
+		return resolve_path(p, in, out, outlen);
+	if (lxp_guest_strnlen(p, in, LXP_PATH_MAX) < 0)
+		return -LXP_EFAULT;
+	if (in[0] == '/') /* an absolute path ignores dirfd */
+		return resolve_from("/", in, out, outlen);
+	char base[LXP_PATH_MAX];
+	long rc = lxp_vfs_dir_path(p, dirfd, base, sizeof(base));
+	return rc < 0 ? rc : resolve_from(base, in, out, outlen);
 }
 
 long resolve_path_trusted(const char *in, char *out, size_t outlen)

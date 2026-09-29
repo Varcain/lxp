@@ -74,11 +74,20 @@ static long fop_fstat_rootfs(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 }
 
 /* Read-only: a NULL write makes write(2) return -EBADF and pwrite64(2) -ESPIPE. */
+static long fop_dir_path_rootfs(lxp_proc_t *p, lxp_ofd_t *s, char *out, size_t cap)
+{
+	const lxp_file_t *f = &p->fs[s->file_idx];
+	if ((file_mode(f) & LXP_S_IFMT) != LXP_S_IFDIR)
+		return -LXP_ENOTDIR;
+	return lxp_vfs_copy_path(f->path, out, cap);
+}
+
 const lxp_file_ops_t lxp_rootfs_fops = {
 	.read = fop_read_rootfs,
 	.pread = fop_pread_rootfs,
 	.lseek = fop_lseek_rootfs,
 	.getdents = fop_getdents_rootfs,
+	.dir_path = fop_dir_path_rootfs,
 	.mmap = fop_mmap_rootfs,
 	.fstat = fop_fstat_rootfs,
 };

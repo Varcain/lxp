@@ -23,6 +23,11 @@
  * string the kernel owns — see resolve_path_trusted(). */
 long resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen);
 
+/* resolve_path() for the *at() calls: a relative `in` resolves against the directory
+ * open on @p dirfd (LXP_AT_FDCWD: the cwd). -EBADF, -ENOTDIR, or -EOPNOTSUPP for a
+ * directory whose kind cannot name it (hostfs, netfs). */
+long resolve_path_at(lxp_proc_t *p, int dirfd, const char *in, char *out, size_t outlen);
+
 /* Normalize an ABSOLUTE path the kernel itself owns — one copied out of a file's
  * bytes rather than handed over by the guest, so there is no user pointer to
  * validate and resolve_path()'s -EFAULT guard would reject it outright.

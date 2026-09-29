@@ -52,6 +52,10 @@ struct lxp_file_ops {
 	 *  written, 0 at the end, a negated errno, or 0 after parking the proc (netfs).
 	 *  NULL means the kind is not a directory (the syscall returns -ENOTDIR). */
 	long (*getdents)(lxp_proc_t *p, lxp_ofd_t *f, lxp_dirent_sink_t *sink);
+	/** the absolute path of this open directory, into @p out[@p cap], for the *at()
+	 *  calls relative to it: 0 or a negated errno. NULL means the kind cannot name its
+	 *  directories (lxp_vfs_dir_path answers EOPNOTSUPP for one, ENOTDIR otherwise). */
+	long (*dir_path)(lxp_proc_t *p, lxp_ofd_t *f, char *out, size_t cap);
 	/** fstat64(2) and statx(2) on the fd: fill @p st, 0 or a negated errno. NULL
 	 *  means the kind has no backing object and reports a bare character device
 	 *  (console/pipe/eventfd). */
@@ -143,5 +147,12 @@ long lxp_vfs_read_mem(lxp_proc_t *p, const void *data, size_t size, void *buf, s
  *  stores and returns the new offset, -EINVAL for a negative one or -EOVERFLOW
  *  past what the descriptor's offset can hold. */
 int64_t lxp_vfs_seek(lxp_ofd_t *ofd, int64_t end, int64_t off, int whence);
+
+/** Copy the directory path @p path into @p out[@p cap]: 0 or -ENAMETOOLONG. */
+long lxp_vfs_copy_path(const char *path, char *out, size_t cap);
+
+/** The absolute path of the directory open on @p fd, into @p out[@p cap]: 0, -EBADF,
+ *  -ENOTDIR, or -EOPNOTSUPP for a directory its kind cannot name (hostfs, netfs). */
+long lxp_vfs_dir_path(lxp_proc_t *p, int fd, char *out, size_t cap);
 
 #endif /* LXP_FS_VFS_H */

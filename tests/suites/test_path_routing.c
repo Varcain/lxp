@@ -720,6 +720,73 @@ static void test_exec_from_tmpfs(void **state)
 	world_end(&g_proc);
 }
 
+static long open_path(lxp_conf_t *fx, const char *path, int flags)
+{
+	return call(&g_proc, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, path),
+		    flags, 0);
+}
+
+static long str(lxp_conf_t *fx, const char *text)
+{
+	return (long)(uintptr_t)lxp_conf_str(fx, text);
+}
+
+/* The *at() calls resolve a relative path from the directory open on dirfd: a rootfs,
+ * tmpfs or /proc directory. An absolute path ignores dirfd; a file is ENOTDIR, a closed
+ * descriptor EBADF, a hostfs directory EOPNOTSUPP and an unlinked one ENOENT. */
+static void test_at_calls_resolve_from_dirfd(void **state)
+{
+	(void)state;
+	lxp_conf_t *fx = world_begin(&g_proc);
+	assert_non_null(fx);
+	uint8_t *buf = lxp_conf_alloc(fx, 128);
+	long b = (long)(uintptr_t)buf;
+	long etc = open_path(fx, "/etc", LXP_O_RDONLY);
+	long bin = open_path(fx, "/bin", LXP_O_RDONLY);
+	long proc = open_path(fx, "/proc", LXP_O_RDONLY);
+	long tmp = open_path(fx, "/tmp", LXP_O_RDONLY);
+	long wd = open_path(fx, "/tmp/wd", LXP_O_RDONLY);
+	assert_true(etc >= 0 && bin >= 0 && proc >= 0 && tmp >= 0 && wd >= 0);
+
+	long fd = call(&g_proc, LXP_NR_openat, etc, str(fx, "hosts"), LXP_O_RDONLY, 0);
+	assert_true(fd >= 0);
+	assert_int_equal(lxp_fd_kind(&g_proc, (int)fd), LXP_FD_FILE);
+	assert_int_equal(call(&g_proc, LXP_NR_fstatat64, etc, str(fx, "hosts"), b, 0), 0);
+	assert_int_equal(call(&g_proc, LXP_NR_readlinkat, bin, str(fx, "sh"), b, 64), 7);
+	assert_int_equal(call(&g_proc, LXP_NR_faccessat, proc, str(fx, "stat"), 0, 0), 0);
+	assert_int_equal(call(&g_proc, LXP_NR_mkdirat, wd, str(fx, "x"), 0755, 0), 0);
+	assert_true(wfs_find("/tmp/wd/x") >= 0);
+	assert_int_equal(call(&g_proc, LXP_NR_unlinkat, wd, str(fx, "x"), LXP_AT_REMOVEDIR, 0), 0);
+	assert_int_equal(call(&g_proc, LXP_NR_renameat, tmp, str(fx, "w"), wd, str(fx, "moved")),
+			 0);
+	assert_true(wfs_find("/tmp/wd/moved") >= 0);
+	assert_int_equal(call(&g_proc, LXP_NR_symlinkat, str(fx, "t"), wd, str(fx, "l"), 0), 0);
+	assert_true(wfs_find("/tmp/wd/l") >= 0);
+
+	assert_int_equal(call(&g_proc, LXP_NR_openat, fd, str(fx, "x"), LXP_O_RDONLY, 0),
+			 -LXP_ENOTDIR);
+	assert_int_equal(call(&g_proc, LXP_NR_openat, 29, str(fx, "hosts"), LXP_O_RDONLY, 0),
+			 -LXP_EBADF);
+	long abs_fd = call(&g_proc, LXP_NR_openat, 29, str(fx, "/etc/hosts"), LXP_O_RDONLY, 0);
+	assert_true(abs_fd >= 0);
+	long data = open_path(fx, "/data", LXP_O_RDONLY);
+	assert_true(data >= 0);
+	assert_int_equal(call(&g_proc, LXP_NR_openat, data, str(fx, "f"), LXP_O_RDONLY, 0),
+			 -LXP_EOPNOTSUPP);
+	assert_int_equal(call(&g_proc, LXP_NR_mkdir, str(fx, "/tmp/gone"), 0755, 0, 0), 0);
+	long gone = open_path(fx, "/tmp/gone", LXP_O_RDONLY);
+	assert_true(gone >= 0);
+	assert_int_equal(call(&g_proc, LXP_NR_rmdir, str(fx, "/tmp/gone"), 0, 0, 0), 0);
+	long create = LXP_O_WRONLY | LXP_O_CREAT;
+	assert_int_equal(call(&g_proc, LXP_NR_openat, gone, str(fx, "x"), create, 0644),
+			 -LXP_ENOENT);
+
+	const long fds[] = {etc, bin, proc, tmp, wd, fd, abs_fd, data, gone};
+	for (size_t i = 0; i < sizeof(fds) / sizeof(fds[0]); i++)
+		assert_int_equal(call(&g_proc, LXP_NR_close, fds[i], 0, 0, 0), 0);
+	world_end(&g_proc);
+}
+
 static int group_setup(void **state)
 {
 	(void)state;
@@ -758,6 +825,7 @@ int test_path_routing_run(void)
 		cmocka_unit_test(test_dev_nodes_stat_as_devices),
 		cmocka_unit_test(test_chdir_follows_symlinks),
 		cmocka_unit_test(test_exec_from_tmpfs),
+		cmocka_unit_test(test_at_calls_resolve_from_dirfd),
 	};
 	return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }
