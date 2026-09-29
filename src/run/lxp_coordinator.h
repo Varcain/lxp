@@ -178,6 +178,10 @@ int vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *parent, lxp_region_ref_t 
 		  lxp_slot_ref_t child, uintptr_t parent_sp);
 void vfork_contain_stale(lxp_slot_ref_t child, lxp_proc_t *proc);
 void lxp_vfork_guard_reset(int slot);
+/* futex(2) from the trap: answers in @p f->r[0] or parks the caller (src/run/lxp_futex.c). */
+void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64);
+/* Whether another live thread shares @p proc's address space and could wake its futex wait. */
+int lxp_futex_has_corunner(const lxp_proc_t *proc);
 /* The slots whose live address space lies in region @p region. */
 unsigned lxp_region_live_users(int region);
 lxp_region_ref_t region_ref_at(int region);

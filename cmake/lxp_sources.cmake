@@ -56,6 +56,7 @@ set(LXP_COORDINATOR_SOURCES
     "${LXP_SOURCE_ROOT}/src/run/lxp_exec.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_exit.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_fork.c"
+    "${LXP_SOURCE_ROOT}/src/run/lxp_futex.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_guest_event.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_image.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_initial.c"
