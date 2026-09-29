@@ -48,7 +48,6 @@ extern "C" {
 #define LXP_SOCKW_SEND 2u
 #define LXP_SOCKW_RECV 3u
 #define LXP_SOCKW_ACCEPT 4u /**< A blocked accept(2). */
-#define LXP_SOCKW_POLL 5u   /**< A blocking poll(2)/select over a set that includes a socket. */
 
 /* Guest socket ABI. LXP_AF_* and LXP_SOCK_STREAM/DGRAM/RAW are the provider
  * types from lxp_net_ops.h (identical Linux values); these bits are guest-only. */
@@ -191,11 +190,6 @@ int lxp_sock_ifsnapshot(uint8_t ip[4], uint8_t gw[4], uint8_t nm[4], uint8_t mac
 
 /** Retry a parked socket op for the coordinator; result or -EAGAIN (still blocked). */
 long lxp_sock_retry(lxp_proc_t *p);
-
-/* Re-scan a parked poll(2)/select's fd set for readiness (called from lxp_sock_retry
- * for LXP_SOCKW_POLL). Implemented in the syscall TU, which owns the fd table + the
- * per-kind readiness probes. Returns the ready count (>0), 0 at the deadline, or -EAGAIN. */
-long lxp_poll_retry(lxp_proc_t *p);
 
 #ifdef __cplusplus
 }

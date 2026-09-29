@@ -391,5 +391,6 @@ typedef struct lxp_pollfd {
 
 #define LXP_POLLIN 0x0001
 #define LXP_POLLOUT 0x0004
+#define LXP_POLLNVAL 0x0020
 
 #endif /* LXP_LINUX_UAPI_H */

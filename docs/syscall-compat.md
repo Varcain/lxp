@@ -151,7 +151,7 @@ Surface: 144 LXP_NR_* — 106 implemented, 27 benign-stub, 1 refused-eopnotsupp,
 | 403 | clock_gettime64 | implemented | 64-bit time_t |
 | 407 | clock_nanosleep_time64 | implemented | parks via the run loop |
 | 412 | utimensat_time64 | benign-stub | times not tracked |
-| 413 | pselect6_time64 | implemented | NET-gated |
+| 413 | pselect6_time64 | implemented | one fd_set word (fds below 32); sigmask not applied |
 | 414 | ppoll_time64 | implemented |  |
 | 421 | rt_sigtimedwait_time64 | implemented | poll only: dequeues a pending signal in the set, else -EAGAIN; does not block for the timeout |
 | 422 | futex_time64 | run-loop-handled | same as futex |

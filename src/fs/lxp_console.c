@@ -7,6 +7,7 @@
  * Console file operations (FD_CONSOLE): stdio on the host console transport plus
  * the stateless character devices sharing the kind, selected by file_idx —
  * 0 stdin, 1 stdout/stderr, 3 /dev/null, 4 /dev/urandom + /dev/random, 5 /dev/zero.
+ * Poll readiness depends on the caller's timeout, so fs/lxp_poll.c decides it.
  */
 #include "fs/lxp_vfs.h"
 
@@ -113,16 +114,8 @@ static long fop_ioctl_console(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, un
 	}
 }
 
-static unsigned fop_poll_console(lxp_proc_t *p, lxp_ofd_t *s)
-{
-	(void)s;
-	int key = lxp_console_input_ready(p);
-	return (unsigned)((p->console_poll ? (key ? LXP_POLLIN : 0) : LXP_POLLIN) | LXP_POLLOUT);
-}
-
 const lxp_file_ops_t lxp_console_fops = {
 	.read = fop_read_console,
 	.write = fop_write_console,
 	.ioctl = fop_ioctl_console,
-	.poll = fop_poll_console,
 };

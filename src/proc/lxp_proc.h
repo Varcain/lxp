@@ -200,6 +200,7 @@ typedef enum lxp_wait_kind {
 	LXP_WAIT_HOSTFS,
 	LXP_WAIT_PTY,
 	LXP_WAIT_SIGSUSPEND,
+	LXP_WAIT_POLL,
 	LXP_WAIT_COUNT,
 } lxp_wait_kind_t;
 
@@ -242,6 +243,14 @@ typedef struct lxp_wait {
 			uintptr_t writefds;
 			uintptr_t exceptfds;
 		} socket;
+		struct {
+			uintptr_t pollfds; /**< poll: the guest pollfd array */
+			int nfds;	   /**< poll: entries; select: highest fd + 1 */
+			uint64_t deadline_us; /**< UINT64_MAX = no timeout */
+			uintptr_t readfds;    /**< select (flags bit 0): the guest fd_sets */
+			uintptr_t writefds;
+			uintptr_t exceptfds;
+		} poll;
 		struct {
 			intptr_t nr;
 			intptr_t args[6];

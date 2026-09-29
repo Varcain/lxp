@@ -91,6 +91,7 @@ int claim_slot_event(int s)
 	case LXP_WAIT_DEVICE:
 		return LXP_EV_DEVWAIT;
 	case LXP_WAIT_SOCKET:
+	case LXP_WAIT_POLL: /* counted with socket waits, as before poll had its own wait */
 		return LXP_EV_SOCKWAIT;
 #if LXP_ENABLE_NETFS
 	case LXP_WAIT_NETFS:

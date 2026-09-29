@@ -782,11 +782,6 @@ long lxp_sock_retry(lxp_proc_t *p)
 {
 	if (!p || p->wait.kind != LXP_WAIT_SOCKET)
 		return -LXP_EINVAL;
-	/* A parked poll() waits on a whole fd set, not one open; the syscall TU owns the
-	 * fd table + per-kind readiness probes, so re-scan there. */
-	if (p->wait.op == LXP_SOCKW_POLL)
-		return lxp_poll_retry(p);
-
 	struct sock_open *o = open_slot(p->wait.data.socket.object);
 	if (!o)
 		return -LXP_EBADF;

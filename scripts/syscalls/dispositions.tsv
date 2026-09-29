@@ -80,7 +80,7 @@ clock_nanosleep	implemented	parks via the run loop
 clock_nanosleep_time64	implemented	parks via the run loop
 poll	implemented
 ppoll_time64	implemented
-pselect6_time64	implemented	NET-gated
+pselect6_time64	implemented	one fd_set word (fds below 32); sigmask not applied
 uname	implemented	Linux identity plus current RTOS, RTOS version, oveRTOS revision, and lxp revision
 sysinfo	implemented	uptime plus live-process and free slot/region capacity
 times	implemented	uptime ticks; per-proc breakdown zeroed

@@ -19,6 +19,7 @@
 #include "net/lxp_net.h"
 #include "lxp_syscall.h"
 #include "lxp_provider.h"
+#include "fs/lxp_poll.h"
 /* The POSIX reference port provides the synthetic netif bound for one run. */
 lxp_netif_t lxp_posix_netif(void);
 
@@ -82,18 +83,18 @@ static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 	p->mm->pool_lo = p->mm->pool_hi = 0;
 }
 
-/* Drive a syscall and, if it parked on the socket layer, pump the coordinator
- * retry the run loop would run. Returns the
- * completed result. */
+/* Drive a syscall and, if it parked on the socket layer or in a poll, pump the
+ * coordinator retry the run loop would run. Returns the completed result. */
 static long call_pump(lxp_proc_t *p, long nr, long a0, long a1, long a2, long a3, long a4, long a5)
 {
 	long r = lxp_syscall(p, nr, a0, a1, a2, a3, a4, a5);
-	if (p->wait.kind != LXP_WAIT_SOCKET)
+	lxp_wait_kind_t kind = p->wait.kind;
+	if (kind != LXP_WAIT_SOCKET && kind != LXP_WAIT_POLL)
 		return r;
 	for (int i = 0; i < 4000; i++) {
-		long rr = lxp_sock_retry(p);
+		long rr = kind == LXP_WAIT_POLL ? lxp_poll_retry(p) : lxp_sock_retry(p);
 		if (rr != -LXP_EAGAIN) {
-			(void)lxp_wait_complete(p, LXP_WAIT_SOCKET);
+			(void)lxp_wait_complete(p, kind);
 			return rr;
 		}
 		struct timespec ts = {.tv_sec = 0, .tv_nsec = 500000}; /* 0.5 ms */
@@ -396,7 +397,7 @@ static void test_net_dup_close(void **state)
 
 /* poll(2) on a socket must block until the fd is readable (or the timeout) — the
  * uClibc DNS resolver does poll(POLLIN) then recv(MSG_DONTWAIT), so a poll that
- * returned early/late would break name resolution. Exercises the SOCKW_POLL park
+ * returned early/late would break name resolution. Exercises the LXP_WAIT_POLL park
  * + lxp_poll_retry re-scan for both the timeout and the readiness-wake paths. */
 static void test_net_poll(void **state)
 {
@@ -416,7 +417,7 @@ static void test_net_poll(void **state)
 	int conn = accept(ls, NULL, NULL);
 	assert_true(conn >= 0);
 
-	/* Timeout: nothing readable, poll(POLLIN, 120 ms) parks on SOCKW_POLL, the
+	/* Timeout: nothing readable, poll(POLLIN, 120 ms) parks in LXP_WAIT_POLL, the
 	 * coordinator retry re-scans until the deadline, then poll returns 0. */
 	lxp_pollfd pf;
 	memset(&pf, 0, sizeof(pf));

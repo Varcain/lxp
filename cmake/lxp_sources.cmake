@@ -25,6 +25,7 @@ set(LXP_RUNTIME_SOURCES
     "${LXP_SOURCE_ROOT}/src/fs/lxp_hostfs.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_path.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_pipe.c"
+    "${LXP_SOURCE_ROOT}/src/fs/lxp_poll.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_rootfs.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_stat.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_tmpfs.c"

@@ -694,6 +694,8 @@ static uint32_t diag_wait_mask(const lxp_proc_t *p)
 		return LXP_DIAG_WAIT_PTY;
 	case LXP_WAIT_SIGSUSPEND:
 		return LXP_DIAG_WAIT_SIGSUSPEND;
+	case LXP_WAIT_POLL:
+		return LXP_DIAG_WAIT_POLL;
 	default:
 		return UINT32_MAX;
 	}

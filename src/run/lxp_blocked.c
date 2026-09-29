@@ -10,6 +10,7 @@
 #include "lxp_run_internal.h"
 #include "lxp/lxp_run.h"
 #include "lxp_syscall.h"
+#include "fs/lxp_poll.h"
 #if LXP_ENABLE_DEV
 #include "dev/lxp_dev.h"
 #endif
@@ -62,6 +63,7 @@ static int lxp_wait_service_class(lxp_wait_kind_t kind)
 	case LXP_WAIT_HOSTFS:
 		return LXP_SERVICE_FS;
 	case LXP_WAIT_SOCKET:
+	case LXP_WAIT_POLL:
 		return LXP_SERVICE_SOCKET;
 	case LXP_WAIT_CONSOLE:
 		return LXP_SERVICE_CONSOLE;
@@ -130,6 +132,7 @@ static uint32_t lxp_blocked_wait_policy(lxp_wait_kind_t kind)
 	case LXP_WAIT_CONSOLE:
 		return LXP_BLOCKED_WAIT_CONSOLE;
 	case LXP_WAIT_SOCKET:
+	case LXP_WAIT_POLL: /* re-scanned on the socket tick; readiness is not evented */
 		return LXP_BLOCKED_WAIT_SOCKET;
 	case LXP_WAIT_NONE:
 	case LXP_WAIT_TIMER:
@@ -424,6 +427,19 @@ static void lxp_blocked_retry_socket(const lxp_os_ops_t *eng, int slot, lxp_proc
 }
 #endif
 
+static void lxp_blocked_retry_poll(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
+				   struct lxp_blocked_scan *scan)
+{
+	if (proc->wait.kind != LXP_WAIT_POLL || slot_runnable_load(slot))
+		return;
+	long rc = lxp_poll_retry(proc);
+	if (rc != -LXP_EAGAIN) {
+		(void)lxp_wait_complete(proc, LXP_WAIT_POLL);
+		(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+		scan->progress = 1;
+	}
+}
+
 #if LXP_ENABLE_NETFS
 void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, long rc,
 				      struct lxp_blocked_scan *scan)
@@ -579,6 +595,7 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 #if LXP_ENABLE_NET
 			lxp_blocked_retry_socket(eng, slot, proc, &scan);
 #endif
+			lxp_blocked_retry_poll(eng, slot, proc, &scan);
 #if LXP_ENABLE_NETFS
 			lxp_blocked_retry_netfs(eng, slot, proc, &scan);
 #endif

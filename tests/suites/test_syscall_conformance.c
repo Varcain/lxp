@@ -22,11 +22,13 @@
 #include "../framework/lxp_test.h"
 #include "../framework/lxp_proc_fixture.h"
 #include "../framework/lxp_stat_view.h"
+#include "fs/lxp_poll.h" /* lxp_poll_retry: the coordinator re-scan */
 
 #include "dev/lxp_dev.h" /* lxp_guest_access_ok: assert the host canary is outside the guest ranges */
 
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 /* ---- ABI mirrors (identical layout to the file-scope structs in lxp_syscall.c) -------- */
 
@@ -714,6 +716,85 @@ static void test_conf_inode_identity(void **state)
 	ino = lxp_view_dirent64_ino(dbuf, n, "self");
 	assert_int_not_equal(ino, 0);
 	assert_int_equal(path_ino(&p, fx, "/proc/self", buf, 0), ino);
+}
+
+/* Re-scan a parked poll the way the coordinator does until it completes. */
+static long poll_pump(lxp_proc_t *p)
+{
+	for (int i = 0; i < 2000; i++) {
+		long rc = lxp_poll_retry(p);
+		if (rc != -LXP_EAGAIN) {
+			(void)lxp_wait_complete(p, LXP_WAIT_POLL);
+			return rc;
+		}
+		struct timespec ts = {.tv_sec = 0, .tv_nsec = 500000};
+		nanosleep(&ts, NULL);
+	}
+	return -LXP_EAGAIN;
+}
+
+/* A poll or select that finds nothing ready waits on any kind whose readiness can
+ * change (here a pipe and an eventfd, no socket), until it is ready or times out. */
+static void test_conf_poll_wait(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+	int *fds = lxp_conf_alloc(fx, 2 * sizeof(int));
+	assert_int_equal(SC(&p, LXP_NR_pipe2, (long)(uintptr_t)fds, 0, 0, 0, 0, 0), 0);
+	lxp_pollfd *pf = lxp_conf_alloc(fx, 2 * sizeof(lxp_pollfd));
+	char *one = lxp_conf_str(fx, "x");
+
+	/* Blocking poll on an empty pipe parks; a write wakes it. */
+	pf[0].fd = fds[0];
+	pf[0].events = LXP_POLLIN;
+	assert_int_equal(SC(&p, LXP_NR_poll, (long)(uintptr_t)pf, 1, -1, 0, 0, 0), 0);
+	assert_int_equal(p.wait.kind, LXP_WAIT_POLL);
+	assert_int_equal(lxp_poll_retry(&p), -LXP_EAGAIN);
+	assert_int_equal(SC(&p, LXP_NR_write, fds[1], (long)(uintptr_t)one, 1, 0, 0, 0), 1);
+	assert_int_equal(poll_pump(&p), 1);
+	assert_int_equal(pf[0].revents, LXP_POLLIN);
+	uint8_t *buf = lxp_conf_alloc(fx, 4);
+	assert_int_equal(SC(&p, LXP_NR_read, fds[0], (long)(uintptr_t)buf, 4, 0, 0, 0), 1);
+
+	/* A finite timeout expires with 0. */
+	assert_int_equal(SC(&p, LXP_NR_poll, (long)(uintptr_t)pf, 1, 20, 0, 0, 0), 0);
+	assert_int_equal(p.wait.kind, LXP_WAIT_POLL);
+	assert_int_equal(poll_pump(&p), 0);
+	assert_int_equal(pf[0].revents, 0);
+
+	/* An eventfd becomes readable when its counter is written. */
+	long efd = SC(&p, LXP_NR_eventfd2, 0, 0, 0, 0, 0, 0);
+	pf[0].fd = (int)efd;
+	assert_int_equal(SC(&p, LXP_NR_poll, (long)(uintptr_t)pf, 1, -1, 0, 0, 0), 0);
+	uint64_t *ctr = lxp_conf_alloc(fx, sizeof(uint64_t));
+	*ctr = 1;
+	assert_int_equal(SC(&p, LXP_NR_write, efd, (long)(uintptr_t)ctr, 8, 0, 0, 0), 8);
+	assert_int_equal(poll_pump(&p), 1);
+	assert_int_equal(pf[0].revents, LXP_POLLIN);
+
+	/* A descriptor that is not open is reported, not waited on. */
+	pf[0].fd = 60;
+	pf[1].fd = fds[0];
+	pf[1].events = LXP_POLLIN;
+	assert_int_equal(SC(&p, LXP_NR_poll, (long)(uintptr_t)pf, 2, -1, 0, 0, 0), 1);
+	assert_int_equal(pf[0].revents, LXP_POLLNVAL);
+	assert_int_equal(p.wait.kind, LXP_WAIT_NONE);
+
+	/* select: the read end parks, a write wakes it with the bit set; a set bit that
+	 * names no open descriptor is EBADF. */
+	uint32_t *rset = lxp_conf_alloc(fx, sizeof(uint32_t));
+	*rset = 1u << fds[0];
+	assert_int_equal(SC(&p, LXP_NR_pselect6_time64, fds[0] + 1, (long)(uintptr_t)rset, 0, 0, 0,
+			    0),
+			 0);
+	assert_int_equal(p.wait.kind, LXP_WAIT_POLL);
+	assert_int_equal(SC(&p, LXP_NR_write, fds[1], (long)(uintptr_t)one, 1, 0, 0, 0), 1);
+	assert_int_equal(poll_pump(&p), 1);
+	assert_int_equal(*rset, 1u << fds[0]);
+	*rset = 1u << 30;
+	assert_int_equal(SC(&p, LXP_NR_pselect6_time64, 31, (long)(uintptr_t)rset, 0, 0, 0, 0),
+			 -LXP_EBADF);
 }
 
 /* =============================== directory entries ==================================== */
@@ -1470,6 +1551,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_open_flags),
 		cmocka_unit_test(test_conf_access_mode),
 		cmocka_unit_test(test_conf_stat_kinds),
+		cmocka_unit_test(test_conf_poll_wait),
 		cmocka_unit_test(test_conf_inode_identity),
 		cmocka_unit_test(test_conf_dirent),
 		cmocka_unit_test(test_conf_dirent_records),

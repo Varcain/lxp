@@ -25,6 +25,7 @@
 #endif
 #include "fs/lxp_path.h"     /* path resolution (resolve_path / fs_lookup / fs_follow) */
 #include "fs/lxp_pipe.h"     /* pipe ring ops (FD_PIPE) */
+#include "fs/lxp_poll.h"     /* poll/ppoll/pselect6 */
 #include "fs/lxp_stat.h"     /* ARM struct stat64 record */
 #include "fs/lxp_tmpfs.h"    /* writable VFS overlay nodes (FD_TMPFS) */
 #include "proc/lxp_procfs.h" /* synthetic /proc content generation (FD_PROC) */
@@ -86,13 +87,6 @@ LXP_STATIC_ASSERT(sizeof(struct lxp_pollfd) == 8, "pollfd ABI size drifted");
 
 static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off, int flags);
 
-#if LXP_ENABLE_NET
-/* pselect6(2): select() over the poll machinery (busybox inetd + dropbear are
- * select-based). Defined with the poll retry below; the dispatch calls it earlier. */
-#define LXP_SEL_MAXFDS 32 /* max nfds handled (fd_set = one 32-bit word here) */
-static long sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwfds, uintptr_t uefds,
-			 uintptr_t utimeout);
-#endif
 
 /* The pipe subsystem (ring buffer + read/write/poll ops) lives in src/fs/lxp_pipe.c;
  * this dispatcher calls it via fs/lxp_pipe.h. */
@@ -1712,157 +1706,6 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 	return 0;
 }
 
-static long sys_poll(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
-{
-	lxp_pollfd *pfds = (lxp_pollfd *)(uintptr_t)a0;
-	unsigned nfds = (unsigned)a1;
-	if (nfds > LXP_MAX_FDS) /* bound before nfds*sizeof(pollfd) wraps a 32-bit size_t */
-		return -LXP_EINVAL;
-	if (nfds && !lxp_guest_access_ok(proc, pfds, (size_t)nfds * sizeof(lxp_pollfd), 1))
-		return -LXP_EFAULT;
-	/* Timeout: poll(2) passes ms in a2 (<0 = block); ppoll passes a struct
-		 * timespec* (NULL = block). A SHORT finite timeout means the caller is
-		 * probing for input that might *immediately* follow — e.g. vi/hush's
-		 * read_key polling ~50 ms after ESC to tell a lone ESC from an escape
-		 * sequence. We keep no read-ahead, so honestly report "no data yet" for
-		 * such probes: a lone ESC then stays ESC (Esc then :q works in vi). vi
-		 * also uses poll(timeout 0) as "is input pending? if not, repaint the
-		 * screen" — reporting ready there made it never repaint while inserting
-		 * (edits stayed invisible). A blocking/long poll reports ready and the
-		 * caller blocks in read() for the real byte (the console read blocks
-		 * until a key arrives). */
-	long tmo_ms;
-	if (nr == LXP_NR_poll) {
-		tmo_ms = (long)(int32_t)a2;
-	} else {
-		const int64_t *ts = (const int64_t *)(uintptr_t)a2; /* {sec, nsec} */
-		if (ts && !lxp_guest_access_ok(proc, ts, 2 * sizeof(int64_t), 0))
-			return -LXP_EFAULT;
-		tmo_ms = ts ? (long)(ts[0] * 1000 + ts[1] / 1000000) : -1;
-	}
-	/* With a console_poll callback (UART console) we report the console fd's REAL
-		 * readiness, enabling interactive top's `q` quit; without one a short finite
-		 * timeout is a read_key probe (vi/hush ESC + "input pending?") reported
-		 * not-ready (no read-ahead), and a longer/blocking poll reports ready so the
-		 * caller blocks in read() for the byte. */
-	int probe = (tmo_ms >= 0 && tmo_ms <= 100);
-	int key = lxp_console_input_ready(proc);
-	int ready = 0;
-#if LXP_ENABLE_NET
-	int has_socket = 0, has_eventfd = 0, has_pty = 0;
-#endif
-	for (unsigned i = 0; i < nfds; i++) {
-		pfds[i].revents = 0;
-		lxp_ofd_t *s = lxp_fd_description(proc, pfds[i].fd);
-		if (!s)
-			continue;
-		int avail;
-		if (s->kind == LXP_FD_CONSOLE)
-			avail = (tmo_ms < 0) ? 1 : (proc->console_poll ? key : !probe);
-#if LXP_ENABLE_DEV
-		else if (s->kind == LXP_FD_DEV) {
-			/* Report the driver's real readiness bits (fb POLLOUT, evdev
-				 * POLLIN when the event ring is non-empty). */
-			unsigned pb = lxp_dev_poll(s->file_idx);
-			pfds[i].revents = (short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
-			if (pfds[i].revents)
-				ready++;
-			continue;
-		}
-#endif
-#if LXP_ENABLE_NET
-		else if (s->kind == LXP_FD_SOCKET) {
-			unsigned pb = lxp_sock_poll(s->file_idx);
-			pfds[i].revents = (short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
-			if (pfds[i].revents)
-				ready++;
-			has_socket = 1;
-			continue;
-		} else if (s->kind == LXP_FD_EVENTFD) {
-			/* Readable once the counter is non-zero (the resolver thread
-				 * wrote it); always writable. Park like a socket poll so the
-				 * coordinator re-checks on its tick. */
-			unsigned pb = lxp_vfs_ops(s)->poll(proc, s);
-			pfds[i].revents = (short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
-			if (pfds[i].revents)
-				ready++;
-			has_eventfd = 1;
-			continue;
-		}
-#if LXP_ENABLE_PTY
-		else if (s->kind == LXP_FD_PTY) {
-			unsigned pb = lxp_pty_poll(s->file_idx, s->rw);
-			pfds[i].revents = (short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
-			if (pfds[i].revents)
-				ready++;
-			has_pty = 1; /* park via SOCKW_POLL; the re-scan re-checks the pty */
-			continue;
-		}
-#endif
-#endif
-		else if (s->kind == LXP_FD_PIPE) {
-			/* Real pipe readiness — NOT "always ready", or a select on an empty
-				 * self-pipe wrongly reports readable (dropbear then blocks forever). */
-			unsigned pb = pipe_poll(s->file_idx, s->rw);
-			pfds[i].revents = (short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
-			if (pfds[i].revents)
-				ready++;
-			continue;
-		} else
-			avail = 1; /* regular files: always readable/writable */
-		if (avail) {
-			pfds[i].revents = pfds[i].events & (LXP_POLLIN | LXP_POLLOUT);
-			if (pfds[i].revents)
-				ready++;
-		}
-	}
-	if (ready > 0 || tmo_ms == 0)
-		return ready;
-#if LXP_ENABLE_NET
-	/* A blocking poll whose set includes a socket parks on SOCKW_POLL: the
-		 * coordinator re-scans readiness on its <=5 ms socket-retry tick (via
-		 * lxp_poll_retry) and resumes us when an fd becomes ready or the timeout
-		 * elapses. Without this a socket poll would sleep the whole timeout and return
-		 * 0, breaking the uClibc DNS resolver (poll(POLLIN) then recv(MSG_DONTWAIT)). */
-	if (has_socket || has_eventfd || has_pty) {
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_SOCKET,
-			.op = LXP_SOCKW_POLL,
-			.data.socket.object = -1,
-			.data.socket.buffer = (uintptr_t)pfds,
-			.data.socket.length = nfds,
-		};
-		if (tmo_ms > 0) {
-			uint64_t now_us = 0;
-			lxp_time_us(&now_us);
-			wait.data.socket.deadline_us = now_us + (uint64_t)tmo_ms * 1000ull;
-		} else {
-			wait.data.socket.deadline_us = UINT64_MAX; /* poll(-1): block forever */
-		}
-		if (lxp_wait_begin(proc, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* parked; coordinator resumes with the ready count / 0 */
-	}
-#endif
-	/* Nothing ready + a real timeout: with the UART console, park for the timeout
-		 * (paces interactive top's refresh, returns 0); a buffered keystroke is caught
-		 * at the next poll. Without console_poll a long timeout already reported ready
-		 * above, so we only reach here on a no-callback probe → return 0. */
-	if (proc->console_poll && tmo_ms > 0) {
-		/* Use the same cross-idle microsecond clock as the coordinator deadline
-		 * scan. Mixing clock domains here makes poll refresh and input drift. */
-		uint64_t now_us = 0;
-		lxp_time_us(&now_us);
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_TIMER,
-			.data.timer.deadline_us = now_us + (uint64_t)tmo_ms * 1000ull,
-		};
-		if (lxp_wait_begin(proc, &wait) != 0)
-			return -LXP_EAGAIN;
-	}
-	return 0;
-}
-
 static long sys_ioctl(lxp_proc_t *proc, long a0, long a1, long a2)
 {
 	lxp_ofd_t *s = lxp_fd_description(proc, (int)a0);
@@ -2418,14 +2261,12 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		}
 		return 0;
 	}
-#if LXP_ENABLE_NET
 	case LXP_NR_pselect6_time64: /* (nfds, readfds, writefds, exceptfds, timeout, sigmask) */
-		return sys_pselect6(proc, (int)a0, (uintptr_t)a1, (uintptr_t)a2, (uintptr_t)a3,
-				    (uintptr_t)a4);
-#endif
+		return lxp_sys_pselect6(proc, (int)a0, (uintptr_t)a1, (uintptr_t)a2, (uintptr_t)a3,
+					(uintptr_t)a4);
 	case LXP_NR_poll:
 	case LXP_NR_ppoll_time64:
-		return sys_poll(proc, nr, a0, a1, a2);
+		return lxp_sys_poll(proc, nr, a0, a1, a2);
 	case LXP_NR_wait4: {
 		if (a1 && !lxp_guest_access_ok(proc, (void *)(uintptr_t)a1, sizeof(int), 1))
 			return -LXP_EFAULT; /* the kernel WRITES *status */
@@ -2707,166 +2548,3 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 	}
 }
 
-#if LXP_ENABLE_NET
-/* Re-evaluate a parked poll(2)'s fd set for readiness (socket + device + console).
- * Mirrors the initial sys_poll scan but in blocking mode — a console fd reports its
- * real key readiness rather than the vi/top ESC-probe heuristic. */
-static int lxp_poll_scan(lxp_proc_t *proc, lxp_pollfd *pfds, unsigned nfds)
-{
-	int ready = 0;
-	for (unsigned i = 0; i < nfds; i++) {
-		pfds[i].revents = 0;
-		lxp_ofd_t *s = lxp_fd_description(proc, pfds[i].fd);
-		if (!s)
-			continue;
-		/* Dispatch readiness through the fd's ops; a kind with no poll fop
-		 * (regular file / tmpfs / proc / netfs) is always ready. */
-		const lxp_file_ops_t *ops = lxp_vfs_ops(s);
-		unsigned pb = ops && ops->poll ? ops->poll(proc, s)
-					       : (unsigned)(LXP_POLLIN | LXP_POLLOUT);
-		pfds[i].revents = (short)(pfds[i].events & pb & (LXP_POLLIN | LXP_POLLOUT));
-		if (pfds[i].revents)
-			ready++;
-	}
-	return ready;
-}
-
-/* ── pselect6(2): select() bridged onto the poll machinery ─────────────────────
- * An fd_set here is one 32-bit word (nfds capped at LXP_SEL_MAXFDS). We derive a
- * pollfd set from the caller's readfds/writefds, scan it with lxp_poll_scan, and
- * write the ready fds back into the fd_sets. A blocking select parks on SOCKW_POLL and
- * the retry re-derives the set from the (still-unmodified) fd_sets each pass. */
-static int sel_isset(const uint32_t *set, int fd)
-{
-	return set && ((set[fd >> 5] >> (fd & 31)) & 1u);
-}
-
-/* Build a pollfd array from the fd_sets; returns the count. */
-static int sel_build(const lxp_wait_t *wait, lxp_pollfd *pf)
-{
-	const uint32_t *r = (const uint32_t *)wait->data.socket.readfds;
-	const uint32_t *w = (const uint32_t *)wait->data.socket.writefds;
-	int n = 0;
-	for (int fd = 0; fd < wait->data.socket.nfds && n < LXP_SEL_MAXFDS; fd++) {
-		unsigned ev = 0;
-		if (sel_isset(r, fd))
-			ev |= LXP_POLLIN;
-		if (sel_isset(w, fd))
-			ev |= LXP_POLLOUT;
-		if (ev) {
-			pf[n].fd = fd;
-			pf[n].events = (short)ev;
-			pf[n].revents = 0;
-			n++;
-		}
-	}
-	return n;
-}
-
-/* Write the scanned pollfd revents back into the caller's fd_sets; returns select()'s
- * count (a fd ready for both read and write counts twice). Zeroes the sets first. */
-static long sel_writeback(const lxp_wait_t *wait, const lxp_pollfd *pf, int npf)
-{
-	uint32_t *r = (uint32_t *)wait->data.socket.readfds;
-	uint32_t *w = (uint32_t *)wait->data.socket.writefds;
-	uint32_t *e = (uint32_t *)wait->data.socket.exceptfds;
-	if (r)
-		r[0] = 0;
-	if (w)
-		w[0] = 0;
-	if (e)
-		e[0] = 0;
-	long ready = 0;
-	for (int i = 0; i < npf; i++) {
-		int fd = pf[i].fd;
-		if ((pf[i].revents & LXP_POLLIN) && r) {
-			r[fd >> 5] |= (1u << (fd & 31));
-			ready++;
-		}
-		if ((pf[i].revents & LXP_POLLOUT) && w) {
-			w[fd >> 5] |= (1u << (fd & 31));
-			ready++;
-		}
-	}
-	return ready; /* exceptfds left cleared (no out-of-band data on this tier) */
-}
-
-static long sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwfds, uintptr_t uefds,
-			 uintptr_t utimeout)
-{
-	if (nfds < 0)
-		return -LXP_EINVAL;
-	if (nfds > LXP_SEL_MAXFDS)
-		nfds = LXP_SEL_MAXFDS; /* one fd_set word; higher fds are not selectable here */
-	size_t setb = sizeof(uint32_t);
-	if ((urfds && !lxp_guest_access_ok(p, (void *)urfds, setb, 1)) ||
-	    (uwfds && !lxp_guest_access_ok(p, (void *)uwfds, setb, 1)) ||
-	    (uefds && !lxp_guest_access_ok(p, (void *)uefds, setb, 1)))
-		return -LXP_EFAULT;
-	long tmo_ms = -1; /* NULL timeout = block forever */
-	if (utimeout) {
-		if (!lxp_guest_access_ok(p, (void *)utimeout, 2 * sizeof(int64_t), 0))
-			return -LXP_EFAULT;
-		const int64_t *ts = (const int64_t *)utimeout; /* time64: tv_sec, tv_nsec */
-		int64_t ms = ts[0] * 1000 + ts[1] / 1000000;
-		tmo_ms = ms < 0 ? 0 : (long)ms;
-	}
-	lxp_wait_t wait = {
-		.kind = LXP_WAIT_SOCKET,
-		.op = LXP_SOCKW_POLL,
-		.flags = 1,
-		.data.socket.object = -1,
-		.data.socket.nfds = nfds,
-		.data.socket.readfds = urfds,
-		.data.socket.writefds = uwfds,
-		.data.socket.exceptfds = uefds,
-	};
-	lxp_pollfd pf[LXP_SEL_MAXFDS];
-	int npf = sel_build(&wait, pf);
-	int ready = lxp_poll_scan(p, pf, (unsigned)npf);
-	if (ready > 0 || tmo_ms == 0)
-		return sel_writeback(&wait, pf, npf);
-	/* Park on the poll machinery; lxp_poll_retry re-derives + completes it. */
-	if (tmo_ms > 0) {
-		uint64_t now = 0;
-		lxp_time_us(&now);
-		wait.data.socket.deadline_us = now + (uint64_t)tmo_ms * 1000ull;
-	} else {
-		wait.data.socket.deadline_us = UINT64_MAX;
-	}
-	if (lxp_wait_begin(p, &wait) != 0)
-		return -LXP_EAGAIN;
-	return 0;
-}
-
-long lxp_poll_retry(lxp_proc_t *proc)
-{
-	if (!proc || proc->wait.kind != LXP_WAIT_SOCKET || proc->wait.op != LXP_SOCKW_POLL)
-		return -LXP_EINVAL;
-	if (proc->wait.flags & 1u) { /* parked pselect6: re-derive from fd_sets */
-		lxp_pollfd pf[LXP_SEL_MAXFDS];
-		int npf = sel_build(&proc->wait, pf);
-		int ready = lxp_poll_scan(proc, pf, (unsigned)npf);
-		int timedout = 0;
-		if (proc->wait.data.socket.deadline_us != UINT64_MAX) {
-			uint64_t now_us = 0;
-			lxp_time_us(&now_us);
-			timedout = (now_us >= proc->wait.data.socket.deadline_us);
-		}
-		if (ready > 0 || timedout)
-			return sel_writeback(&proc->wait, pf, npf);
-		return -LXP_EAGAIN;
-	}
-	lxp_pollfd *pfds = (lxp_pollfd *)(uintptr_t)proc->wait.data.socket.buffer;
-	int ready = lxp_poll_scan(proc, pfds, (unsigned)proc->wait.data.socket.length);
-	if (ready > 0)
-		return ready;
-	if (proc->wait.data.socket.deadline_us != UINT64_MAX) {
-		uint64_t now_us = 0;
-		lxp_time_us(&now_us);
-		if (now_us >= proc->wait.data.socket.deadline_us)
-			return 0; /* timed out */
-	}
-	return -LXP_EAGAIN; /* still waiting */
-}
-#endif /* LXP_ENABLE_NET */
