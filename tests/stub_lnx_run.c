@@ -12,6 +12,7 @@
  */
 #include "lxp_syscall.h"
 #include "lxp_internal.h"
+#include "proc/lxp_exec_stage.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -46,6 +47,16 @@ static const struct lxp_resource_stats g_lxp_test_resource_stats = {
 	.regions_free = 5,
 	.processes = 1,
 };
+
+/* The engine's exec staging RAM (on target the STM32 backend puts it in SDRAM): netfs
+ * exec fetches and tmpfs execs copy their image into it. */
+static uint8_t g_lxp_test_exec_stage[64 * 1024];
+uint8_t *lxp_exec_stage(size_t *cap)
+{
+	if (cap)
+		*cap = sizeof(g_lxp_test_exec_stage);
+	return g_lxp_test_exec_stage;
+}
 
 int lxp_random_fill(void *buf, size_t len)
 {

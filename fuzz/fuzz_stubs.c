@@ -33,16 +33,3 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 	(void)proc;
 }
 
-#if LXP_ENABLE_NETFS_EXEC
-#include "netfs/lxp_netfs.h"
-/* Engine staging buffer for a fetched remote ELF (on target the STM32 backend puts
- * this in SDRAM). The 9P exec-fetch path stages into it; give it real backing so the
- * netfs harness can drive a fetch without the coordinator. */
-static uint8_t g_fuzz_exec_stage[64 * 1024];
-uint8_t *lxp_exec_stage(size_t *cap)
-{
-	if (cap)
-		*cap = sizeof(g_fuzz_exec_stage);
-	return g_fuzz_exec_stage;
-}
-#endif

@@ -33,6 +33,7 @@ set(LXP_RUNTIME_SOURCES
     "${LXP_SOURCE_ROOT}/src/fs/lxp_stat.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_tmpfs.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_vfs.c"
+    "${LXP_SOURCE_ROOT}/src/proc/lxp_exec_stage.c"
     "${LXP_SOURCE_ROOT}/src/proc/lxp_process.c"
     "${LXP_SOURCE_ROOT}/src/proc/lxp_procfs.c"
     "${LXP_SOURCE_ROOT}/src/proc/lxp_script.c"

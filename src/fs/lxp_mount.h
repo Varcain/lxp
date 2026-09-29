@@ -53,6 +53,12 @@ typedef struct lxp_mount_ops {
 	/** chdir(2): make the directory at @p path the cwd, or park to do so. NULL: stat it,
 	 *  following a symlink, and require a directory. */
 	long (*chdir)(lxp_proc_t *p, const char *path);
+	/** execve: the program at @p path, following a symlink. 0 with @p data / @p size its
+	 *  bytes and @p rootfs_index its rootfs index (loaded in place) or -1 (to be copied
+	 *  into the exec staging buffer); 1 with the caller parked while the mount fetches
+	 *  it; EACCES for a directory. NULL: the mount runs no programs. */
+	long (*exec)(lxp_proc_t *p, const char *path, const uint8_t **data, size_t *size,
+		     int *rootfs_index);
 
 	/** statfs f_type for a mount without a statfs operation. */
 	uint32_t magic;

@@ -43,6 +43,7 @@
 #endif
 #if LXP_ENABLE_NETFS
 #include "netfs/lxp_netfs.h" /* remote-fs park/retry + init/pump + fork/exit lifecycle */
+#include "proc/lxp_exec_stage.h"
 #endif
 #if LXP_ENABLE_PTY
 #include "pty/lxp_pty.h" /* pty-layer park/retry (lxp_pty_retry) */

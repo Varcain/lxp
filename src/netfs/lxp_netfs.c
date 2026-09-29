@@ -24,6 +24,7 @@
 #if LXP_ENABLE_NETFS
 
 #include "netfs/lxp_netfs.h"
+#include "proc/lxp_exec_stage.h"
 #include "fs/lxp_dirent.h"
 #include "fs/lxp_mount.h"
 #include "fs/lxp_path.h"
@@ -1458,9 +1459,9 @@ long lxp_netfs_exec_fetch(lxp_proc_t *p, const char *abspath)
 	if (strlen(rp) >= LXP_PATH_MAX)
 		return -LXP_ENAMETOOLONG;
 	size_t cap = 0;
-	g_exec_buf = lxp_exec_stage(&cap);
-	if (!g_exec_buf || cap == 0)
-		return -LXP_ENOMEM; /* no staging buffer on this build */
+	long claimed = lxp_exec_stage_claim(p, &g_exec_buf, &cap);
+	if (claimed < 0)
+		return claimed; /* no staging buffer on this build, or another exec's image is in it */
 	g_exec_cap = cap;
 	g_exec_size = 0;
 	struct netfs_req *r = req_new(p, LXP_NETFSW_EXECFETCH);
@@ -1472,12 +1473,6 @@ long lxp_netfs_exec_fetch(lxp_proc_t *p, const char *abspath)
 	return 0; /* parked */
 }
 
-const uint8_t *lxp_netfs_exec_image(size_t *size)
-{
-	if (size)
-		*size = g_exec_size;
-	return g_exec_buf;
-}
 #endif /* LXP_ENABLE_NETFS_EXEC */
 
 /* ---- coordinator: retry a parked op / periodic pump ------------------------ */
@@ -1528,9 +1523,10 @@ long lxp_netfs_retry(lxp_proc_t *p)
 		 * the EXEC intent. Returning 0 with that intent tells the run loop not
 		 * to resume the old image. */
 		(void)lxp_wait_complete(p, LXP_WAIT_NETFS);
+		lxp_exec_stage_publish(p, g_exec_size);
 		if (lxp_intent_begin(p, &(lxp_intent_t){.kind = LXP_INTENT_EXEC}) != 0)
 			return -LXP_EAGAIN;
-		p->exec_file_idx = LXP_NETFS_EXEC_SENTINEL;
+		p->exec_file_idx = LXP_EXEC_STAGED;
 		return 0;
 	}
 #endif
@@ -1664,12 +1660,28 @@ const lxp_file_ops_t lxp_netfs_fops = {
 	.close = fop_close_netfs,
 };
 
+#if LXP_ENABLE_NETFS_EXEC
+/* A program off the mount is fetched whole into the exec staging buffer; the caller parks. */
+static long netfs_mount_exec(lxp_proc_t *p, const char *path, const uint8_t **data,
+			     size_t *size, int *rootfs_index)
+{
+	(void)data;
+	(void)size;
+	(void)rootfs_index;
+	long rc = lxp_netfs_exec_fetch(p, path);
+	return rc < 0 ? rc : 1; /* parked on the fetch */
+}
+#endif
+
 /* A read-only browse mount: every name change is EROFS. */
 const lxp_mount_ops_t lxp_netfs_mount_ops = {
 	.open = lxp_netfs_open,
 	.stat_park = lxp_netfs_stat,
 	.access = lxp_netfs_access,
 	.chdir = lxp_netfs_chdir,
+#if LXP_ENABLE_NETFS_EXEC
+	.exec = netfs_mount_exec,
+#endif
 	.magic = LXP_V9FS_MAGIC,
 	.name_errno = LXP_EROFS,
 };

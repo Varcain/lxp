@@ -135,20 +135,12 @@ int lxp_netfs_busy(void);
 
 /* ---- remote executable staging (LXP_ENABLE_NETFS_EXEC) --------------- */
 #if LXP_ENABLE_NETFS_EXEC
-/** exec_file_idx marker: the image to launch lives in the netfs exec staging buffer (RAM),
- *  not the rootfs table. The run loop's EV_EXEC sources it via lxp_netfs_exec_image. */
-#define LXP_NETFS_EXEC_SENTINEL (-2)
-
 /** execve of a /mnt path: submit walk/getattr/open + chained Tread of the whole ELF into the
- *  staging buffer; parks with @c LXP_NETFSW_EXECFETCH. On completion the retry publishes an
- *  @c LXP_INTENT_EXEC plus @c exec_file_idx=SENTINEL and the run loop launches the staged image.
- *  Returns 0 (parked) or a negative Linux errno inline. */
+ *  exec staging buffer (proc/lxp_exec_stage.h); parks with @c LXP_NETFSW_EXECFETCH. On
+ *  completion the retry publishes an @c LXP_INTENT_EXEC with @c exec_file_idx =
+ *  @c LXP_EXEC_STAGED and the run loop launches the staged image. Returns 0 (parked) or a
+ *  negative Linux errno inline. */
 long lxp_netfs_exec_fetch(lxp_proc_t *p, const char *abspath);
-/** The staged remote ELF after a completed EXECFETCH: bytes + size for launch(). */
-const uint8_t *lxp_netfs_exec_image(size_t *size);
-
-/** Internal adapter to the active lxp_os_ops_t::exec_stage provider. */
-uint8_t *lxp_exec_stage(size_t *cap);
 #endif
 
 #ifdef __cplusplus

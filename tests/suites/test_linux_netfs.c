@@ -15,11 +15,13 @@
  */
 
 #include "../framework/lxp_test.h"
+#include "../framework/lxp_mock_fdpic.h"
 #include "fs/lxp_fd_private.h" /* lxp_fd_get_cloexec */
 #include "lxp_arena.h"
 #include "lxp_guest.h"
 #include "lxp/lxp_net_ops.h"
 #include "netfs/lxp_netfs.h"
+#include "proc/lxp_exec_stage.h"
 #include "lxp_syscall.h"
 #include "lxp_provider.h"
 
@@ -83,40 +85,11 @@ struct mnode {
 	size_t size;
 	int parent;
 };
-static uint8_t g_prog[128];
+static uint8_t g_prog[LXP_MOCK_FDPIC_SIZE];
 
 static void build_mock_fdpic(void)
 {
-	memset(g_prog, 0, sizeof(g_prog));
-	g_prog[0] = 0x7f;
-	g_prog[1] = 'E';
-	g_prog[2] = 'L';
-	g_prog[3] = 'F';
-	g_prog[4] = 1;	/* ELFCLASS32 */
-	g_prog[7] = 65; /* ELFOSABI_ARM_FDPIC */
-	size_t off = 16;
-	w16(g_prog, &off, 3);  /* ET_DYN */
-	w16(g_prog, &off, 40); /* EM_ARM */
-	off = 24;
-	w32(g_prog, &off, 0);  /* entry */
-	w32(g_prog, &off, 52); /* phoff */
-	off = 42;
-	w16(g_prog, &off, 32);
-	w16(g_prog, &off, 2);
-	off = 52;
-	w32(g_prog, &off, 1); /* PT_LOAD text */
-	off = 52 + 16;
-	w32(g_prog, &off, 16); /* filesz */
-	w32(g_prog, &off, 16); /* memsz */
-	w32(g_prog, &off, 1);  /* PF_X */
-	off = 84;
-	w32(g_prog, &off, 1);	/* PT_LOAD data */
-	w32(g_prog, &off, 116); /* file offset */
-	w32(g_prog, &off, 0x1000);
-	off = 84 + 16;
-	w32(g_prog, &off, 8);  /* filesz */
-	w32(g_prog, &off, 16); /* memsz */
-	w32(g_prog, &off, 6);  /* PF_R | PF_W */
+	lxp_mock_fdpic(g_prog);
 }
 
 static const struct mnode g_tree[] = {
@@ -562,16 +535,6 @@ static void test_netfs_init_never_waits_for_server(void **state)
 	assert_int_equal(observed_timeout_ns, 0);
 }
 
-#if LXP_ENABLE_NETFS_EXEC
-/* The engine staging buffer for a fetched remote ELF (the STM32 backend puts this in SDRAM). */
-static uint8_t g_stage[64 * 1024];
-uint8_t *lxp_exec_stage(size_t *cap)
-{
-	if (cap)
-		*cap = sizeof(g_stage);
-	return g_stage;
-}
-#endif
 
 /* ---- test: full browse over one mock connection ---------------------------- */
 static void test_netfs_browse(void **state)
@@ -746,11 +709,11 @@ static void test_netfs_browse(void **state)
 					   (long)(uintptr_t)xargv, 0, 0, 0, 0),
 				 0);
 		assert_int_equal(xp.intent.kind, LXP_INTENT_EXEC);
-		assert_int_equal(xp.exec_file_idx, LXP_NETFS_EXEC_SENTINEL);
+		assert_int_equal(xp.exec_file_idx, LXP_EXEC_STAGED);
 		assert_int_equal(lxp_syscall(&xp, LXP_NR_fcntl64, pfds[0], LXP_F_GETFD, 0, 0, 0, 0),
 				 LXP_FD_CLOEXEC);
 		size_t xsz = 0;
-		const uint8_t *ximg = lxp_netfs_exec_image(&xsz);
+		const uint8_t *ximg = lxp_exec_stage_image(&xsz);
 		assert_int_equal((int)xsz, (int)sizeof(g_prog));
 		assert_memory_equal(ximg, g_prog, sizeof(g_prog));
 		(void)lxp_syscall(&xp, LXP_NR_close, pfds[0], 0, 0, 0, 0, 0);

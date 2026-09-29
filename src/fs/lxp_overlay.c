@@ -263,6 +263,31 @@ static long overlay_chdir(lxp_proc_t *p, const char *path)
 	return 0;
 }
 
+/* A rootfs program is loaded in place; a tmpfs one is copied out first. */
+static long overlay_exec(lxp_proc_t *p, const char *path, const uint8_t **data, size_t *size,
+			 int *rootfs_index)
+{
+	int wi = wfs_find(path);
+	if (wi >= 0) {
+		if (is_dir(wnode_at(wi)->mode))
+			return -LXP_EACCES;
+		*data = wnode_at(wi)->data;
+		*size = wnode_at(wi)->size;
+		*rootfs_index = -1;
+		return 0;
+	}
+	/* Follow symlinks, e.g. /bin/echo -> busybox (Buildroot installs applets as symlinks). */
+	int fi = fs_follow(p, fs_lookup(p, path));
+	if (fi < 0)
+		return -LXP_ENOENT;
+	if (is_dir(file_mode(&p->fs[fi])))
+		return -LXP_EACCES;
+	*data = p->fs[fi].data;
+	*size = p->fs[fi].size;
+	*rootfs_index = fi;
+	return 0;
+}
+
 const lxp_mount_ops_t lxp_overlay_mount_ops = {
 	.open = overlay_open,
 	.stat = overlay_stat,
@@ -276,6 +301,7 @@ const lxp_mount_ops_t lxp_overlay_mount_ops = {
 	.readlink = overlay_readlink,
 	.access = overlay_access,
 	.chdir = overlay_chdir,
+	.exec = overlay_exec,
 	.magic = LXP_TMPFS_MAGIC,
 	.name_errno = LXP_EROFS,
 };

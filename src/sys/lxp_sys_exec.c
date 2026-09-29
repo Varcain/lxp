@@ -9,16 +9,14 @@
  */
 #include "sys/lxp_sys.h"
 #include "fs/lxp_fd_private.h"
+#include "fs/lxp_mount.h"
 #include "fs/lxp_path.h"
-#include "fs/lxp_tmpfs.h"
 #include "lxp_guest.h"
 #include "lxp_internal.h"
 #include "lxp_linux_uapi.h"
 #include "lxp_loader.h"
+#include "proc/lxp_exec_stage.h"
 #include "proc/lxp_script.h"
-#if LXP_ENABLE_NETFS
-#include "netfs/lxp_netfs.h"
-#endif
 
 #include <string.h>
 
@@ -124,6 +122,41 @@ static long exec_rewrite_script_argv(lxp_exec_capture_t *cap, int old_argc, size
 	return 0;
 }
 
+/* The program at a resolved path, from the mount that answers it (see lxp_mount_ops_t::exec). */
+static long exec_lookup(lxp_proc_t *p, const char *abspath, const uint8_t **image, size_t *size,
+			int *idx)
+{
+	const lxp_mount_ops_t *m = lxp_mount_of(p, abspath);
+	*image = NULL;
+	*size = 0;
+	*idx = -1;
+	if (m->exec)
+		return m->exec(p, abspath, image, size, idx);
+	/* The mount runs no programs: a name it holds is EACCES, as on a noexec mount. */
+	struct lxp_stat st;
+	long rc = m->stat ? m->stat(p, abspath, 1, &st) : 0;
+	return rc < 0 ? rc : -LXP_EACCES;
+}
+
+/* A program that cannot be loaded in place (a tmpfs file, whose bytes a later write may
+ * move) is checked and copied into the exec staging buffer now, so the commit loads
+ * exactly the image execve saw. */
+static long exec_stage_copy(lxp_proc_t *p, const uint8_t *image, size_t size)
+{
+	if (!image || lxp_loader_validate_fdpic(image, size, LXP_PROG_REGION_SIZE, 1) != LXP_OK)
+		return -LXP_ENOEXEC;
+	uint8_t *stage;
+	size_t cap;
+	long rc = lxp_exec_stage_claim(p, &stage, &cap);
+	if (rc < 0)
+		return rc;
+	if (size > cap)
+		return -LXP_ENOMEM;
+	memcpy(stage, image, size);
+	lxp_exec_stage_publish(p, size);
+	return 0;
+}
+
 static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char *const envp[])
 {
 	if (!path)
@@ -148,42 +181,41 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	long rr = resolve_path(p, path, execabs, sizeof(execabs));
 	if (rr < 0)
 		return rr;
-#if LXP_ENABLE_NETFS_EXEC
-	/* Exec a program off the remote mount (/mnt/pi/prog): capture argv and
-	 * park the ELF fetch. CLOEXEC is deliberately deferred until the fetched
-	 * image reaches the coordinator's exec commit point. */
-	if (lxp_netfs_lookup(execabs) >= 0) {
-		cap->argc = raw_argc;
-		return lxp_netfs_exec_fetch(p, execabs); /* parks, or a negative errno inline */
-	}
-#endif
+	const uint8_t *image;
+	size_t image_size;
 	int idx;
 	if (strcmp(execabs, "/proc/self/exe") == 0) {
 		/* BusyBox re-execs its own image via execv("/proc/self/exe", argv) on NOMMU
 		 * — httpd (and any vfork+re-exec server) does this per connection. Re-run the
-		 * caller's current program image (kept in exec_file_idx across relaunches). */
+		 * caller's current program image (kept in exec_file_idx across relaunches); a
+		 * staged image is not kept once its exec has loaded it. */
 		idx = p->exec_file_idx;
 		if (idx < 0 || idx >= p->fs_count)
 			return -LXP_ENOENT;
+		image = p->fs[idx].data;
+		image_size = p->fs[idx].size;
 	} else {
-		/* Follow symlinks, e.g. /bin/echo -> busybox (Buildroot installs applets as
-		 * symlinks). The argv (argv[0] = "echo") is kept, so busybox runs that applet. */
-		idx = fs_follow(p, fs_lookup(p, execabs));
-		if (idx < 0)
-			return -LXP_ENOENT;
+		/* The argv (argv[0] = "echo") is kept when the path is a symlink to busybox,
+		 * so busybox runs that applet. */
+		long lr = exec_lookup(p, execabs, &image, &image_size, &idx);
+		if (lr < 0)
+			return lr;
+		if (lr > 0) {
+			/* The mount is fetching the program and the caller is parked. CLOEXEC is
+			 * deferred until the fetched image reaches the coordinator's commit. */
+			cap->argc = raw_argc;
+			return 0;
+		}
 	}
-	if ((file_mode(&p->fs[idx]) & LXP_S_IFMT) == LXP_S_IFDIR)
-		return -LXP_EACCES;
 
 	/* Interpreter scripts: a "#!interp [arg]" first line re-targets the exec to
 	 * the interpreter, with argv = [interp, arg?, scriptpath, original argv[1:]].
 	 * init runs /etc/init.d/rcS (a #!/bin/sh script) this way. */
-	const lxp_file_t *f = &p->fs[idx];
 	lxp_script_spec_t script;
-	int script_rc = lxp_script_parse(f->data, f->size, &script);
+	int script_rc = lxp_script_parse(image, image_size, &script);
 	if (script_rc < 0)
 		return script_rc;
-	int interp_idx = -1;
+	int argc = raw_argc;
 	if (script_rc == LXP_SCRIPT_PRESENT) {
 		char interpabs[LXP_PATH_MAX];
 		/* _trusted, not resolve_path(): interp was copied out of the script's
@@ -192,26 +224,30 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 		 * every #! script unrunnable — BusyBox init's /etc/init.d/rcS included. */
 		if (resolve_path_trusted(script.interpreter, interpabs, sizeof(interpabs)) < 0)
 			return -LXP_ENOENT;
-		interp_idx = fs_follow(p, fs_lookup(p, interpabs));
+		int interp_idx = fs_follow(p, fs_lookup(p, interpabs)); /* from the rootfs */
 		if (interp_idx < 0)
 			return -LXP_ENOENT;
-	}
-
-	int argc = raw_argc;
-	if (interp_idx >= 0) {
 		long ar = exec_rewrite_script_argv(cap, raw_argc, raw_argbytes, script.interpreter,
 						   script.argument, script.has_argument, execabs,
 						   &argc);
 		if (ar < 0)
 			return ar;
 		idx = interp_idx;
+		image = p->fs[idx].data;
+		image_size = p->fs[idx].size;
 	}
 	/* Refuse a wrong-ABI (hard-float) image before committing, so the caller gets a clean ENOEXEC
 	 * and its shell keeps running — the loader would otherwise reject it only at launch, which
-	 * terminates the caller. idx is the image that actually runs (the interpreter for a #! script);
-	 * a remote-mount exec took the early netfs path above and is caught by the loader instead. */
-	if (lxp_loader_abi_incompatible(p->fs[idx].data, p->fs[idx].size))
+	 * terminates the caller. The image is the one that actually runs (the interpreter for a #!
+	 * script); a fetched remote image is checked when its fetch completes. */
+	if (lxp_loader_abi_incompatible(image, image_size))
 		return -LXP_ENOEXEC;
+	if (idx < 0) {
+		long sr = exec_stage_copy(p, image, image_size);
+		if (sr < 0)
+			return sr;
+		idx = LXP_EXEC_STAGED;
+	}
 	/* close-on-exec: the fd table survives execve (the run loop preserves it), so drop the
 	 * FD_CLOEXEC fds here — the exec is committed past every error check. dropbear confirms
 	 * the shell exec'd by its exec-status pipe (FD_CLOEXEC) closing this way. */

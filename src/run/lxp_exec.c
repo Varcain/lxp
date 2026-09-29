@@ -8,11 +8,8 @@
 #include <string.h>
 
 #include "fs/lxp_fd_private.h"
+#include "proc/lxp_exec_stage.h"
 #include "run/lxp_exec_private.h"
-
-#if LXP_ENABLE_NETFS_EXEC
-#include "netfs/lxp_netfs.h"
-#endif
 
 LXP_EXEC_TXN_LINKAGE void exec_txn_init(struct exec_txn *tx, int slot)
 {
@@ -304,14 +301,13 @@ void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int s
 	exec_txn_init(&tx, slot);
 	const uint8_t *image = NULL;
 	size_t image_size = 0;
-	int remote_exec = 0;
-#if LXP_ENABLE_NETFS_EXEC
-	if (tx.image_index == LXP_NETFS_EXEC_SENTINEL) {
-		image = lxp_netfs_exec_image(&image_size);
+	int remote_exec = 0; /* a staged copy: its text is loaded into the region, not mapped */
+	if (tx.image_index == LXP_EXEC_STAGED) {
+		/* Read synchronously below; the exec intent completed above, so the staging
+		 * buffer is free for the next exec once this commit returns. */
+		image = lxp_exec_stage_image(&image_size);
 		remote_exec = 1;
-	} else
-#endif
-		if (tx.image_index >= 0 && tx.image_index < cfg->rootfs_count) {
+	} else if (tx.image_index >= 0 && tx.image_index < cfg->rootfs_count) {
 		image = cfg->rootfs[tx.image_index].data;
 		image_size = cfg->rootfs[tx.image_index].size;
 	}

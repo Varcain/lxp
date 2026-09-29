@@ -9,6 +9,7 @@
 #include "lxp/lxp_config.h"
 
 #include "proc/lxp_proc.h"
+#include "proc/lxp_exec_stage.h"
 
 #include "fs/lxp_fd_private.h"
 
@@ -166,6 +167,7 @@ void lxp_proc_runtime_reset(void)
 	memset(g_sighand, 0, sizeof(g_sighand));
 	memset(g_mm, 0, sizeof(g_mm));
 	memset(g_groups, 0, sizeof(g_groups));
+	lxp_exec_stage_reset();
 }
 
 static void files_put(lxp_proc_t *proc)

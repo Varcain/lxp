@@ -17,6 +17,7 @@
  * (for open, stat and the calls that create or remove a name).
  */
 #include "../framework/lxp_test.h"
+#include "../framework/lxp_mock_fdpic.h"
 #include "../framework/lxp_proc_fixture.h"
 #include "../framework/lxp_stat_view.h"
 
@@ -27,6 +28,7 @@
 #include "lxp_guest.h"
 #include "lxp_provider.h"
 #include "netfs/lxp_netfs.h"
+#include "proc/lxp_exec_stage.h"
 #include "pty/lxp_pty.h"
 
 #include <stdio.h>
@@ -536,20 +538,20 @@ static const struct row6 g_lookup[] = {
 	/* path         readlink  access    w_ok      x_ok      chdir      exec */
 	{"/",          {E(INVAL), 0,        0,        0,        0,         E(ACCES)}},
 	{"/proc",      {E(INVAL), 0,        E(ACCES), 0,        0,         E(ACCES)}},
-	{"/proc/self", {1,        0,        E(ACCES), 0,        0,         E(NOENT)}},
-	{"/proc/stat", {E(INVAL), 0,        E(ACCES), E(ACCES), E(NOTDIR), E(NOENT)}},
+	{"/proc/self", {1,        0,        E(ACCES), 0,        0,         E(ACCES)}},
+	{"/proc/stat", {E(INVAL), 0,        E(ACCES), E(ACCES), E(NOTDIR), E(ACCES)}},
 	{"/proc/nope", {E(NOENT), E(NOENT), E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
 	{"/data",      {E(INVAL), 0,        0,        0,        0,         E(ACCES)}},
-	{"/data/f",    {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(NOENT)}},
+	{"/data/f",    {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(ACCES)}},
 	{"/data/nope", {E(NOENT), E(NOENT), E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
 	{"/dev",       {E(INVAL), 0,        0,        0,        0,         E(ACCES)}},
-	{"/dev/null",  {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(NOENT)}},
-	{"/dev/ptmx",  {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(NOENT)}},
-	{"/dev/rtest", {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(NOENT)}},
+	{"/dev/null",  {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(ACCES)}},
+	{"/dev/ptmx",  {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(ACCES)}},
+	{"/dev/rtest", {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(ACCES)}},
 	{"/mnt/pi",    {E(INVAL), NET,      E(ROFS),  NET,      NET,       NET}},
 	{"/mnt/pi/f",  {E(INVAL), NET,      E(ROFS),  NET,      NET,       NET}},
-	{"/tmp/w",     {E(INVAL), 0,        0,        0,        E(NOTDIR), E(NOENT)}},
-	{"/tmp/wd",    {E(INVAL), 0,        0,        0,        0,         E(NOENT)}},
+	{"/tmp/w",     {E(INVAL), 0,        0,        0,        E(NOTDIR), E(NOEXEC)}},
+	{"/tmp/wd",    {E(INVAL), 0,        0,        0,        0,         E(ACCES)}},
 	{"/etc/hosts", {E(INVAL), 0,        E(ROFS),  0,        E(NOTDIR), SKIP}},
 	{"/bin/sh",    {7,        0,        E(ROFS),  0,        E(NOTDIR), SKIP}},
 	{"/etclink",   {3,        0,        E(ROFS),  0,        0,         E(ACCES)}},
@@ -681,6 +683,43 @@ static void test_chdir_follows_symlinks(void **state)
 	world_end(&g_proc);
 }
 
+/* A program stored in tmpfs is checked and copied into the exec staging buffer by execve.
+ * The buffer then belongs to that exec until the coordinator's commit takes the image, so
+ * another staged exec meanwhile is EAGAIN. */
+static void test_exec_from_tmpfs(void **state)
+{
+	(void)state;
+	lxp_conf_t *fx = world_begin(&g_proc);
+	assert_non_null(fx);
+	g_proc.alive = 1; /* a process calling execve is running */
+	uint8_t prog[LXP_MOCK_FDPIC_SIZE];
+	lxp_mock_fdpic(prog);
+	int wi = wfs_create("/tmp/prog", LXP_S_IFREG | 0755u);
+	assert_true(wi >= 0);
+	assert_int_equal(wfs_reserve(wi, sizeof(prog)), 0);
+	memcpy(wnode_at(wi)->data, prog, sizeof(prog));
+	wnode_at(wi)->size = sizeof(prog);
+
+	long path = (long)(uintptr_t)lxp_conf_str(fx, "/tmp/prog");
+	assert_int_equal(call(&g_proc, LXP_NR_execve, path, 0, 0, 0), 0);
+	assert_int_equal(g_proc.intent.kind, LXP_INTENT_EXEC);
+	assert_int_equal(g_proc.exec_file_idx, LXP_EXEC_STAGED);
+	size_t size = 0;
+	const uint8_t *image = lxp_exec_stage_image(&size);
+	assert_int_equal(size, sizeof(prog));
+	assert_memory_equal(image, prog, sizeof(prog));
+
+	lxp_proc_t other;
+	memset(&other, 0, sizeof(other));
+	uint8_t *stage;
+	size_t cap;
+	assert_int_equal(lxp_exec_stage_claim(&other, &stage, &cap), -LXP_EAGAIN);
+	assert_int_equal(lxp_intent_complete(&g_proc, LXP_INTENT_EXEC), 0); /* the commit */
+	assert_int_equal(lxp_exec_stage_claim(&other, &stage, &cap), 0);
+	g_proc.alive = 0;
+	world_end(&g_proc);
+}
+
 static int group_setup(void **state)
 {
 	(void)state;
@@ -718,6 +757,7 @@ int test_path_routing_run(void)
 		cmocka_unit_test(test_route_lookups),
 		cmocka_unit_test(test_dev_nodes_stat_as_devices),
 		cmocka_unit_test(test_chdir_follows_symlinks),
+		cmocka_unit_test(test_exec_from_tmpfs),
 	};
 	return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }
