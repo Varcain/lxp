@@ -12,6 +12,7 @@
 #include "fs/lxp_dir.h"
 
 #include "fs/lxp_path.h"
+#include "fs/lxp_stat.h"
 #include "fs/lxp_tmpfs.h"
 #include "lxp/lxp_config.h"
 #include "lxp/lxp_stats.h"
@@ -46,6 +47,13 @@ static int dirent_emit(lxp_dirent_sink_t *sink, long *pos, lxp_ofd_t *s, uint64_
 	return 1;
 }
 
+/* Emit a synthetic /proc entry, numbered from its path as stat() numbers it. */
+static int proc_emit(lxp_dirent_sink_t *sink, long *pos, lxp_ofd_t *s, const char *dirpath,
+		     const char *name, uint32_t mode)
+{
+	return dirent_emit(sink, pos, s, lxp_procfs_child_inode(dirpath, name), name, mode);
+}
+
 long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_sink_t *sink)
 {
 	long pos = 0; /* running child index across both sources; s->offset = emitted */
@@ -62,7 +70,7 @@ long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_s
 #endif
 		)
 			continue;
-		if (!dirent_emit(sink, &pos, s, (uint64_t)(i + 1), name, file_mode(&p->fs[i])))
+		if (!dirent_emit(sink, &pos, s, LXP_INO_ROOTFS + (uint64_t)i, name, file_mode(&p->fs[i])))
 			full = 1;
 	}
 	/* writable-overlay children */
@@ -76,7 +84,7 @@ long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_s
 		const char *name = lxp_path_child_name(dirpath, wnode_at(i)->path);
 		if (!name)
 			continue;
-		if (!dirent_emit(sink, &pos, s, (uint64_t)(100000 + i), name, wnode_at(i)->mode))
+		if (!dirent_emit(sink, &pos, s, LXP_INO_TMPFS + (uint64_t)i, name, wnode_at(i)->mode))
 			full = 1;
 	}
 #if LXP_ENABLE_FS
@@ -95,7 +103,7 @@ long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_s
 		const char *name = dp ? lxp_path_child_name(dirpath, dp) : NULL;
 		if (!name)
 			continue;
-		if (!dirent_emit(sink, &pos, s, (uint64_t)(0x300000 + i), name, dmode))
+		if (!dirent_emit(sink, &pos, s, LXP_INO_DEV + (uint64_t)i, name, dmode))
 			full = 1;
 	}
 #endif
@@ -104,13 +112,10 @@ long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_s
 		const char *file;
 		int dpid = proc_pid(dirpath, p, &file);
 		if (strcmp(dirpath, "/proc") == 0) {
-			uint64_t ino = 200000;
 			for (int i = 0; g_proc_files[i] && !full; i++)
-				if (!dirent_emit(sink, &pos, s, ino++,
-						 g_proc_files[i], LXP_S_IFREG))
+				if (!proc_emit(sink, &pos, s, dirpath, g_proc_files[i], LXP_S_IFREG))
 					full = 1;
-			if (!full &&
-			    !dirent_emit(sink, &pos, s, ino++, "self", LXP_S_IFLNK))
+			if (!full && !proc_emit(sink, &pos, s, dirpath, "self", LXP_S_IFLNK))
 				full = 1;
 			/* every live process + kernel thread from the ps/top snapshot */
 			int np = lxp_pent_count(), seen1 = 0, seenself = 0;
@@ -125,12 +130,11 @@ long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_s
 				pidstr[k] = '\0';
 				seen1 |= (e->pid == 1);
 				seenself |= (e->pid == p->pid);
-				if (!dirent_emit(sink, &pos, s, ino++, pidstr, LXP_S_IFDIR))
+				if (!proc_emit(sink, &pos, s, dirpath, pidstr, LXP_S_IFDIR))
 					full = 1;
 			}
 			/* fallbacks before the first snapshot refresh populates the table */
-			if (!full && !seen1 &&
-			    !dirent_emit(sink, &pos, s, ino++, "1", LXP_S_IFDIR))
+			if (!full && !seen1 && !proc_emit(sink, &pos, s, dirpath, "1", LXP_S_IFDIR))
 				full = 1;
 			if (!full && !seenself && p->pid != 1) {
 				char pidstr[12];
@@ -138,14 +142,13 @@ long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_s
 				lxp_text_u64(&pid_text, (uint64_t)p->pid);
 				size_t k = pid_text.length;
 				pidstr[k] = '\0';
-				if (!dirent_emit(sink, &pos, s, ino++, pidstr, LXP_S_IFDIR))
+				if (!proc_emit(sink, &pos, s, dirpath, pidstr, LXP_S_IFDIR))
 					full = 1;
 			}
 		} else if (dpid > 0 && !file && proc_pid_known(p, dpid)) {
 			static const char *const pf[] = {"stat", "cmdline", "status", "comm", NULL};
-			uint64_t ino = 300000;
 			for (int i = 0; pf[i] && !full; i++)
-				if (!dirent_emit(sink, &pos, s, ino++, pf[i], LXP_S_IFREG))
+				if (!proc_emit(sink, &pos, s, dirpath, pf[i], LXP_S_IFREG))
 					full = 1;
 		}
 	}

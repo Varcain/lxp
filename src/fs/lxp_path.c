@@ -194,3 +194,12 @@ const char *lxp_path_child_name(const char *dir, const char *path)
 	const char *name = path + dl + 1;
 	return (*name && !strchr(name, '/')) ? name : NULL;
 }
+
+uint32_t lxp_path_hash(uint32_t hash, const char *text)
+{
+	for (const unsigned char *c = (const unsigned char *)text; *c; c++) {
+		hash ^= *c;
+		hash *= 16777619u;
+	}
+	return hash;
+}

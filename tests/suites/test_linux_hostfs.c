@@ -670,6 +670,16 @@ static void test_hostfs_directory_paging_and_mount_boundary(void **state)
 	assert_true(n2 > 0);
 	assert_true(contains_dirent64(first, (size_t)n1, "hello.txt"));
 	assert_true(contains_dirent64(second, (size_t)n2, "sub"));
+	/* Each listed inode is the one stat reports for that path. */
+	uint8_t st[104] = {0};
+	assert_int_equal(call(&proc, LXP_NR_stat64, (long)(uintptr_t)"/data/hello.txt",
+			      (long)(uintptr_t)st, 0),
+			 0);
+	assert_int_equal(lxp_view_dirent64_ino(first, n1, "hello.txt"), lxp_view_kstat64(st).ino);
+	assert_int_equal(call(&proc, LXP_NR_stat64, (long)(uintptr_t)"/data/sub", (long)(uintptr_t)st,
+			      0),
+			 0);
+	assert_int_equal(lxp_view_dirent64_ino(second, n2, "sub"), lxp_view_kstat64(st).ino);
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_getdents64, dfd, (long)(uintptr_t)second,
 				     sizeof(second), 0, 0, 0),
 			 0);

@@ -11,6 +11,7 @@
 #if LXP_ENABLE_FS
 
 #include "fs/lxp_hostfs.h"
+#include "fs/lxp_path.h"
 #include "fs/lxp_stat.h"
 #include "fs/lxp_vfs.h"
 
@@ -30,6 +31,7 @@ typedef struct lxp_hostfs_open {
 	} handle;
 	lxp_fs_dirent_t pending;
 	uint32_t inode;
+	uint32_t path_hash; /* of the directory path, to number its entries */
 	uint8_t used;
 	uint8_t is_dir;
 	uint8_t has_pending;
@@ -129,20 +131,20 @@ int lxp_hostfs_is_read_only(void)
 	return g_hostfs_read_only != 0;
 }
 
+static uint32_t hostfs_inode_of(uint32_t path_hash)
+{
+	return LXP_INO_HOSTFS | (path_hash & 0x0fffffffu);
+}
+
 uint32_t lxp_hostfs_path_inode(const char *abspath)
 {
 	if (!lxp_hostfs_match(abspath))
 		return 0;
 
 	/* The provider API deliberately exposes no RTOS-specific inode. Use a
-	 * stable namespace-tagged FNV-1a value so stat(path), fstat(open(path)),
-	 * and statx agree independent of the transient open-pool slot. */
-	uint32_t hash = 2166136261u;
-	for (const unsigned char *p = (const unsigned char *)abspath; *p; p++) {
-		hash ^= *p;
-		hash *= 16777619u;
-	}
-	return 0x70000000u | (hash & 0x0fffffffu);
+	 * stable namespace-tagged path hash so stat(path), fstat(open(path)),
+	 * statx and readdir agree independent of the transient open-pool slot. */
+	return hostfs_inode_of(lxp_path_hash(LXP_PATH_HASH_INIT, abspath));
 }
 
 static lxp_hostfs_open_t *hostfs_slot(int index)
@@ -212,6 +214,7 @@ long lxp_hostfs_open(lxp_proc_t *proc, const char *abspath, int linux_flags)
 		g_hostfs_open[index].used = 1;
 		g_hostfs_open[index].is_dir = 1;
 		g_hostfs_open[index].inode = lxp_hostfs_path_inode(abspath);
+		g_hostfs_open[index].path_hash = lxp_path_hash(LXP_PATH_HASH_INIT, abspath);
 		return index;
 	}
 	if (opened.type != LXP_FS_TYPE_FILE)
@@ -665,8 +668,11 @@ static long fop_getdents_hostfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *
 	if (rc <= 0)
 		return rc;
 	uint32_t mode = entry->type == LXP_FS_TYPE_DIR ? LXP_S_IFDIR : LXP_S_IFREG;
-	if (!lxp_dirent_put(sink, 0x700001u + (uint64_t)s->offset, (uint64_t)s->offset + 1u,
-			    lxp_dirent_type(mode), entry->name, strlen(entry->name)))
+	/* The entry's inode is the hash of its path, as stat(dir/name) reports. */
+	uint32_t hash = lxp_path_hash(hostfs_slot(s->file_idx)->path_hash, "/");
+	uint32_t ino = hostfs_inode_of(lxp_path_hash(hash, entry->name));
+	if (!lxp_dirent_put(sink, ino, (uint64_t)s->offset + 1u, lxp_dirent_type(mode), entry->name,
+			    strlen(entry->name)))
 		return sink->error ? sink->error : -LXP_EINVAL;
 	s->offset++;
 	lxp_hostfs_dir_consume(s->file_idx);

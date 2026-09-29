@@ -933,12 +933,13 @@ static long path_stat_lookup(lxp_proc_t *p, const char *abspath, int follow,
 		out->mode = proc_mode(abspath, p);
 		if (out->mode == 0)
 			return -LXP_ENOENT;
-		out->ino = LXP_INO_PROC;
+		out->ino = lxp_procfs_inode(abspath);
 		return LXP_PATH_STAT_LOCAL;
 	}
 #if LXP_ENABLE_DEV
-	if (lxp_dev_stat_path(abspath, &out->mode, &out->rdev) == 0) {
-		out->ino = LXP_INO_DEV;
+	int di = lxp_dev_stat_path(abspath, &out->mode, &out->rdev);
+	if (di >= 0) {
+		out->ino = LXP_INO_DEV + (uint32_t)di;
 		return LXP_PATH_STAT_LOCAL;
 	}
 #endif

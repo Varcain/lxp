@@ -557,6 +557,68 @@ static void test_conf_stat_kinds(void **state)
 	assert_int_equal(x.ino, k.ino);
 }
 
+/* stat(path).st_ino of @p path. */
+static uint64_t path_ino(lxp_proc_t *p, lxp_conf_t *fx, const char *path, uint8_t *buf, int follow)
+{
+	memset(buf, 0, 256);
+	assert_int_equal(SC(p, follow ? LXP_NR_stat64 : LXP_NR_lstat64,
+			    (long)(uintptr_t)lxp_conf_str(fx, path), (long)(uintptr_t)buf, 0, 0, 0, 0),
+			 0);
+	return lxp_view_kstat64(buf).ino;
+}
+
+/* fstat(open(path)).st_ino of @p path. */
+static uint64_t open_ino(lxp_proc_t *p, lxp_conf_t *fx, const char *path, uint8_t *buf)
+{
+	long fd = SC(p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, path),
+		     LXP_O_RDONLY, 0, 0, 0);
+	assert_true(fd >= 3);
+	memset(buf, 0, 256);
+	assert_int_equal(SC(p, LXP_NR_fstat64, fd, (long)(uintptr_t)buf, 0, 0, 0, 0), 0);
+	SC(p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+	return lxp_view_kstat64(buf).ino;
+}
+
+/* A named object reports the same inode from readdir, stat and fstat. */
+static void test_conf_inode_identity(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+	uint8_t *buf = lxp_conf_alloc(fx, 256);
+	uint8_t *dbuf = lxp_conf_alloc(fx, 1024);
+
+	/* tmpfs: a file in a created directory. */
+	assert_int_equal(SC(&p, LXP_NR_mkdir, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/idd"), 0755, 0,
+			    0, 0, 0),
+			 0);
+	long fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/idd/f"),
+		     LXP_O_WRONLY | LXP_O_CREAT, 0644, 0, 0);
+	assert_true(fd >= 3);
+	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/idd"),
+		LXP_O_RDONLY | LXP_O_DIRECTORY, 0, 0, 0);
+	long n = SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 1024, 0, 0, 0);
+	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+	uint64_t ino = lxp_view_dirent64_ino(dbuf, n, "f");
+	assert_int_not_equal(ino, 0);
+	assert_int_equal(path_ino(&p, fx, "/tmp/idd/f", buf, 1), ino);
+	assert_int_equal(open_ino(&p, fx, "/tmp/idd/f", buf), ino);
+
+	/* /proc: a generated file, and the self symlink. */
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/proc"),
+		LXP_O_RDONLY | LXP_O_DIRECTORY, 0, 0, 0);
+	n = SC(&p, LXP_NR_getdents64, fd, (long)(uintptr_t)dbuf, 1024, 0, 0, 0);
+	SC(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+	ino = lxp_view_dirent64_ino(dbuf, n, "version");
+	assert_int_not_equal(ino, 0);
+	assert_int_equal(path_ino(&p, fx, "/proc/version", buf, 1), ino);
+	assert_int_equal(open_ino(&p, fx, "/proc/version", buf), ino);
+	ino = lxp_view_dirent64_ino(dbuf, n, "self");
+	assert_int_not_equal(ino, 0);
+	assert_int_equal(path_ino(&p, fx, "/proc/self", buf, 0), ino);
+}
+
 /* =============================== directory entries ==================================== */
 
 static void test_conf_dirent(void **state)
@@ -1308,6 +1370,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_mem),
 		cmocka_unit_test(test_conf_stat),
 		cmocka_unit_test(test_conf_stat_kinds),
+		cmocka_unit_test(test_conf_inode_identity),
 		cmocka_unit_test(test_conf_dirent),
 		cmocka_unit_test(test_conf_dirent_records),
 		cmocka_unit_test(test_conf_pathmeta),

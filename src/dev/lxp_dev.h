@@ -201,7 +201,8 @@ void lxp_dev_cancel(lxp_proc_t *p);
 int lxp_dev_defer_caught_signal(const lxp_proc_t *p);
 /** Fill node mode / st_rdev / size for fstat/statx of open @p oi. */
 void lxp_dev_fstat(int oi, uint32_t *mode, uint64_t *rdev, uint64_t *size);
-/** Path-based stat: fill mode/rdev for a device @p abspath; -1 if not a device. */
+/** Path-based stat: fill mode/rdev for a device @p abspath and return its registry
+ *  index (its inode offset); -1 if not a device. */
 int lxp_dev_stat_path(const char *abspath, uint32_t *mode, uint64_t *rdev);
 /** Registered-device count + i-th path/mode/rdev, for the /dev getdents listing. */
 int lxp_dev_count(void);

@@ -45,4 +45,9 @@ int lxp_rootfs_resolve_index(const lxp_file_t *fs, int count, const char *abspat
  * that child's name; otherwise NULL. */
 const char *lxp_path_child_name(const char *dir, const char *path);
 
+/* FNV-1a over path text. Start from LXP_PATH_HASH_INIT; chaining calls hashes the
+ * concatenation, so hash("/dir") then "/" then "name" equals hash("/dir/name"). */
+#define LXP_PATH_HASH_INIT 2166136261u
+uint32_t lxp_path_hash(uint32_t hash, const char *text);
+
 #endif /* LXP_FS_PATH_H */

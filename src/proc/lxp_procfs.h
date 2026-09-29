@@ -33,6 +33,11 @@ int proc_pid(const char *abs, const lxp_proc_t *p, const char **file);
 /* True iff `pid` is a live/known process (pid 1, self, or a ps/top snapshot entry). */
 int proc_pid_known(const lxp_proc_t *p, int pid);
 
+/* The inode of /proc node `abs` (from its path, so stat, fstat and readdir agree),
+ * and of entry `name` of /proc directory `dir`. */
+uint32_t lxp_procfs_inode(const char *abs);
+uint32_t lxp_procfs_child_inode(const char *dir, const char *name);
+
 /* NULL-terminated list of top-level /proc file names (for the /proc dir listing). */
 extern const char *const g_proc_files[];
 

@@ -477,7 +477,7 @@ int lxp_dev_stat_path(const char *abspath, uint32_t *mode, uint64_t *rdev)
 		*mode = dev_mode(d);
 	if (rdev)
 		*rdev = ((uint64_t)d->major << 8) | d->minor;
-	return 0;
+	return di;
 }
 
 /* ---- coordinator: retry parked device I/O + periodic tick ------------------ */
@@ -632,7 +632,9 @@ static long fop_fstat_dev(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 	uint32_t mode;
 	uint64_t rdev, size;
 	lxp_dev_fstat(s->file_idx, &mode, &rdev, &size);
-	lxp_stat_init(st, LXP_INO_DEV + (uint32_t)s->file_idx, mode, size);
+	/* Number the node by its registry entry, as stat(path) and readdir do. */
+	const struct lxp_dev_open *o = open_slot(s->file_idx);
+	lxp_stat_init(st, LXP_INO_DEV + (uint32_t)(o ? o->dev : s->file_idx), mode, size);
 	st->rdev = rdev;
 	return 0;
 }

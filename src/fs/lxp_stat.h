@@ -101,16 +101,17 @@ LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_rdev_major) == 128,
 
 /* Inode ranges. Each namespace numbers its objects from its own base so that
  * (st_dev, st_ino) stays unique: ld.so dedups loaded objects by that pair, so a
- * collision makes a library look already loaded. hostfs objects take stable
- * inodes from lxp_hostfs_inode() / lxp_hostfs_path_inode(). */
+ * collision makes a library look already loaded. A named object gets the same
+ * inode from stat, fstat and readdir. */
 enum lxp_ino_base {
-	LXP_INO_ROOTFS = 0x000001u, /* + rootfs index */
-	LXP_INO_TMPFS = 0x100000u,  /* + writable node index */
-	LXP_INO_PROC = 0x200000u,   /* + open /proc slot */
-	LXP_INO_DEV = 0x300000u,    /* + object index: devices, console, pipes, eventfds */
-	LXP_INO_SOCKET = 0x400000u, /* + socket index */
-	LXP_INO_PTY = 0x500000u,    /* + pty index */
-	LXP_INO_NETFS = 0x600000u,  /* + 9P qid path */
+	LXP_INO_ROOTFS = 0x000001u,   /* + rootfs index */
+	LXP_INO_TMPFS = 0x100000u,    /* + writable node index */
+	LXP_INO_PROC = 0x200000u,     /* + 20-bit path hash (lxp_procfs_inode) */
+	LXP_INO_DEV = 0x300000u,      /* + registry index; streams: + object index */
+	LXP_INO_SOCKET = 0x400000u,   /* + socket index */
+	LXP_INO_PTY = 0x500000u,      /* + pty index */
+	LXP_INO_NETFS = 0x600000u,    /* + 9P qid path */
+	LXP_INO_HOSTFS = 0x70000000u, /* + 28-bit path hash (lxp_hostfs_path_inode) */
 };
 
 /* The attributes every stat path reports, before formatting for the guest. */

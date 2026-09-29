@@ -12,6 +12,7 @@
  */
 
 #include "../framework/lxp_test.h"
+#include "../framework/lxp_stat_view.h"
 #include "lxp_arena.h"
 #include "lxp/lxp_block_ops.h"
 #include "dev/lxp_dev.h"
@@ -754,6 +755,21 @@ static void test_dev_getdents(void **state)
 	}
 	assert_true(found);
 
+	/* The listed inode is the one stat and fstat report. */
+	uint64_t ino = lxp_view_dirent64_ino(buf, n, "mock");
+	uint8_t st[104] = {0};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_stat64, (long)(uintptr_t)"/dev/mock",
+				     (long)(uintptr_t)st, 0, 0, 0, 0),
+			 0);
+	assert_int_equal(lxp_view_kstat64(st).ino, ino);
+	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/dev/mock",
+			      LXP_O_RDWR, 0, 0, 0);
+	assert_true(fd >= 3);
+	memset(st, 0, sizeof(st));
+	assert_int_equal(lxp_syscall(&p, LXP_NR_fstat64, fd, (long)(uintptr_t)st, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_view_kstat64(st).ino, ino);
+	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+
 	lxp_syscall(&p, LXP_NR_close, dfd, 0, 0, 0, 0, 0);
 }
 
@@ -1016,10 +1032,10 @@ static void test_dev_block_geometry_partitions_and_64bit_io(void **state)
 
 	uint32_t mode = 0;
 	uint64_t rdev = 0;
-	assert_int_equal(lxp_dev_stat_path("/dev/mmcblk0", &mode, &rdev), 0);
+	assert_true(lxp_dev_stat_path("/dev/mmcblk0", &mode, &rdev) >= 0);
 	assert_int_equal(mode & LXP_S_IFMT, LXP_S_IFBLK);
 	assert_int_equal(rdev, (179u << 8));
-	assert_int_equal(lxp_dev_stat_path("/dev/mmcblk0p1", &mode, &rdev), 0);
+	assert_true(lxp_dev_stat_path("/dev/mmcblk0p1", &mode, &rdev) >= 0);
 	assert_int_equal(rdev, (179u << 8) | 1u);
 	assert_int_equal(lxp_dev_stat_path("/dev/mmcblk0p2", &mode, &rdev), -1);
 	long proc_fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,

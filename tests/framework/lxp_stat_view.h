@@ -71,4 +71,20 @@ static inline lxp_stat_view_t lxp_view_statx(const uint8_t *b)
 	return v;
 }
 
+/* d_ino of entry @p name in a getdents64 buffer of @p len bytes, or 0 if absent. */
+static inline uint64_t lxp_view_dirent64_ino(const uint8_t *buf, long len, const char *name)
+{
+	long off = 0;
+	while (off + 19 <= len) {
+		uint16_t reclen;
+		memcpy(&reclen, buf + off + 16, sizeof(reclen));
+		if (reclen == 0)
+			break;
+		if (strcmp((const char *)(buf + off + 19), name) == 0)
+			return lxp_view_u64(buf, (size_t)off);
+		off += reclen;
+	}
+	return 0;
+}
+
 #endif /* LXP_STAT_VIEW_H */

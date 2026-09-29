@@ -11,6 +11,7 @@
 #include "proc/lxp_procfs.h"
 
 #include "fs/lxp_dir.h"
+#include "fs/lxp_path.h"
 #include "fs/lxp_stat.h"
 #include "fs/lxp_vfs.h"
 #include "lxp/lxp_config.h"
@@ -439,6 +440,22 @@ long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 	return (long)text.length;
 }
 
+static uint32_t procfs_inode_of(uint32_t path_hash)
+{
+	return LXP_INO_PROC + (path_hash & 0xfffffu);
+}
+
+uint32_t lxp_procfs_inode(const char *abs)
+{
+	return procfs_inode_of(lxp_path_hash(LXP_PATH_HASH_INIT, abs));
+}
+
+uint32_t lxp_procfs_child_inode(const char *dir, const char *name)
+{
+	uint32_t hash = lxp_path_hash(lxp_path_hash(LXP_PATH_HASH_INIT, dir), "/");
+	return procfs_inode_of(lxp_path_hash(hash, name));
+}
+
 /* ---- /proc descriptors (content generated on open) ------------------------ */
 #define LXP_NPROCF 12
 #define LXP_PROCBUF 1024
@@ -504,7 +521,7 @@ static long fop_getdents_proc(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *si
 static long fop_fstat_proc(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
 	(void)p;
-	lxp_stat_init(st, LXP_INO_PROC + (uint32_t)s->file_idx,
+	lxp_stat_init(st, lxp_procfs_inode(g_procf[s->file_idx].path),
 		      g_procf[s->file_idx].is_dir ? (LXP_S_IFDIR | 0555u) : (LXP_S_IFREG | 0444u),
 		      g_procf[s->file_idx].len);
 	return 0;
