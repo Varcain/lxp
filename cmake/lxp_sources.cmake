@@ -33,6 +33,7 @@ set(LXP_RUNTIME_SOURCES
     "${LXP_SOURCE_ROOT}/src/proc/lxp_process.c"
     "${LXP_SOURCE_ROOT}/src/proc/lxp_procfs.c"
     "${LXP_SOURCE_ROOT}/src/proc/lxp_script.c"
+    "${LXP_SOURCE_ROOT}/src/sys/lxp_sys_fd.c"
 )
 
 set(LXP_COORDINATOR_SOURCES

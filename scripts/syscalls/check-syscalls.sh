@@ -35,7 +35,7 @@ done
 # Sets used by the coverage check + the matrix, extracted once.
 CASES=$(mktemp); RUNLOOP=$(mktemp); ROWS=$(mktemp)
 trap 'rm -f "$CASES" "$RUNLOOP" "$ROWS"' EXIT
-grep -oE '^	\[LXP_NR_[A-Za-z0-9_]+\] = \{sc_' "$DISP" | sed 's/^	\[LXP_NR_//; s/\].*//' | sort -u > "$CASES"
+grep -oE '^	\[LXP_NR_[A-Za-z0-9_]+\] = \{[a-z]' "$DISP" | sed 's/^	\[LXP_NR_//; s/\].*//' | sort -u > "$CASES"
 grep -oE 'LXP_NR_[A-Za-z0-9_]+'      "$RUN"  | sed 's/LXP_NR_//'      | sort -u > "$RUNLOOP"
 
 # Rows for the matrix: "<num>\t<name>\t<disposition>\t<note>", sorted by number.
