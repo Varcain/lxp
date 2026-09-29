@@ -461,7 +461,7 @@ static void stat_fd_both(lxp_proc_t *p, lxp_conf_t *fx, long fd, uint8_t *buf, l
 
 #define INO_BASE(ino) ((ino) & ~(uint64_t)0xfffffu)
 
-/* What fstat64 and statx report for a descriptor of each local kind. */
+/* fstat64 and statx report the same record for a descriptor of each local kind. */
 static void test_conf_stat_kinds(void **state)
 {
 	(void)state;
@@ -511,21 +511,21 @@ static void test_conf_stat_kinds(void **state)
 			 0);
 	stat_fd_both(&p, fx, fd, buf, &k, &x);
 	assert_int_equal(k.nlink, 0);
-	assert_int_equal(x.nlink, 1); /* statx does not see the unlink */
+	assert_int_equal(x.nlink, k.nlink);
 
-	/* /proc file and directory: statx reports a character device. */
+	/* /proc file and directory. */
 	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/proc/version"),
 		LXP_O_RDONLY, 0, 0, 0);
 	stat_fd_both(&p, fx, fd, buf, &k, &x);
 	assert_int_equal(k.mode, LXP_S_IFREG | 0444u);
 	assert_int_equal(INO_BASE(k.ino), 0x200000);
-	assert_int_equal(x.mode, LXP_S_IFCHR | 0620u);
-	assert_int_equal(INO_BASE(x.ino), 0x300000);
+	assert_int_equal(x.mode, k.mode);
+	assert_int_equal(x.ino, k.ino);
 	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/proc"),
 		LXP_O_RDONLY | LXP_O_DIRECTORY, 0, 0, 0);
 	stat_fd_both(&p, fx, fd, buf, &k, &x);
 	assert_int_equal(k.mode, LXP_S_IFDIR | 0555u);
-	assert_int_equal(x.mode, LXP_S_IFCHR | 0620u);
+	assert_int_equal(x.mode, k.mode);
 
 	/* console, pipe and eventfd: a bare character device from both. */
 	stat_fd_both(&p, fx, 0, buf, &k, &x);
@@ -546,7 +546,7 @@ static void test_conf_stat_kinds(void **state)
 	assert_int_equal(x.mode, k.mode);
 	assert_int_equal(x.ino, k.ino);
 
-	/* pty master: statx uses the default inode range instead of the pty one. */
+	/* pty master. */
 	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/dev/ptmx"),
 		LXP_O_RDWR, 0, 0, 0);
 	assert_true(fd >= 3);
@@ -554,7 +554,7 @@ static void test_conf_stat_kinds(void **state)
 	assert_int_equal(k.mode, LXP_S_IFCHR | 0620u);
 	assert_int_equal(INO_BASE(k.ino), 0x500000);
 	assert_int_equal(x.mode, k.mode);
-	assert_int_equal(INO_BASE(x.ino), 0x300000);
+	assert_int_equal(x.ino, k.ino);
 }
 
 /* =============================== directory entries ==================================== */

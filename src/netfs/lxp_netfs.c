@@ -25,6 +25,7 @@
 
 #include "netfs/lxp_netfs.h"
 #include "fs/lxp_dirent.h"
+#include "fs/lxp_stat.h"
 #include "fs/lxp_vfs.h"
 #include "lxp_guest.h"
 #include "lxp_loader.h"
@@ -684,6 +685,17 @@ static long req_build(struct netfs_req *r)
 	}
 }
 
+/* The stat record of a remote object. 9P objects number from LXP_INO_NETFS by qid
+ * path and report a distinct synthetic st_dev, so ld.so's (st_dev, st_ino) dedup
+ * never collides with the local rootfs. */
+static void netfs_stat_record(struct lxp_stat *st, uint32_t mode, uint64_t size, uint64_t mtime,
+			      uint64_t ino)
+{
+	lxp_stat_init(st, LXP_INO_NETFS + (uint32_t)ino, mode, size);
+	st->dev_minor = 0xfeu;
+	st->mtime = (int64_t)mtime;
+}
+
 /* Map a 9P readdir entry type (a qid.type byte) to a Linux d_type. */
 static uint8_t dtype_from_qid(uint8_t qt)
 {
@@ -933,8 +945,9 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type, c
 				req_fail(r, -LXP_EIO);
 				return;
 			}
-			r->result = lxp_netfs_fill_stat(owner, r->ubuf, r->statkind, mode, size,
-							mtime, ino);
+			struct lxp_stat st;
+			netfs_stat_record(&st, mode, size, mtime, ino);
+			r->result = lxp_stat_copyout(owner, r->ubuf, r->statkind, &st);
 			r->step = 2; /* send Tclunk(fid) */
 			return;
 		}
@@ -1590,13 +1603,15 @@ static long fop_getdents_netfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *s
 	return lxp_netfs_getdents(p, s->file_idx, sink->ubuf, sink->cap, sink->is64);
 }
 
-static long fop_fstat_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+static long fop_fstat_netfs(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
+	(void)p;
 	uint32_t mode;
 	uint64_t size, mtime, ino;
 	if (lxp_netfs_fstat(s->file_idx, &mode, &size, &mtime, &ino) != 0)
 		return -LXP_EBADF;
-	return lxp_netfs_fill_stat(p, (uintptr_t)statbuf, 0, mode, size, mtime, ino);
+	netfs_stat_record(st, mode, size, mtime, ino);
+	return 0;
 }
 
 static void fop_close_netfs(lxp_proc_t *p, lxp_ofd_t *s)

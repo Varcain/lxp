@@ -626,14 +626,14 @@ static long fop_lseek_dev(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 	return lxp_dev_lseek(s->file_idx, off, whence);
 }
 
-static long fop_fstat_dev(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+static long fop_fstat_dev(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
 	(void)p;
 	uint32_t mode;
 	uint64_t rdev, size;
 	lxp_dev_fstat(s->file_idx, &mode, &rdev, &size);
-	lxp_fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, mode, size);
-	((struct lxp_kstat64 *)statbuf)->st_rdev = rdev;
+	lxp_stat_init(st, LXP_INO_DEV + (uint32_t)s->file_idx, mode, size);
+	st->rdev = rdev;
 	return 0;
 }
 

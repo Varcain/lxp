@@ -156,12 +156,12 @@ static void test_net_socket_open_stat(void **state)
 	memset(&st, 0, sizeof(st));
 	assert_int_equal(lxp_syscall(&p, LXP_NR_fstat64, fd, (long)(uintptr_t)&st, 0, 0, 0, 0), 0);
 	assert_int_equal(st.st_mode & LXP_S_IFMT, LXP_S_IFSOCK);
-	/* statx on the descriptor reports a character device instead. */
+	/* statx on the descriptor reports the same. */
 	uint8_t sx[256] = {0};
 	assert_int_equal(lxp_syscall(&p, LXP_NR_statx, fd, (long)(uintptr_t)"", LXP_AT_EMPTY_PATH, 0,
 				     (long)(uintptr_t)sx, 0),
 			 0);
-	assert_int_equal(lxp_view_statx(sx).mode, LXP_S_IFCHR | 0620u);
+	assert_int_equal(lxp_view_statx(sx).mode, st.st_mode);
 
 	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
 	assert_int_equal(lxp_fd_kind(&p, fd), LXP_FD_FREE);

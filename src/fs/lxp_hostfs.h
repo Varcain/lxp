@@ -22,7 +22,6 @@
 /* st_dev reported for every hostfs object. */
 #define LXP_HOSTFS_DEV_MAJOR 179u
 #define LXP_HOSTFS_DEV_MINOR 0u
-#define LXP_HOSTFS_DEV ((uint64_t)((LXP_HOSTFS_DEV_MAJOR << 8) | LXP_HOSTFS_DEV_MINOR))
 
 /* Guest st_mode of a provider object (providers report no permission bits). */
 static inline uint32_t lxp_hostfs_mode(const lxp_fs_stat_t *stat)
@@ -62,6 +61,9 @@ long lxp_hostfs_unmount(lxp_proc_t *proc, const char *target);
 int lxp_hostfs_is_mounted(void);
 /** Query allocation statistics for the mounted host volume. */
 long lxp_hostfs_volume_stat(lxp_proc_t *proc, lxp_fs_volume_stat_t *out);
+/** The stat record of a provider object with inode @p ino. */
+struct lxp_stat;
+void lxp_hostfs_stat_record(struct lxp_stat *st, uint32_t ino, const lxp_fs_stat_t *stat);
 /** statfs for the mounted host volume, from the provider's allocation data. */
 struct lxp_statfs64;
 long lxp_hostfs_statfs(lxp_proc_t *proc, struct lxp_statfs64 *st);

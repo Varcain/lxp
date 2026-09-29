@@ -50,10 +50,10 @@ static long fop_getdents_rootfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *
 	return lxp_dir_list(p, s, f->path, sink);
 }
 
-static long fop_fstat_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+static long fop_fstat_rootfs(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
-	lxp_fill_kstat64(statbuf, 1u + (uint32_t)s->file_idx, file_mode(&p->fs[s->file_idx]),
-			 p->fs[s->file_idx].size);
+	lxp_stat_init(st, LXP_INO_ROOTFS + (uint32_t)s->file_idx, file_mode(&p->fs[s->file_idx]),
+		      p->fs[s->file_idx].size);
 	return 0;
 }
 

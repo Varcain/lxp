@@ -501,12 +501,12 @@ static long fop_getdents_proc(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *si
 	return lxp_dir_list(p, s, g_procf[s->file_idx].path, sink);
 }
 
-static long fop_fstat_proc(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+static long fop_fstat_proc(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
 	(void)p;
-	lxp_fill_kstat64(statbuf, 0x200000u + (uint32_t)s->file_idx,
-		     g_procf[s->file_idx].is_dir ? (LXP_S_IFDIR | 0555u) : (LXP_S_IFREG | 0444u),
-		     g_procf[s->file_idx].len);
+	lxp_stat_init(st, LXP_INO_PROC + (uint32_t)s->file_idx,
+		      g_procf[s->file_idx].is_dir ? (LXP_S_IFDIR | 0555u) : (LXP_S_IFREG | 0444u),
+		      g_procf[s->file_idx].len);
 	return 0;
 }
 

@@ -87,7 +87,7 @@ long lxp_netfs_read(lxp_proc_t *p, int oi, void *ubuf, size_t len);
 long lxp_netfs_getdents(lxp_proc_t *p, int oi, uintptr_t ubuf, size_t cap, int is64);
 
 /** stat/lstat/fstatat/statx on a /mnt path: submit Twalk->Tlgetattr->Tclunk; parks. On
- *  completion the retry marshals the attrs into the guest buffer via lxp_netfs_fill_stat.
+ *  completion the retry copies the attributes into the guest buffer.
  *  @p statkind: 0 = stat64/newfstatat kstat, 1 = statx. */
 long lxp_netfs_stat(lxp_proc_t *p, const char *abspath, uintptr_t ustat, int statkind);
 
@@ -121,13 +121,6 @@ void lxp_netfs_tick(uint64_t now_us);
 
 /** 1 if any netfs request is outstanding (so the run loop holds its ≤5 ms retry tick). */
 int lxp_netfs_busy(void);
-
-/* ---- implemented in lxp_syscall.c, called by the netfs retry --------- */
-
-/** Marshal remote attributes into the guest's stat/statx buffer (the netfs retry owns the
- *  9P transport; the syscall TU owns the kstat/statx layout + lxp_guest_access_ok). @return 0 or -errno. */
-long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t mode, uint64_t size,
-			 uint64_t mtime, uint64_t ino);
 
 /* ---- remote executable staging (LXP_ENABLE_NETFS_EXEC) --------------- */
 #if LXP_ENABLE_NETFS_EXEC

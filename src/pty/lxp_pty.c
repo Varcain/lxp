@@ -477,13 +477,13 @@ static long fop_write_pty(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t l
 	return r; /* bytes consumed, or -EAGAIN (O_NONBLOCK) */
 }
 
-static long fop_fstat_pty(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+static long fop_fstat_pty(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
 	(void)p;
 	uint32_t mode;
 	uint64_t size;
 	lxp_pty_fstat(&mode, &size); /* S_IFCHR so isatty() → interactive shell */
-	lxp_fill_kstat64(statbuf, 0x500000u + (uint32_t)s->file_idx, mode, size);
+	lxp_stat_init(st, LXP_INO_PTY + (uint32_t)s->file_idx, mode, size);
 	return 0;
 }
 

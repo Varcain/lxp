@@ -870,13 +870,13 @@ static long fop_write_socket(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_
 	return lxp_sock_send(p, s->file_idx, buf, len, 0, NULL, 0);
 }
 
-static long fop_fstat_socket(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+static long fop_fstat_socket(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
 	(void)p;
 	uint32_t mode;
 	uint64_t size;
 	lxp_sock_fstat(s->file_idx, &mode, &size);
-	lxp_fill_kstat64(statbuf, 0x400000u + (uint32_t)s->file_idx, mode, size);
+	lxp_stat_init(st, LXP_INO_SOCKET + (uint32_t)s->file_idx, mode, size);
 	return 0;
 }
 

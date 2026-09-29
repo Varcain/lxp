@@ -553,7 +553,7 @@ static void test_hostfs_stat_fd_both(void **state)
 	assert_int_equal(x.ino, k.ino);
 	assert_int_equal(x.size, k.size);
 	assert_int_equal(x.dev, k.dev);
-	assert_int_equal(x.mtime, 0); /* statx does not report the provider mtime */
+	assert_int_equal(x.mtime, k.mtime);
 	assert_int_equal(call(&proc, LXP_NR_close, fd, 0, 0), 0);
 }
 

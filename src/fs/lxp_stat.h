@@ -4,7 +4,8 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * The ARM kernel struct stat64 and statfs64 records the stat and statfs paths fill.
+ * The stat record each descriptor kind and path namespace fills, and the ARM-EABI
+ * struct stat64, statx and statfs64 layouts it is formatted into.
  */
 #ifndef LXP_FS_STAT_H
 #define LXP_FS_STAT_H
@@ -13,6 +14,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_types.h"
+#include "proc/lxp_proc_fwd.h"
 
 /*
  * ARM kernel struct stat64. Spelled with fixed-width types (the kernel's
@@ -70,7 +72,64 @@ LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_namelen) == 56,
 #define LXP_ST_NODEV 0x0004u
 #define LXP_ST_NOEXEC 0x0008u
 
-/* Fill an ARM kstat64 from a node's inode + mode + size. */
-void lxp_fill_kstat64(struct lxp_kstat64 *st, uint32_t ino, uint32_t mode, uint64_t size);
+/* Modern struct statx (256 bytes); fixed-width so host tests match the target. */
+struct lxp_statx {
+	uint32_t stx_mask;
+	uint32_t stx_blksize;
+	uint64_t stx_attributes;
+	uint32_t stx_nlink;
+	uint32_t stx_uid;
+	uint32_t stx_gid;
+	uint16_t stx_mode;
+	uint16_t __spare0;
+	uint64_t stx_ino;
+	uint64_t stx_size;
+	uint64_t stx_blocks;
+	uint64_t stx_attributes_mask;
+	uint8_t __times[64];	 /* atime/btime/ctime/mtime (4 x 16B) — offsets 64..128 */
+	uint32_t stx_rdev_major; /* offset 128 */
+	uint32_t stx_rdev_minor; /* offset 132 */
+	uint32_t stx_dev_major;
+	uint32_t stx_dev_minor;
+	uint8_t __rest[256 - 144];
+};
+LXP_STATIC_ASSERT(sizeof(struct lxp_statx) == 256, "statx ABI size drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_mode) == 28, "statx stx_mode offset drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_ino) == 32, "statx stx_ino offset drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_rdev_major) == 128,
+		  "statx stx_rdev offset drifted");
+
+/* Inode ranges. Each namespace numbers its objects from its own base so that
+ * (st_dev, st_ino) stays unique: ld.so dedups loaded objects by that pair, so a
+ * collision makes a library look already loaded. hostfs objects take stable
+ * inodes from lxp_hostfs_inode() / lxp_hostfs_path_inode(). */
+enum lxp_ino_base {
+	LXP_INO_ROOTFS = 0x000001u, /* + rootfs index */
+	LXP_INO_TMPFS = 0x100000u,  /* + writable node index */
+	LXP_INO_PROC = 0x200000u,   /* + open /proc slot */
+	LXP_INO_DEV = 0x300000u,    /* + object index: devices, console, pipes, eventfds */
+	LXP_INO_SOCKET = 0x400000u, /* + socket index */
+	LXP_INO_PTY = 0x500000u,    /* + pty index */
+	LXP_INO_NETFS = 0x600000u,  /* + 9P qid path */
+};
+
+/* The attributes every stat path reports, before formatting for the guest. */
+struct lxp_stat {
+	uint32_t mode;
+	uint32_t ino;
+	uint32_t nlink;
+	uint32_t dev_major;
+	uint32_t dev_minor;
+	uint64_t rdev; /* major << 8 | minor */
+	uint64_t size;
+	int64_t mtime; /* seconds; 0 when the backend has none */
+};
+
+/* A single-link object with no device or time attributes. */
+void lxp_stat_init(struct lxp_stat *st, uint32_t ino, uint32_t mode, uint64_t size);
+
+/* Write @p st to guest @p ubuf as a struct stat64, or as a struct statx when
+ * @p statx is nonzero: 0 or -EFAULT. */
+long lxp_stat_copyout(lxp_proc_t *p, uintptr_t ubuf, int statx, const struct lxp_stat *st);
 
 #endif /* LXP_FS_STAT_H */

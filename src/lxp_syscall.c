@@ -894,6 +894,17 @@ static long sys_umount(lxp_proc_t *p, const char *target, int flags)
 	return -LXP_EINVAL;
 }
 
+/* The stat record of an open descriptor, for fstat64 and statx(AT_EMPTY_PATH). */
+static long fd_stat(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
+{
+	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+	if (ops && ops->fstat)
+		return ops->fstat(p, s, st);
+	/* console/pipe/eventfd: a bare character device (S_IFCHR) so isatty()/stdio behaves. */
+	lxp_stat_init(st, LXP_INO_DEV + (uint32_t)s->file_idx, LXP_S_IFCHR | 0620u, 0);
+	return 0;
+}
+
 static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 {
 	lxp_ofd_t *s = lxp_fd_description(p, fd);
@@ -901,23 +912,10 @@ static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 		return -LXP_EBADF;
 	if (!lxp_guest_access_ok(p, statbuf, sizeof(struct lxp_kstat64), 1))
 		return -LXP_EFAULT;
-	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
-	if (ops && ops->fstat)
-		return ops->fstat(p, s, statbuf);
-	/* console/pipe/eventfd: a bare character device (S_IFCHR) so isatty()/stdio behaves. */
-	lxp_fill_kstat64(statbuf, 0x300000u + (uint32_t)s->file_idx, LXP_S_IFCHR | 0620u, 0);
-	return 0;
+	struct lxp_stat st;
+	long rc = fd_stat(p, s, &st);
+	return rc < 0 ? rc : lxp_stat_copyout(p, (uintptr_t)statbuf, 0, &st);
 }
-
-struct lxp_path_stat {
-	uint32_t mode;
-	uint32_t inode;
-	uint32_t dev_major;
-	uint32_t dev_minor;
-	uint64_t size;
-	uint64_t rdev;
-	uint64_t mtime;
-};
 
 enum lxp_path_stat_result {
 	LXP_PATH_STAT_LOCAL,
@@ -928,19 +926,19 @@ enum lxp_path_stat_result {
  * Remote 9P metadata retains its asynchronous guest-buffer path, so identify
  * that boundary without duplicating the rest of the lookup ladder. */
 static long path_stat_lookup(lxp_proc_t *p, const char *abspath, int follow,
-			     struct lxp_path_stat *out)
+			     struct lxp_stat *out)
 {
-	memset(out, 0, sizeof(*out));
+	lxp_stat_init(out, 0, 0, 0);
 	if (proc_is(abspath)) {
 		out->mode = proc_mode(abspath, p);
 		if (out->mode == 0)
 			return -LXP_ENOENT;
-		out->inode = 0x200000u;
+		out->ino = LXP_INO_PROC;
 		return LXP_PATH_STAT_LOCAL;
 	}
 #if LXP_ENABLE_DEV
 	if (lxp_dev_stat_path(abspath, &out->mode, &out->rdev) == 0) {
-		out->inode = 0x300000u;
+		out->ino = LXP_INO_DEV;
 		return LXP_PATH_STAT_LOCAL;
 	}
 #endif
@@ -954,20 +952,14 @@ static long path_stat_lookup(lxp_proc_t *p, const char *abspath, int follow,
 		long rc = lxp_hostfs_path_stat(p, abspath, &stat);
 		if (rc < 0)
 			return rc;
-		out->mode = lxp_hostfs_mode(&stat);
-		out->size = stat.size;
-		out->mtime = stat.mtime_sec;
-		out->inode = lxp_hostfs_path_inode(abspath);
-		out->dev_major = LXP_HOSTFS_DEV_MAJOR;
-		out->dev_minor = LXP_HOSTFS_DEV_MINOR;
+		lxp_hostfs_stat_record(out, lxp_hostfs_path_inode(abspath), &stat);
 		return LXP_PATH_STAT_LOCAL;
 	}
 #endif
 	int index = wfs_find(abspath);
 	if (index >= 0) {
-		out->mode = wnode_at(index)->mode;
-		out->size = wnode_at(index)->size;
-		out->inode = 0x100000u + (uint32_t)index;
+		lxp_stat_init(out, LXP_INO_TMPFS + (uint32_t)index, wnode_at(index)->mode,
+			      wnode_at(index)->size);
 		return LXP_PATH_STAT_LOCAL;
 	}
 	index = fs_lookup(p, abspath);
@@ -978,9 +970,8 @@ static long path_stat_lookup(lxp_proc_t *p, const char *abspath, int follow,
 		if (index < 0)
 			return -LXP_ENOENT;
 	}
-	out->mode = file_mode(&p->fs[index]);
-	out->size = p->fs[index].size;
-	out->inode = 1u + (uint32_t)index;
+	lxp_stat_init(out, LXP_INO_ROOTFS + (uint32_t)index, file_mode(&p->fs[index]),
+		      p->fs[index].size);
 	return LXP_PATH_STAT_LOCAL;
 }
 
@@ -993,7 +984,7 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 	long rr = resolve_path(p, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
-	struct lxp_path_stat stat;
+	struct lxp_stat stat;
 	long source = path_stat_lookup(p, abspath, follow, &stat);
 #if LXP_ENABLE_NETFS
 	if (source == LXP_PATH_STAT_NETFS)
@@ -1001,12 +992,7 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 #endif
 	if (source < 0)
 		return source;
-	lxp_fill_kstat64(statbuf, stat.inode, stat.mode, stat.size);
-	struct lxp_kstat64 *out = statbuf;
-	out->st_rdev = stat.rdev;
-	out->st_dev = ((uint64_t)stat.dev_major << 8) | stat.dev_minor;
-	out->st_mtime = (uint32_t)stat.mtime;
-	return 0;
+	return lxp_stat_copyout(p, (uintptr_t)statbuf, 0, &stat);
 }
 
 /* readlink: write the symlink target (not NUL-terminated) + return its length. */
@@ -1452,33 +1438,6 @@ static long sys_getdents64(lxp_proc_t *p, int fd, void *buf, size_t count, int i
 	return ops->getdents(p, s, &sink);
 }
 
-/* Modern struct statx (256 bytes); fixed-width so host tests match the target. */
-struct lxp_statx {
-	uint32_t stx_mask;
-	uint32_t stx_blksize;
-	uint64_t stx_attributes;
-	uint32_t stx_nlink;
-	uint32_t stx_uid;
-	uint32_t stx_gid;
-	uint16_t stx_mode;
-	uint16_t __spare0;
-	uint64_t stx_ino;
-	uint64_t stx_size;
-	uint64_t stx_blocks;
-	uint64_t stx_attributes_mask;
-	uint8_t __times[64];	 /* atime/btime/ctime/mtime (4 x 16B) — offsets 64..128 */
-	uint32_t stx_rdev_major; /* offset 128 */
-	uint32_t stx_rdev_minor; /* offset 132 */
-	uint32_t stx_dev_major;
-	uint32_t stx_dev_minor;
-	uint8_t __rest[256 - 144];
-};
-LXP_STATIC_ASSERT(sizeof(struct lxp_statx) == 256, "statx ABI size drifted");
-LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_mode) == 28, "statx stx_mode offset drifted");
-LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_ino) == 32, "statx stx_ino offset drifted");
-LXP_STATIC_ASSERT(offsetof(struct lxp_statx, stx_rdev_major) == 128,
-		  "statx stx_rdev offset drifted");
-
 /*
  * statx: the stat() uClibc-ng actually issues. With AT_EMPTY_PATH (or an empty
  * path) it stats the open dirfd (fstat); otherwise it resolves a rootfs path.
@@ -1487,139 +1446,34 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 {
 	if (!lxp_guest_access_ok(p, buf, sizeof(struct lxp_statx), 1))
 		return -LXP_EFAULT;
-
-	uint32_t mode;
-	uint64_t size;
-	uint64_t rdev = 0; /* device id for a character node, else 0 */
-	uint32_t dev_major = 0;
-	uint32_t dev_minor = 0;
-	uint32_t ino = 0x300000u; /* unique, non-zero inode: ld.so dedups by (st_dev, st_ino) */
 	/* Validate the path pointer before the path[0] empty-check deref below — resolve_path
 	 * validates it too, but only after this reads path[0] (a bad pointer would fault here). */
 	if (path && lxp_guest_strnlen(p, path, LXP_PATH_MAX) < 0)
 		return -LXP_EFAULT;
+	struct lxp_stat st;
 	if (path && path[0] && !(flags & LXP_AT_EMPTY_PATH)) {
 		char abspath[LXP_PATH_MAX];
 		long rr = resolve_path(p, path, abspath, sizeof(abspath));
 		if (rr < 0)
 			return rr;
-		struct lxp_path_stat stat;
 		long source =
-			path_stat_lookup(p, abspath, !(flags & LXP_AT_SYMLINK_NOFOLLOW), &stat);
+			path_stat_lookup(p, abspath, !(flags & LXP_AT_SYMLINK_NOFOLLOW), &st);
 #if LXP_ENABLE_NETFS
 		if (source == LXP_PATH_STAT_NETFS)
 			return lxp_netfs_stat(p, abspath, (uintptr_t)buf, 1); /* parks */
 #endif
 		if (source < 0)
 			return source;
-		mode = stat.mode;
-		size = stat.size;
-		rdev = stat.rdev;
-		ino = stat.inode;
-		dev_major = stat.dev_major;
-		dev_minor = stat.dev_minor;
 	} else {
 		lxp_ofd_t *s = lxp_fd_description(p, dirfd);
 		if (!s)
 			return -LXP_EBADF;
-		if (s->kind == LXP_FD_FILE) {
-			mode = file_mode(&p->fs[s->file_idx]);
-			size = p->fs[s->file_idx].size;
-			ino = 1u + (uint32_t)s->file_idx;
-		} else if (s->kind == LXP_FD_TMPFS) {
-			mode = wnode_at(s->file_idx)->mode;
-			size = wnode_at(s->file_idx)->size;
-			ino = 0x100000u + (uint32_t)s->file_idx;
-#if LXP_ENABLE_DEV
-		} else if (s->kind == LXP_FD_DEV) {
-			uint32_t dmode;
-			uint64_t drdev, dsize;
-			lxp_dev_fstat(s->file_idx, &dmode, &drdev, &dsize);
-			mode = dmode;
-			size = dsize;
-			rdev = drdev;
-			ino = 0x300000u + (uint32_t)s->file_idx;
-#endif
-#if LXP_ENABLE_NETFS
-		} else if (s->kind == LXP_FD_NET) {
-			uint32_t nmode;
-			uint64_t nsize, nmtime, nino;
-			if (lxp_netfs_fstat(s->file_idx, &nmode, &nsize, &nmtime, &nino) != 0)
-				return -LXP_EBADF;
-			return lxp_netfs_fill_stat(p, (uintptr_t)buf, 1, nmode, nsize, nmtime,
-						   nino);
-#endif
-#if LXP_ENABLE_FS
-		} else if (s->kind == LXP_FD_HOSTFS) {
-			lxp_fs_stat_t stat;
-			long rc = lxp_hostfs_stat(p, s->file_idx, &stat);
-			if (rc < 0)
-				return rc;
-			mode = lxp_hostfs_mode(&stat);
-			size = stat.size;
-			ino = lxp_hostfs_inode(s->file_idx);
-			dev_major = LXP_HOSTFS_DEV_MAJOR;
-			dev_minor = LXP_HOSTFS_DEV_MINOR;
-#endif
-		} else {
-			mode = LXP_S_IFCHR | 0620u;
-			size = 0;
-			ino = 0x300000u + (uint32_t)s->file_idx;
-		}
+		long rc = fd_stat(p, s, &st);
+		if (rc < 0)
+			return rc;
 	}
-
-	struct lxp_statx *st = buf;
-	memset(st, 0, sizeof(*st));
-	st->stx_mask = LXP_STATX_BASIC_STATS;
-	st->stx_blksize = 512;
-	st->stx_nlink = 1;
-	st->stx_mode = (uint16_t)mode;
-	st->stx_size = size;
-	st->stx_blocks = (size + 511u) / 512u;
-	st->stx_ino = ino; /* ld.so dedups loaded .so objects by (st_dev, st_ino) */
-	st->stx_rdev_major = (uint32_t)(rdev >> 8);
-	st->stx_rdev_minor = (uint32_t)(rdev & 0xffu);
-	st->stx_dev_major = dev_major;
-	st->stx_dev_minor = dev_minor;
-	return 0;
+	return lxp_stat_copyout(p, (uintptr_t)buf, 1, &st);
 }
-
-#if LXP_ENABLE_NETFS
-/* Marshal remote 9P attributes into a guest stat/statx buffer. Called by the netfs
- * retry (which owns the transport) for a path stat, and inline for an fstat on an
- * FD_NET fd. @p statkind: 0 = kstat64 (stat/lstat/fstat/fstatat), 1 = statx. The
- * netfs inode namespace is 0x600000+, with a distinct synthetic st_dev so ld.so's
- * (st_dev, st_ino) dedup never collides with the local rootfs. */
-long lxp_netfs_fill_stat(lxp_proc_t *p, uintptr_t ustat, int statkind, uint32_t mode, uint64_t size,
-			 uint64_t mtime, uint64_t ino)
-{
-	uint32_t nino = 0x600000u + (uint32_t)ino;
-	if (statkind == 1) {
-		if (!lxp_guest_access_ok(p, (void *)ustat, sizeof(struct lxp_statx), 1))
-			return -LXP_EFAULT;
-		struct lxp_statx *st = (struct lxp_statx *)ustat;
-		memset(st, 0, sizeof(*st));
-		st->stx_mask = LXP_STATX_BASIC_STATS;
-		st->stx_blksize = 512;
-		st->stx_nlink = 1;
-		st->stx_mode = (uint16_t)mode;
-		st->stx_size = size;
-		st->stx_blocks = (size + 511u) / 512u;
-		st->stx_ino = nino;
-		st->stx_dev_minor = 0xfeu;
-		memcpy(st->__times + 48, &mtime,
-		       sizeof(uint64_t)); /* mtime tv_sec (4th 16B slot) */
-		return 0;
-	}
-	if (!lxp_guest_access_ok(p, (void *)ustat, sizeof(struct lxp_kstat64), 1))
-		return -LXP_EFAULT;
-	struct lxp_kstat64 *st = (struct lxp_kstat64 *)ustat;
-	lxp_fill_kstat64(st, nino, mode, size);
-	st->st_dev = 0xfeu;
-	st->st_mtime = (uint32_t)mtime;
-	return 0;
-}
-#endif
 
 /*
  * execve: resolve the program in the rootfs and capture its argument vector,

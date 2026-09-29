@@ -27,6 +27,7 @@
 #include "lxp/lxp_config.h"
 #include "proc/lxp_proc.h" /* lxp_proc_t, lxp_ofd_t */
 
+struct lxp_stat;
 struct lxp_statfs64;
 
 struct lxp_file_ops {
@@ -51,10 +52,10 @@ struct lxp_file_ops {
 	 *  written, 0 at the end, a negated errno, or 0 after parking the proc (netfs).
 	 *  NULL means the kind is not a directory (the syscall returns -ENOTDIR). */
 	long (*getdents)(lxp_proc_t *p, lxp_ofd_t *f, lxp_dirent_sink_t *sink);
-	/** fill @p statbuf (a struct kstat64) for fstat64(2): 0, a negated errno, or
-	 *  0 after parking (netfs). NULL means the kind has no backing object and the
-	 *  syscall reports a bare character device (console/pipe/eventfd). */
-	long (*fstat)(lxp_proc_t *p, lxp_ofd_t *f, void *statbuf);
+	/** fstat64(2) and statx(2) on the fd: fill @p st, 0 or a negated errno. NULL
+	 *  means the kind has no backing object and reports a bare character device
+	 *  (console/pipe/eventfd). */
+	long (*fstat)(lxp_proc_t *p, lxp_ofd_t *f, struct lxp_stat *st);
 	/** fstatfs64(2): fill @p st for the filesystem holding the fd: 0 or a negated
 	 *  errno. NULL means the in-memory namespace's synthetic values. */
 	long (*fstatfs)(lxp_proc_t *p, lxp_ofd_t *f, struct lxp_statfs64 *st);

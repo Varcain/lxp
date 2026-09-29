@@ -214,13 +214,13 @@ static long fop_getdents_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *s
 	return lxp_dir_list(p, s, t->path, sink);
 }
 
-static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
 	(void)p;
 	lxp_wnode_t *node = wnode_at(s->file_idx);
-	lxp_fill_kstat64(statbuf, 0x100000u + (uint32_t)s->file_idx, node->mode, node->size);
+	lxp_stat_init(st, LXP_INO_TMPFS + (uint32_t)s->file_idx, node->mode, node->size);
 	if (!node->linked)
-		((struct lxp_kstat64 *)statbuf)->st_nlink = 0;
+		st->nlink = 0;
 	return 0;
 }
 

@@ -582,6 +582,14 @@ void lxp_hostfs_runtime_reset(void)
 		g_hostfs_run_generation = 1u;
 }
 
+void lxp_hostfs_stat_record(struct lxp_stat *st, uint32_t ino, const lxp_fs_stat_t *stat)
+{
+	lxp_stat_init(st, ino, lxp_hostfs_mode(stat), stat->size);
+	st->dev_major = LXP_HOSTFS_DEV_MAJOR;
+	st->dev_minor = LXP_HOSTFS_DEV_MINOR;
+	st->mtime = (int64_t)stat->mtime_sec;
+}
+
 long lxp_hostfs_statfs(lxp_proc_t *p, struct lxp_statfs64 *st)
 {
 	lxp_fs_volume_stat_t volume;
@@ -665,15 +673,13 @@ static long fop_getdents_hostfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *
 	return (long)sink->filled;
 }
 
-static long fop_fstat_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
+static long fop_fstat_hostfs(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
 	lxp_fs_stat_t stat;
 	long rc = lxp_hostfs_stat(p, s->file_idx, &stat);
 	if (rc < 0)
 		return rc;
-	lxp_fill_kstat64(statbuf, lxp_hostfs_inode(s->file_idx), lxp_hostfs_mode(&stat), stat.size);
-	((struct lxp_kstat64 *)statbuf)->st_dev = LXP_HOSTFS_DEV;
-	((struct lxp_kstat64 *)statbuf)->st_mtime = (uint32_t)stat.mtime_sec;
+	lxp_hostfs_stat_record(st, lxp_hostfs_inode(s->file_idx), &stat);
 	return 0;
 }
 
