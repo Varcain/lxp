@@ -6,46 +6,21 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  */
 
-#include "lxp/lxp_config.h"
-#include "lxp_loader.h" /* lxp_loader_abi_incompatible — refuse a wrong-ABI execve up front */
-
-#include "lxp/lxp_stats.h"
+/*
+ * Linux syscall dispatch. The per-engine SVC seam decodes the trap frame and calls
+ * lxp_syscall() with the register arguments; the table below maps each syscall
+ * number to its handler (src/sys/, src/fs/lxp_poll.c, src/net/lxp_net_sys.c) and its
+ * flags. Pointer arguments are guest addresses, reached through the lxp_guest copy
+ * helpers.
+ */
 #include "lxp_syscall.h"
+
+#include "lxp/lxp_config.h"
 #include "lxp/lxp_types.h"
-
-#include "lxp_internal.h" /* lxp_guest_access_ok / lxp_guest_strnlen / file_mode / lxp_encode_wstatus */
-#include "lxp_text.h"	  /* bounded text construction for synthetic names */
-#include "fs/lxp_vfs.h"	  /* per-fd-kind file-operation vtable (dispatch by kind) */
-#include "sys/lxp_sys.h"	  /* the syscall handlers the table dispatches to */
-
-#include "fs/lxp_dirent.h"      /* getdents record output */
-#include "fs/lxp_eventfd.h"     /* eventfd2(2) counters (FD_EVENTFD) */
-#include "fs/lxp_fd_private.h" /* descriptor-table reference transaction */
+#include "sys/lxp_sys.h"
 #if LXP_ENABLE_FS
-#include "fs/lxp_hostfs.h" /* writable host mount (FD_HOSTFS, /data) */
+#include "fs/lxp_hostfs.h" /* lxp_hostfs_syscall_enter */
 #endif
-#include "fs/lxp_path.h"     /* path resolution (resolve_path / fs_lookup / fs_follow) */
-#include "fs/lxp_pipe.h"     /* pipe ring ops (FD_PIPE) */
-#include "fs/lxp_poll.h"     /* poll/ppoll/pselect6 */
-#include "fs/lxp_stat.h"     /* ARM struct stat64 record */
-#include "fs/lxp_tmpfs.h"    /* writable VFS overlay nodes (FD_TMPFS) */
-#include "proc/lxp_procfs.h" /* synthetic /proc content generation (FD_PROC) */
-#include "proc/lxp_script.h" /* bounded #! parsing shared with initial launch */
-#if LXP_ENABLE_DEV
-#include "dev/lxp_dev.h" /* /dev character-device routing (FD_DEV) */
-#endif
-#if LXP_ENABLE_NET
-#include "net/lxp_net.h" /* socket routing (FD_SOCKET) */
-#endif
-#if LXP_ENABLE_NETFS
-#include "netfs/lxp_netfs.h" /* remote-fs routing (FD_NET, /mnt/pi) */
-#endif
-#if LXP_ENABLE_PTY
-#include "pty/lxp_pty.h" /* pseudo-terminal routing (FD_PTY) */
-#endif
-
-#include <limits.h>
-#include <string.h>
 
 /* ABI pins for the tty/poll uapi structs (lxp_proc.h). Fixed-width fields → these
  * hold on the 32-bit target and the 64-bit host build; a drift fails the build. */
@@ -53,46 +28,6 @@ LXP_STATIC_ASSERT(sizeof(struct lxp_termios) == 36, "termios ABI size drifted");
 LXP_STATIC_ASSERT(offsetof(struct lxp_termios, c_cc) == 17, "termios c_cc offset drifted");
 LXP_STATIC_ASSERT(sizeof(struct lxp_winsize) == 8, "winsize ABI size drifted");
 LXP_STATIC_ASSERT(sizeof(struct lxp_pollfd) == 8, "pollfd ABI size drifted");
-
-/*
- * Linux syscall personality — engine-agnostic dispatch.
- *
- * Translates the Linux syscall ABI into host-agnostic module primitives. The trap frame is
- * decoded by the per-engine SVC seam, which calls lxp_syscall() with the
- * register arguments; this file holds the dispatcher and most syscall handlers.
- * Pointer arguments are program addresses — in the flat (NOMMU) model the
- * program shares our address space, so they are used directly once
- * lxp_guest_access_ok() has checked them against the process's memory.
- */
-
-/* fd kinds (lxp_ofd_t.kind) live in lxp_proc.h and are shared with subsystem TUs. */
-
-/* The pipe subsystem (ring buffer + read/write/poll ops) lives in src/fs/lxp_pipe.c;
- * this dispatcher calls it via fs/lxp_pipe.h. */
-
-
-/* ---- syscall handlers: (proc, the six argument registers) → result ---------- */
-
-/* (nfds, readfds, writefds, exceptfds, timeout, sigmask) */
-static long sc_pselect6_time64(lxp_proc_t *proc, const long a[6])
-{
-	return lxp_sys_pselect6(proc, (int)a[0], (uintptr_t)a[1], (uintptr_t)a[2], (uintptr_t)a[3],
-				(uintptr_t)a[4]);
-}
-
-static long sc_poll(lxp_proc_t *proc, const long a[6])
-{
-	return lxp_sys_poll(proc, LXP_NR_poll, a[0], a[1], a[2]);
-}
-
-static long sc_ppoll_time64(lxp_proc_t *proc, const long a[6])
-{
-	return lxp_sys_poll(proc, LXP_NR_ppoll_time64, a[0], a[1], a[2]);
-}
-/* futex / futex_time64 are intercepted by the coordinator (src/lxp_run.c, lxp_futex):
- * a co-running thread's WAIT parks on the uaddr and a peer's WAKE resumes it. They
- * never reach the dispatcher. */
-
 
 /* ---- the syscall table ------------------------------------------------------
  * One row per syscall the dispatcher answers, indexed by number, with its flags
@@ -208,9 +143,9 @@ static const struct lxp_sys_entry g_lxp_sys_table[LXP_SYS_TABLE_SIZE] = {
 	[LXP_NR_clock_nanosleep_time64] = {lxp_sys_clock_nanosleep_time64, 0},
 	[LXP_NR_uname] = {lxp_sys_uname, 0},
 	[LXP_NR_rt_sigaction] = {lxp_sys_rt_sigaction, 0},
-	[LXP_NR_pselect6_time64] = {sc_pselect6_time64, 0},
-	[LXP_NR_poll] = {sc_poll, 0},
-	[LXP_NR_ppoll_time64] = {sc_ppoll_time64, 0},
+	[LXP_NR_pselect6_time64] = {lxp_sys_pselect6_time64, 0},
+	[LXP_NR_poll] = {lxp_sys_poll, 0},
+	[LXP_NR_ppoll_time64] = {lxp_sys_ppoll_time64, 0},
 	[LXP_NR_wait4] = {lxp_sys_wait4, 0},
 	[LXP_NR_getuid32] = {lxp_sys_getuid_root, LXP_SYS_FAST},
 	[LXP_NR_geteuid32] = {lxp_sys_getuid_root, LXP_SYS_FAST},

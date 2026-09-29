@@ -145,4 +145,9 @@ long lxp_sys_sendmsg(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_recvmsg(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_socketpair(lxp_proc_t *proc, const long a[6]);
 
+/* ---- poll and select (src/fs/lxp_poll.c) ---- */
+long lxp_sys_poll(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_ppoll_time64(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_pselect6_time64(lxp_proc_t *proc, const long a[6]);
+
 #endif /* LXP_SYS_H */

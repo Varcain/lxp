@@ -15,6 +15,7 @@
 #include "lxp_guest.h"
 #include "lxp_internal.h"
 #include "lxp_linux_uapi.h"
+#include "sys/lxp_sys.h"
 
 #define LXP_SEL_MAXFDS 32 /* select() handles one 32-bit fd_set word */
 #define LXP_POLL_EVENTS (LXP_POLLIN | LXP_POLLOUT)
@@ -110,7 +111,10 @@ static int poll_timed_out(const lxp_proc_t *p)
 
 /* ---- poll / ppoll ---------------------------------------------------------- */
 
-long lxp_sys_poll(lxp_proc_t *p, long nr, long a0, long a1, long a2)
+/* poll (@p nr LXP_NR_poll: @p a2 = timeout ms) or ppoll (@p a2 = struct timespec *,
+ * NULL = block) over the pollfd array @p a0 of @p a1 entries. Returns the ready
+ * count, 0 at the timeout, a negated errno, or 0 after parking in LXP_WAIT_POLL. */
+static long poll_entry(lxp_proc_t *p, long nr, long a0, long a1, long a2)
 {
 	uintptr_t upfds = (uintptr_t)a0;
 	unsigned nfds = (unsigned)a1;
@@ -172,6 +176,16 @@ static long poll_retry(lxp_proc_t *p)
 	if (nfds && lxp_copy_to_guest(p, upfds, pf, bytes) != 0)
 		return -LXP_EFAULT;
 	return ready;
+}
+
+long lxp_sys_poll(lxp_proc_t *proc, const long a[6])
+{
+	return poll_entry(proc, LXP_NR_poll, a[0], a[1], a[2]);
+}
+
+long lxp_sys_ppoll_time64(lxp_proc_t *proc, const long a[6])
+{
+	return poll_entry(proc, LXP_NR_ppoll_time64, a[0], a[1], a[2]);
 }
 
 /* ---- pselect6: select() over the poll scan --------------------------------- */
@@ -246,8 +260,9 @@ static long sel_scan(lxp_proc_t *p, const lxp_wait_t *wait, int may_wait)
 	return sel_writeback(p, wait, pf, n);
 }
 
-long lxp_sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwfds, uintptr_t uefds,
-		      uintptr_t utimeout)
+/* pselect6 over one fd_set word (fds below 32); the signal mask is not applied. */
+static long pselect6_entry(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwfds,
+			   uintptr_t uefds, uintptr_t utimeout)
 {
 	if (nfds < 0)
 		return -LXP_EINVAL;
@@ -272,6 +287,13 @@ long lxp_sys_pselect6(lxp_proc_t *p, int nfds, uintptr_t urfds, uintptr_t uwfds,
 	if (rc != -LXP_EAGAIN)
 		return rc;
 	return poll_park(p, &wait, tmo_ms);
+}
+
+/* (nfds, readfds, writefds, exceptfds, timeout, sigmask) */
+long lxp_sys_pselect6_time64(lxp_proc_t *proc, const long a[6])
+{
+	return pselect6_entry(proc, (int)a[0], (uintptr_t)a[1], (uintptr_t)a[2], (uintptr_t)a[3],
+			      (uintptr_t)a[4]);
 }
 
 long lxp_poll_retry(lxp_proc_t *p)
