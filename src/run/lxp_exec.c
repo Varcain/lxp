@@ -282,9 +282,7 @@ void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int s
 	(void)lxp_intent_complete(proc, LXP_INTENT_EXEC);
 	lxp_exec_capture_t *capture = proc->exec_capture;
 	if (!capture) {
-		proc->exit_status = 127;
-		(void)lxp_intent_exit(proc, 0);
-		primary_slot_mark(slot);
+		coordinator_exit_slot(slot, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION, 0);
 		return;
 	}
 

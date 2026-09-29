@@ -37,13 +37,8 @@ static void slot_transition_failed(int sidx, int transition, int rc)
 	lxp_proc_t *p = lxp_slot_proc(sidx);
 	if (!p || !p->alive)
 		return;
-	p->exit_status = 127;
-	p->exit_reason = LXP_EXIT_REASON_HOST_TRANSITION;
-	p->exit_signal = 0;
-	p->exit_detail = ((uint32_t)(transition & 0xff) << 24) | (uint32_t)(-rc & 0x00ffffff);
-	p->exit_address = 0;
-	(void)lxp_intent_exit(p, 0);
-	primary_slot_mark(sidx);
+	coordinator_exit_slot(sidx, 0, 127, LXP_EXIT_REASON_HOST_TRANSITION,
+			      ((uint32_t)(transition & 0xff) << 24) | (uint32_t)(-rc & 0x00ffffff));
 }
 
 /* The sole applicator for native task lifecycle changes. Event handlers

@@ -8,6 +8,18 @@
 #include "run/lxp_coordinator.h"
 #include "lxp_run_internal.h"
 
+void coordinator_exit_slot(int slot, int group, int status, uint8_t reason, uint32_t detail)
+{
+	lxp_proc_t *proc = lxp_slot_proc(slot);
+	proc->exit_status = status;
+	proc->exit_reason = reason;
+	proc->exit_signal = 0;
+	proc->exit_detail = detail;
+	proc->exit_address = 0;
+	(void)lxp_intent_exit(proc, group);
+	primary_slot_mark(slot);
+}
+
 struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
 {
 	struct lxp_exit_result result = {0};

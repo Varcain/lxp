@@ -191,12 +191,7 @@ void guest_view_failure(int slot, int rc)
 {
 	if (slot < 0 || slot >= LXP_NSLOT || !g_lxp_slots[slot].proc.alive)
 		return;
-	lxp_proc_t *proc = &g_lxp_slots[slot].proc;
-	proc->exit_status = 127;
-	proc->exit_reason = LXP_EXIT_REASON_STATE_CORRUPTION;
-	proc->exit_detail = (uint32_t)(-rc);
-	(void)lxp_intent_exit(proc, 0);
-	primary_slot_mark(slot);
+	coordinator_exit_slot(slot, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION, (uint32_t)(-rc));
 }
 
 int coordinator_guest_view_begin(int slot, lxp_guest_view_t *view)
@@ -781,13 +776,7 @@ void thread_group_request_exit(int source_slot, int status)
 		lxp_proc_t *p = &g_lxp_slots[s].proc;
 		if (!p->alive || p->group != group)
 			continue;
-		p->exit_status = status & 0xff;
-		p->exit_reason = LXP_EXIT_REASON_NORMAL;
-		p->exit_signal = 0;
-		p->exit_detail = 0;
-		p->exit_address = 0;
-		(void)lxp_intent_exit(p, 1);
-		primary_slot_mark(s);
+		coordinator_exit_slot(s, 1, status & 0xff, LXP_EXIT_REASON_NORMAL, 0);
 	}
 }
 
@@ -805,11 +794,7 @@ int thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slot, int f
 			continue;
 		if (coordinator_abort_slot(eng, s) != LXP_OK)
 			rc = -LXP_EAGAIN;
-		p->exit_status = failure_status & 0xff;
-		p->exit_reason = LXP_EXIT_REASON_NORMAL;
-		p->exit_signal = 0;
-		(void)lxp_intent_exit(p, 0);
-		primary_slot_mark(s);
+		coordinator_exit_slot(s, 0, failure_status & 0xff, LXP_EXIT_REASON_NORMAL, 0);
 	}
 	return rc;
 }

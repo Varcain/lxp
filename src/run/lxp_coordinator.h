@@ -183,6 +183,10 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc);
 int pending_take(lxp_proc_t *p);
 void deferred_state_store(int slot, uint8_t state);
 void coordinator_report_enosys(long nr, long result);
+/* End @p slot's process for a coordinator reason (not a signal): record the status,
+ * reason and detail, ask for its exit (its whole thread group when @p group), and mark
+ * the slot for the primary loop (src/run/lxp_exit.c). */
+void coordinator_exit_slot(int slot, int group, int status, uint8_t reason, uint32_t detail);
 /* futex(2) from the trap: answers in @p f->r[0] or parks the caller (src/run/lxp_futex.c). */
 void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64);
 /* Whether another live thread shares @p proc's address space and could wake its futex wait. */

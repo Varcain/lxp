@@ -301,12 +301,8 @@ void vfork_contain_stale(lxp_slot_ref_t child_ref, lxp_proc_t *child)
 {
 	struct vfork_snapshot_guard *guard = &g_lxp_vfork_guard[child_ref.index];
 	if (vfork_parent_is_current(child_ref)) {
-		lxp_proc_t *par = &g_lxp_slots[guard->parent.index].proc;
-		par->exit_status = 127;
-		par->exit_reason = LXP_EXIT_REASON_STATE_CORRUPTION;
-		par->exit_signal = 0;
-		(void)lxp_intent_exit(par, 0);
-		primary_slot_mark(guard->parent.index);
+		coordinator_exit_slot(guard->parent.index, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION,
+				      0);
 	}
 	if (guard->snapshot.index >= 0)
 		(void)region_release_if_owned(guard->snapshot, child_ref);
@@ -315,9 +311,5 @@ void vfork_contain_stale(lxp_slot_ref_t child_ref, lxp_proc_t *child)
 	child->snapshot = lxp_region_ref_none();
 	if (child->intent.kind == LXP_INTENT_EXEC)
 		(void)lxp_intent_complete(child, LXP_INTENT_EXEC);
-	child->exit_status = 127;
-	child->exit_reason = LXP_EXIT_REASON_STATE_CORRUPTION;
-	child->exit_signal = 0;
-	(void)lxp_intent_exit(child, 0);
-	primary_slot_mark(child_ref.index);
+	coordinator_exit_slot(child_ref.index, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION, 0);
 }
