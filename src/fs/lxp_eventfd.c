@@ -37,7 +37,9 @@ long lxp_eventfd_open(lxp_proc_t *p, unsigned initval, int flags)
 	long ei = efd_new(initval, flags);
 	if (ei < 0)
 		return ei;
-	int fd = lxp_fd_install(p, LXP_FD_EVENTFD, (int)ei);
+	/* EFD_NONBLOCK / EFD_CLOEXEC share O_NONBLOCK / O_CLOEXEC's values. */
+	int fd = lxp_fd_install(p, LXP_FD_EVENTFD, (int)ei,
+				LXP_O_RDWR | (flags & (LXP_O_NONBLOCK | LXP_O_CLOEXEC)));
 	if (fd < 0) {
 		g_efd[ei].used = 0;
 		return -LXP_EMFILE;

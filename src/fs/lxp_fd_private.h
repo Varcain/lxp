@@ -11,10 +11,12 @@
 
 #include "proc/lxp_proc.h"
 
-/** Allocate the lowest descriptor and its open-file description. */
-int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset);
-/** Set open-description direction and nonblocking state. */
-int lxp_fd_set_status(lxp_proc_t *proc, int fd, int direction, int nonblock);
+/** Allocate the lowest descriptor and its open-file description, recording the
+ *  access mode, O_NONBLOCK and O_CLOEXEC from the open @p flags. */
+int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset, int flags);
+/** Select the pipe/pty end an open-file description refers to (1 = write end or
+ *  master, 0 = read end or slave). */
+int lxp_fd_set_end(lxp_proc_t *proc, int fd, int end);
 /** Set or query the descriptor-local close-on-exec flag. */
 int lxp_fd_set_cloexec(lxp_proc_t *proc, int fd, int enabled);
 int lxp_fd_get_cloexec(const lxp_proc_t *proc, int fd);

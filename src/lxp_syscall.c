@@ -84,7 +84,7 @@ LXP_STATIC_ASSERT(sizeof(struct lxp_pollfd) == 8, "pollfd ABI size drifted");
 
 /* fd kinds (lxp_ofd_t.kind) live in lxp_proc.h and are shared with subsystem TUs. */
 
-static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off);
+static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off, int flags);
 
 #if LXP_ENABLE_NET
 /* pselect6(2): select() over the poll machinery (busybox inetd + dropbear are
@@ -449,22 +449,22 @@ static long sys_munmap(lxp_proc_t *p, uintptr_t addr, size_t len)
 	return lxp_arena_free_tracked(p->mm->arena, (void *)addr, len) ? 0 : -LXP_EINVAL;
 }
 
-/* Claim the lowest free fd for (kind, idx, off); -EMFILE if the table is full. */
-static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off)
+/* Claim the lowest free fd for (kind, idx, off) opened with @p flags; -EMFILE if the
+ * table is full. */
+static int fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off, int flags)
 {
 	if (kind == LXP_FD_TMPFS && wfs_open(idx) != 0)
 		return -LXP_EMFILE;
-	int fd = lxp_fd_open(p, kind, idx, off);
+	int fd = lxp_fd_open(p, kind, idx, off, flags);
 	if (fd < 0 && kind == LXP_FD_TMPFS)
 		wfs_close(idx);
 	return fd;
 }
 
-/* Public wrapper so the socket bridge can mint an accept(2) fd (the fd table is
- * owned by lxp_fd.c; the bridge owns the socket pool). */
-int lxp_fd_install(lxp_proc_t *p, uint8_t kind, int idx)
+/* Install for subsystems that own their object pools (sockets, /proc, eventfd, 9P). */
+int lxp_fd_install(lxp_proc_t *p, uint8_t kind, int idx, int flags)
 {
-	return fd_alloc(p, kind, idx, 0);
+	return fd_alloc(p, kind, idx, 0, flags);
 }
 
 /* eventfd(2): a 64-bit counter fd used to wake a poller from another thread — curl's
@@ -482,7 +482,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 		return rr;
 	path = abspath;
 	if (proc_is(path)) /* synthetic /proc shadows everything */
-		return lxp_procfs_open(p, path);
+		return lxp_procfs_open(p, path, flags);
 #if LXP_ENABLE_FS
 	/* The mount boundary is exact: /data and descendants route to the host
 	 * provider, while /database remains part of the ordinary rootfs/tmpfs. */
@@ -490,14 +490,9 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 		long hi = lxp_hostfs_open(p, path, flags);
 		if (hi < 0)
 			return hi;
-		int fd = fd_alloc(p, LXP_FD_HOSTFS, (int)hi, 0);
+		int fd = fd_alloc(p, LXP_FD_HOSTFS, (int)hi, 0, flags);
 		if (fd < 0)
 			lxp_hostfs_close((int)hi);
-		else {
-			(void)lxp_fd_set_status(p, fd, flags & LXP_O_ACCMODE,
-						(flags & LXP_O_NONBLOCK) != 0);
-			(void)lxp_fd_set_cloexec(p, fd, (flags & LXP_O_CLOEXEC) != 0);
-		}
 		return fd;
 	}
 #endif
@@ -515,7 +510,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 	};
 	for (size_t k = 0; k < sizeof(console_dev) / sizeof(console_dev[0]); k++)
 		if (strcmp(path, console_dev[k].path) == 0)
-			return fd_alloc(p, LXP_FD_CONSOLE, console_dev[k].idx, 0);
+			return fd_alloc(p, LXP_FD_CONSOLE, console_dev[k].idx, 0, flags);
 #if LXP_ENABLE_PTY
 	/* Unix98 pty: each open of /dev/ptmx mints a fresh pair (the master, rw=1); the
 	 * slave is /dev/pts/N (rw=0), N = the pool index from TIOCGPTN/ptsname. */
@@ -523,9 +518,9 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 		long idx = lxp_pty_open_master(flags);
 		if (idx < 0)
 			return idx;
-		int fd = fd_alloc(p, LXP_FD_PTY, (int)idx, 0);
+		int fd = fd_alloc(p, LXP_FD_PTY, (int)idx, 0, flags);
 		if (fd >= 0) {
-			(void)lxp_fd_set_status(p, fd, 1, 0); /* master end */
+			(void)lxp_fd_set_end(p, fd, 1); /* master end */
 			lxp_pty_end_open((int)idx, 1);
 		} else {
 			lxp_pty_discard((int)idx);
@@ -544,7 +539,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 		long idx = lxp_pty_open_slave(num, flags);
 		if (idx < 0)
 			return idx;
-		int fd = fd_alloc(p, LXP_FD_PTY, (int)idx, 0); /* slave end (rw=0) */
+		int fd = fd_alloc(p, LXP_FD_PTY, (int)idx, 0, flags); /* slave end (rw=0) */
 		if (fd >= 0)
 			lxp_pty_end_open((int)idx, 0);
 		return fd;
@@ -559,7 +554,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 			long oi = lxp_dev_open_new(p, di, flags);
 			if (oi < 0)
 				return oi;
-			int fd = fd_alloc(p, LXP_FD_DEV, (int)oi, 0);
+			int fd = fd_alloc(p, LXP_FD_DEV, (int)oi, 0, flags);
 			if (fd < 0)
 				lxp_dev_close((int)oi);
 			return fd;
@@ -592,29 +587,19 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 			if (flags & LXP_O_TRUNC)
 				wnode_at(wi)->size = 0;
 		}
-		return fd_alloc(p, LXP_FD_TMPFS, wi,
-				(flags & LXP_O_APPEND) ? wnode_at(wi)->size : 0);
+		return fd_alloc(p, LXP_FD_TMPFS, wi, (flags & LXP_O_APPEND) ? wnode_at(wi)->size : 0,
+				flags);
 	}
 
 	/* Read: a writable node shadows the rootfs; else the read-only rootfs. */
 	if (wi >= 0)
-		return fd_alloc(p, LXP_FD_TMPFS, wi, 0);
+		return fd_alloc(p, LXP_FD_TMPFS, wi, 0, flags);
 	/* Follow symlinks so a read open of e.g. /lib/libc.so.0 -> libuClibc.so returns the
 	 * target ELF (ld.so opens its .so deps by their symlinked SONAMEs). */
 	int idx = fs_follow(p, fs_lookup(p, path));
 	if (idx >= 0)
-		return fd_alloc(p, LXP_FD_FILE, idx, 0);
+		return fd_alloc(p, LXP_FD_FILE, idx, 0, flags);
 	return -LXP_ENOENT;
-}
-
-/* open/openat: apply O_CLOEXEC to the new descriptor. An open that parked (netfs)
- * returned 0 without one; its completion installs the fd and applies the flag. */
-static long sys_open_cloexec(lxp_proc_t *p, int dirfd, const char *path, int flags)
-{
-	long fd = sys_openat(p, dirfd, path, flags);
-	if (fd >= 0 && p->wait.kind == LXP_WAIT_NONE && (flags & LXP_O_CLOEXEC))
-		(void)lxp_fd_set_cloexec(p, (int)fd, 1);
-	return fd;
 }
 
 static long sys_close(lxp_proc_t *p, int fd)
@@ -628,9 +613,8 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 {
 	if (!lxp_guest_access_ok(p, fds, 2 * sizeof(int), 1)) /* the kernel writes fds[0],fds[1] */
 		return -LXP_EFAULT;
-	uint8_t cx = (flags & LXP_O_CLOEXEC) ? 1 : 0;
-	uint8_t nb = (flags & LXP_O_NONBLOCK) ? 1
-					      : 0; /* pipe2(O_NONBLOCK): both ends non-blocking */
+	/* pipe2(O_NONBLOCK / O_CLOEXEC) applies to both ends. */
+	int shared = flags & (LXP_O_NONBLOCK | LXP_O_CLOEXEC);
 	/* Reserve a pipe object; endpoint ownership is published as each open-file
 	 * description is installed and released by its final close hook. */
 	int pi = lxp_pipe_alloc();
@@ -640,22 +624,19 @@ static long sys_pipe(lxp_proc_t *p, int *fds, int flags)
 		lxp_pipe_discard(pi);
 		return -LXP_EMFILE;
 	}
-	int rfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
+	int rfd = fd_alloc(p, LXP_FD_PIPE, pi, 0, LXP_O_RDONLY | shared);
 	if (rfd < 0) {
 		lxp_pipe_discard(pi);
 		return -LXP_EMFILE;
 	}
-	(void)lxp_fd_set_status(p, rfd, 0, nb);
 	lxp_pipe_end_open(pi, 0);
-	int wfd = fd_alloc(p, LXP_FD_PIPE, pi, 0);
+	int wfd = fd_alloc(p, LXP_FD_PIPE, pi, 0, LXP_O_WRONLY | shared);
 	if (wfd < 0) {
 		(void)sys_close(p, rfd);
 		return -LXP_EMFILE;
 	}
-	(void)lxp_fd_set_status(p, wfd, 1, nb);
+	(void)lxp_fd_set_end(p, wfd, 1);
 	lxp_pipe_end_open(pi, 1);
-	(void)lxp_fd_set_cloexec(p, rfd, cx);
-	(void)lxp_fd_set_cloexec(p, wfd, cx);
 	const int result[2] = {rfd, wfd};
 	if (lxp_copy_to_guest(p, (uintptr_t)fds, result, sizeof(result)) != 0) {
 		(void)sys_close(p, rfd);
@@ -2029,12 +2010,12 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		return sys_pwrite(proc, (int)a0, (const void *)(uintptr_t)a1, (size_t)a2,
 				  (uint64_t)(uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32));
 	case LXP_NR_open: /* legacy open(path, flags, mode): dirfd = cwd */
-		return sys_open_cloexec(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a0, (int)a1);
+		return sys_openat(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a0, (int)a1);
 	case LXP_NR_execve: /* (path, argv, envp) */
 		return sys_execve(proc, (const char *)(uintptr_t)a0, (char *const *)(uintptr_t)a1,
 				  (char *const *)(uintptr_t)a2);
 	case LXP_NR_openat:
-		return sys_open_cloexec(proc, (int)a0, (const char *)(uintptr_t)a1, (int)a2);
+		return sys_openat(proc, (int)a0, (const char *)(uintptr_t)a1, (int)a2);
 	case LXP_NR_close:
 		return sys_close(proc, (int)a0);
 	case LXP_NR_pipe:
@@ -2695,7 +2676,9 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		long oi = lxp_sock_new((int)a0, (int)a1, (int)a2);
 		if (oi < 0)
 			return oi;
-		int fd = fd_alloc(proc, LXP_FD_SOCKET, (int)oi, 0);
+		/* SOCK_NONBLOCK / SOCK_CLOEXEC share O_NONBLOCK / O_CLOEXEC's values. */
+		int fd = fd_alloc(proc, LXP_FD_SOCKET, (int)oi, 0,
+				  LXP_O_RDWR | ((int)a1 & (LXP_O_NONBLOCK | LXP_O_CLOEXEC)));
 		if (fd < 0) {
 			lxp_sock_close((int)oi);
 			return -LXP_EMFILE;

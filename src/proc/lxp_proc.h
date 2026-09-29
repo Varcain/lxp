@@ -419,9 +419,10 @@ void lxp_fd_runtime_reset(void);
 /** Reset process-owned resource pools after all tasks are stopped. */
 void lxp_proc_runtime_reset(void);
 
-/** @brief Install a kernel object (@p kind, @p idx) into @p p's fd table, returning the
- * lowest free fd or @c -LXP_EMFILE. Lets the socket bridge mint an accept(2) fd. */
-int lxp_fd_install(lxp_proc_t *p, uint8_t kind, int idx);
+/** @brief Install a kernel object (@p kind, @p idx) into @p p's fd table with open
+ * @p flags (access mode, O_NONBLOCK, O_CLOEXEC), returning the lowest free fd or
+ * @c -LXP_EMFILE. */
+int lxp_fd_install(lxp_proc_t *p, uint8_t kind, int idx, int flags);
 
 /** @brief Retry a parked pipe read/write (run-loop coordinator). Returns the byte
  * count, 0 (EOF), or -EPIPE on completion; @c -LXP_EAGAIN while still blocked. */

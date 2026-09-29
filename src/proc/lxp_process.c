@@ -457,9 +457,9 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 	 * Console backing 0 is readable; backing 1 is writable. lxp_fd_install()
 	 * chooses the lowest free descriptor, so these become stdin/out/err.
 	 */
-	if (lxp_fd_install(proc, LXP_FD_CONSOLE, 0) != 0 ||
-	    lxp_fd_install(proc, LXP_FD_CONSOLE, 1) != 1 ||
-	    lxp_fd_install(proc, LXP_FD_CONSOLE, 1) != 2) {
+	if (lxp_fd_install(proc, LXP_FD_CONSOLE, 0, LXP_O_RDWR) != 0 ||
+	    lxp_fd_install(proc, LXP_FD_CONSOLE, 1, LXP_O_RDWR) != 1 ||
+	    lxp_fd_install(proc, LXP_FD_CONSOLE, 1, LXP_O_RDWR) != 2) {
 		lxp_proc_resources_put(proc);
 		lxp_proc_mm_put(proc);
 		lxp_proc_group_put(proc);

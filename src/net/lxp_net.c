@@ -328,7 +328,8 @@ static long do_accept(lxp_proc_t *p, struct sock_open *lo, void *uaddr, void *ua
 		if (g_lxp_net_ops->sock_getpeername(co->sock, &pa) == LXP_OK)
 			(void)copy_sockaddr_out(p, uaddr, uaddrlen, &pa);
 	}
-	int fd = lxp_fd_install(p, LXP_FD_SOCKET, ci);
+	int fd = lxp_fd_install(p, LXP_FD_SOCKET, ci,
+				LXP_O_RDWR | (flags & (LXP_O_NONBLOCK | LXP_O_CLOEXEC)));
 	if (fd < 0) {
 		g_lxp_net_ops->sock_close(co->sock);
 		co->used = 0;

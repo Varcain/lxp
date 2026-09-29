@@ -48,7 +48,7 @@ int lxp_fd_backing(const lxp_proc_t *proc, int fd)
 	return ofd ? ofd->file_idx : -1;
 }
 
-int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset)
+int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset, int flags)
 {
 	if (!proc || !proc->files || kind >= LXP_FD_KIND_COUNT || !g_lxp_file_ops[kind])
 		return -LXP_EMFILE;
@@ -68,25 +68,23 @@ int lxp_fd_open(lxp_proc_t *proc, uint8_t kind, int backing, size_t offset)
 		g_ofd[oi].refs = 1;
 		g_ofd[oi].kind = kind;
 		g_ofd[oi].rw = 0;
-		g_ofd[oi].nonblock = 0;
-		g_ofd[oi].accmode = LXP_O_RDONLY;
+		g_ofd[oi].nonblock = (flags & LXP_O_NONBLOCK) ? 1 : 0;
+		g_ofd[oi].accmode = (uint8_t)(flags & LXP_O_ACCMODE);
 		g_ofd[oi].file_idx = backing;
 		g_ofd[oi].offset = offset;
 		proc->files->fd[fd].ofd = (uint16_t)(oi + 1);
-		proc->files->fd[fd].cloexec = 0;
+		proc->files->fd[fd].cloexec = (flags & LXP_O_CLOEXEC) ? 1 : 0;
 		return fd;
 	}
 	return -LXP_EMFILE;
 }
 
-int lxp_fd_set_status(lxp_proc_t *proc, int fd, int direction, int nonblock)
+int lxp_fd_set_end(lxp_proc_t *proc, int fd, int end)
 {
 	lxp_ofd_t *ofd = fd_lookup(proc, fd);
 	if (!ofd)
 		return -LXP_EBADF;
-	ofd->rw = direction ? 1 : 0;
-	ofd->accmode = (uint8_t)(direction & LXP_O_ACCMODE);
-	ofd->nonblock = nonblock ? 1 : 0;
+	ofd->rw = end ? 1 : 0;
 	return 0;
 }
 

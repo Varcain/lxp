@@ -468,7 +468,7 @@ static struct {
 	int used;
 } g_procf[LXP_NPROCF];
 
-long lxp_procfs_open(lxp_proc_t *p, const char *abs)
+long lxp_procfs_open(lxp_proc_t *p, const char *abs, int flags)
 {
 	uint32_t m = proc_mode(abs, p);
 	if (m == 0 || (m & LXP_S_IFMT) == LXP_S_IFLNK)
@@ -486,7 +486,7 @@ long lxp_procfs_open(lxp_proc_t *p, const char *abs)
 		g_procf[i].len = (size_t)n;
 		g_procf[i].is_dir = dir;
 		g_procf[i].used = 1;
-		int fd = lxp_fd_install(p, LXP_FD_PROC, i);
+		int fd = lxp_fd_install(p, LXP_FD_PROC, i, flags);
 		if (fd < 0)
 			g_procf[i].used = 0; /* no fd installed → release the content slot */
 		return fd;

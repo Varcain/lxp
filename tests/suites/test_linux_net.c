@@ -156,6 +156,15 @@ static void test_net_socket_open_stat(void **state)
 	memset(&st, 0, sizeof(st));
 	assert_int_equal(lxp_syscall(&p, LXP_NR_fstat64, fd, (long)(uintptr_t)&st, 0, 0, 0, 0), 0);
 	assert_int_equal(st.st_mode & LXP_S_IFMT, LXP_S_IFSOCK);
+	/* SOCK_CLOEXEC marks the new descriptor close-on-exec. */
+	long cfd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM | LXP_SOCK_CLOEXEC,
+			       0, 0, 0, 0);
+	assert_true(cfd >= 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_fcntl64, cfd, LXP_F_GETFD, 0, 0, 0, 0),
+			 LXP_FD_CLOEXEC);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_fcntl64, fd, LXP_F_GETFD, 0, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, cfd, 0, 0, 0, 0, 0), 0);
+
 	/* statx on the descriptor reports the same. */
 	uint8_t sx[256] = {0};
 	assert_int_equal(lxp_syscall(&p, LXP_NR_statx, fd, (long)(uintptr_t)"", LXP_AT_EMPTY_PATH, 0,

@@ -53,7 +53,7 @@ extern "C" {
 /* Guest socket ABI. LXP_AF_* and LXP_SOCK_STREAM/DGRAM/RAW are the provider
  * types from lxp_net_ops.h (identical Linux values); these bits are guest-only. */
 #define LXP_SOCK_NONBLOCK 0x800	 /**< ORed into the type arg. */
-#define LXP_SOCK_CLOEXEC 0x80000 /**< ORed into the type arg (ignored: no exec close). */
+#define LXP_SOCK_CLOEXEC 0x80000 /**< ORed into the type arg; closes the fd on exec. */
 #define LXP_SOCK_TYPE_MASK 0xff	 /**< Base type after masking the flag bits. */
 #define LXP_IPPROTO_ICMP 1
 #define LXP_IPPROTO_TCP 6

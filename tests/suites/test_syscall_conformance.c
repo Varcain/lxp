@@ -445,6 +445,29 @@ static void test_conf_stat(void **state)
 			 -LXP_EFAULT);
 }
 
+/* Open flags reach the installed descriptor: O_CLOEXEC from open and eventfd2's
+ * EFD_CLOEXEC set FD_CLOEXEC, and their absence leaves it clear. */
+static void test_conf_open_flags(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+	char *motd = lxp_conf_str(fx, "/etc/motd");
+
+	long fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)motd,
+		     LXP_O_RDONLY | LXP_O_CLOEXEC, 0, 0, 0);
+	assert_true(fd >= 3);
+	assert_int_equal(SC(&p, LXP_NR_fcntl64, fd, LXP_F_GETFD, 0, 0, 0, 0), LXP_FD_CLOEXEC);
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)motd, LXP_O_RDONLY, 0, 0, 0);
+	assert_int_equal(SC(&p, LXP_NR_fcntl64, fd, LXP_F_GETFD, 0, 0, 0, 0), 0);
+
+	fd = SC(&p, LXP_NR_eventfd2, 0, LXP_EFD_CLOEXEC, 0, 0, 0, 0);
+	assert_true(fd >= 3);
+	assert_int_equal(SC(&p, LXP_NR_fcntl64, fd, LXP_F_GETFD, 0, 0, 0, 0), LXP_FD_CLOEXEC);
+	fd = SC(&p, LXP_NR_eventfd2, 0, 0, 0, 0, 0, 0);
+	assert_int_equal(SC(&p, LXP_NR_fcntl64, fd, LXP_F_GETFD, 0, 0, 0, 0), 0);
+}
+
 /* fstat64 and statx(AT_EMPTY_PATH) on one descriptor, through @p buf (256 bytes). */
 static void stat_fd_both(lxp_proc_t *p, lxp_conf_t *fx, long fd, uint8_t *buf, lxp_stat_view_t *k,
 			 lxp_stat_view_t *x)
@@ -1369,6 +1392,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_pread_streams),
 		cmocka_unit_test(test_conf_mem),
 		cmocka_unit_test(test_conf_stat),
+		cmocka_unit_test(test_conf_open_flags),
 		cmocka_unit_test(test_conf_stat_kinds),
 		cmocka_unit_test(test_conf_inode_identity),
 		cmocka_unit_test(test_conf_dirent),
