@@ -1256,49 +1256,6 @@ int pending_deliverable(const lxp_proc_t *p)
 	return 0;
 }
 
-/* Only constant-time, pointer-free operations may execute in the SVC top half.
- * The default is deliberately deferred: a newly added syscall cannot silently
- * inherit handler-mode execution merely because its number was added elsewhere. */
-static int syscall_is_fast(long nr)
-{
-	switch (nr) {
-	case LXP_NR_exit:
-	case LXP_NR_exit_group:
-	case LXP_NR_getpid:
-	case LXP_NR_getppid:
-	case LXP_NR_getuid32:
-	case LXP_NR_getgid32:
-	case LXP_NR_geteuid32:
-	case LXP_NR_getegid32:
-	case LXP_NR_gettid:
-	case LXP_NR_umask:
-	case LXP_NR_prctl:
-	case LXP_NR_sched_yield:
-	case LXP_NR_nice:
-	case LXP_NR_getpriority:
-	case LXP_NR_setpriority:
-	case LXP_NR_setpgid:
-	case LXP_NR_getpgrp:
-	case LXP_NR_setsid:
-	case LXP_NR_fchmod:
-	case LXP_NR_fchown32:
-	case LXP_NR_setgroups32:
-	case LXP_NR_setuid32:
-	case LXP_NR_setgid32:
-	case LXP_NR_setreuid32:
-	case LXP_NR_setregid32:
-	case LXP_NR_setresuid32:
-	case LXP_NR_setresgid32:
-	case LXP_NR_set_tid_address:
-	case LXP_NR_set_robust_list:
-	case LXP_NR_mprotect: /* currently a pointer-free NOMMU no-op */
-	case LXP_NR_reboot:
-		return 1;
-	default:
-		return 0;
-	}
-}
-
 /* ---- the syscall dispatch body --------------------------------------------- */
 static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 {
@@ -1438,16 +1395,17 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		lxp_futex(f, proc, nr == LXP_NR_futex_time64);
 		return;
 	}
-	if (!syscall_is_fast(nr)) {
+	if (!(lxp_syscall_flags(nr) & LXP_SYS_FAST)) {
 		defer_syscall(f, proc);
 		return;
 	}
 
 	long r = lxp_syscall(proc, nr, (int32_t)f->r[0], (int32_t)f->r[1], (int32_t)f->r[2],
 			     (int32_t)f->r[3], (int32_t)f->r[4], (int32_t)f->r[5]);
-	/* Suppress the console diagnostic for syscalls we deliberately don't implement but the guest
-	 * probes and gracefully falls back on: getdents(141)→getdents64, socket(281)→no networking. */
-	if (r == -LXP_ENOSYS && g_cfg && g_cfg->on_enosys && nr != 141 && nr != 281)
+	/* Suppress the console diagnostic for an ENOSYS the guest probes for and falls back
+	 * from (LXP_SYS_QUIET_ENOSYS: socket() without networking). */
+	if (r == -LXP_ENOSYS && g_cfg && g_cfg->on_enosys &&
+	    !(lxp_syscall_flags(nr) & LXP_SYS_QUIET_ENOSYS))
 		g_cfg->on_enosys(nr);
 	/* A blocking syscall published a typed wait; capture the
 	 * post-svc context (resume the SAME image after the svc) and park. The
@@ -2025,7 +1983,8 @@ void execute_deferred(const lxp_os_ops_t *eng, int slot)
 	(void)lxp_intent_complete(proc, LXP_INTENT_DEFERRED_SYSCALL);
 	deferred_track_tty(proc, nr, a0, a1, a2);
 	long r = lxp_syscall(proc, nr, a0, a1, a2, a3, a4, a5);
-	if (r == -LXP_ENOSYS && g_cfg && g_cfg->on_enosys && nr != 141 && nr != 281)
+	if (r == -LXP_ENOSYS && g_cfg && g_cfg->on_enosys &&
+	    !(lxp_syscall_flags(nr) & LXP_SYS_QUIET_ENOSYS))
 		g_cfg->on_enosys(nr);
 	deferred_state_store(slot, DEFER_IDLE);
 

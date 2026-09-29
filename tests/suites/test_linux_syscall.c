@@ -94,20 +94,36 @@ static void test_lnx_niceness(void **state)
 	assert_int_equal(lxp_nice_weight(0), 20);
 	assert_int_equal(lxp_nice_weight(-20), 40);
 	assert_int_equal(lxp_nice_weight(19), 1);
-	/* The raw getpriority syscall uses 20-nice so negative nice values cannot
-	 * be confused with a negative errno by libc. */
-	assert_int_equal(lxp_syscall(&p, LXP_NR_getpriority, 0, 0, 0, 0, 0, 0), 20);
+	/* nice(2) moves the value by its increment, clamped to [-20, 19]; get/setpriority
+	 * are answered by the coordinator (test_run_coord.c). */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, -7, 0, 0, 0, 0, 0), 0);
 	assert_int_equal(lxp_proc_nice_get(&p), -7);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_getpriority, 0, p.pid, 0, 0, 0, 0), 27);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_setpriority, 0, 0, 50, 0, 0, 0), 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, 50, 0, 0, 0, 0, 0), 0);
 	assert_int_equal(lxp_proc_nice_get(&p), 19);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, INT32_MIN, 0, 0, 0, 0, 0), 0);
 	assert_int_equal(lxp_proc_nice_get(&p), -20);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_getpriority, 0, 99, 0, 0, 0, 0),
-			 -LXP_ESRCH);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_setpriority, 3, 0, 0, 0, 0, 0),
-			 -LXP_EINVAL);
+}
+
+/* The syscalls that may run in the trap's top half: exactly this set. */
+static void test_lnx_fast_syscalls(void **state)
+{
+	(void)state;
+	static const long fast[] = {
+		LXP_NR_exit,	    LXP_NR_exit_group,	    LXP_NR_getpid,	 LXP_NR_getppid,
+		LXP_NR_getuid32,    LXP_NR_getgid32,	    LXP_NR_geteuid32,	 LXP_NR_getegid32,
+		LXP_NR_gettid,	    LXP_NR_umask,	    LXP_NR_prctl,	 LXP_NR_sched_yield,
+		LXP_NR_nice,	    LXP_NR_setpgid,	    LXP_NR_getpgrp,	 LXP_NR_setsid,
+		LXP_NR_fchmod,	    LXP_NR_fchown32,	    LXP_NR_setgroups32,	 LXP_NR_setuid32,
+		LXP_NR_setgid32,    LXP_NR_setreuid32,	    LXP_NR_setregid32,	 LXP_NR_setresuid32,
+		LXP_NR_setresgid32, LXP_NR_set_tid_address, LXP_NR_set_robust_list, LXP_NR_mprotect,
+		LXP_NR_reboot,
+	};
+	for (long nr = -1; nr < 512; nr++) {
+		int expected = 0;
+		for (size_t i = 0; i < sizeof(fast) / sizeof(fast[0]); i++)
+			expected |= fast[i] == nr;
+		assert_int_equal((lxp_syscall_flags(nr) & LXP_SYS_FAST) != 0, expected);
+	}
 }
 
 static void test_lnx_writev(void **state)
@@ -1282,6 +1298,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_sigprocmask),
 		cmocka_unit_test(test_lnx_write),
 		cmocka_unit_test(test_lnx_niceness),
+		cmocka_unit_test(test_lnx_fast_syscalls),
 		cmocka_unit_test(test_lnx_writev),
 		cmocka_unit_test(test_lnx_brk),
 		cmocka_unit_test(test_lnx_mmap),

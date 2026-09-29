@@ -70,8 +70,8 @@ umask	implemented	stored per-proc, returns previous
 getpid	implemented
 getppid	implemented
 nice	implemented	updates the current process niceness within the Linux range
-getpriority	implemented	current-process PRIO_PROCESS query
-setpriority	implemented	current-process PRIO_PROCESS update
+getpriority	run-loop-handled	PRIO_PROCESS/PGRP/USER over the process table
+setpriority	run-loop-handled	PRIO_PROCESS/PGRP/USER over the process table, nice clamped to [-20, 19]
 gettid	implemented	single-threaded: tid == pid
 gettimeofday	implemented
 clock_gettime	implemented	32-bit time_t

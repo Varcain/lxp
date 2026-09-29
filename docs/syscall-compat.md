@@ -8,7 +8,7 @@ Every syscall the lxp personality answers, cross-checked against the ARM EABI re
 Numbers come from `src/lxp_linux_uapi.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/lxp_run.c` by the coverage guard.
 
-Surface: 144 LXP_NR_* — 106 implemented, 27 benign-stub, 1 refused-eopnotsupp, 10 run-loop-handled, 0 deliberately-enosys.
+Surface: 144 LXP_NR_* — 104 implemented, 27 benign-stub, 1 refused-eopnotsupp, 12 run-loop-handled, 0 deliberately-enosys.
 
 | Number | Name | Disposition | Notes |
 |---:|---|---|---|
@@ -52,8 +52,8 @@ Surface: 144 LXP_NR_* — 106 implemented, 27 benign-stub, 1 refused-eopnotsupp,
 | 88 | reboot | implemented | HALT/POWEROFF/RESTART latch the run |
 | 91 | munmap | implemented | exact arena-backed live extents; zero-copy/device maps are no-op |
 | 94 | fchmod | benign-stub | modes not tracked |
-| 96 | getpriority | implemented | current-process PRIO_PROCESS query |
-| 97 | setpriority | implemented | current-process PRIO_PROCESS update |
+| 96 | getpriority | run-loop-handled | PRIO_PROCESS/PGRP/USER over the process table |
+| 97 | setpriority | run-loop-handled | PRIO_PROCESS/PGRP/USER over the process table, nice clamped to [-20, 19] |
 | 104 | setitimer | implemented | ITIMER_REAL -> SIGALRM |
 | 114 | wait4 | implemented | reaps / blocks via the run loop |
 | 116 | sysinfo | implemented | uptime plus live-process and free slot/region capacity |

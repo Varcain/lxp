@@ -794,6 +794,25 @@ static void test_priority_syscalls_update_bounded_guest_weights(void **state)
 	assert_int_equal(lxp_guest_sched_weight(0), 1);
 	assert_int_equal(lxp_guest_sched_weight(1), 1);
 	assert_int_equal(lxp_guest_sched_weight(2), 0); /* not runnable */
+
+	/* The caller itself (who 0): the raw value is 20 - nice, so a negative nice
+	 * cannot be mistaken for an errno by libc. */
+	memset(&frame, 0, sizeof(frame));
+	frame.r[7] = LXP_NR_getpriority;
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal(frame.r[0], 1); /* nice 19 */
+
+	/* No such process, and an invalid `which`. */
+	memset(&frame, 0, sizeof(frame));
+	frame.r[7] = LXP_NR_getpriority;
+	frame.r[1] = 99;
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal((int32_t)frame.r[0], -LXP_ESRCH);
+	memset(&frame, 0, sizeof(frame));
+	frame.r[7] = LXP_NR_setpriority;
+	frame.r[0] = 3;
+	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal((int32_t)frame.r[0], -LXP_EINVAL);
 }
 
 static long child_test_write(void *ctx, int fd, const void *buf, size_t len)

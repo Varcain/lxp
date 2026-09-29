@@ -2144,21 +2144,6 @@ static long sc_nice(lxp_proc_t *proc, const long a[6])
 	return 0;
 }
 
-static long sc_getpriority(lxp_proc_t *proc, const long a[6])
-{
-	if ((int)a[0] != 0 || ((int)a[1] != 0 && (int)a[1] != proc->pid))
-		return (int)a[0] < 0 || (int)a[0] > 2 || (int)a[1] < 0 ? -LXP_EINVAL : -LXP_ESRCH;
-	return 20 - lxp_proc_nice_get(proc); /* raw Linux syscall encoding */
-}
-
-static long sc_setpriority(lxp_proc_t *proc, const long a[6])
-{
-	if ((int)a[0] != 0 || ((int)a[1] != 0 && (int)a[1] != proc->pid))
-		return (int)a[0] < 0 || (int)a[0] > 2 || (int)a[1] < 0 ? -LXP_EINVAL : -LXP_ESRCH;
-	lxp_proc_nice_set(proc, (int)a[2]);
-	return 0;
-}
-
 static long sc_getppid(lxp_proc_t *proc, const long a[6])
 {
 	(void)a;
@@ -2911,15 +2896,9 @@ static long sc_socketpair(lxp_proc_t *proc, const long a[6])
 #endif /* LXP_ENABLE_NET */
 
 /* ---- the syscall table ------------------------------------------------------
- * One row per syscall the dispatcher answers, indexed by number; a missing row is
- * ENOSYS. A clamp flag caps a guest-controlled byte count before the handler runs:
- * each interface permits a short result, and the finite quantum keeps one deferred
- * request preemptible and bounded. */
-enum {
-	LXP_SYS_CLAMP_A1 = 1u << 0,	 /* a[1] to LXP_SYSCALL_QUANTUM_BYTES */
-	LXP_SYS_CLAMP_A2 = 1u << 1,	 /* a[2] to LXP_SYSCALL_QUANTUM_BYTES */
-	LXP_SYS_CLAMP_A2_FILE = 1u << 2, /* a[2] to LXP_SYSCALL_FILE_QUANTUM_BYTES */
-};
+ * One row per syscall the dispatcher answers, indexed by number, with its flags
+ * (LXP_SYS_*, lxp_syscall.h); a row without a handler is ENOSYS. The coordinator
+ * answers futex and get/setpriority itself, before dispatch. */
 
 struct lxp_sys_entry {
 	long (*fn)(lxp_proc_t *proc, const long a[6]);
@@ -2936,7 +2915,7 @@ static const struct lxp_sys_entry g_lxp_sys_table[LXP_SYS_TABLE_SIZE] = {
 	[LXP_NR_brk] = {sc_brk, 0},
 	[LXP_NR_mmap2] = {sc_mmap2, 0},
 	[LXP_NR_munmap] = {sc_munmap, 0},
-	[LXP_NR_mprotect] = {sc_mprotect, 0},
+	[LXP_NR_mprotect] = {sc_mprotect, LXP_SYS_FAST},
 	[LXP_NR_pread64] = {sc_pread64, LXP_SYS_CLAMP_A2_FILE},
 	[LXP_NR_pwrite64] = {sc_pwrite64, LXP_SYS_CLAMP_A2_FILE},
 	[LXP_NR_open] = {sc_open, 0},
@@ -2992,38 +2971,36 @@ static const struct lxp_sys_entry g_lxp_sys_table[LXP_SYS_TABLE_SIZE] = {
 	[LXP_NR_getdents] = {sc_getdents, LXP_SYS_CLAMP_A2},
 	[LXP_NR_getdents64] = {sc_getdents64, LXP_SYS_CLAMP_A2},
 	[LXP_NR_statx] = {sc_statx, 0},
-	[LXP_NR_exit] = {sc_exit, 0},
-	[LXP_NR_exit_group] = {sc_exit_group, 0},
-	[LXP_NR_getpid] = {sc_getpid, 0},
-	[LXP_NR_nice] = {sc_nice, 0},
-	[LXP_NR_getpriority] = {sc_getpriority, 0},
-	[LXP_NR_setpriority] = {sc_setpriority, 0},
-	[LXP_NR_getppid] = {sc_getppid, 0},
+	[LXP_NR_exit] = {sc_exit, LXP_SYS_FAST},
+	[LXP_NR_exit_group] = {sc_exit_group, LXP_SYS_FAST},
+	[LXP_NR_getpid] = {sc_getpid, LXP_SYS_FAST},
+	[LXP_NR_nice] = {sc_nice, LXP_SYS_FAST},
+	[LXP_NR_getppid] = {sc_getppid, LXP_SYS_FAST},
 	[LXP_NR_getcwd] = {sc_getcwd, 0},
 	[LXP_NR_chdir] = {sc_chdir, 0},
-	[LXP_NR_umask] = {sc_umask, 0},
-	[LXP_NR_setpgid] = {sc_setpgid, 0},
-	[LXP_NR_prctl] = {sc_inert, 0},
-	[LXP_NR_sched_yield] = {sc_inert, 0},
-	[LXP_NR_fchmod] = {sc_inert, 0},
-	[LXP_NR_fchown32] = {sc_inert, 0},
+	[LXP_NR_umask] = {sc_umask, LXP_SYS_FAST},
+	[LXP_NR_setpgid] = {sc_setpgid, LXP_SYS_FAST},
+	[LXP_NR_prctl] = {sc_inert, LXP_SYS_FAST},
+	[LXP_NR_sched_yield] = {sc_inert, LXP_SYS_FAST},
+	[LXP_NR_fchmod] = {sc_inert, LXP_SYS_FAST},
+	[LXP_NR_fchown32] = {sc_inert, LXP_SYS_FAST},
 	[LXP_NR_chown32] = {sc_inert, 0},
-	[LXP_NR_setgroups32] = {sc_inert, 0},
-	[LXP_NR_setuid32] = {sc_inert, 0},
-	[LXP_NR_setgid32] = {sc_inert, 0},
-	[LXP_NR_setreuid32] = {sc_inert, 0},
-	[LXP_NR_setregid32] = {sc_inert, 0},
-	[LXP_NR_setresuid32] = {sc_inert, 0},
-	[LXP_NR_setresgid32] = {sc_inert, 0},
+	[LXP_NR_setgroups32] = {sc_inert, LXP_SYS_FAST},
+	[LXP_NR_setuid32] = {sc_inert, LXP_SYS_FAST},
+	[LXP_NR_setgid32] = {sc_inert, LXP_SYS_FAST},
+	[LXP_NR_setreuid32] = {sc_inert, LXP_SYS_FAST},
+	[LXP_NR_setregid32] = {sc_inert, LXP_SYS_FAST},
+	[LXP_NR_setresuid32] = {sc_inert, LXP_SYS_FAST},
+	[LXP_NR_setresgid32] = {sc_inert, LXP_SYS_FAST},
 	[LXP_NR_getresuid32] = {sc_getresid, 0},
 	[LXP_NR_getresgid32] = {sc_getresid, 0},
 	[LXP_NR_prlimit64] = {sc_prlimit64, 0},
 	[LXP_NR_times] = {sc_times, 0},
 	[LXP_NR_setitimer] = {sc_setitimer, 0},
-	[LXP_NR_getpgrp] = {sc_getpgrp, 0},
-	[LXP_NR_setsid] = {sc_setsid, 0},
-	[LXP_NR_reboot] = {sc_reboot, 0},
-	[LXP_NR_gettid] = {sc_gettid, 0},
+	[LXP_NR_getpgrp] = {sc_getpgrp, LXP_SYS_FAST},
+	[LXP_NR_setsid] = {sc_setsid, LXP_SYS_FAST},
+	[LXP_NR_reboot] = {sc_reboot, LXP_SYS_FAST},
+	[LXP_NR_gettid] = {sc_gettid, LXP_SYS_FAST},
 	[LXP_NR_clock_gettime] = {sc_clock_gettime, 0},
 	[LXP_NR_clock_gettime64] = {sc_clock_gettime64, 0},
 	[LXP_NR_gettimeofday] = {sc_gettimeofday, 0},
@@ -3036,16 +3013,16 @@ static const struct lxp_sys_entry g_lxp_sys_table[LXP_SYS_TABLE_SIZE] = {
 	[LXP_NR_poll] = {sc_poll, 0},
 	[LXP_NR_ppoll_time64] = {sc_ppoll_time64, 0},
 	[LXP_NR_wait4] = {sc_wait4, 0},
-	[LXP_NR_getuid32] = {sc_getuid_root, 0},
-	[LXP_NR_geteuid32] = {sc_getuid_root, 0},
-	[LXP_NR_getgid32] = {sc_getuid_root, 0},
-	[LXP_NR_getegid32] = {sc_getuid_root, 0},
+	[LXP_NR_getuid32] = {sc_getuid_root, LXP_SYS_FAST},
+	[LXP_NR_geteuid32] = {sc_getuid_root, LXP_SYS_FAST},
+	[LXP_NR_getgid32] = {sc_getuid_root, LXP_SYS_FAST},
+	[LXP_NR_getegid32] = {sc_getuid_root, LXP_SYS_FAST},
 	[LXP_NR_ioctl] = {sc_ioctl, 0},
 	[LXP_NR_rt_sigsuspend] = {sc_rt_sigsuspend, 0},
 	[LXP_NR_rt_sigtimedwait_time64] = {sc_rt_sigtimedwait_time64, 0},
 	[LXP_NR_rt_sigprocmask] = {sc_rt_sigprocmask, 0},
-	[LXP_NR_set_tid_address] = {sc_set_tid_address, 0},
-	[LXP_NR_set_robust_list] = {sc_set_robust_list, 0},
+	[LXP_NR_set_tid_address] = {sc_set_tid_address, LXP_SYS_FAST},
+	[LXP_NR_set_robust_list] = {sc_set_robust_list, LXP_SYS_FAST},
 #if LXP_ENABLE_NET
 	[LXP_NR_socket] = {sc_socket, 0},
 	[LXP_NR_connect] = {sc_connect, 0},
@@ -3065,8 +3042,15 @@ static const struct lxp_sys_entry g_lxp_sys_table[LXP_SYS_TABLE_SIZE] = {
 	[LXP_NR_sendmsg] = {sc_sendmsg, 0},
 	[LXP_NR_recvmsg] = {sc_recvmsg, 0},
 	[LXP_NR_socketpair] = {sc_socketpair, 0},
+#else
+	[LXP_NR_socket] = {NULL, LXP_SYS_QUIET_ENOSYS}, /* libc probes for networking */
 #endif
 };
+
+unsigned lxp_syscall_flags(long nr)
+{
+	return nr >= 0 && nr < LXP_SYS_TABLE_SIZE ? g_lxp_sys_table[nr].flags : 0u;
+}
 
 long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, long a4, long a5)
 {
