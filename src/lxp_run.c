@@ -225,7 +225,6 @@ static struct lxp_region_runtime g_regions[LXP_NREG];
 static struct vfork_snapshot_guard g_vfork_guard[LXP_NSLOT];
 /* The active run's configuration and engine. */
 static const lxp_run_config_t *g_cfg;
-static const lxp_os_ops_t *g_eng; /* for the dispatch to post coordinator events */
 
 long lxp_rt_scope_read(char *buf, size_t cap)
 {
@@ -237,60 +236,6 @@ long lxp_rt_scope_read(char *buf, size_t cap)
 static lxp_region_ref_t region_ref_at(int region);
 int lxp_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_owner);
 
-/* ---- OS-service hooks routed through the engine ops ------------------------
- * The personality core calls these instead of host clock/cache primitives, so
- * it carries no direct dependency on any particular OS. The seam
- * (host adapter) fills the ops; g_eng is live for the duration of a run. */
-int lxp_time_us(uint64_t *out)
-{
-	if (g_eng && g_eng->time_us)
-		return g_eng->time_us(out);
-	*out = 0;
-	return LXP_ERR_NOT_SUPPORTED;
-}
-int lxp_time_ns(uint64_t *out)
-{
-	if (g_eng && g_eng->time_ns)
-		return g_eng->time_ns(out);
-	*out = 0;
-	return LXP_ERR_NOT_SUPPORTED;
-}
-int lxp_random_fill(void *buf, size_t len)
-{
-	if ((!buf && len != 0u) || !g_eng || !g_eng->random_fill)
-		return (!buf && len != 0u) ? LXP_ERR_INVALID_PARAM : LXP_ERR_NOT_SUPPORTED;
-	return g_eng->random_fill(buf, len);
-}
-uint8_t *lxp_exec_stage(size_t *cap)
-{
-	if (cap)
-		*cap = 0;
-	if (!g_eng || !g_eng->exec_stage)
-		return NULL;
-	return g_eng->exec_stage(cap);
-}
-int lxp_mem_stats(struct lxp_mem_stats *out)
-{
-	if (!out)
-		return LXP_ERR_INVALID_PARAM;
-	memset(out, 0, sizeof(*out));
-	if (!g_eng || !g_eng->mem_stats)
-		return LXP_ERR_NOT_SUPPORTED;
-	int rc = g_eng->mem_stats(out);
-	if (rc != LXP_OK) {
-		memset(out, 0, sizeof(*out));
-		return rc;
-	}
-	/* Keep Linux's total/free view internally consistent even if a host port
-	 * samples a changing allocator or only populates part of the snapshot. */
-	if (out->free > out->total)
-		out->free = out->total;
-	if (out->used > out->total)
-		out->used = out->total;
-	if (out->peak_used > out->total)
-		out->peak_used = out->total;
-	return rc;
-}
 void lxp_get_resource_stats(struct lxp_resource_stats *out)
 {
 	if (!out)
@@ -299,9 +244,9 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out)
 	out->slots_total = LXP_NSLOT;
 	out->regions_total = LXP_NREG;
 	out->program_region_bytes = LXP_PROG_REGION_SIZE;
-	if (g_eng && g_eng->dyn_pool) {
+	if (g_lxp_os_ops && g_lxp_os_ops->dyn_pool) {
 		size_t dyn_size = 0;
-		if (g_eng->dyn_pool(0, &dyn_size))
+		if (g_lxp_os_ops->dyn_pool(0, &dyn_size))
 			out->dynamic_pool_bytes = dyn_size;
 	}
 
@@ -325,32 +270,13 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out)
 								   : out->slots_free;
 	out->available_bytes = region_bytes * allocatable;
 }
-const char *lxp_system_version(void)
-{
-	if (g_eng && g_eng->system_version) {
-		const char *version = g_eng->system_version();
-		if (version && version[0])
-			return version;
-	}
-	return "lxp";
-}
-void lxp_cache_clean(const void *base, size_t len)
-{
-	if (g_eng && g_eng->cache_clean)
-		g_eng->cache_clean(base, len);
-}
-void lxp_cache_invalidate(const void *base, size_t len)
-{
-	if (g_eng && g_eng->cache_invalidate)
-		g_eng->cache_invalidate(base, len);
-}
 /* Map guest region `ridx` cacheable into the coordinator before it services that
  * slot's deferred syscall / parked-op retry (see lxp_os_ops_t.coord_map). Only the
  * run loop's coordinator-context paths call it, so it stays file-local. */
 static void lxp_coord_map(int ridx)
 {
-	if (g_eng && g_eng->coord_map && ridx >= 0)
-		g_eng->coord_map(ridx);
+	if (g_lxp_os_ops && g_lxp_os_ops->coord_map && ridx >= 0)
+		g_lxp_os_ops->coord_map(ridx);
 }
 
 void guest_view_failure(int slot, int rc)
@@ -374,14 +300,6 @@ int coordinator_guest_view_begin(int slot, lxp_guest_view_t *view)
 	return lxp_guest_view_begin(&g_lxp_slots[slot].proc, ref, &g_lxp_slots[slot].generation,
 				    LXP_GUEST_READ_WRITE, view);
 }
-int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actual_count)
-{
-	if (g_eng && g_eng->thread_list)
-		return g_eng->thread_list(out, max_count, actual_count);
-	if (actual_count)
-		*actual_count = 0;
-	return LXP_ERR_NOT_SUPPORTED;
-}
 
 /* The rootfs cpio region [lo, hi). Dynamic FDPIC processes execute busybox.so, ld.so and libc.so
  * text shared in place from this backing store; engine MPU policies grant it user RO+X access.
@@ -403,16 +321,6 @@ lxp_proc_t *lxp_slot_proc(int slot)
 {
 	return slot >= 0 && slot < LXP_NSLOT ? &g_lxp_slots[slot].proc : NULL;
 }
-
-#if LXP_ENABLE_DEV
-/* Wake the coordinator so it retries parked device I/O at once (a driver calls this
- * from its data-ready path). */
-void lxp_dev_kick(void)
-{
-	if (g_eng && g_eng->event_post)
-		g_eng->event_post();
-}
-#endif
 
 /* Run-scoped console-provider callback. The provider retains the immutable
  * engine table only until its matching unsubscribe returns. */
@@ -634,11 +542,11 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	int slot = slot_of(proc);
 	capture_ctx(slot, f);
-	void *token = lxp_lifecycle_prepare_park(g_eng, slot, &g_lxp_slots[slot].resume);
+	void *token = lxp_lifecycle_prepare_park(g_lxp_os_ops, slot, &g_lxp_slots[slot].resume);
 	f->r[0] = (uint32_t)(uintptr_t)token;
-	f->r[15] = (uint32_t)((uintptr_t)g_eng->park_entry & ~(uintptr_t)1u);
+	f->r[15] = (uint32_t)((uintptr_t)g_lxp_os_ops->park_entry & ~(uintptr_t)1u);
 	f->xpsr |= (1u << 24);
-	lxp_event_post_slot(g_eng, slot);
+	lxp_event_post_slot(g_lxp_os_ops, slot);
 }
 
 /* Bounded per-slot stacks of interrupted signal contexts. LinuxThreads can
@@ -1096,8 +1004,8 @@ int lxp_signal_process_group(int pgid, int sig)
 			recipients++;
 		}
 	}
-	if (recipients && g_eng && g_eng->event_post)
-		g_eng->event_post();
+	if (recipients && g_lxp_os_ops && g_lxp_os_ops->event_post)
+		g_lxp_os_ops->event_post();
 	return recipients;
 }
 
@@ -1216,8 +1124,8 @@ static void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 				woken++;
 			}
 		}
-		if (woken && g_eng && g_eng->event_post)
-			g_eng->event_post();
+		if (woken && g_lxp_os_ops && g_lxp_os_ops->event_post)
+			g_lxp_os_ops->event_post();
 		f->r[0] = woken;
 		return;
 	}
@@ -1354,8 +1262,8 @@ static void lxp_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		/* Wake the coordinator NOW so it delivers the signal at once (the LinuxThreads
 		 * restart) instead of at its next ~poll-interval tick — otherwise every thread
 		 * wakeup costs up to one event_wait timeout. */
-		if (f->r[0] == 0 && g_eng && g_eng->event_post)
-			g_eng->event_post();
+		if (f->r[0] == 0 && g_lxp_os_ops && g_lxp_os_ops->event_post)
+			g_lxp_os_ops->event_post();
 		return;
 	}
 	if (nr == LXP_NR_rt_sigreturn || nr == LXP_NR_sigreturn) {
@@ -1630,7 +1538,7 @@ int lxp_slot_report_memory_fault(lxp_slot_ref_t ref, const lxp_guest_fault_t *fa
 	proc->exit_detail = fault->detail;
 	proc->exit_address = fault->address;
 	(void)lxp_intent_exit(proc, 0);
-	lxp_event_post_slot(g_eng, ref.index);
+	lxp_event_post_slot(g_lxp_os_ops, ref.index);
 	return LXP_OK;
 }
 
@@ -2379,7 +2287,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		if (!eng->exec_capture(s))
 			return LXP_RUN_ELAUNCH;
 	g_cfg = cfg;
-	g_eng = eng;
+	lxp_os_publish(eng);
 	g_lxp_rootfs_lo = cfg->rootfs_image;
 	g_lxp_rootfs_hi = g_lxp_rootfs_lo + cfg->rootfs_image_size;
 	for (int i = 0; i < LXP_NSLOT; i++) {
@@ -2849,7 +2757,7 @@ out:
 #else
 	(void)net_entered;
 #endif
-	g_eng = NULL;
+	lxp_os_publish(NULL);
 	g_cfg = NULL;
 	g_lxp_rootfs_lo = NULL;
 	g_lxp_rootfs_hi = NULL;
@@ -2865,7 +2773,7 @@ struct lxp_runtime_test_fixture *lxp_runtime_test_fixture(void)
 		.regions = g_regions,
 		.vfork_guards = g_vfork_guard,
 		.config = &g_cfg,
-		.engine = &g_eng,
+		.engine = &g_lxp_os_ops,
 		.rootfs_lo = &g_lxp_rootfs_lo,
 		.rootfs_hi = &g_lxp_rootfs_hi,
 		.diag_native_known = &g_diag_native_known,

@@ -4,15 +4,16 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Host run-loop hook stubs. The unit tests drive lxp_syscall() directly and do NOT
- * link the coordinator (src/lxp_run.c), which normally defines these OS-service
- * symbols by routing through the engine ops. On the host we back the clock with
- * clock_gettime and make the cache/flush hooks no-ops (a coherent host has no cache
- * maintenance to do).
+ * Host run-loop stubs. The unit tests drive lxp_syscall() directly and do NOT link the
+ * coordinator (src/lxp_run.c). The OS services (clock, entropy, cache maintenance, exec
+ * staging, memory statistics) go through the real wrappers in src/lxp_provider.c, which
+ * route to the mock engine published below: a monotonic host clock, deterministic entropy
+ * and cache hooks that only count their calls (a coherent host has nothing to maintain).
+ * The coordinator's own services are stubbed further down.
  */
 #include "lxp_syscall.h"
 #include "lxp_internal.h"
-#include "proc/lxp_exec_stage.h"
+#include "lxp_provider.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -51,14 +52,14 @@ static const struct lxp_resource_stats g_lxp_test_resource_stats = {
 /* The engine's exec staging RAM (on target the STM32 backend puts it in SDRAM): netfs
  * exec fetches and tmpfs execs copy their image into it. */
 static uint8_t g_lxp_test_exec_stage[64 * 1024];
-uint8_t *lxp_exec_stage(size_t *cap)
+static uint8_t *mock_exec_stage(size_t *cap)
 {
 	if (cap)
 		*cap = sizeof(g_lxp_test_exec_stage);
 	return g_lxp_test_exec_stage;
 }
 
-int lxp_random_fill(void *buf, size_t len)
+static int mock_random_fill(void *buf, size_t len)
 {
 	g_lxp_test_random_calls++;
 	g_lxp_test_random_len = len;
@@ -71,37 +72,36 @@ int lxp_random_fill(void *buf, size_t len)
 	return LXP_OK;
 }
 
-int lxp_time_us(uint64_t *out)
+static int mock_time_us(uint64_t *out)
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	*out = (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
 	return 0;
 }
-int lxp_time_ns(uint64_t *out)
+
+static int mock_time_ns(uint64_t *out)
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	*out = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 	return 0;
 }
-int lxp_mem_stats(struct lxp_mem_stats *out)
+
+static int mock_mem_stats(struct lxp_mem_stats *out)
 {
-	if (!out)
-		return LXP_ERR_INVALID_PARAM;
-	if (g_lxp_test_mem_stats_result != LXP_OK) {
-		memset(out, 0, sizeof(*out));
+	if (g_lxp_test_mem_stats_result != LXP_OK)
 		return g_lxp_test_mem_stats_result;
-	}
 	*out = g_lxp_test_mem_stats;
 	return LXP_OK;
 }
+
 void lxp_get_resource_stats(struct lxp_resource_stats *out)
 {
 	if (out)
 		*out = g_lxp_test_resource_stats;
 }
-const char *lxp_system_version(void)
+static const char *mock_system_version(void)
 {
 	return "TestRTOS 1.2.3 ove-abcdef0 lxp-1234567";
 }
@@ -112,17 +112,36 @@ long lxp_rt_scope_read(char *buf, size_t cap)
 	(void)cap;
 	return -1;
 }
-void lxp_cache_clean(const void *base, size_t len)
+static void mock_cache_clean(const void *base, size_t len)
 {
 	g_lxp_test_cache_clean_calls++;
 	g_lxp_test_cache_clean_base = base;
 	g_lxp_test_cache_clean_len = len;
 }
-void lxp_cache_invalidate(const void *base, size_t len)
+
+static void mock_cache_invalidate(const void *base, size_t len)
 {
 	g_lxp_test_cache_invalidate_calls++;
 	g_lxp_test_cache_invalidate_base = base;
 	g_lxp_test_cache_invalidate_len = len;
+}
+
+/* Only the OS-service hooks: nothing here runs a task, so the lifecycle ops stay NULL. */
+static const lxp_os_ops_t g_lxp_test_engine = {
+	.time_us = mock_time_us,
+	.time_ns = mock_time_ns,
+	.random_fill = mock_random_fill,
+	.exec_stage = mock_exec_stage,
+	.mem_stats = mock_mem_stats,
+	.system_version = mock_system_version,
+	.cache_clean = mock_cache_clean,
+	.cache_invalidate = mock_cache_invalidate,
+};
+
+/* Every test and fuzz binary that links these stubs runs with the mock engine. */
+__attribute__((constructor)) static void publish_test_engine(void)
+{
+	lxp_os_publish(&g_lxp_test_engine);
 }
 
 /* Console tty foreground process group: lxp_run.c owns this in the coordinator; the
@@ -157,13 +176,6 @@ void lxp_rootfs_bounds(uintptr_t *lo, uintptr_t *hi)
 	*lo = 0;
 	*hi = 0;
 }
-
-#if LXP_ENABLE_DEV
-/* No run loop to wake. */
-void lxp_dev_kick(void)
-{
-}
-#endif
 
 /* Console input without the coordinator: no ^C/^Z check runs, so there is never
  * typeahead and reads go straight to the transport. */
