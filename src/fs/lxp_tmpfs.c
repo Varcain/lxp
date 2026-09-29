@@ -224,6 +224,25 @@ static long fop_fstat_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 	return 0;
 }
 
+/* ftruncate64(fd, length) on a writable-VFS file: set its logical size, growing
+ * with zeros if needed. vi's :w writes the new content then truncates to the exact
+ * length, so editing an existing file shorter drops the old trailing bytes. */
+static long fop_ftruncate_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, uint64_t length)
+{
+	(void)p;
+	lxp_wnode_t *t = wnode_at(s->file_idx);
+	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
+		return -LXP_EISDIR;
+	size_t newlen = (size_t)length;
+	if (newlen > t->size) {
+		if (wfs_reserve(s->file_idx, newlen) != 0)
+			return -LXP_EFBIG;
+		memset(t->data + t->size, 0, newlen - t->size);
+	}
+	t->size = newlen;
+	return 0;
+}
+
 static void fop_close_tmpfs(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
@@ -238,5 +257,6 @@ const lxp_file_ops_t lxp_tmpfs_fops = {
 	.lseek = fop_lseek_tmpfs,
 	.getdents = fop_getdents_tmpfs,
 	.fstat = fop_fstat_tmpfs,
+	.ftruncate = fop_ftruncate_tmpfs,
 	.close = fop_close_tmpfs,
 };

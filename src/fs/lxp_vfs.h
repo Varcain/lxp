@@ -27,6 +27,8 @@
 #include "lxp/lxp_config.h"
 #include "proc/lxp_proc.h" /* lxp_proc_t, lxp_ofd_t */
 
+struct lxp_statfs64;
+
 struct lxp_file_ops {
 	/** read up to @p len bytes into @p buf (the kernel WRITES buf): bytes read,
 	 *  0 (EOF), a negated errno, or 0 after parking the proc. */
@@ -53,6 +55,15 @@ struct lxp_file_ops {
 	 *  0 after parking (netfs). NULL means the kind has no backing object and the
 	 *  syscall reports a bare character device (console/pipe/eventfd). */
 	long (*fstat)(lxp_proc_t *p, lxp_ofd_t *f, void *statbuf);
+	/** fstatfs64(2): fill @p st for the filesystem holding the fd: 0 or a negated
+	 *  errno. NULL means the in-memory namespace's synthetic values. */
+	long (*fstatfs)(lxp_proc_t *p, lxp_ofd_t *f, struct lxp_statfs64 *st);
+	/** ftruncate64(2): set the file's size to @p length: 0 or a negated errno. NULL
+	 *  means the kind cannot be truncated (the syscall returns -EINVAL). */
+	long (*ftruncate)(lxp_proc_t *p, lxp_ofd_t *f, uint64_t length);
+	/** fsync/fdatasync(2): flush the fd's pending writes: 0 or a negated errno. NULL
+	 *  means there is nothing to flush (success). */
+	long (*fsync)(lxp_proc_t *p, lxp_ofd_t *f);
 	/** release the fd's backing object at close(2) (drop a refcount / free a pool
 	 *  slot). NULL means the kind holds nothing to release (console/rootfs).
 	 *  Cannot fail. */

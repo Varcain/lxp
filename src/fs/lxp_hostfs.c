@@ -582,6 +582,34 @@ void lxp_hostfs_runtime_reset(void)
 		g_hostfs_run_generation = 1u;
 }
 
+long lxp_hostfs_statfs(lxp_proc_t *p, struct lxp_statfs64 *st)
+{
+	lxp_fs_volume_stat_t volume;
+	long rc = lxp_hostfs_volume_stat(p, &volume);
+	if (rc < 0)
+		return rc;
+	if (volume.block_size == 0u || volume.fragment_size == 0u ||
+	    volume.blocks_free > volume.blocks || volume.blocks_available > volume.blocks_free)
+		return -LXP_EIO;
+
+	memset(st, 0, sizeof(*st));
+	st->f_type = LXP_MSDOS_SUPER_MAGIC;
+	st->f_bsize = volume.block_size;
+	st->f_frsize = volume.fragment_size;
+	st->f_blocks = volume.blocks;
+	st->f_bfree = volume.blocks_free;
+	st->f_bavail = volume.blocks_available;
+	st->f_files = volume.files;
+	st->f_ffree = volume.files_free;
+	st->f_fsid[0] = LXP_HOSTFS_DEV_MAJOR;
+	st->f_fsid[1] = LXP_HOSTFS_DEV_MINOR;
+	st->f_namelen = volume.name_max;
+	st->f_flags = LXP_ST_NOSUID | LXP_ST_NODEV | LXP_ST_NOEXEC;
+	if (lxp_hostfs_is_read_only())
+		st->f_flags |= LXP_ST_RDONLY;
+	return 0;
+}
+
 /* ---- FD_HOSTFS file operations ---- */
 static long fop_read_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
@@ -649,6 +677,24 @@ static long fop_fstat_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 	return 0;
 }
 
+static long fop_fstatfs_hostfs(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_statfs64 *st)
+{
+	(void)s;
+	return lxp_hostfs_statfs(p, st);
+}
+
+static long fop_ftruncate_hostfs(lxp_proc_t *p, lxp_ofd_t *s, uint64_t length)
+{
+	if (s->accmode == LXP_O_RDONLY)
+		return -LXP_EINVAL;
+	return lxp_hostfs_truncate(p, s->file_idx, length);
+}
+
+static long fop_fsync_hostfs(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	return lxp_hostfs_sync(p, s->file_idx);
+}
+
 static void fop_close_hostfs(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
@@ -663,6 +709,9 @@ const lxp_file_ops_t lxp_hostfs_fops = {
 	.lseek = fop_lseek_hostfs,
 	.getdents = fop_getdents_hostfs,
 	.fstat = fop_fstat_hostfs,
+	.fstatfs = fop_fstatfs_hostfs,
+	.ftruncate = fop_ftruncate_hostfs,
+	.fsync = fop_fsync_hostfs,
 	.close = fop_close_hostfs,
 };
 

@@ -4,7 +4,7 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * The ARM kernel struct stat64 record every fstat/stat path fills.
+ * The ARM kernel struct stat64 and statfs64 records the stat and statfs paths fill.
  */
 #ifndef LXP_FS_STAT_H
 #define LXP_FS_STAT_H
@@ -50,6 +50,25 @@ LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_rdev) == 32, "stat64 st_rdev o
 LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_size) == 48, "stat64 st_size offset drifted");
 LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_blocks) == 64, "stat64 st_blocks offset drifted");
 LXP_STATIC_ASSERT(offsetof(struct lxp_kstat64, st_ino) == 96, "stat64 st_ino offset drifted");
+
+/* ARM-EABI statfs64. Mounted host volumes use provider allocation data; the
+ * in-memory personality namespaces retain bounded synthetic values. */
+struct lxp_statfs64 {
+	uint32_t f_type, f_bsize;
+	uint64_t f_blocks, f_bfree, f_bavail, f_files, f_ffree;
+	uint32_t f_fsid[2], f_namelen, f_frsize, f_flags, f_spare[4];
+};
+LXP_STATIC_ASSERT(sizeof(struct lxp_statfs64) == 88, "statfs64 ABI size drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_blocks) == 8, "statfs64 f_blocks offset drifted");
+LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_namelen) == 56,
+		  "statfs64 f_namelen offset drifted");
+
+#define LXP_TMPFS_MAGIC 0x01021994u
+#define LXP_MSDOS_SUPER_MAGIC 0x00004d44u
+#define LXP_ST_RDONLY 0x0001u
+#define LXP_ST_NOSUID 0x0002u
+#define LXP_ST_NODEV 0x0004u
+#define LXP_ST_NOEXEC 0x0008u
 
 /* Fill an ARM kstat64 from a node's inode + mode + size. */
 void lxp_fill_kstat64(struct lxp_kstat64 *st, uint32_t ino, uint32_t mode, uint64_t size);

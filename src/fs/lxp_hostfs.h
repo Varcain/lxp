@@ -62,6 +62,9 @@ long lxp_hostfs_unmount(lxp_proc_t *proc, const char *target);
 int lxp_hostfs_is_mounted(void);
 /** Query allocation statistics for the mounted host volume. */
 long lxp_hostfs_volume_stat(lxp_proc_t *proc, lxp_fs_volume_stat_t *out);
+/** statfs for the mounted host volume, from the provider's allocation data. */
+struct lxp_statfs64;
+long lxp_hostfs_statfs(lxp_proc_t *proc, struct lxp_statfs64 *st);
 void lxp_hostfs_close(int index);
 
 /**

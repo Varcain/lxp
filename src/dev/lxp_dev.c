@@ -637,6 +637,11 @@ static long fop_fstat_dev(lxp_proc_t *p, lxp_ofd_t *s, void *statbuf)
 	return 0;
 }
 
+static long fop_fsync_dev(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	return lxp_dev_sync(p, s->file_idx);
+}
+
 static void fop_close_dev(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
@@ -661,6 +666,7 @@ const lxp_file_ops_t lxp_dev_fops = {
 	.pwrite = fop_pwrite_dev,
 	.lseek = fop_lseek_dev,
 	.fstat = fop_fstat_dev,
+	.fsync = fop_fsync_dev,
 	.close = fop_close_dev,
 	.ioctl = fop_ioctl_dev,
 	.poll = fop_poll_dev,

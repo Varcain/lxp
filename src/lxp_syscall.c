@@ -708,34 +708,17 @@ static long sys_llseek(lxp_proc_t *p, int fd, unsigned long off_hi, unsigned lon
 	return 0;
 }
 
-/* ftruncate64(fd, length) on a writable-VFS file: set its logical size, growing
- * with zeros if needed. vi's :w writes the new content then truncates to the exact
- * length, so editing an existing file shorter drops the old trailing bytes. */
+/* ftruncate64(fd, length): kinds without a truncate file operation (the read-only
+ * rootfs, streams) are EINVAL. */
 static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 {
 	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-#if LXP_ENABLE_FS
-	if (s->kind == LXP_FD_HOSTFS) {
-		if (s->accmode == LXP_O_RDONLY)
-			return -LXP_EINVAL;
-		return lxp_hostfs_truncate(p, s->file_idx, length);
-	}
-#endif
-	if (s->kind != LXP_FD_TMPFS)
+	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+	if (!ops || !ops->ftruncate)
 		return -LXP_EINVAL; /* the rootfs is read-only; console/pipe N/A */
-	lxp_wnode_t *t = wnode_at(s->file_idx);
-	if ((t->mode & LXP_S_IFMT) == LXP_S_IFDIR)
-		return -LXP_EISDIR;
-	size_t newlen = (size_t)length;
-	if (newlen > t->size) {
-		if (wfs_reserve(s->file_idx, newlen) != 0)
-			return -LXP_EFBIG;
-		memset(t->data + t->size, 0, newlen - t->size);
-	}
-	t->size = newlen;
-	return 0;
+	return ops->ftruncate(p, s, length);
 }
 
 static long sys_sync_fd(lxp_proc_t *p, int fd)
@@ -743,17 +726,10 @@ static long sys_sync_fd(lxp_proc_t *p, int fd)
 	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
-#if LXP_ENABLE_FS
-	if (s->kind == LXP_FD_HOSTFS)
-		return lxp_hostfs_sync(p, s->file_idx);
-#endif
-#if LXP_ENABLE_DEV
-	if (s->kind == LXP_FD_DEV)
-		return lxp_dev_sync(p, s->file_idx);
-#endif
+	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
 	/* tmpfs/rootfs have no backing write queue. Other open descriptors report
 	 * success, which small libc utilities expect. */
-	return 0;
+	return ops && ops->fsync ? ops->fsync(p, s) : 0;
 }
 
 /* Linux mount flags which have meaningful or intrinsically satisfied semantics
@@ -1397,25 +1373,6 @@ static long sys_getrandom(lxp_proc_t *p, void *buf, size_t count, unsigned flags
 	return lxp_random_fill_guest(buf, count, LXP_ENOSYS);
 }
 
-/* ARM-EABI statfs64. Mounted host volumes use provider allocation data; the
- * in-memory personality namespaces retain bounded synthetic values. */
-struct lxp_statfs64 {
-	uint32_t f_type, f_bsize;
-	uint64_t f_blocks, f_bfree, f_bavail, f_files, f_ffree;
-	uint32_t f_fsid[2], f_namelen, f_frsize, f_flags, f_spare[4];
-};
-LXP_STATIC_ASSERT(sizeof(struct lxp_statfs64) == 88, "statfs64 ABI size drifted");
-LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_blocks) == 8, "statfs64 f_blocks offset drifted");
-LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_namelen) == 56,
-		  "statfs64 f_namelen offset drifted");
-
-#define LXP_TMPFS_MAGIC 0x01021994u
-#define LXP_MSDOS_SUPER_MAGIC 0x00004d44u
-#define LXP_ST_RDONLY 0x0001u
-#define LXP_ST_NOSUID 0x0002u
-#define LXP_ST_NODEV 0x0004u
-#define LXP_ST_NOEXEC 0x0008u
-
 static void statfs_synthetic(struct lxp_statfs64 *st)
 {
 	memset(st, 0, sizeof(*st));
@@ -1429,36 +1386,6 @@ static void statfs_synthetic(struct lxp_statfs64 *st)
 	st->f_ffree = 48;
 	st->f_namelen = 255;
 }
-
-#if LXP_ENABLE_FS
-static long statfs_host(lxp_proc_t *p, struct lxp_statfs64 *st)
-{
-	lxp_fs_volume_stat_t volume;
-	long rc = lxp_hostfs_volume_stat(p, &volume);
-	if (rc < 0)
-		return rc;
-	if (volume.block_size == 0u || volume.fragment_size == 0u ||
-	    volume.blocks_free > volume.blocks || volume.blocks_available > volume.blocks_free)
-		return -LXP_EIO;
-
-	memset(st, 0, sizeof(*st));
-	st->f_type = LXP_MSDOS_SUPER_MAGIC;
-	st->f_bsize = volume.block_size;
-	st->f_frsize = volume.fragment_size;
-	st->f_blocks = volume.blocks;
-	st->f_bfree = volume.blocks_free;
-	st->f_bavail = volume.blocks_available;
-	st->f_files = volume.files;
-	st->f_ffree = volume.files_free;
-	st->f_fsid[0] = LXP_HOSTFS_DEV_MAJOR;
-	st->f_fsid[1] = LXP_HOSTFS_DEV_MINOR;
-	st->f_namelen = volume.name_max;
-	st->f_flags = LXP_ST_NOSUID | LXP_ST_NODEV | LXP_ST_NOEXEC;
-	if (lxp_hostfs_is_read_only())
-		st->f_flags |= LXP_ST_RDONLY;
-	return 0;
-}
-#endif
 
 static long statfs_copy(lxp_proc_t *p, size_t size, void *buf, const struct lxp_statfs64 *st)
 {
@@ -1480,7 +1407,7 @@ static long sys_statfs_path(lxp_proc_t *p, const char *path, size_t size, void *
 	struct lxp_statfs64 st;
 #if LXP_ENABLE_FS
 	if (lxp_hostfs_match(abspath)) {
-		rc = statfs_host(p, &st);
+		rc = lxp_hostfs_statfs(p, &st);
 		return rc < 0 ? rc : statfs_copy(p, size, buf, &st);
 	}
 #endif
@@ -1496,12 +1423,11 @@ static long sys_fstatfs(lxp_proc_t *p, int fd, size_t size, void *buf)
 	if (!slot)
 		return -LXP_EBADF;
 	struct lxp_statfs64 st;
-#if LXP_ENABLE_FS
-	if (slot->kind == LXP_FD_HOSTFS) {
-		long rc = statfs_host(p, &st);
+	const lxp_file_ops_t *ops = lxp_vfs_ops(slot);
+	if (ops && ops->fstatfs) {
+		long rc = ops->fstatfs(p, slot, &st);
 		return rc < 0 ? rc : statfs_copy(p, size, buf, &st);
 	}
-#endif
 	statfs_synthetic(&st);
 	return statfs_copy(p, size, buf, &st);
 }
