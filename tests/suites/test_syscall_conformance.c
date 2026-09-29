@@ -145,6 +145,17 @@ static void test_conf_fileio(void **state)
 	assert_int_equal(SC(&p, LXP_NR_lseek, fd, 0, LXP_SEEK_END, 0, 0, 0), 19);
 	assert_int_equal(SC(&p, LXP_NR_lseek, fd, -4, LXP_SEEK_CUR, 0, 0, 0), 15);
 
+	/* _llseek takes a 64-bit offset; an offset past lseek's 32-bit off_t is EOVERFLOW
+	 * from lseek (the offset has moved, as on Linux), and a negative one EINVAL. */
+	uint64_t *pos64 = lxp_conf_alloc(fx, sizeof(uint64_t));
+	assert_int_equal(SC(&p, LXP_NR__llseek, fd, 0, 0x80000000L, (long)(uintptr_t)pos64,
+			    LXP_SEEK_SET, 0),
+			 0);
+	assert_int_equal(*pos64, 0x80000000ull);
+	assert_int_equal(SC(&p, LXP_NR_lseek, fd, 0, LXP_SEEK_CUR, 0, 0, 0), -LXP_EOVERFLOW);
+	assert_int_equal(SC(&p, LXP_NR_lseek, fd, -20, LXP_SEEK_END, 0, 0, 0), -LXP_EINVAL);
+	assert_int_equal(SC(&p, LXP_NR_lseek, fd, 15, LXP_SEEK_SET, 0, 0, 0), 15);
+
 	/* pread64 reads at an absolute offset without disturbing the fd position (off in a4). */
 	assert_int_equal(SC(&p, LXP_NR_pread64, fd, (long)(uintptr_t)buf, 2, 0, 8, 0), 2);
 	assert_memory_equal(buf, "to", 2);

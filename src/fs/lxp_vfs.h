@@ -44,10 +44,10 @@ struct lxp_file_ops {
 	/** pwrite64(2): write at @p off without moving the fd offset: bytes written or a
 	 *  negated errno. NULL means the kind is not positioned-writable (-ESPIPE). */
 	long (*pwrite)(lxp_proc_t *p, lxp_ofd_t *f, const void *buf, size_t len, uint64_t off);
-	/** reposition the fd offset (lseek/_llseek): the new absolute offset, or a
-	 *  negated errno. NULL means the kind is not seekable (the syscall returns
-	 *  -ESPIPE). */
-	long (*lseek)(lxp_proc_t *p, lxp_ofd_t *f, long off, int whence);
+	/** reposition the fd offset (lseek/_llseek) by the 64-bit @p off: the new
+	 *  absolute offset, or a negated errno (lseek(2) narrows it to 32 bits). NULL
+	 *  means the kind is not seekable (the syscall returns -ESPIPE). */
+	int64_t (*lseek)(lxp_proc_t *p, lxp_ofd_t *f, int64_t off, int whence);
 	/** getdents/getdents64: write the directory's next records into @p sink: bytes
 	 *  written, 0 at the end, a negated errno, or 0 after parking the proc (netfs).
 	 *  NULL means the kind is not a directory (the syscall returns -ENOTDIR). */
@@ -140,7 +140,8 @@ long lxp_vfs_read_mem(lxp_proc_t *p, const void *data, size_t size, void *buf, s
 		      uint64_t off);
 
 /** SEEK_SET/CUR/END arithmetic for @p ofd over an object of logical size @p end:
- *  stores and returns the new offset, or -EINVAL. */
-long lxp_vfs_seek(lxp_ofd_t *ofd, long end, long off, int whence);
+ *  stores and returns the new offset, -EINVAL for a negative one or -EOVERFLOW
+ *  past what the descriptor's offset can hold. */
+int64_t lxp_vfs_seek(lxp_ofd_t *ofd, int64_t end, int64_t off, int whence);
 
 #endif /* LXP_FS_VFS_H */

@@ -46,15 +46,15 @@ long lxp_vfs_read_mem(lxp_proc_t *p, const void *data, size_t size, void *buf, s
 	return (long)n;
 }
 
-long lxp_vfs_seek(lxp_ofd_t *ofd, long end, long off, int whence)
+int64_t lxp_vfs_seek(lxp_ofd_t *ofd, int64_t end, int64_t off, int whence)
 {
-	long base;
+	int64_t base;
 	switch (whence) {
 	case LXP_SEEK_SET:
 		base = 0;
 		break;
 	case LXP_SEEK_CUR:
-		base = (long)ofd->offset;
+		base = (int64_t)ofd->offset;
 		break;
 	case LXP_SEEK_END:
 		base = end;
@@ -62,9 +62,13 @@ long lxp_vfs_seek(lxp_ofd_t *ofd, long end, long off, int whence)
 	default:
 		return -LXP_EINVAL;
 	}
-	long pos = base + off;
+	if (off > 0 && base > INT64_MAX - off)
+		return -LXP_EOVERFLOW;
+	int64_t pos = base + off;
 	if (pos < 0)
 		return -LXP_EINVAL;
+	if ((uint64_t)pos > SIZE_MAX)
+		return -LXP_EOVERFLOW;
 	ofd->offset = (size_t)pos;
 	return pos;
 }

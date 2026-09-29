@@ -48,7 +48,7 @@ uint32_t lxp_hostfs_inode(int index);
 uint32_t lxp_hostfs_path_inode(const char *abspath);
 long lxp_hostfs_read(lxp_proc_t *proc, int index, void *buf, size_t len);
 long lxp_hostfs_write(lxp_proc_t *proc, int index, const void *buf, size_t len);
-long lxp_hostfs_seek(lxp_proc_t *proc, int index, int64_t offset, int whence);
+int64_t lxp_hostfs_seek(lxp_proc_t *proc, int index, int64_t offset, int whence);
 long lxp_hostfs_pread(lxp_proc_t *proc, int index, void *buf, size_t len, uint64_t offset);
 long lxp_hostfs_pwrite(lxp_proc_t *proc, int index, const void *buf, size_t len, uint64_t offset);
 long lxp_hostfs_stat(lxp_proc_t *proc, int index, lxp_fs_stat_t *out);

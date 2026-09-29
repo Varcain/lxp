@@ -337,17 +337,6 @@ unsigned lxp_dev_poll(int oi)
 	return d->ops->poll ? d->ops->poll(d, o) : (LXP_POLLIN | LXP_POLLOUT);
 }
 
-long lxp_dev_lseek(int oi, long off, int whence)
-{
-	uint64_t position = 0;
-	int rc = lxp_dev_llseek(oi, off, whence, &position);
-	if (rc < 0)
-		return rc;
-	if (position > (uint64_t)LONG_MAX)
-		return -LXP_EOVERFLOW;
-	return (long)position;
-}
-
 int lxp_dev_llseek(int oi, int64_t off, int whence, uint64_t *position)
 {
 	struct lxp_dev_open *o = open_slot(oi);
@@ -607,10 +596,14 @@ static long fop_pwrite_dev(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t 
 	return lxp_dev_pwrite(p, s->file_idx, buf, len, off);
 }
 
-static long fop_lseek_dev(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
+static int64_t fop_lseek_dev(lxp_proc_t *p, lxp_ofd_t *s, int64_t off, int whence)
 {
 	(void)p;
-	return lxp_dev_lseek(s->file_idx, off, whence);
+	uint64_t position = 0;
+	int rc = lxp_dev_llseek(s->file_idx, off, whence, &position);
+	if (rc < 0)
+		return rc;
+	return position > (uint64_t)INT64_MAX ? -LXP_EOVERFLOW : (int64_t)position;
 }
 
 static long fop_fstat_dev(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)

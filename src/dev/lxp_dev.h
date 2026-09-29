@@ -189,7 +189,6 @@ long lxp_dev_ioctl(lxp_proc_t *p, int oi, unsigned long cmd, unsigned long arg);
 long lxp_dev_mmap(lxp_proc_t *p, int oi, size_t len, uint32_t pgoff);
 unsigned lxp_dev_poll(int oi);
 /** lseek on open @p oi within the device's @c size; -ESPIPE if not seekable. */
-long lxp_dev_lseek(int oi, long off, int whence);
 int lxp_dev_llseek(int oi, int64_t off, int whence, uint64_t *position);
 long lxp_dev_sync(lxp_proc_t *p, int oi);
 void lxp_dev_cancel(lxp_proc_t *p);

@@ -273,7 +273,7 @@ long lxp_hostfs_write(lxp_proc_t *proc, int index, const void *buf, size_t len)
 	return rc == LXP_OK ? (long)done : lxp_provider_error(rc);
 }
 
-long lxp_hostfs_seek(lxp_proc_t *proc, int index, int64_t offset, int whence)
+int64_t lxp_hostfs_seek(lxp_proc_t *proc, int index, int64_t offset, int whence)
 {
 	lxp_hostfs_open_t *slot = hostfs_slot(index);
 	if (!slot)
@@ -285,9 +285,9 @@ long lxp_hostfs_seek(lxp_proc_t *proc, int index, int64_t offset, int whence)
 	int rc = g_lxp_fs_ops->file_seek(slot->handle.file, offset, whence, &position);
 	if (rc != LXP_OK)
 		return hostfs_result(proc, rc);
-	if (position > (uint64_t)INT32_MAX)
+	if (position > (uint64_t)INT64_MAX)
 		return -LXP_EOVERFLOW;
-	return (long)position;
+	return (int64_t)position;
 }
 
 static long hostfs_positioned(lxp_proc_t *proc, int index, void *buf, size_t len, uint64_t offset,
@@ -645,9 +645,9 @@ static long fop_pwrite_hostfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size
 	return lxp_hostfs_pwrite(p, s->file_idx, buf, len, off);
 }
 
-static long fop_lseek_hostfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
+static int64_t fop_lseek_hostfs(lxp_proc_t *p, lxp_ofd_t *s, int64_t off, int whence)
 {
-	long position = lxp_hostfs_seek(p, s->file_idx, off, whence);
+	int64_t position = lxp_hostfs_seek(p, s->file_idx, off, whence);
 	if (position >= 0)
 		s->offset = (size_t)position;
 	return position;

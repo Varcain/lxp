@@ -200,10 +200,10 @@ static long fop_write_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t
 	return n;
 }
 
-static long fop_lseek_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
+static int64_t fop_lseek_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, int64_t off, int whence)
 {
 	(void)p;
-	return lxp_vfs_seek(s, (long)wnode_at(s->file_idx)->size, off, whence);
+	return lxp_vfs_seek(s, (int64_t)wnode_at(s->file_idx)->size, off, whence);
 }
 
 static long fop_getdents_tmpfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *sink)

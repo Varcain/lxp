@@ -37,9 +37,9 @@ static long fop_read_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 	return n;
 }
 
-static long fop_lseek_rootfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
+static int64_t fop_lseek_rootfs(lxp_proc_t *p, lxp_ofd_t *s, int64_t off, int whence)
 {
-	return lxp_vfs_seek(s, (long)p->fs[s->file_idx].size, off, whence);
+	return lxp_vfs_seek(s, (int64_t)p->fs[s->file_idx].size, off, whence);
 }
 
 /* Text sharing: a read-only map of a range within the file is the rootfs image in

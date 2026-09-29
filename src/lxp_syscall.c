@@ -636,42 +636,37 @@ static long sys_dup(lxp_proc_t *p, int oldfd)
 	return lxp_fd_dup_min(p, oldfd, 0, 0);
 }
 
-static long sys_lseek(lxp_proc_t *p, int fd, long off, int whence)
+/* The new offset of @p fd moved by the 64-bit @p off, or a negated errno. */
+static int64_t fd_seek(lxp_proc_t *p, int fd, int64_t off, int whence)
 {
 	lxp_ofd_t *s = lxp_fd_description(p, fd);
 	if (!s)
 		return -LXP_EBADF;
 	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
-	if (ops && ops->lseek)
-		return ops->lseek(p, s, off, whence);
-	return -LXP_ESPIPE; /* console/pipe/proc/eventfd/pty/socket not seekable */
+	if (!ops || !ops->lseek)
+		return -LXP_ESPIPE; /* console/pipe/eventfd/pty/socket are not seekable */
+	return ops->lseek(p, s, off, whence);
 }
 
-/* _llseek(fd, offset_high, offset_low, loff_t *result, whence): signed 64-bit
- * offsets are mandatory for block media above 2 GiB. */
+/* lseek(2): the guest's off_t is 32-bit, so a result beyond it is EOVERFLOW (the
+ * offset has still moved, as on Linux). */
+static long sys_lseek(lxp_proc_t *p, int fd, long off, int whence)
+{
+	int64_t pos = fd_seek(p, fd, (int64_t)(int32_t)off, whence);
+	if (pos > INT32_MAX)
+		return -LXP_EOVERFLOW;
+	return (long)pos;
+}
+
+/* _llseek(2): a 64-bit offset from two registers, the result stored at @p result. */
 static long sys_llseek(lxp_proc_t *p, int fd, unsigned long off_hi, unsigned long off_lo,
 		       uint64_t *result, unsigned int whence)
 {
-	lxp_ofd_t *slot = lxp_fd_description(p, fd);
-	if (!slot)
-		return -LXP_EBADF;
 	int64_t offset = (int64_t)((uint64_t)(uint32_t)off_lo | ((uint64_t)(uint32_t)off_hi << 32));
-	uint64_t position;
-#if LXP_ENABLE_DEV
-	if (slot->kind == LXP_FD_DEV) {
-		int rc = lxp_dev_llseek(slot->file_idx, offset, (int)whence, &position);
-		if (rc < 0)
-			return rc;
-	} else
-#endif
-	{
-		if (offset < LONG_MIN || offset > LONG_MAX)
-			return -LXP_EOVERFLOW;
-		long pos = sys_lseek(p, fd, (long)offset, (int)whence);
-		if (pos < 0)
-			return pos;
-		position = (uint64_t)pos;
-	}
+	int64_t pos = fd_seek(p, fd, offset, (int)whence);
+	if (pos < 0)
+		return (long)pos;
+	uint64_t position = (uint64_t)pos;
 	if (result && lxp_copy_to_guest(p, (uintptr_t)result, &position, sizeof(*result)) != 0)
 		return -LXP_EFAULT;
 	return 0;

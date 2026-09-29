@@ -97,7 +97,7 @@ int lxp_netfs_fstat(int oi, uint32_t *mode, uint64_t *size, uint64_t *mtime, uin
 
 /** lseek(2) on an FD_NET fd: cursor math against the shared open offset + cached size.
  *  No round-trip. @return the new absolute offset, or a negative Linux errno. */
-long lxp_netfs_lseek(int oi, long off, int whence);
+int64_t lxp_netfs_lseek(int oi, int64_t off, int whence);
 
 /** Drop a reference on open @p oi (close/exit); the last ref enqueues a background Tclunk.
  *  Never parks — close(2) always completes at once. */

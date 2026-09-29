@@ -1294,7 +1294,7 @@ long lxp_netfs_read(lxp_proc_t *p, int oi, void *ubuf, size_t len)
 
 /* lseek(2) on an FD_NET fd: cursor math against the shared open offset + cached size.
  * Returns the new absolute offset, or a negative Linux errno. */
-long lxp_netfs_lseek(int oi, long off, int whence)
+int64_t lxp_netfs_lseek(int oi, int64_t off, int whence)
 {
 	struct netfs_open *op = open_slot(oi);
 	if (!op)
@@ -1304,11 +1304,13 @@ long lxp_netfs_lseek(int oi, long off, int whence)
 	uint64_t base = (whence == LXP_SEEK_CUR)   ? op->rd_off
 			: (whence == LXP_SEEK_END) ? op->size
 						   : 0;
-	long long np = (long long)base + off;
+	if (base > (uint64_t)INT64_MAX || (off > 0 && (int64_t)base > INT64_MAX - off))
+		return -LXP_EOVERFLOW;
+	int64_t np = (int64_t)base + off;
 	if (np < 0)
 		return -LXP_EINVAL;
 	op->rd_off = (uint64_t)np;
-	return (long)np;
+	return np;
 }
 
 long lxp_netfs_getdents(lxp_proc_t *p, int oi, uintptr_t ubuf, size_t cap, int is64)
@@ -1583,7 +1585,7 @@ static long fop_read_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 	return lxp_netfs_read(p, s->file_idx, buf, len);
 }
 
-static long fop_lseek_netfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
+static int64_t fop_lseek_netfs(lxp_proc_t *p, lxp_ofd_t *s, int64_t off, int whence)
 {
 	(void)p;
 	return lxp_netfs_lseek(s->file_idx, off, whence);
