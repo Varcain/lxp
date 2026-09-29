@@ -94,6 +94,14 @@ long lxp_netfs_getdents(lxp_proc_t *p, int oi, uintptr_t ubuf, size_t cap, int i
  *  @p statkind: 0 = stat64/newfstatat kstat, 1 = statx. */
 long lxp_netfs_stat(lxp_proc_t *p, const char *abspath, uintptr_t ustat, int statkind);
 
+/** access(2) below the mount: parks on the same walk + getattr and completes with 0 when
+ *  the name exists. W_OK is EROFS at once: the mount is read-only. */
+long lxp_netfs_access(lxp_proc_t *p, const char *abspath, int mode);
+
+/** chdir(2) below the mount: parks on the same walk + getattr and, when the name is a
+ *  directory, makes it the caller's cwd (else ENOTDIR). */
+long lxp_netfs_chdir(lxp_proc_t *p, const char *abspath);
+
 /** Cached open attributes for fstat/statx(fd) + lseek(SEEK_END) — no round-trip.
  *  Fills any non-NULL out param. @return 0, or -1 if @p oi is not a live open. */
 int lxp_netfs_fstat(int oi, uint32_t *mode, uint64_t *size, uint64_t *mtime, uint64_t *ino);

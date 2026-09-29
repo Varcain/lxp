@@ -437,10 +437,9 @@ static void cancel_as_owner(lxp_proc_t *p, uint32_t generation)
 	lxp_guest_view_end(&view);
 }
 
-/* Drive a syscall; if it parked on netfs, pump the coordinator retry. */
-static long call_pump(lxp_proc_t *p, long nr, long a0, long a1, long a2, long a3, long a4, long a5)
+/* If the call that returned @p r parked on netfs, pump the coordinator retry to its end. */
+static long pump(lxp_proc_t *p, long r)
 {
-	long r = call_as_owner(p, 1, nr, a0, a1, a2, a3, a4, a5);
 	if (p->wait.kind != LXP_WAIT_NETFS)
 		return r;
 	for (int i = 0; i < 4000; i++) {
@@ -455,6 +454,25 @@ static long call_pump(lxp_proc_t *p, long nr, long a0, long a1, long a2, long a3
 	}
 	(void)lxp_wait_cancel(p);
 	return -LXP_EAGAIN;
+}
+
+/* Drive a syscall; if it parked on netfs, pump the coordinator retry. */
+static long call_pump(lxp_proc_t *p, long nr, long a0, long a1, long a2, long a3, long a4, long a5)
+{
+	return pump(p, call_as_owner(p, 1, nr, a0, a1, a2, a3, a4, a5));
+}
+
+/* access(2) (or chdir(2) when @p chdir) below the mount, driven to its end. */
+static long query_pump(lxp_proc_t *p, int chdir, const char *path, int mode)
+{
+	uint32_t generation = 1;
+	lxp_guest_view_t view;
+	lxp_slot_ref_t owner = {.index = 0, .generation = 1};
+	assert_int_equal(lxp_guest_view_begin(p, owner, &generation, LXP_GUEST_READ_WRITE, &view),
+			 LXP_OK);
+	long r = chdir ? lxp_netfs_chdir(p, path) : lxp_netfs_access(p, path, mode);
+	lxp_guest_view_end(&view);
+	return pump(p, r);
 }
 
 static pthread_t g_mock_thread;
@@ -593,6 +611,17 @@ static void test_netfs_browse(void **state)
 	assert_int_equal(call_pump(&p, LXP_NR_stat64, (long)(uintptr_t)"/mnt/pi/nope",
 				   (long)(uintptr_t)&st, 0, 0, 0, 0),
 			 -LXP_ENOENT);
+
+	/* access and chdir park on the same walk + getattr; chdir lands only in a directory. */
+	assert_int_equal(query_pump(&p, 0, "/mnt/pi/hello.txt", 0), 0);
+	assert_int_equal(query_pump(&p, 0, "/mnt/pi/nope", 0), -LXP_ENOENT);
+	assert_int_equal(query_pump(&p, 0, "/mnt/pi/hello.txt", 2), -LXP_EROFS);
+	assert_int_equal(query_pump(&p, 1, "/mnt/pi/hello.txt", 0), -LXP_ENOTDIR);
+	assert_string_equal(p.fs_context->cwd, "/");
+	assert_int_equal(query_pump(&p, 1, "/mnt/pi/sub", 0), 0);
+	assert_string_equal(p.fs_context->cwd, "/mnt/pi/sub");
+	assert_int_equal(query_pump(&p, 1, "/mnt/pi", 0), 0);
+	assert_string_equal(p.fs_context->cwd, "/mnt/pi");
 
 	/* open + read the file → "hello world\n". */
 	long fd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/mnt/pi/hello.txt",

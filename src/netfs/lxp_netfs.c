@@ -183,7 +183,7 @@ struct netfs_req {
 	uintptr_t ubuf;	      /* guest buffer (read/getdents) or stat-out. */
 	size_t ulen;	      /* length / capacity. */
 	int flags;	      /* open flags. */
-	int statkind;
+	int statkind; /* a path stat's result: the guest layout, or one of netfs_stat_kind */
 	int is64;
 	char path[LXP_PATH_MAX]; /* remote path (open/stat). */
 	long result;
@@ -609,6 +609,34 @@ static void conn_advance(uint64_t now_us)
 	}
 }
 
+/* What a finished path stat delivers besides the guest's stat record (statkind 0 = kstat64,
+ * 1 = statx): the bare existence access(2) asks about, or a chdir(2) into a directory. */
+enum netfs_stat_kind {
+	NETFS_STAT_EXISTS = 2,
+	NETFS_STAT_CHDIR = 3,
+};
+
+static long stat_deliver(lxp_proc_t *owner, const struct netfs_req *r, const struct lxp_stat *st)
+{
+	if (r->statkind == NETFS_STAT_EXISTS)
+		return 0;
+	if (r->statkind != NETFS_STAT_CHDIR)
+		return lxp_stat_copyout(owner, r->ubuf, r->statkind, st);
+	if ((st->mode & LXP_S_IFMT) != LXP_S_IFDIR)
+		return -LXP_ENOTDIR;
+	/* The cwd is the absolute path: the mountpoint, then the path below it. */
+	const char *below = strcmp(r->path, "/") == 0 ? "" : r->path;
+	size_t mp_len = strlen(g_mnt.mp);
+	size_t below_len = strlen(below);
+	if (mp_len + below_len >= sizeof(owner->fs_context->cwd))
+		return -LXP_ENAMETOOLONG;
+	memcpy(owner->fs_context->cwd, g_mnt.mp, mp_len);
+	memcpy(owner->fs_context->cwd + mp_len, below, below_len + 1u);
+	if (owner->fs_context->cwd[0] == '\0')
+		strcpy(owner->fs_context->cwd, "/");
+	return 0;
+}
+
 /* ---- request build for the current step ------------------------------------ */
 /* Build the message for req's current (op, step) into g_tx. Returns 0 on success,
  * or a negative errno that completes the request. */
@@ -949,7 +977,7 @@ static void handle_reply(struct netfs_req *r, lxp_proc_t *owner, uint8_t type, c
 			}
 			struct lxp_stat st;
 			netfs_stat_record(&st, mode, size, mtime, ino);
-			r->result = lxp_stat_copyout(owner, r->ubuf, r->statkind, &st);
+			r->result = stat_deliver(owner, r, &st);
 			r->step = 2; /* send Tclunk(fid) */
 			return;
 		}
@@ -1349,6 +1377,18 @@ long lxp_netfs_stat(lxp_proc_t *p, const char *abspath, uintptr_t ustat, int sta
 	strcpy(r->path, rp);
 	p->wait.data.io.object = -1;
 	return 0; /* parked */
+}
+
+long lxp_netfs_access(lxp_proc_t *p, const char *abspath, int mode)
+{
+	if (mode & 2) /* W_OK: the mount is read-only */
+		return -LXP_EROFS;
+	return lxp_netfs_stat(p, abspath, 0, NETFS_STAT_EXISTS);
+}
+
+long lxp_netfs_chdir(lxp_proc_t *p, const char *abspath)
+{
+	return lxp_netfs_stat(p, abspath, 0, NETFS_STAT_CHDIR);
 }
 
 int lxp_netfs_fstat(int oi, uint32_t *mode, uint64_t *size, uint64_t *mtime, uint64_t *ino)
