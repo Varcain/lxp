@@ -7,14 +7,25 @@
  * Console file operations (FD_CONSOLE): stdio on the host console transport plus
  * the stateless character devices sharing the kind, selected by file_idx —
  * 0 stdin, 1 stdout/stderr, 3 /dev/null, 4 /dev/urandom + /dev/random, 5 /dev/zero.
- * Poll readiness depends on the caller's timeout, so fs/lxp_poll.c decides it.
+ * Poll readiness depends on the caller's timeout, so fs/lxp_poll.c decides it. The
+ * console is one tty (fs/lxp_tty.h) whose termios the coordinator applies to input.
  */
+#include "fs/lxp_tty.h"
 #include "fs/lxp_vfs.h"
 
 #include "lxp_internal.h"
 #include "lxp_linux_uapi.h"
 
 #include <string.h>
+
+/* Coordinator-owned: tty ioctls defer to the coordinator, which also applies the
+ * settings to console input (src/run/lxp_console_input.c). */
+static lxp_tty_t g_console_tty = LXP_TTY_DEFAULTS;
+
+lxp_tty_t *lxp_console_tty(void)
+{
+	return &g_console_tty;
+}
 
 static long fop_read_console(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
@@ -56,60 +67,10 @@ static long fop_write_console(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size
 
 static long fop_ioctl_console(lxp_proc_t *p, lxp_ofd_t *s, unsigned long cmd, unsigned long arg)
 {
-	/* Make the console fds look like a tty so the shell goes interactive
-	 * (isatty → prompt + line editing). */
+	/* Every console fd is the one console tty, so isatty() holds and the shell goes
+	 * interactive (prompt + line editing). */
 	(void)s;
-	void *ua = (void *)(uintptr_t)arg;
-	switch (cmd) {
-	case LXP_TCGETS: {
-		lxp_termios t = {0};
-		t.c_iflag = LXP_ICRNL;
-		t.c_oflag = LXP_OPOST | LXP_ONLCR;
-		t.c_cflag = LXP_CS8 | LXP_CREAD;
-		t.c_lflag = LXP_ICANON | LXP_ECHO | LXP_ISIG;
-		t.c_cc[LXP_VINTR] = 3;	   /* ^C */
-		t.c_cc[LXP_VERASE] = 0x7f; /* DEL */
-		t.c_cc[LXP_VEOF] = 4;	   /* ^D */
-		t.c_cc[LXP_VSUSP] = 26;	   /* ^Z */
-		t.c_cc[LXP_VMIN] = 1;
-		return lxp_copy_to_guest(p, (uintptr_t)ua, &t, sizeof(t));
-	}
-	case LXP_TCSETS:
-	case LXP_TCSETSW:
-	case LXP_TCSETSF:
-		if (!lxp_guest_access_ok(p, ua, sizeof(lxp_termios), 0))
-			return -LXP_EFAULT;
-		return 0; /* accept mode changes; the console echo is the engine's job */
-	case LXP_TIOCGWINSZ: {
-		const lxp_winsize w = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0};
-		return lxp_copy_to_guest(p, (uintptr_t)ua, &w, sizeof(w));
-	}
-	case LXP_TIOCSCTTY: /* getty/login: become/drop/set the tty session */
-	case LXP_TIOCNOTTY:
-		return 0;
-	case LXP_TIOCSPGRP: {
-		/* tcsetpgrp(): the shell (HUSH_JOB) records which process group is in the
-		 * foreground of the console. A console ^C then raises SIGINT on exactly that
-		 * group (see console_signal_fg). Runs in coordinator context (ioctl defers),
-		 * so writing the shared fg-pgrp state here is safe. */
-		uint32_t pgrp;
-		if (lxp_guest_get_u32(p, (uintptr_t)ua, &pgrp) != 0)
-			return -LXP_EFAULT;
-		lxp_console_set_fg_pgrp((int)pgrp);
-		return 0;
-	}
-	case LXP_TIOCGPGRP: {
-		/* Report the tracked foreground group once set; before the shell's first
-		 * tcsetpgrp, fall back to the caller's pid so tcgetpgrp() returns non-zero
-		 * and the shell enables job control at startup. */
-		int pgrp = lxp_console_fg_pgrp();
-		if (pgrp <= 0)
-			pgrp = p->pid;
-		return lxp_guest_put_u32(p, (uintptr_t)ua, (uint32_t)pgrp);
-	}
-	default:
-		return -LXP_ENOTTY;
-	}
+	return lxp_tty_ioctl(p, &g_console_tty, cmd, arg);
 }
 
 const lxp_file_ops_t lxp_console_fops = {

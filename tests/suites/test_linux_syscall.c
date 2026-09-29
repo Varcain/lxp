@@ -15,6 +15,7 @@
 #include "lxp/lxp_bootstrap.h"
 #include "lxp_guest.h"
 #include "lxp_syscall.h"
+#include "fs/lxp_tty.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -291,6 +292,60 @@ static void test_lnx_init_stubs(void **state)
 	assert_string_equal(cwd, "/");
 	assert_int_equal(lxp_syscall(&p, LXP_NR_getcwd, (long)(uintptr_t)cwd, 1, 0, 0, 0, 0),
 			 -LXP_ERANGE);
+}
+
+/* The console is a tty: TCGETS returns what TCSETS set (so a program restoring saved
+ * settings restores its own), TIOCSWINSZ sticks, and a new tty starts from the cooked
+ * defaults with ^C and ^Z. */
+static void test_lnx_console_termios_roundtrip(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+	lxp_tty_init(lxp_console_tty());
+
+	lxp_termios tio;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, 0, LXP_TCGETS, (long)(uintptr_t)&tio, 0, 0,
+				     0),
+			 0);
+	assert_int_equal(tio.c_cc[LXP_VINTR], 3);
+	assert_int_equal(tio.c_cc[LXP_VSUSP], 26);
+	tio.c_lflag &= ~(LXP_ICANON | LXP_ECHO | LXP_ISIG);
+	tio.c_cc[LXP_VMIN] = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, 0, LXP_TCSETSW, (long)(uintptr_t)&tio, 0,
+				     0, 0),
+			 0);
+	lxp_termios got;
+	memset(&got, 0xa5, sizeof(got));
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, 1, LXP_TCGETS, (long)(uintptr_t)&got, 0, 0,
+				     0),
+			 0);
+	assert_memory_equal(&got, &tio, sizeof(tio));
+
+	lxp_winsize ws = {.ws_row = 50, .ws_col = 132};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, 1, LXP_TIOCSWINSZ, (long)(uintptr_t)&ws, 0,
+				     0, 0),
+			 0);
+	lxp_winsize wgot = {0};
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, 0, LXP_TIOCGWINSZ, (long)(uintptr_t)&wgot,
+				     0, 0, 0),
+			 0);
+	assert_int_equal(wgot.ws_row, 50);
+	assert_int_equal(wgot.ws_col, 132);
+
+	/* Before a tcsetpgrp the caller is reported as the foreground group. */
+	uint32_t pgrp = 0;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, 0, LXP_TIOCGPGRP, (long)(uintptr_t)&pgrp, 0,
+				     0, 0),
+			 0);
+	assert_int_equal(pgrp, (uint32_t)p.pid);
+	pgrp = 9;
+	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, 0, LXP_TIOCSPGRP, (long)(uintptr_t)&pgrp, 0,
+				     0, 0),
+			 0);
+	assert_int_equal(lxp_console_tty()->fg_pgrp, 9);
+	lxp_tty_init(lxp_console_tty());
 }
 
 static void test_lnx_setup_stack(void **state)
@@ -1303,6 +1358,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_brk),
 		cmocka_unit_test(test_lnx_mmap),
 		cmocka_unit_test(test_lnx_init_stubs),
+		cmocka_unit_test(test_lnx_console_termios_roundtrip),
 		cmocka_unit_test(test_lnx_setup_stack),
 		cmocka_unit_test(test_lnx_file),
 		cmocka_unit_test(test_dup_and_fork_share_file_offset),

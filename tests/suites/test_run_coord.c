@@ -25,6 +25,7 @@
 #include "pty/lxp_pty.h"
 #include "lxp/lxp_port_posix.h"
 #include "fs/lxp_pipe.h"
+#include "fs/lxp_tty.h"
 #include "lxp_internal.h"
 #include "lxp_provider.h"
 #include "run/lxp_exec_private.h"
@@ -46,8 +47,6 @@
 #define g_diag_native_present (TEST_RUNTIME->diag_native_present)
 #define g_diag_lifecycle_epoch (*TEST_RUNTIME->diag_lifecycle_epoch)
 #define g_diag_native_epoch (*TEST_RUNTIME->diag_native_epoch)
-#define g_tty_isig (*TEST_RUNTIME->tty_isig)
-#define g_tty_icrnl (*TEST_RUNTIME->tty_icrnl)
 #define g_lifecycle_failpoint (*TEST_RUNTIME->lifecycle_failpoint)
 #define region_ref_at lxp_test_region_ref_at
 #define region_commit_address_space lxp_test_region_commit_address_space
@@ -720,14 +719,11 @@ static int reset_state(void **state)
 		g_regions[r].lease_owner = lxp_slot_ref_none();
 	for (int s = 0; s < LXP_NSLOT; s++)
 		lxp_vfork_guard_reset(s);
-	lxp_console_set_fg_pgrp(0);
 	g_eng = &g_mock_eng;
 	g_cfg = NULL;
 	g_lifecycle_failpoint = LXP_FAIL_NONE;
 	lxp_trap_publish(0);
-	g_tty_isig = 1;
-	g_tty_icrnl = 1;
-	lxp_console_typeahead_reset();
+	lxp_console_reset();
 	lxp_providers_publish(g_test_net_ops, NULL, NULL, NULL);
 	return 0;
 }
@@ -2237,7 +2233,7 @@ static lxp_proc_t *make_console_reader(int slot, uint8_t **buf)
 	p->read_fn = script_console_read;
 	p->console_poll = script_console_poll;
 	p->group->pgid = p->pid;
-	lxp_console_set_fg_pgrp(p->pid);
+	lxp_console_tty()->fg_pgrp = p->pid;
 	*buf = g_mock_regions[slot];
 	return p;
 }
@@ -3628,6 +3624,7 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 	proc->mm->pool_lo = proc->mm->pool_hi = 0;
 
 	const uint32_t cmds[] = {LXP_TCSETS, LXP_TCSETSW, LXP_TCSETSF};
+	const lxp_tty_t defaults = LXP_TTY_DEFAULTS;
 	for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
 		struct lxp_frame f;
 		memset(&f, 0, sizeof(f));
@@ -3635,8 +3632,7 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 		f.r[1] = cmds[i];
 		f.r[2] = 0x20000000u; /* mapped host SRAM on target; outside this guest */
 		f.r[7] = LXP_NR_ioctl;
-		g_tty_isig = 1;
-		g_tty_icrnl = 1;
+		lxp_console_reset();
 		g_lxp_slots[0].runnable = 1;
 		g_lxp_slots[0].host_state = SLOT_RUNNING;
 
@@ -3646,8 +3642,9 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 		assert_int_equal(g_mock.event_posts, (int)i + 1);
 		execute_deferred(&g_mock_eng, 0);
 		assert_int_equal(g_mock.resume_r0, -LXP_EFAULT);
-		assert_int_equal(g_tty_isig, 1); /* invalid input cannot alter console state */
-		assert_int_equal(g_tty_icrnl, 1);
+		/* invalid input cannot alter console state */
+		assert_memory_equal(&lxp_console_tty()->termios, &defaults.termios,
+				    sizeof(defaults.termios));
 	}
 }
 
@@ -3658,12 +3655,13 @@ static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 static void test_console_icrnl_translation(void **state)
 {
 	(void)state;
-	g_tty_icrnl = 1;
+	lxp_termios *tio = &lxp_console_tty()->termios;
+	tio->c_iflag |= LXP_ICRNL;
 	assert_int_equal(lxp_console_input_xlate('\r'), '\n');
 	assert_int_equal(lxp_console_input_xlate('x'), 'x');
 	assert_int_equal(lxp_console_input_xlate('\n'), '\n');
 
-	g_tty_icrnl = 0;
+	tio->c_iflag &= ~LXP_ICRNL;
 	assert_int_equal(lxp_console_input_xlate('\r'), '\r');
 }
 
@@ -4159,6 +4157,17 @@ static long console_read_cr(void *ctx, int fd, void *buf, size_t len)
 	return 1;
 }
 
+static uint8_t g_console_byte;
+static long console_read_byte(void *ctx, int fd, void *buf, size_t len)
+{
+	(void)ctx;
+	(void)fd;
+	if (!len)
+		return 0;
+	((uint8_t *)buf)[0] = g_console_byte;
+	return 1;
+}
+
 static long console_read_sigint(void *ctx, int fd, void *buf, size_t len)
 {
 	(void)ctx;
@@ -4199,7 +4208,7 @@ static void test_async_console_signal_is_scan_progress(void **state)
 	lxp_proc_t *proc = &g_lxp_slots[0].proc;
 	proc->pid = 2;
 	proc->group->pgid = 2;
-	lxp_console_set_fg_pgrp(2);
+	lxp_console_tty()->fg_pgrp = 2;
 	const lxp_run_config_t cfg = {
 		.read_fn = console_read_sigint,
 		.console_poll = console_ready,
@@ -4226,11 +4235,12 @@ static void test_console_icrnl_immediate_read(void **state)
 	p.console_poll = console_ready;
 
 	uint8_t ch = 0;
-	g_tty_icrnl = 1;
+	lxp_termios *tio = &lxp_console_tty()->termios;
+	tio->c_iflag |= LXP_ICRNL;
 	assert_int_equal(lxp_syscall(&p, LXP_NR_read, 0, (long)(uintptr_t)&ch, 1, 0, 0, 0), 1);
 	assert_int_equal(ch, '\n');
 
-	g_tty_icrnl = 0;
+	tio->c_iflag &= ~LXP_ICRNL;
 	assert_int_equal(lxp_syscall(&p, LXP_NR_read, 0, (long)(uintptr_t)&ch, 1, 0, 0, 0), 1);
 	assert_int_equal(ch, '\r');
 }
@@ -4360,14 +4370,13 @@ static void test_console_sigint_targets_fg_group(void **state)
 	const uint64_t bit = lxp_sig_bit(LXP_SIGINT);
 
 	/* No foreground group yet (pre-first-tcsetpgrp): ^C signals nobody. */
-	lxp_console_set_fg_pgrp(0);
+	lxp_console_tty()->fg_pgrp = 0;
 	console_signal_fg(LXP_SIGINT);
 	for (int i = 0; i < 5; i++)
 		assert_false(g_lxp_slots[i].proc.pending_sigs & bit);
 
 	/* Shell put group 3 in the foreground: ^C hits that group only. */
-	lxp_console_set_fg_pgrp(3);
-	assert_int_equal(lxp_console_fg_pgrp(), 3);
+	lxp_console_tty()->fg_pgrp = 3;
 	console_signal_fg(LXP_SIGINT);
 	assert_true(g_lxp_slots[2].proc.pending_sigs & bit);  /* fg job (pgid 3) */
 	assert_true(g_lxp_slots[3].proc.pending_sigs & bit);  /* fg pipeline peer (pgid 3) */
@@ -4376,6 +4385,46 @@ static void test_console_sigint_targets_fg_group(void **state)
 		     bit); /* the shell (pgid 2) — survives to re-prompt */
 	assert_false(g_lxp_slots[4].proc.pending_sigs &
 		     bit); /* background job (pgid 5) — untouched */
+}
+
+/* The console's signal characters are its termios c_cc entries under ISIG: ^Z raises
+ * SIGTSTP only while VSUSP names it, a disabled entry makes it ordinary typeahead, and
+ * with ISIG off the check leaves input for the reader. */
+static void test_console_signal_chars_follow_termios(void **state)
+{
+	(void)state;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *proc = &g_lxp_slots[0].proc;
+	proc->pid = 2;
+	proc->group->pgid = 2;
+	lxp_tty_t *tty = lxp_console_tty();
+	tty->fg_pgrp = 2;
+	const lxp_run_config_t cfg = {
+		.read_fn = console_read_byte,
+		.console_poll = console_ready,
+	};
+	const uint64_t tstp = lxp_sig_bit(LXP_SIGTSTP);
+	g_console_byte = 26; /* ^Z */
+
+	assert_int_equal(lxp_console_poll_interrupts(&cfg), 1);
+	assert_true(proc->pending_sigs & tstp);
+	assert_false(lxp_console_input_ready(NULL)); /* the signal byte is consumed */
+
+	proc->pending_sigs = 0;
+	tty->termios.c_cc[LXP_VSUSP] = 0; /* _POSIX_VDISABLE */
+	assert_int_equal(lxp_console_poll_interrupts(&cfg), 0);
+	assert_false(proc->pending_sigs & tstp);
+	assert_true(lxp_console_input_ready(NULL)); /* kept as typeahead */
+	uint8_t ch = 0;
+	proc->read_fn = NULL;
+	assert_int_equal(lxp_console_read(proc, 0, &ch, 1), 1);
+	assert_int_equal(ch, 26);
+
+	tty->termios.c_cc[LXP_VSUSP] = 26;
+	tty->termios.c_lflag &= ~LXP_ISIG;
+	assert_int_equal(lxp_console_poll_interrupts(&cfg), 0);
+	assert_false(lxp_console_input_ready(NULL)); /* nothing read on the reader's behalf */
+	assert_false(proc->pending_sigs & tstp);
 }
 
 /* Ctrl+Z (VSUSP) fans SIGTSTP out to the foreground group only — the shell and background
@@ -4391,7 +4440,7 @@ static void test_console_sigtstp_targets_fg_group(void **state)
 		g_lxp_slots[i].proc.group->pgid = pgid[i];
 	}
 	const uint64_t bit = lxp_sig_bit(LXP_SIGTSTP);
-	lxp_console_set_fg_pgrp(3);
+	lxp_console_tty()->fg_pgrp = 3;
 	console_signal_fg(LXP_SIGTSTP);
 	assert_true(g_lxp_slots[1].proc.pending_sigs & bit);  /* fg job (pgid 3) */
 	assert_false(g_lxp_slots[0].proc.pending_sigs & bit); /* the shell (pgid 2) */
@@ -4850,6 +4899,7 @@ int main(void)
 		cmocka_unit_test_setup(test_setpgid_getpgrp_track_group, reset_state),
 		cmocka_unit_test_setup(test_console_sigint_targets_fg_group, reset_state),
 		cmocka_unit_test_setup(test_console_sigtstp_targets_fg_group, reset_state),
+		cmocka_unit_test_setup(test_console_signal_chars_follow_termios, reset_state),
 		cmocka_unit_test_setup(test_running_stop_parks_at_boundary_and_continues,
 				       reset_state),
 		cmocka_unit_test_setup(test_stop_continue_publication_preserves_generation_order,

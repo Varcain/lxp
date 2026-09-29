@@ -9,7 +9,7 @@
  * @brief Pseudo-terminal (Unix98 pty) layer for the Linux personality.
  *
  * A pty is a pair of in-memory rings (master↔slave) plus a minimal in-kernel line
- * discipline (echo / canonical line editing / ICRNL / ONLCR / ISIG ^C→SIGINT),
+ * discipline (echo / canonical line editing / ICRNL / ONLCR / ISIG ^C→SIGINT, ^Z→SIGTSTP),
  * modeled on the two-ended pipe (@ref lxp_pipe_retry): master/slave endpoint counts
  * follow open-file-description lifetime. An SSH server (dropbear) opens @c /dev/ptmx (the
  * master) + @c /dev/pts/N (the slave, the login shell's controlling tty) and shuttles

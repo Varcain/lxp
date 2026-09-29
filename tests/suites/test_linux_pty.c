@@ -183,6 +183,34 @@ static void test_pty_foreground_signal(void **st)
 	assert_int_equal(g_lxp_test_signal_number, LXP_SIGINT);
 }
 
+/* VSUSP (^Z, the Linux default) raises SIGTSTP on the foreground group; with ISIG off
+ * the same byte is ordinary input. */
+static void test_pty_suspend_signal(void **st)
+{
+	(void)st;
+	pty_setup();
+	int mfd, sfd;
+	open_pair(&mfd, &sfd);
+	lxp_termios t;
+	assert_int_equal(sc(LXP_NR_ioctl, sfd, LXP_TCGETS, (long)(uintptr_t)&t), 0);
+	assert_int_equal(t.c_cc[LXP_VSUSP], 26);
+	uint32_t pgid = 41;
+	assert_int_equal(sc(LXP_NR_ioctl, sfd, LXP_TIOCSPGRP, (long)(uintptr_t)&pgid), 0);
+	char susp = 26;
+	assert_int_equal(sc(LXP_NR_write, mfd, (long)(uintptr_t)&susp, 1), 1);
+	assert_int_equal(g_lxp_test_signal_calls, 1);
+	assert_int_equal(g_lxp_test_signal_pgid, 41);
+	assert_int_equal(g_lxp_test_signal_number, LXP_SIGTSTP);
+
+	t.c_lflag &= ~(LXP_ISIG | LXP_ICANON | LXP_ECHO);
+	assert_int_equal(sc(LXP_NR_ioctl, mfd, LXP_TCSETS, (long)(uintptr_t)&t), 0);
+	assert_int_equal(sc(LXP_NR_write, mfd, (long)(uintptr_t)&susp, 1), 1);
+	assert_int_equal(g_lxp_test_signal_calls, 1);
+	char buf[4] = {0};
+	assert_int_equal(sc(LXP_NR_read, sfd, (long)(uintptr_t)buf, sizeof(buf)), 1);
+	assert_int_equal(buf[0], 26);
+}
+
 /* TIOCSWINSZ then TIOCGWINSZ round-trips the terminal size (ssh forwards the client's). */
 static void test_pty_winsize(void **st)
 {
@@ -208,6 +236,7 @@ int test_linux_pty_run(void)
 		cmocka_unit_test(test_pty_nonblock_empty),
 		cmocka_unit_test(test_pty_endpoint_lifetime),
 		cmocka_unit_test(test_pty_foreground_signal),
+		cmocka_unit_test(test_pty_suspend_signal),
 		cmocka_unit_test(test_pty_winsize),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

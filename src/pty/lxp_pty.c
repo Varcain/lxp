@@ -10,7 +10,7 @@
  * A pty is two in-memory rings — m2s (master→slave, program INPUT) and s2m
  * (slave→master, program OUTPUT) — plus a minimal in-kernel line discipline. It is
  * the two-ended pipe with a transform at the boundary: master WRITE runs input
- * processing (ICRNL, ISIG ^C→SIGINT, canonical line editing + echo), slave WRITE runs
+ * processing (ICRNL, ISIG ^C/^Z, canonical line editing + echo), slave WRITE runs
  * output processing (OPOST/ONLCR). Master/slave counts follow open-file-description
  * lifetime, so dup/fork aliases do not create phantom endpoints and the final close
  * drives EOF/hangup without inspecting the coordinator's process table.
@@ -28,9 +28,10 @@
 
 #include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read */
 #include "fs/lxp_stat.h"
+#include "fs/lxp_tty.h"
 #include "fs/lxp_vfs.h"
+#include "lxp_guest.h"
 #include "lxp_internal.h" /* foreground process-group signal service */
-#include "dev/lxp_dev.h" /* lxp_guest_access_ok() (confused-deputy guard for ioctl arg pointers) */
 #include "proc/lxp_proc.h"
 
 /* Each login holds one pty pair (a master + a slave), so two pairs allow two
@@ -50,9 +51,7 @@ typedef struct {
 	pty_ring_t s2m; /* slave→master: program output (+ canonical echo) */
 	uint8_t canon[LXP_PTY_CANON]; /* in-progress canonical line (not yet readable) */
 	size_t canon_n;
-	lxp_termios tio; /* line-discipline state (TCGETS/TCSETS) */
-	lxp_winsize ws;
-	int fg_pgrp; /* TIOCSPGRP foreground process group receiving terminal signals */
+	lxp_tty_t tty; /* termios, window size and foreground process group */
 	uint16_t masters;
 	uint16_t slaves;
 	int used;
@@ -99,8 +98,8 @@ static size_t ring_read_line(pty_ring_t *r, uint8_t *out, size_t len)
 
 static void pty_signal_foreground(int idx, int sig)
 {
-	if (g_ptys[idx].fg_pgrp > 0)
-		(void)lxp_signal_process_group(g_ptys[idx].fg_pgrp, sig);
+	if (g_ptys[idx].tty.fg_pgrp > 0)
+		(void)lxp_signal_process_group(g_ptys[idx].tty.fg_pgrp, sig);
 }
 
 /* ── line discipline ──────────────────────────────────────────── */
@@ -110,17 +109,18 @@ static void pty_signal_foreground(int idx, int sig)
 static long pty_input(int idx, const uint8_t *in, size_t len)
 {
 	lxp_pty_t *pt = &g_ptys[idx];
-	int icanon = pt->tio.c_lflag & LXP_ICANON;
-	int echo = pt->tio.c_lflag & LXP_ECHO;
-	int isig = pt->tio.c_lflag & LXP_ISIG;
-	int icrnl = pt->tio.c_iflag & LXP_ICRNL;
+	const lxp_termios *tio = &pt->tty.termios;
+	int icanon = tio->c_lflag & LXP_ICANON;
+	int echo = tio->c_lflag & LXP_ECHO;
+	int icrnl = tio->c_iflag & LXP_ICRNL;
 	size_t consumed = 0;
 	for (size_t i = 0; i < len; i++) {
 		uint8_t c = in[i];
 		if (icrnl && c == '\r')
 			c = '\n';
-		if (isig && c == pt->tio.c_cc[LXP_VINTR]) {
-			pty_signal_foreground(idx, LXP_SIGINT);
+		int sig = lxp_tty_signal_for(&pt->tty, c);
+		if (sig) {
+			pty_signal_foreground(idx, sig);
 			consumed++;
 			continue;
 		}
@@ -136,7 +136,7 @@ static long pty_input(int idx, const uint8_t *in, size_t len)
 			continue;
 		}
 		/* Canonical mode: accumulate a line; deliver it whole on newline. */
-		if (c == pt->tio.c_cc[LXP_VERASE] || c == 0x08) {
+		if (c == tio->c_cc[LXP_VERASE] || c == 0x08) {
 			if (pt->canon_n > 0) {
 				pt->canon_n--;
 				if (echo) { /* erase the echoed char: back, space, back */
@@ -162,7 +162,7 @@ static long pty_input(int idx, const uint8_t *in, size_t len)
 			consumed++;
 			continue;
 		}
-		if (c == pt->tio.c_cc[LXP_VEOF]) { /* ^D: flush the line; empty → EOF */
+		if (c == tio->c_cc[LXP_VEOF]) { /* ^D: flush the line; empty → EOF */
 			if (ring_space(&pt->m2s) < pt->canon_n)
 				return consumed ? (long)consumed : -LXP_EAGAIN;
 			for (size_t k = 0; k < pt->canon_n; k++)
@@ -188,8 +188,8 @@ static long pty_input(int idx, const uint8_t *in, size_t len)
 static long pty_output(int idx, const uint8_t *in, size_t len)
 {
 	lxp_pty_t *pt = &g_ptys[idx];
-	int opost = pt->tio.c_oflag & LXP_OPOST;
-	int onlcr = pt->tio.c_oflag & LXP_ONLCR;
+	int opost = pt->tty.termios.c_oflag & LXP_OPOST;
+	int onlcr = pt->tty.termios.c_oflag & LXP_ONLCR;
 	size_t consumed = 0;
 	for (size_t i = 0; i < len; i++) {
 		uint8_t c = in[i];
@@ -228,8 +228,9 @@ long lxp_pty_read(lxp_proc_t *p, int idx, int is_master, void *ubuf, size_t len)
 	}
 	/* slave: the shell reads its input from m2s */
 	if (pt->m2s.n > 0)
-		return (long)((pt->tio.c_lflag & LXP_ICANON) ? ring_read_line(&pt->m2s, out, len)
-							     : ring_read(&pt->m2s, out, len));
+		return (long)((pt->tty.termios.c_lflag & LXP_ICANON)
+				      ? ring_read_line(&pt->m2s, out, len)
+				      : ring_read(&pt->m2s, out, len));
 	if (pt->masters == 0)
 		return 0; /* master closed (client disconnect) → EOF/hangup → the shell exits */
 	if (pt->m2s_eof) {
@@ -258,12 +259,6 @@ long lxp_pty_ioctl(lxp_proc_t *p, int idx, int is_master, unsigned long cmd, uns
 	lxp_pty_t *pt = &g_ptys[idx];
 	uintptr_t ua = (uintptr_t)arg;
 	switch (cmd) {
-	case LXP_TCGETS:
-		return lxp_copy_to_guest(p, ua, &pt->tio, sizeof(pt->tio));
-	case LXP_TCSETS:
-	case LXP_TCSETSW:
-	case LXP_TCSETSF:
-		return lxp_copy_from_guest(p, &pt->tio, ua, sizeof(pt->tio));
 	case LXP_TIOCGPTN:
 		return lxp_guest_put_u32(p, ua, (uint32_t)idx);
 	case LXP_TIOCSPTLCK: {
@@ -273,25 +268,8 @@ long lxp_pty_ioctl(lxp_proc_t *p, int idx, int is_master, unsigned long cmd, uns
 		pt->locked = (int)locked;
 		return 0;
 	}
-	case LXP_TIOCGWINSZ:
-		return lxp_copy_to_guest(p, ua, &pt->ws, sizeof(pt->ws));
-	case LXP_TIOCSWINSZ:
-		return lxp_copy_from_guest(p, &pt->ws, ua, sizeof(pt->ws));
-	case LXP_TIOCSPGRP: {
-		uint32_t pgrp;
-		if (lxp_guest_get_u32(p, ua, &pgrp) != 0)
-			return -LXP_EFAULT;
-		pt->fg_pgrp = (int)pgrp;
-		return 0;
-	}
-	case LXP_TIOCGPGRP:
-		return lxp_guest_put_u32(p, ua,
-					 (uint32_t)(pt->fg_pgrp ? pt->fg_pgrp : p->pid));
-	case LXP_TIOCSCTTY:
-	case LXP_TIOCNOTTY:
-		return 0; /* the slave becomes/loses the ctty — accepted (single-session tier) */
-	default:
-		return -LXP_ENOTTY;
+	default: /* both ends share the one terminal (single-session tier) */
+		return lxp_tty_ioctl(p, &pt->tty, cmd, arg);
 	}
 }
 
@@ -373,17 +351,7 @@ long lxp_pty_open_master(int flags)
 		pt->used = 1;
 		pt->locked = 1; /* until unlockpt (TIOCSPTLCK 0) */
 		pt->m_nb = (flags & LXP_O_NONBLOCK) ? 1 : 0;
-		/* Default cooked termios — matches the console's TCGETS defaults. */
-		pt->tio.c_iflag = LXP_ICRNL;
-		pt->tio.c_oflag = LXP_OPOST | LXP_ONLCR;
-		pt->tio.c_cflag = LXP_CS8 | LXP_CREAD;
-		pt->tio.c_lflag = LXP_ICANON | LXP_ECHO | LXP_ISIG;
-		pt->tio.c_cc[LXP_VINTR] = 3;	 /* ^C */
-		pt->tio.c_cc[LXP_VERASE] = 0x7f; /* DEL */
-		pt->tio.c_cc[LXP_VEOF] = 4;	 /* ^D */
-		pt->tio.c_cc[LXP_VMIN] = 1;
-		pt->ws.ws_row = 24;
-		pt->ws.ws_col = 80;
+		lxp_tty_init(&pt->tty); /* the console's cooked defaults */
 		return i;
 	}
 	return -LXP_EMFILE; /* pty pool exhausted */

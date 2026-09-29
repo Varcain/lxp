@@ -11,6 +11,7 @@
 #include "lxp/lxp_run.h"
 #include "lxp_syscall.h"
 #include "fs/lxp_poll.h"
+#include "fs/lxp_tty.h"
 #if LXP_ENABLE_DEV
 #include "dev/lxp_dev.h"
 #endif
@@ -500,13 +501,14 @@ static int lxp_blocked_retry_console(const lxp_os_ops_t *eng, int slot, lxp_proc
 	size_t length = proc->wait.data.io.length;
 	long rc = lxp_console_read(proc, 0, (void *)buffer, length);
 	uint8_t ch = rc == 1 ? ((const volatile uint8_t *)(uintptr_t)buffer)[0] : 0;
-	if (rc == 1 && lxp_tty_isig() && ch == 26) {
-		console_signal_fg(LXP_SIGTSTP);
+	int sig = rc == 1 ? lxp_tty_signal_for(lxp_console_tty(), ch) : 0;
+	if (sig == LXP_SIGTSTP) {
+		console_signal_fg(sig);
 		scan->progress = 1;
 		return 1;
 	}
-	if (rc == 1 && lxp_tty_isig() && ch == 3) {
-		console_signal_fg(LXP_SIGINT);
+	if (sig == LXP_SIGINT) {
+		console_signal_fg(sig);
 		rc = -LXP_EINTR;
 	}
 	(void)lxp_wait_complete(proc, LXP_WAIT_CONSOLE);

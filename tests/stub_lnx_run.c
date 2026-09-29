@@ -144,18 +144,6 @@ __attribute__((constructor)) static void publish_test_engine(void)
 	lxp_os_publish(&g_lxp_test_engine);
 }
 
-/* Console tty foreground process group: lxp_run.c owns this in the coordinator; the
- * isolated syscall tests (no lxp_run.c) just need a definition. A file-static gives
- * the TIOCSPGRP/TIOCGPGRP round-trip real behavior on the host. */
-static int g_stub_console_fg_pgrp;
-void lxp_console_set_fg_pgrp(int pgrp)
-{
-	g_stub_console_fg_pgrp = pgrp;
-}
-int lxp_console_fg_pgrp(void)
-{
-	return g_stub_console_fg_pgrp;
-}
 /* The coordinator's process table is absent: record process-group signal
  * requests so terminal signal routing can be asserted. */
 int g_lxp_test_signal_calls;

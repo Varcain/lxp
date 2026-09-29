@@ -150,6 +150,7 @@ int coordinator_map_mm_range(const lxp_os_ops_t *eng, lxp_mm_t *mm, uintptr_t ad
 int coordinator_restore_mm_maps(const lxp_os_ops_t *eng, int slot, const lxp_mm_t *mm);
 int device_map_index(const lxp_proc_t *proc, uintptr_t addr, size_t len);
 
+/* Raise @p sig on the console's foreground process group (src/run/lxp_console_input.c). */
 void console_signal_fg(int sig);
 int pending_deliverable(const lxp_proc_t *proc);
 void flatten_vec(char *buf, const char **ptrs, const char *src_buf, const uint16_t *offsets,

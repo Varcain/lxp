@@ -379,33 +379,6 @@ int slot_of(const lxp_proc_t *p)
  * it as the module GOT. Delivery/restore operations live in lxp_signal.c. */
 struct sig_save_stack_s g_sig_save[LXP_NSLOT];
 
-static volatile int g_tty_isig = 1;
-/* Input translation advertised by the console's canonical termios.  The board
- * callback deliberately preserves CR for raw-mode line editors, so perform the
- * tty's ICRNL conversion here, after the byte enters the personality and only
- * while the guest has that flag enabled. */
-static volatile int g_tty_icrnl = 1;
-/* The console tty's foreground process group (job control): the pgid the shell put
- * in the foreground via tcsetpgrp(TIOCSPGRP). A console ^C (VINTR in cooked mode)
- * raises SIGINT on exactly this group — the shell (a different group) and background
- * jobs (their own groups) are left alone. 0 = unset (no ^C target). */
-static volatile int g_console_fg_pgrp;
-
-int lxp_tty_isig(void)
-{
-	return g_tty_isig;
-}
-
-void lxp_console_set_fg_pgrp(int pgrp)
-{
-	g_console_fg_pgrp = pgrp;
-}
-
-int lxp_console_fg_pgrp(void)
-{
-	return g_console_fg_pgrp;
-}
-
 int lxp_signal_process_group(int pgid, int sig)
 {
 	if (pgid <= 0 || sig <= 0 || sig >= LXP_NSIG)
@@ -421,14 +394,6 @@ int lxp_signal_process_group(int pgid, int sig)
 	if (recipients && g_lxp_os_ops && g_lxp_os_ops->event_post)
 		g_lxp_os_ops->event_post();
 	return recipients;
-}
-
-/* A console ^C (VINTR, cooked/ISIG mode) raises @p sig on the console's foreground
- * process group. Every live member takes the signal at its next syscall boundary
- * or coordinator retry. With no foreground group yet, this is a no-op. */
-void console_signal_fg(int sig)
-{
-	(void)lxp_signal_process_group(g_console_fg_pgrp, sig);
 }
 
 void lxp_run_health(lxp_run_health_t *out)
@@ -859,81 +824,6 @@ void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, 
 				sig); /* r0 = signo */
 }
 
-/* Track the tty input/local modes from the coordinator, never from SVC handler mode.
- * The guest is parked and the termios payload is copied before use. */
-static void deferred_track_tty(lxp_proc_t *proc, long nr, long a0, long a1, long a2)
-{
-	if (nr != LXP_NR_ioctl)
-		return;
-	int fd = (int)a0;
-	unsigned long cmd = (unsigned long)a1;
-	if (fd < 0 || fd >= LXP_MAX_FDS || lxp_fd_kind(proc, fd) != LXP_FD_CONSOLE ||
-	    (cmd != LXP_TCSETS && cmd != LXP_TCSETSW && cmd != LXP_TCSETSF))
-		return;
-	lxp_termios t;
-	if (lxp_copy_from_guest(proc, &t, (uintptr_t)(uint32_t)a2, sizeof(t)) == 0) {
-		g_tty_isig = (t.c_lflag & LXP_ISIG) ? 1 : 0;
-		g_tty_icrnl = (t.c_iflag & LXP_ICRNL) ? 1 : 0;
-	}
-}
-
-uint8_t lxp_console_input_xlate(uint8_t ch)
-{
-	return (g_tty_icrnl && ch == '\r') ? '\n' : ch;
-}
-
-/* Console bytes read by the ^C/^Z check while no guest was reading the console.
- * Coordinator-owned: every producer and consumer runs in coordinator context. */
-static uint8_t g_console_typeahead[LXP_CONSOLE_TYPEAHEAD];
-static unsigned g_console_typeahead_head;
-static unsigned g_console_typeahead_count;
-
-void lxp_console_typeahead_reset(void)
-{
-	g_console_typeahead_head = 0;
-	g_console_typeahead_count = 0;
-}
-
-int lxp_console_input_ready(const lxp_proc_t *proc)
-{
-	return g_console_typeahead_count != 0 ||
-	       (proc && proc->console_poll && proc->console_poll(proc->io_ctx) > 0);
-}
-
-long lxp_console_read(lxp_proc_t *proc, int fd, void *buf, size_t len)
-{
-	long rc;
-	if (len != 0 && g_console_typeahead_count != 0) {
-		((uint8_t *)buf)[0] = g_console_typeahead[g_console_typeahead_head];
-		g_console_typeahead_head = (g_console_typeahead_head + 1u) % LXP_CONSOLE_TYPEAHEAD;
-		g_console_typeahead_count--;
-		rc = 1;
-	} else {
-		rc = proc->read_fn ? proc->read_fn(proc->io_ctx, fd, buf, len) : 0;
-	}
-	if (rc == 1)
-		((uint8_t *)buf)[0] = lxp_console_input_xlate(((const uint8_t *)buf)[0]);
-	return rc;
-}
-
-int lxp_console_poll_interrupts(const lxp_run_config_t *cfg)
-{
-	if (!g_tty_isig || !cfg || !cfg->read_fn || !cfg->console_poll ||
-	    g_console_typeahead_count == LXP_CONSOLE_TYPEAHEAD || !cfg->console_poll(cfg->io_ctx))
-		return 0;
-	uint8_t ch = 0;
-	if (cfg->read_fn(cfg->io_ctx, 0, &ch, 1) != 1)
-		return 0;
-	if (ch == 3 || ch == 26) {
-		console_signal_fg(ch == 3 ? LXP_SIGINT : LXP_SIGTSTP);
-		return 1;
-	}
-	unsigned tail = (g_console_typeahead_head + g_console_typeahead_count) % LXP_CONSOLE_TYPEAHEAD;
-	g_console_typeahead[tail] = ch;
-	g_console_typeahead_count++;
-	return 0;
-}
-
 /* Execute one READY mailbox in privileged task context. The lower-priority guest
  * is suspended before its host syscall runs; immediate completion resumes that
  * same task, while a blocking syscall leaves it parked for the established wait
@@ -989,7 +879,6 @@ void execute_deferred(const lxp_os_ops_t *eng, int slot)
 	long a4 = (long)(int32_t)g_lxp_slots[slot].resume.r4_11[0];
 	long a5 = (long)(int32_t)g_lxp_slots[slot].resume.r4_11[1];
 	(void)lxp_intent_complete(proc, LXP_INTENT_DEFERRED_SYSCALL);
-	deferred_track_tty(proc, nr, a0, a1, a2);
 	long r = lxp_syscall(proc, nr, a0, a1, a2, a3, a4, a5);
 	coordinator_report_enosys(nr, r);
 	deferred_state_store(slot, DEFER_IDLE);
@@ -1104,10 +993,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	memset(g_lxp_vfork_guard, 0, sizeof(g_lxp_vfork_guard));
 	for (int i = 0; i < LXP_NSLOT; i++)
 		lxp_vfork_guard_reset(i);
-	g_tty_isig = 1;
-	g_tty_icrnl = 1;
-	g_console_fg_pgrp = 0;
-	lxp_console_typeahead_reset();
+	lxp_console_reset();
 	lxp_stats_reset();
 	for (int i = 0; i < LXP_NSLOT; i++)
 		g_sig_save[i].depth = 0;
@@ -1413,8 +1299,6 @@ struct lxp_runtime_test_fixture *lxp_runtime_test_fixture(void)
 		.diag_native_present = g_lxp_diag.native_present,
 		.diag_lifecycle_epoch = &g_lxp_diag.lifecycle_epoch,
 		.diag_native_epoch = &g_lxp_diag.native_epoch,
-		.tty_isig = &g_tty_isig,
-		.tty_icrnl = &g_tty_icrnl,
 #if defined(LXP_TEST_FAILPOINTS)
 		.lifecycle_failpoint = &g_lifecycle_failpoint,
 #endif
