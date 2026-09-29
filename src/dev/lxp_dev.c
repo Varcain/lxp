@@ -170,81 +170,100 @@ void lxp_dev_close(int oi)
 	o->used = 0;
 }
 
-/* ---- read / write / ioctl (with deferred-block park) ----------------------- */
+/* ---- read / write / ioctl / positioned I/O / sync (with deferred-block park) ---- */
+
+/* One device call, described by the wait record that would retry it: the driver's
+ * answer, or -EAGAIN when it would block. The first attempt and the coordinator's retry
+ * both run it, so a parked call resumes exactly as it started. */
+static long dev_attempt(lxp_proc_t *p, const lxp_wait_t *call)
+{
+	struct lxp_dev_open *o = open_slot(call->data.io.object);
+	if (!o)
+		return -LXP_EBADF;
+	struct lxp_dev *d = &g_lnx_devs[o->dev];
+	void *buf = (void *)call->data.io.buffer;
+	size_t len = call->data.io.length;
+	switch (call->op) {
+	case LXP_DEVW_READ:
+		return d->ops->read ? d->ops->read(d, o, p, buf, len) : -LXP_EINVAL;
+	case LXP_DEVW_WRITE:
+		return d->ops->write ? d->ops->write(d, o, p, buf, len) : -LXP_EINVAL;
+	case LXP_DEVW_IOCTL:
+		return d->ops->ioctl ? d->ops->ioctl(d, o, p, call->data.io.command,
+						     call->data.io.buffer)
+				     : -LXP_ENOTTY;
+	case LXP_DEVW_PREAD:
+	case LXP_DEVW_PWRITE: {
+		/* Positioned I/O drives the same operation with a temporary cursor. */
+		int write = call->op == LXP_DEVW_PWRITE;
+		if ((write && !d->ops->write) || (!write && !d->ops->read))
+			return -LXP_EINVAL;
+		uint64_t save = o->pos;
+		o->pos = call->data.io.offset;
+		long r = write ? d->ops->write(d, o, p, buf, len) : d->ops->read(d, o, p, buf, len);
+		o->pos = save;
+		return r;
+	}
+	case LXP_DEVW_SYNC:
+		return d->ops->sync ? d->ops->sync(d, o, p) : 0;
+	default:
+		return -LXP_EINVAL;
+	}
+}
+
+/* Run a device call, parking it for the coordinator's retry when the driver would block
+ * and the descriptor is not O_NONBLOCK. */
+static long dev_call(lxp_proc_t *p, const lxp_wait_t *call)
+{
+	long r = dev_attempt(p, call);
+	if (r != -LXP_EAGAIN)
+		return r;
+	const struct lxp_dev_open *o = open_slot(call->data.io.object);
+	if (o->oflags & LXP_O_NONBLOCK)
+		return -LXP_EAGAIN;
+	return lxp_wait_park(p, call);
+}
+
+/* A call on open @p oi, as the wait record that would retry it. */
+static lxp_wait_t dev_request(uint8_t op, int oi, uintptr_t buffer, size_t length)
+{
+	lxp_wait_t call = {
+		.kind = LXP_WAIT_DEVICE,
+		.op = op,
+		.data.io.object = oi,
+		.data.io.buffer = buffer,
+		.data.io.length = length,
+	};
+	return call;
+}
+
 long lxp_dev_read(lxp_proc_t *p, int oi, void *buf, size_t len)
 {
-	struct lxp_dev_open *o = open_slot(oi);
+	const struct lxp_dev_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
 	if ((o->oflags & LXP_O_ACCMODE) == LXP_O_WRONLY)
 		return -LXP_EBADF; /* a write-only fd is not readable */
-	struct lxp_dev *d = &g_lnx_devs[o->dev];
-	if (!d->ops->read)
-		return -LXP_EINVAL;
-	long r = d->ops->read(d, o, p, buf, len);
-	if (r == -LXP_EAGAIN) {
-		if (o->oflags & LXP_O_NONBLOCK)
-			return -LXP_EAGAIN;
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_DEVICE,
-			.op = LXP_DEVW_READ,
-			.data.io.object = oi,
-			.data.io.buffer = (uintptr_t)buf,
-			.data.io.length = len,
-		};
-		return lxp_wait_park(p, &wait);
-	}
-	return r;
+	lxp_wait_t call = dev_request(LXP_DEVW_READ, oi, (uintptr_t)buf, len);
+	return dev_call(p, &call);
 }
 
 long lxp_dev_write(lxp_proc_t *p, int oi, const void *buf, size_t len)
 {
-	struct lxp_dev_open *o = open_slot(oi);
+	const struct lxp_dev_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
 	if ((o->oflags & LXP_O_ACCMODE) == LXP_O_RDONLY)
 		return -LXP_EBADF; /* a read-only fd is not writable */
-	struct lxp_dev *d = &g_lnx_devs[o->dev];
-	if (!d->ops->write)
-		return -LXP_EINVAL;
-	long r = d->ops->write(d, o, p, buf, len);
-	if (r == -LXP_EAGAIN) {
-		if (o->oflags & LXP_O_NONBLOCK)
-			return -LXP_EAGAIN;
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_DEVICE,
-			.op = LXP_DEVW_WRITE,
-			.data.io.object = oi,
-			.data.io.buffer = (uintptr_t)buf,
-			.data.io.length = len,
-		};
-		return lxp_wait_park(p, &wait);
-	}
-	return r;
+	lxp_wait_t call = dev_request(LXP_DEVW_WRITE, oi, (uintptr_t)buf, len);
+	return dev_call(p, &call);
 }
 
 long lxp_dev_ioctl(lxp_proc_t *p, int oi, unsigned long cmd, unsigned long arg)
 {
-	struct lxp_dev_open *o = open_slot(oi);
-	if (!o)
-		return -LXP_EBADF;
-	struct lxp_dev *d = &g_lnx_devs[o->dev];
-	if (!d->ops->ioctl)
-		return -LXP_ENOTTY;
-	long r = d->ops->ioctl(d, o, p, cmd, arg);
-	if (r == -LXP_EAGAIN) {
-		if (o->oflags & LXP_O_NONBLOCK)
-			return -LXP_EAGAIN;
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_DEVICE,
-			.op = LXP_DEVW_IOCTL,
-			.data.io.object = oi,
-			.data.io.buffer = arg,
-			.data.io.command = cmd,
-		};
-		return lxp_wait_park(p, &wait);
-	}
-	return r;
+	lxp_wait_t call = dev_request(LXP_DEVW_IOCTL, oi, arg, 0);
+	call.data.io.command = cmd;
+	return dev_call(p, &call);
 }
 
 /* mmap(2) a device buffer: the driver's .mmap op resolves the physical range +
@@ -276,36 +295,14 @@ long lxp_dev_mmap(lxp_proc_t *p, int oi, size_t len, uint32_t pgoff)
 	return lxp_wait_park(p, &wait);
 }
 
-/* Positioned I/O drives the same operation with a temporary cursor. Async
- * devices retain the 64-bit offset in the typed wait record for retry. */
+/* Positioned I/O keeps its 64-bit offset in the wait record for the retry. */
 static long dev_positioned(lxp_proc_t *p, int oi, void *buf, size_t len, uint64_t off,
 			   int write)
 {
-	struct lxp_dev_open *o = open_slot(oi);
-	if (!o)
-		return -LXP_EBADF;
-	struct lxp_dev *d = &g_lnx_devs[o->dev];
-	if ((write && !d->ops->write) || (!write && !d->ops->read))
-		return -LXP_EINVAL;
-	uint64_t save = o->pos;
-	o->pos = off;
-	long r = write ? d->ops->write(d, o, p, buf, len)
-		       : d->ops->read(d, o, p, buf, len);
-	o->pos = save;
-	if (r == -LXP_EAGAIN) {
-		if (o->oflags & LXP_O_NONBLOCK)
-			return r;
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_DEVICE,
-			.op = write ? LXP_DEVW_PWRITE : LXP_DEVW_PREAD,
-			.data.io.object = oi,
-			.data.io.buffer = (uintptr_t)buf,
-			.data.io.length = len,
-			.data.io.offset = off,
-		};
-		return lxp_wait_park(p, &wait);
-	}
-	return r;
+	lxp_wait_t call =
+		dev_request(write ? LXP_DEVW_PWRITE : LXP_DEVW_PREAD, oi, (uintptr_t)buf, len);
+	call.data.io.offset = off;
+	return dev_call(p, &call);
 }
 
 long lxp_dev_pread(lxp_proc_t *p, int oi, void *buf, size_t len, uint64_t off)
@@ -370,21 +367,8 @@ int lxp_dev_llseek(int oi, int64_t off, int whence, uint64_t *position)
 
 long lxp_dev_sync(lxp_proc_t *p, int oi)
 {
-	struct lxp_dev_open *o = open_slot(oi);
-	if (!o)
-		return -LXP_EBADF;
-	struct lxp_dev *d = &g_lnx_devs[o->dev];
-	if (!d->ops->sync)
-		return 0;
-	long r = d->ops->sync(d, o, p);
-	if (r != -LXP_EAGAIN)
-		return r;
-	if (o->oflags & LXP_O_NONBLOCK)
-		return r;
-	lxp_wait_t wait = {.kind = LXP_WAIT_DEVICE,
-			   .op = LXP_DEVW_SYNC,
-			   .data.io.object = oi};
-	return lxp_wait_park(p, &wait);
+	lxp_wait_t call = dev_request(LXP_DEVW_SYNC, oi, 0, 0);
+	return dev_call(p, &call);
 }
 
 void lxp_dev_cancel(lxp_proc_t *p)
@@ -449,49 +433,7 @@ long lxp_dev_retry(lxp_proc_t *p)
 {
 	if (!p || p->wait.kind != LXP_WAIT_DEVICE)
 		return -LXP_EINVAL;
-	int oi = p->wait.data.io.object;
-	struct lxp_dev_open *o = open_slot(oi);
-	if (!o)
-		return -LXP_EBADF;
-	struct lxp_dev *d = &g_lnx_devs[o->dev];
-	switch (p->wait.op) {
-	case LXP_DEVW_READ:
-		return d->ops->read ? d->ops->read(d, o, p, (void *)p->wait.data.io.buffer,
-						   p->wait.data.io.length)
-				    : -LXP_EINVAL;
-	case LXP_DEVW_WRITE:
-		return d->ops->write ? d->ops->write(d, o, p, (const void *)p->wait.data.io.buffer,
-						     p->wait.data.io.length)
-				     : -LXP_EINVAL;
-	case LXP_DEVW_IOCTL:
-		return d->ops->ioctl ? d->ops->ioctl(d, o, p, p->wait.data.io.command,
-						     p->wait.data.io.buffer)
-					     : -LXP_ENOTTY;
-	case LXP_DEVW_PREAD: {
-		uint64_t save = o->pos;
-		o->pos = p->wait.data.io.offset;
-		long rc = d->ops->read
-				  ? d->ops->read(d, o, p, (void *)p->wait.data.io.buffer,
-						 p->wait.data.io.length)
-				  : -LXP_EINVAL;
-		o->pos = save;
-		return rc;
-	}
-	case LXP_DEVW_PWRITE: {
-		uint64_t save = o->pos;
-		o->pos = p->wait.data.io.offset;
-		long rc = d->ops->write
-				  ? d->ops->write(d, o, p, (const void *)p->wait.data.io.buffer,
-						  p->wait.data.io.length)
-				  : -LXP_EINVAL;
-		o->pos = save;
-		return rc;
-	}
-	case LXP_DEVW_SYNC:
-		return d->ops->sync ? d->ops->sync(d, o, p) : 0;
-	default:
-		return -LXP_EINVAL;
-	}
+	return dev_attempt(p, &p->wait);
 }
 
 void lxp_dev_tick(uint64_t now_us)
