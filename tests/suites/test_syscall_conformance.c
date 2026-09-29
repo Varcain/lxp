@@ -294,6 +294,12 @@ static void test_conf_pread_files(void **state)
 	assert_int_equal(SC(&p, LXP_NR_pread64, ver, (long)(uintptr_t)buf, 4, 0, 8, 0), 4);
 	assert_int_equal(SC(&p, LXP_NR_read, ver, (long)(uintptr_t)seq, 4, 0, 0, 0), 4);
 	assert_memory_equal(buf, seq, 4);
+	/* /proc files seek within their generated content: rewinding re-reads it. */
+	assert_int_equal(SC(&p, LXP_NR_lseek, ver, 0, LXP_SEEK_CUR, 0, 0, 0), 12);
+	assert_int_equal(SC(&p, LXP_NR_lseek, ver, 0, LXP_SEEK_SET, 0, 0, 0), 0);
+	assert_int_equal(SC(&p, LXP_NR_read, ver, (long)(uintptr_t)seq, 8, 0, 0, 0), 8);
+	assert_int_equal(SC(&p, LXP_NR_pread64, ver, (long)(uintptr_t)buf, 8, 0, 0, 0), 8);
+	assert_memory_equal(seq, buf, 8);
 	assert_int_equal(SC(&p, LXP_NR_pwrite64, ver, (long)(uintptr_t)buf, 1, 0, 0, 0),
 			 -LXP_EBADF);
 
@@ -302,6 +308,13 @@ static void test_conf_pread_files(void **state)
 	assert_true(proc >= 3);
 	assert_int_equal(SC(&p, LXP_NR_pread64, proc, (long)(uintptr_t)buf, 4, 0, 0, 0),
 			 -LXP_EISDIR);
+
+	/* rewinddir on /proc lists it again from the start. */
+	uint8_t *dbuf = lxp_conf_alloc(fx, 512);
+	long n1 = SC(&p, LXP_NR_getdents64, proc, (long)(uintptr_t)dbuf, 512, 0, 0, 0);
+	assert_true(n1 > 0);
+	assert_int_equal(SC(&p, LXP_NR_lseek, proc, 0, LXP_SEEK_SET, 0, 0, 0), 0);
+	assert_int_equal(SC(&p, LXP_NR_getdents64, proc, (long)(uintptr_t)dbuf, 512, 0, 0, 0), n1);
 }
 
 static void test_conf_pread_streams(void **state)

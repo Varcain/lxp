@@ -518,6 +518,14 @@ static long fop_getdents_proc(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *si
 	return lxp_dir_list(p, s, g_procf[s->file_idx].path, sink);
 }
 
+/* /proc content is generated at open, so a file seeks within that snapshot and a
+ * directory rewinds its listing (rewinddir). */
+static int64_t fop_lseek_proc(lxp_proc_t *p, lxp_ofd_t *s, int64_t off, int whence)
+{
+	(void)p;
+	return lxp_vfs_seek(s, (int64_t)g_procf[s->file_idx].len, off, whence);
+}
+
 static long fop_fstat_proc(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
 	(void)p;
@@ -536,6 +544,7 @@ static void fop_close_proc(lxp_proc_t *p, lxp_ofd_t *s)
 const lxp_file_ops_t lxp_procfs_fops = {
 	.read = fop_read_proc,
 	.pread = fop_pread_proc,
+	.lseek = fop_lseek_proc,
 	.getdents = fop_getdents_proc,
 	.fstat = fop_fstat_proc,
 	.close = fop_close_proc,
