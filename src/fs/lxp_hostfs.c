@@ -11,6 +11,7 @@
 #if LXP_ENABLE_FS
 
 #include "fs/lxp_hostfs.h"
+#include "fs/lxp_mount.h"
 #include "fs/lxp_path.h"
 #include "fs/lxp_stat.h"
 #include "fs/lxp_vfs.h"
@@ -103,9 +104,7 @@ void lxp_hostfs_cancel(lxp_proc_t *proc)
 
 int lxp_hostfs_match(const char *abspath)
 {
-	const size_t mount_len = strlen(g_hostfs_mount_path);
-	return abspath && strncmp(abspath, g_hostfs_mount_path, mount_len) == 0 &&
-	       (abspath[mount_len] == '\0' || abspath[mount_len] == '/');
+	return abspath && lxp_path_under(abspath, g_hostfs_mount_path) != 0;
 }
 
 const char *lxp_hostfs_relative(const char *abspath)
@@ -719,6 +718,33 @@ const lxp_file_ops_t lxp_hostfs_fops = {
 	.ftruncate = fop_ftruncate_hostfs,
 	.fsync = fop_fsync_hostfs,
 	.close = fop_close_hostfs,
+};
+
+static long hostfs_mount_open(lxp_proc_t *p, const char *path, int flags)
+{
+	long hi = lxp_hostfs_open(p, path, flags);
+	if (hi < 0)
+		return hi;
+	int fd = lxp_fd_install(p, LXP_FD_HOSTFS, (int)hi, flags);
+	if (fd < 0)
+		lxp_hostfs_close((int)hi);
+	return fd;
+}
+
+static long hostfs_mount_stat(lxp_proc_t *p, const char *path, int follow, struct lxp_stat *st)
+{
+	(void)follow; /* the FAT-backed provider has no symlinks */
+	lxp_fs_stat_t stat;
+	long rc = lxp_hostfs_path_stat(p, path, &stat);
+	if (rc < 0)
+		return rc;
+	lxp_hostfs_stat_record(st, lxp_hostfs_path_inode(path), &stat);
+	return 0;
+}
+
+const lxp_mount_ops_t lxp_hostfs_mount_ops = {
+	.open = hostfs_mount_open,
+	.stat = hostfs_mount_stat,
 };
 
 #endif /* LXP_ENABLE_FS */

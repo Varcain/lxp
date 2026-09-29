@@ -25,6 +25,8 @@
 
 #include "netfs/lxp_netfs.h"
 #include "fs/lxp_dirent.h"
+#include "fs/lxp_mount.h"
+#include "fs/lxp_path.h"
 #include "fs/lxp_stat.h"
 #include "fs/lxp_vfs.h"
 #include "lxp_guest.h"
@@ -1223,16 +1225,15 @@ void lxp_netfs_shutdown(void)
 }
 
 /* ---- provider entry points (called from the syscall handlers) -------------- */
+const char *lxp_netfs_mountpoint(void)
+{
+	return g_mnt.configured && g_mnt.mplen ? g_mnt.mp : NULL;
+}
+
 int lxp_netfs_lookup(const char *abspath)
 {
-	if (!g_mnt.configured || !g_mnt.mplen)
-		return -1;
-	if (strncmp(abspath, g_mnt.mp, g_mnt.mplen) != 0)
-		return -1;
-	char c = abspath[g_mnt.mplen];
-	if (c == '\0' || c == '/')
-		return 0; /* the mount point itself or something under it */
-	return -1;
+	const char *mp = lxp_netfs_mountpoint();
+	return mp && lxp_path_under(abspath, mp) ? 0 : -1;
 }
 
 /* Return the mount-relative remote path ("/" for the mount root). */
@@ -1621,6 +1622,11 @@ const lxp_file_ops_t lxp_netfs_fops = {
 	.getdents = fop_getdents_netfs,
 	.fstat = fop_fstat_netfs,
 	.close = fop_close_netfs,
+};
+
+const lxp_mount_ops_t lxp_netfs_mount_ops = {
+	.open = lxp_netfs_open,
+	.stat_park = lxp_netfs_stat,
 };
 
 #endif /* LXP_ENABLE_NETFS */

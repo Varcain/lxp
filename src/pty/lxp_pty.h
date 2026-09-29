@@ -40,6 +40,9 @@ long lxp_pty_open_master(int flags);
  *  fd's @c file_idx) or a negative errno. @p flags carries O_NONBLOCK. */
 long lxp_pty_open_slave(int num, int flags);
 
+/** Whether pty @p num is allocated, i.e. whether /dev/pts/N exists. */
+int lxp_pty_exists(int num);
+
 /** Publish/release one master or slave open-file description. Descriptor
  * aliases share the same endpoint and do not alter these counts. */
 void lxp_pty_end_open(int idx, int is_master);

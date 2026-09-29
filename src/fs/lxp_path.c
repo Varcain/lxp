@@ -181,6 +181,16 @@ int lxp_rootfs_resolve_index(const lxp_file_t *fs, int count, const char *abspat
 	return fsx_follow(fs, count, fsx_lookup(fs, count, abspath));
 }
 
+size_t lxp_path_under(const char *path, const char *prefix)
+{
+	size_t n = strlen(prefix);
+	if (n == 1 && prefix[0] == '/')
+		return path[0] == '/' ? 1u : 0u;
+	if (n == 0 || strncmp(path, prefix, n) != 0)
+		return 0;
+	return path[n] == '\0' || path[n] == '/' ? n : 0u;
+}
+
 const char *lxp_path_child_name(const char *dir, const char *path)
 {
 	if (dir[0] == '/' && dir[1] == 0) { /* root */

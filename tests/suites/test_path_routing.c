@@ -463,25 +463,25 @@ struct pair {
 /* open(O_RDONLY), open(O_WRONLY | O_CREAT), stat, lstat. */
 static const struct row4 g_open_stat[] = {
 	/* path           open      creat     stat      lstat */
-	{"/",            {ROOT,     TMP,      ROOT,     ROOT}},
-	{"/proc",        {PROC,     PROC,     PROC,     PROC}},
-	{"/proc/self",   {E(NOENT), E(NOENT), PROC,     PROC}},
-	{"/proc/uptime",{PROC,     PROC,     PROC,     PROC}},
-	{"/proc/nope",   {E(NOENT), E(NOENT), E(NOENT), E(NOENT)}},
+	{"/",            {ROOT,     E(ISDIR), ROOT,     ROOT}},
+	{"/proc",        {PROC,     E(ISDIR), PROC,     PROC}},
+	{"/proc/self",   {E(NOENT), E(ACCES), PROC,     PROC}},
+	{"/proc/uptime", {PROC,     E(ACCES), PROC,     PROC}},
+	{"/proc/nope",   {E(NOENT), E(ACCES), E(NOENT), E(NOENT)}},
 	{"/data",        {HOST,     E(ISDIR), HOST,     HOST}},
 	{"/data/f",      {HOST,     HOST,     HOST,     HOST}},
 	{"/data/nope",   {E(NOENT), HOST,     E(NOENT), E(NOENT)}},
-	{"/dev",         {ROOT,     TMP,      ROOT,     ROOT}},
-	{"/dev/null",    {CONS,     CONS,     E(NOENT), E(NOENT)}},
-	{"/dev/ptmx",    {PTY,      PTY,      E(NOENT), E(NOENT)}},
+	{"/dev",         {ROOT,     E(ISDIR), ROOT,     ROOT}},
+	{"/dev/null",    {CONS,     CONS,     DEV,      DEV}},
+	{"/dev/ptmx",    {PTY,      PTY,      DEV,      DEV}},
 	{"/dev/rtest",   {DEV,      DEV,      DEV,      DEV}},
 	{"/mnt/pi",      {NET,      E(ROFS),  NET,      NET}},
 	{"/mnt/pi/f",    {NET,      E(ROFS),  NET,      NET}},
 	{"/tmp/w",       {TMP,      TMP,      TMP,      TMP}},
 	{"/tmp/wd",      {TMP,      E(ISDIR), TMP,      TMP}},
-	{"/etc/passwd",  {ROOT,     TMP,      ROOT,     ROOT}},
-	{"/bin/sh",      {ROOT,     TMP,      ROOT,     ROOT}},
-	{"/etclink",     {ROOT,     TMP,      ROOT,     ROOT}},
+	{"/etc/passwd",  {ROOT,     E(ROFS),  ROOT,     ROOT}},
+	{"/bin/sh",      {ROOT,     E(ROFS),  ROOT,     ROOT}},
+	{"/etclink",     {ROOT,     E(ISDIR), ROOT,     ROOT}},
 	{"/nope",        {E(NOENT), TMP,      E(NOENT), E(NOENT)}},
 };
 
@@ -602,6 +602,48 @@ static void test_route_lookups(void **state)
 	assert_int_equal(bad, 0);
 }
 
+/* The built-in /dev nodes stat as character devices with Linux's numbers, and a pts
+ * node reports the inode its open slave descriptor does. */
+static void test_dev_nodes_stat_as_devices(void **state)
+{
+	(void)state;
+	lxp_conf_t *fx = world_begin(&g_proc);
+	assert_non_null(fx);
+	uint8_t *buf = lxp_conf_alloc(fx, 128);
+	uint32_t *ptn = lxp_conf_alloc(fx, sizeof(*ptn));
+	long b = (long)(uintptr_t)buf;
+
+	assert_int_equal(call(&g_proc, LXP_NR_stat64, (long)(uintptr_t)lxp_conf_str(fx, "/dev/null"),
+			      b, 0, 0),
+			 0);
+	lxp_stat_view_t null_node = lxp_view_kstat64(buf);
+	assert_int_equal(null_node.mode, LXP_S_IFCHR | 0666u);
+	assert_int_equal(null_node.rdev, (1u << 8) | 3u);
+
+	long master = call(&g_proc, LXP_NR_openat, LXP_AT_FDCWD,
+			   (long)(uintptr_t)lxp_conf_str(fx, "/dev/ptmx"), LXP_O_RDWR, 0);
+	assert_true(master >= 0);
+	assert_int_equal(call(&g_proc, LXP_NR_ioctl, master, (long)LXP_TIOCGPTN, (long)(uintptr_t)ptn,
+			      0),
+			 0);
+	char name[24];
+	snprintf(name, sizeof(name), "/dev/pts/%u", *ptn);
+	long pts = (long)(uintptr_t)lxp_conf_str(fx, name);
+	assert_int_equal(call(&g_proc, LXP_NR_stat64, pts, b, 0, 0), 0);
+	lxp_stat_view_t by_path = lxp_view_kstat64(buf);
+	assert_int_equal(by_path.rdev, (136u << 8) | *ptn);
+	long slave = call(&g_proc, LXP_NR_openat, LXP_AT_FDCWD, pts, LXP_O_RDWR, 0);
+	assert_true(slave >= 0);
+	assert_int_equal(call(&g_proc, LXP_NR_fstat64, slave, b, 0, 0), 0);
+	lxp_stat_view_t by_fd = lxp_view_kstat64(buf);
+	assert_int_equal(by_fd.ino, by_path.ino);
+	assert_int_equal(by_fd.mode, by_path.mode);
+
+	assert_int_equal(call(&g_proc, LXP_NR_close, slave, 0, 0, 0), 0);
+	assert_int_equal(call(&g_proc, LXP_NR_close, master, 0, 0, 0), 0);
+	world_end(&g_proc);
+}
+
 static int group_setup(void **state)
 {
 	(void)state;
@@ -637,6 +679,7 @@ int test_path_routing_run(void)
 		cmocka_unit_test(test_route_open_and_stat),
 		cmocka_unit_test(test_route_namespace_operations),
 		cmocka_unit_test(test_route_lookups),
+		cmocka_unit_test(test_dev_nodes_stat_as_devices),
 	};
 	return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

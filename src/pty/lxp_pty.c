@@ -397,6 +397,11 @@ long lxp_pty_open_slave(int num, int flags)
 	return num; /* the pool index doubles as the pts number */
 }
 
+int lxp_pty_exists(int num)
+{
+	return num >= 0 && num < LXP_NPTY && g_ptys[num].used;
+}
+
 void lxp_pty_end_open(int idx, int is_master)
 {
 	if (idx < 0 || idx >= LXP_NPTY || !g_ptys[idx].used)

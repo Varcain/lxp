@@ -108,6 +108,7 @@ enum lxp_ino_base {
 	LXP_INO_TMPFS = 0x100000u,    /* + writable node index */
 	LXP_INO_PROC = 0x200000u,     /* + 20-bit path hash (lxp_procfs_inode) */
 	LXP_INO_DEV = 0x300000u,      /* + registry index; streams: + object index */
+	LXP_INO_DEVFS = 0x300100u,    /* + built-in /dev node (console, null, random, ptmx) */
 	LXP_INO_SOCKET = 0x400000u,   /* + socket index */
 	LXP_INO_PTY = 0x500000u,      /* + pty index */
 	LXP_INO_NETFS = 0x600000u,    /* + 9P qid path */

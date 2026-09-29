@@ -11,6 +11,7 @@
 #include "proc/lxp_procfs.h"
 
 #include "fs/lxp_dir.h"
+#include "fs/lxp_mount.h"
 #include "fs/lxp_path.h"
 #include "fs/lxp_stat.h"
 #include "fs/lxp_vfs.h"
@@ -548,4 +549,33 @@ const lxp_file_ops_t lxp_procfs_fops = {
 	.getdents = fop_getdents_proc,
 	.fstat = fop_fstat_proc,
 	.close = fop_close_proc,
+};
+
+/* Every /proc file is read-only and /proc takes no new names, so a write open fails
+ * as it does on Linux: EISDIR for a directory, else EACCES (ENOENT for a missing
+ * name opened without O_CREAT). */
+static long procfs_mount_open(lxp_proc_t *p, const char *path, int flags)
+{
+	if ((flags & LXP_O_ACCMODE) != LXP_O_RDONLY || (flags & (LXP_O_CREAT | LXP_O_TRUNC))) {
+		uint32_t mode = proc_mode(path, p);
+		if ((mode & LXP_S_IFMT) == LXP_S_IFDIR)
+			return -LXP_EISDIR;
+		return mode == 0 && !(flags & LXP_O_CREAT) ? -LXP_ENOENT : -LXP_EACCES;
+	}
+	return lxp_procfs_open(p, path, flags);
+}
+
+static long procfs_mount_stat(lxp_proc_t *p, const char *path, int follow, struct lxp_stat *st)
+{
+	(void)follow;
+	uint32_t mode = proc_mode(path, p);
+	if (mode == 0)
+		return -LXP_ENOENT;
+	lxp_stat_init(st, lxp_procfs_inode(path), mode, 0);
+	return 0;
+}
+
+const lxp_mount_ops_t lxp_procfs_mount_ops = {
+	.open = procfs_mount_open,
+	.stat = procfs_mount_stat,
 };

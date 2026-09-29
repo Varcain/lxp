@@ -69,10 +69,13 @@ int lxp_netfs_init(const lxp_netfs_config_t *config);
  */
 void lxp_netfs_shutdown(void);
 
-/* ---- syscall-layer <-> netfs-core interface (called from lxp_syscall.c) ---- */
+/* ---- syscall-layer <-> netfs-core interface ---- */
 
 /** @return mount id (>=0) if @p abspath is at or under the mount point, else -1. */
 int lxp_netfs_lookup(const char *abspath);
+
+/** The configured mountpoint, or NULL while no mount is configured. */
+const char *lxp_netfs_mountpoint(void);
 
 /** open(2): submit Twalk->Tlgetattr->Tlopen for the /mnt path; parks in an
  *  @c LXP_WAIT_NETFS state with @c LXP_NETFSW_OPEN, or returns a negative

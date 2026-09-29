@@ -10,6 +10,7 @@
  */
 #include "sys/lxp_sys.h"
 #include "fs/lxp_fd_private.h"
+#include "fs/lxp_mount.h"
 #include "fs/lxp_path.h"
 #include "fs/lxp_stat.h"
 #include "fs/lxp_tmpfs.h"
@@ -19,17 +20,8 @@
 #include "lxp_linux_uapi.h"
 #include "lxp_text.h"
 #include "proc/lxp_procfs.h"
-#if LXP_ENABLE_DEV
-#include "dev/lxp_dev.h"
-#endif
 #if LXP_ENABLE_FS
 #include "fs/lxp_hostfs.h"
-#endif
-#if LXP_ENABLE_NETFS
-#include "netfs/lxp_netfs.h"
-#endif
-#if LXP_ENABLE_PTY
-#include "pty/lxp_pty.h"
 #endif
 
 #include <string.h>
@@ -48,12 +40,6 @@
 #define LXP_MS_MGC_MSK 0xffff0000ul
 #define LXP_MS_MGC_VAL 0xc0ed0000ul
 
-enum lxp_path_stat_result {
-	LXP_PATH_STAT_LOCAL,
-	LXP_PATH_STAT_NETFS,
-};
-
-
 static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 {
 	(void)dirfd; /* dirfd is AT_FDCWD; relative paths resolve against p->fs_context->cwd */
@@ -63,126 +49,7 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 	long rr = resolve_path(p, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
-	path = abspath;
-	if (proc_is(path)) /* synthetic /proc shadows everything */
-		return lxp_procfs_open(p, path, flags);
-#if LXP_ENABLE_FS
-	/* The mount boundary is exact: /data and descendants route to the host
-	 * provider, while /database remains part of the ordinary rootfs/tmpfs. */
-	if (lxp_hostfs_match(path)) {
-		long hi = lxp_hostfs_open(p, path, flags);
-		if (hi < 0)
-			return hi;
-		int fd = lxp_sys_fd_alloc(p, LXP_FD_HOSTFS, (int)hi, 0, flags);
-		if (fd < 0)
-			lxp_hostfs_close((int)hi);
-		return fd;
-	}
-#endif
-	/* The synthetic console/null/random nodes all open as an FD_CONSOLE; file_idx selects
-	 * the behaviour (2 = r/w console, 3 = /dev/null → EOF/discard, 4 = host entropy,
-	 * 5 = /dev/zero → zero-fill/discard). A small name→idx table instead of a strcmp chain
-	 * (smaller .text). getty opens /dev/console + dups it to fds 0/1/2; dropbear/mbedTLS open
-	 * /dev/urandom for entropy. */
-	static const struct {
-		const char *path;
-		uint8_t idx;
-	} console_dev[] = {
-		{"/dev/console", 2}, {"/dev/tty", 2},	  {"/dev/tty0", 2},   {"/dev/ttyS0", 2},
-		{"/dev/null", 3},    {"/dev/urandom", 4}, {"/dev/random", 4}, {"/dev/zero", 5},
-	};
-	for (size_t k = 0; k < sizeof(console_dev) / sizeof(console_dev[0]); k++)
-		if (strcmp(path, console_dev[k].path) == 0)
-			return lxp_sys_fd_alloc(p, LXP_FD_CONSOLE, console_dev[k].idx, 0, flags);
-#if LXP_ENABLE_PTY
-	/* Unix98 pty: each open of /dev/ptmx mints a fresh pair (the master, rw=1); the
-	 * slave is /dev/pts/N (rw=0), N = the pool index from TIOCGPTN/ptsname. */
-	if (strcmp(path, "/dev/ptmx") == 0) {
-		long idx = lxp_pty_open_master(flags);
-		if (idx < 0)
-			return idx;
-		int fd = lxp_sys_fd_alloc(p, LXP_FD_PTY, (int)idx, 0, flags);
-		if (fd >= 0) {
-			(void)lxp_fd_set_end(p, fd, 1); /* master end */
-			lxp_pty_end_open((int)idx, 1);
-		} else {
-			lxp_pty_discard((int)idx);
-		}
-		return fd;
-	}
-	if (strncmp(path, "/dev/pts/", 9) == 0) {
-		int num = 0;
-		const char *d = path + 9;
-		if (*d < '0' || *d > '9')
-			return -LXP_ENOENT;
-		for (; *d >= '0' && *d <= '9'; d++)
-			num = num * 10 + (*d - '0');
-		if (*d != '\0')
-			return -LXP_ENOENT;
-		long idx = lxp_pty_open_slave(num, flags);
-		if (idx < 0)
-			return idx;
-		int fd = lxp_sys_fd_alloc(p, LXP_FD_PTY, (int)idx, 0, flags); /* slave end (rw=0) */
-		if (fd >= 0)
-			lxp_pty_end_open((int)idx, 0);
-		return fd;
-	}
-#endif
-#if LXP_ENABLE_DEV
-	/* Registered character devices (/dev/fb0, /dev/input/event0, ...). A hit opens
-	 * an FD_DEV whose file_idx is the device open-pool index; a miss falls through. */
-	{
-		int di = lxp_dev_lookup(path);
-		if (di >= 0) {
-			long oi = lxp_dev_open_new(p, di, flags);
-			if (oi < 0)
-				return oi;
-			int fd = lxp_sys_fd_alloc(p, LXP_FD_DEV, (int)oi, 0, flags);
-			if (fd < 0)
-				lxp_dev_close((int)oi);
-			return fd;
-		}
-	}
-#endif
-#if LXP_ENABLE_NETFS
-	/* Remote 9P mount (/mnt/pi): read-only browse. Shadows the RO rootfs; the open
-	 * parks (walk+getattr+lopen round-trips) and the coordinator installs the fd. */
-	if (lxp_netfs_lookup(path) >= 0)
-		return lxp_netfs_open(p, path, flags);
-#endif
-	int wr = (flags & LXP_O_ACCMODE) != LXP_O_RDONLY;
-	int wi = wfs_find(path);
-
-	/* A writable open (or O_CREAT) goes to the writable VFS overlay. */
-	if (wr || (flags & LXP_O_CREAT)) {
-		if (wi < 0) {
-			if (!(flags & LXP_O_CREAT)) {
-				if (fs_lookup(p, path) >= 0)
-					return -LXP_EROFS; /* RO rootfs file */
-				return -LXP_ENOENT;
-			}
-			wi = wfs_create(path, LXP_S_IFREG | 0644u);
-			if (wi < 0)
-				return -LXP_EMFILE;
-		} else {
-			if ((wnode_at(wi)->mode & LXP_S_IFMT) == LXP_S_IFDIR)
-				return -LXP_EISDIR;
-			if (flags & LXP_O_TRUNC)
-				wnode_at(wi)->size = 0;
-		}
-		return lxp_sys_fd_alloc(p, LXP_FD_TMPFS, wi, (flags & LXP_O_APPEND) ? wnode_at(wi)->size : 0,
-				flags);
-	}
-
-	/* Read: a writable node shadows the rootfs; else the read-only rootfs. */
-	if (wi >= 0)
-		return lxp_sys_fd_alloc(p, LXP_FD_TMPFS, wi, 0, flags);
-	/* Follow symlinks so a read open of e.g. /lib/libc.so.0 -> libuClibc.so returns the
-	 * target ELF (ld.so opens its .so deps by their symlinked SONAMEs). */
-	int idx = fs_follow(p, fs_lookup(p, path));
-	if (idx >= 0)
-		return lxp_sys_fd_alloc(p, LXP_FD_FILE, idx, 0, flags);
-	return -LXP_ENOENT;
+	return lxp_mount_of(p, abspath)->open(p, abspath, flags);
 }
 
 static long mount_copy_string(lxp_proc_t *p, const char *guest, char *out, size_t capacity)
@@ -354,58 +221,16 @@ static long sys_fstat64(lxp_proc_t *p, int fd, void *statbuf)
 	return rc < 0 ? rc : lxp_stat_copyout(p, (uintptr_t)statbuf, 0, &st);
 }
 
-/* Resolve all local pathname namespaces in their authoritative precedence.
- * Remote 9P metadata retains its asynchronous guest-buffer path, so identify
- * that boundary without duplicating the rest of the lookup ladder. */
-static long path_stat_lookup(lxp_proc_t *p, const char *abspath, int follow,
-			     struct lxp_stat *out)
+/* stat a resolved path into the guest's kstat64 (statx layout when @p statx) at @p buf,
+ * by the mount that answers it; a mount that answers later parks the caller instead. */
+static long path_stat(lxp_proc_t *p, const char *abspath, int follow, uintptr_t buf, int statx)
 {
-	lxp_stat_init(out, 0, 0, 0);
-	if (proc_is(abspath)) {
-		out->mode = proc_mode(abspath, p);
-		if (out->mode == 0)
-			return -LXP_ENOENT;
-		out->ino = lxp_procfs_inode(abspath);
-		return LXP_PATH_STAT_LOCAL;
-	}
-#if LXP_ENABLE_DEV
-	int di = lxp_dev_stat_path(abspath, &out->mode, &out->rdev);
-	if (di >= 0) {
-		out->ino = LXP_INO_DEV + (uint32_t)di;
-		return LXP_PATH_STAT_LOCAL;
-	}
-#endif
-#if LXP_ENABLE_NETFS
-	if (lxp_netfs_lookup(abspath) >= 0)
-		return LXP_PATH_STAT_NETFS;
-#endif
-#if LXP_ENABLE_FS
-	if (lxp_hostfs_match(abspath)) {
-		lxp_fs_stat_t stat;
-		long rc = lxp_hostfs_path_stat(p, abspath, &stat);
-		if (rc < 0)
-			return rc;
-		lxp_hostfs_stat_record(out, lxp_hostfs_path_inode(abspath), &stat);
-		return LXP_PATH_STAT_LOCAL;
-	}
-#endif
-	int index = wfs_find(abspath);
-	if (index >= 0) {
-		lxp_stat_init(out, LXP_INO_TMPFS + (uint32_t)index, wnode_at(index)->mode,
-			      wnode_at(index)->size);
-		return LXP_PATH_STAT_LOCAL;
-	}
-	index = fs_lookup(p, abspath);
-	if (index < 0)
-		return -LXP_ENOENT;
-	if (follow) {
-		index = fs_follow(p, index);
-		if (index < 0)
-			return -LXP_ENOENT;
-	}
-	lxp_stat_init(out, LXP_INO_ROOTFS + (uint32_t)index, file_mode(&p->fs[index]),
-		      p->fs[index].size);
-	return LXP_PATH_STAT_LOCAL;
+	const lxp_mount_ops_t *mount = lxp_mount_of(p, abspath);
+	if (mount->stat_park)
+		return mount->stat_park(p, abspath, buf, statx);
+	struct lxp_stat st;
+	long rc = mount->stat(p, abspath, follow, &st);
+	return rc < 0 ? rc : lxp_stat_copyout(p, buf, statx, &st);
 }
 
 /* path-based stat: resolve, optionally follow a trailing symlink, fill kstat64. */
@@ -417,15 +242,7 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 	long rr = resolve_path(p, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
-	struct lxp_stat stat;
-	long source = path_stat_lookup(p, abspath, follow, &stat);
-#if LXP_ENABLE_NETFS
-	if (source == LXP_PATH_STAT_NETFS)
-		return lxp_netfs_stat(p, abspath, (uintptr_t)statbuf, 0); /* parks */
-#endif
-	if (source < 0)
-		return source;
-	return lxp_stat_copyout(p, (uintptr_t)statbuf, 0, &stat);
+	return path_stat(p, abspath, follow, (uintptr_t)statbuf, 0);
 }
 
 /* readlink: write the symlink target (not NUL-terminated) + return its length. */
@@ -825,29 +642,19 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 	long plen = path ? lxp_guest_strnlen(p, path, LXP_PATH_MAX) : 0;
 	if (plen < 0)
 		return -LXP_EFAULT;
-	struct lxp_stat st;
 	if (plen > 0 && !(flags & LXP_AT_EMPTY_PATH)) {
 		char abspath[LXP_PATH_MAX];
 		long rr = resolve_path(p, path, abspath, sizeof(abspath));
 		if (rr < 0)
 			return rr;
-		long source =
-			path_stat_lookup(p, abspath, !(flags & LXP_AT_SYMLINK_NOFOLLOW), &st);
-#if LXP_ENABLE_NETFS
-		if (source == LXP_PATH_STAT_NETFS)
-			return lxp_netfs_stat(p, abspath, (uintptr_t)buf, 1); /* parks */
-#endif
-		if (source < 0)
-			return source;
-	} else {
-		lxp_ofd_t *s = lxp_fd_description(p, dirfd);
-		if (!s)
-			return -LXP_EBADF;
-		long rc = fd_stat(p, s, &st);
-		if (rc < 0)
-			return rc;
+		return path_stat(p, abspath, !(flags & LXP_AT_SYMLINK_NOFOLLOW), (uintptr_t)buf, 1);
 	}
-	return lxp_stat_copyout(p, (uintptr_t)buf, 1, &st);
+	lxp_ofd_t *s = lxp_fd_description(p, dirfd);
+	if (!s)
+		return -LXP_EBADF;
+	struct lxp_stat st;
+	long rc = fd_stat(p, s, &st);
+	return rc < 0 ? rc : lxp_stat_copyout(p, (uintptr_t)buf, 1, &st);
 }
 
 /* legacy open(path, flags, mode): dirfd = cwd */
