@@ -76,6 +76,12 @@ struct lxp_file_ops {
 	/** poll/select readiness: the ready bits (LXP_POLLIN | LXP_POLLOUT) for this fd
 	 *  right now. NULL means the kind is always ready (a regular file). */
 	unsigned (*poll)(lxp_proc_t *p, lxp_ofd_t *f);
+	/** mmap2(2) of the fd's object mapped directly (no copy): the guest address, 0
+	 *  after parking (the coordinator resumes with the address), a negated errno, or
+	 *  -ENODEV to fall back to a private arena copy filled by pread. NULL means every
+	 *  mapping is such a copy — including MAP_SHARED of a tmpfs file, whose pool
+	 *  block may move when the file grows. */
+	long (*mmap)(lxp_proc_t *p, lxp_ofd_t *f, size_t len, int prot, uint32_t pgoff);
 	/** fcntl(F_SETFL) changed @p f->nonblock: mirror it into state the kind keeps
 	 *  itself. NULL means the open-file description's flag is the only state. */
 	void (*setfl)(lxp_proc_t *p, lxp_ofd_t *f);

@@ -42,6 +42,22 @@ static long fop_lseek_rootfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 	return lxp_vfs_seek(s, (long)p->fs[s->file_idx].size, off, whence);
 }
 
+/* Text sharing: a read-only map of a range within the file is the rootfs image in
+ * place (zero-copy). FDPIC text is pure PIC — its relocations land in the per-process
+ * GOT/data, never the shared text — so every dynamic process shares ONE libc.so text
+ * copy (the cpio bytes) instead of its own ~358K arena copy. Every engine exposes the
+ * backing span to its unprivileged guest as RO+X: a static or per-task window on
+ * FreeRTOS, Zephyr's user-RX text/QSPI region, or the NuttX port's raw MPU region. */
+static long fop_mmap_rootfs(lxp_proc_t *p, lxp_ofd_t *s, size_t len, int prot, uint32_t pgoff)
+{
+	const lxp_file_t *f = &p->fs[s->file_idx];
+	size_t foff = (size_t)pgoff * 4096u; /* guard the *4096 and +len wraps (32-bit) */
+	if ((prot & LXP_PROT_WRITE) || foff / 4096u != (size_t)pgoff || foff > f->size ||
+	    f->size - foff < len)
+		return -LXP_ENODEV; /* a private copy */
+	return (long)(uintptr_t)(f->data + foff);
+}
+
 static long fop_getdents_rootfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *sink)
 {
 	const lxp_file_t *f = &p->fs[s->file_idx];
@@ -63,5 +79,6 @@ const lxp_file_ops_t lxp_rootfs_fops = {
 	.pread = fop_pread_rootfs,
 	.lseek = fop_lseek_rootfs,
 	.getdents = fop_getdents_rootfs,
+	.mmap = fop_mmap_rootfs,
 	.fstat = fop_fstat_rootfs,
 };

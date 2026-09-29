@@ -626,6 +626,15 @@ static long fop_fstat_dev(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 	return 0;
 }
 
+/* A driver with an .mmap op maps its own buffer (/dev/fb0): lxp_dev_mmap parks and
+ * the coordinator installs the unprivileged MPU region, then resumes with the
+ * address. Without one it returns -ENODEV and the caller copies instead. */
+static long fop_mmap_dev(lxp_proc_t *p, lxp_ofd_t *s, size_t len, int prot, uint32_t pgoff)
+{
+	(void)prot;
+	return lxp_dev_mmap(p, s->file_idx, len, pgoff);
+}
+
 static long fop_fsync_dev(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	return lxp_dev_sync(p, s->file_idx);
@@ -666,6 +675,7 @@ const lxp_file_ops_t lxp_dev_fops = {
 	.lseek = fop_lseek_dev,
 	.fstat = fop_fstat_dev,
 	.fsync = fop_fsync_dev,
+	.mmap = fop_mmap_dev,
 	.close = fop_close_dev,
 	.ioctl = fop_ioctl_dev,
 	.poll = fop_poll_dev,

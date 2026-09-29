@@ -372,10 +372,10 @@ static long sys_exit(lxp_proc_t *p, int status, int group)
 }
 
 /*
- * mmap: anonymous and private file mappings are backed by the process arena
- * (uClibc's malloc uses anonymous maps for larger allocations; ld.so maps .so
- * segments). Read-only maps of a rootfs file share the file in place, and a
- * device with an mmap op maps its own memory.
+ * mmap: a kind with an mmap file operation maps its object directly (the rootfs
+ * read-only in place, a device its own buffer). Everything else — anonymous maps
+ * (uClibc's malloc), and file maps a kind cannot share (ld.so's writable .so
+ * segments) — is a private copy in the process arena, filled from the file.
  */
 static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int flags, int fd,
 		      uint32_t pgoff)
@@ -384,47 +384,30 @@ static long sys_mmap2(lxp_proc_t *p, uintptr_t addr, size_t len, int prot, int f
 	if (!p || !p->mm || !p->mm->arena || len == 0)
 		return -LXP_EINVAL;
 
-	/* Text-sharing: a read-only file map of a rootfs file whose whole extent lies within the file
-	 * is returned IN-PLACE (zero-copy). FDPIC text is pure PIC — its relocations land in the
-	 * per-process GOT/data, never the shared text — so every dynamic process shares ONE libc.so
-	 * text copy (the cpio bytes) instead of its own ~358K arena copy. Every engine exposes the
-	 * backing span to its unprivileged guest as RO+X: a static or per-task window on FreeRTOS,
-	 * Zephyr's user-RX text/QSPI region, or the NuttX port's raw MPU region. */
-	if (!(flags & LXP_MAP_ANONYMOUS) && fd >= 0 && !(prot & 0x2 /* PROT_WRITE */)) {
+	int file = !(flags & LXP_MAP_ANONYMOUS) && fd >= 0;
+	if (file) {
 		lxp_ofd_t *s = lxp_fd_description(p, fd);
-		if (s && s->kind == LXP_FD_FILE) {
-			const lxp_file_t *f = &p->fs[s->file_idx];
-			size_t foff =
-				(size_t)pgoff * 4096u; /* guard the *4096 and +len wraps (32-bit) */
-			if (foff / 4096u == (size_t)pgoff && foff <= f->size &&
-			    f->size - foff >= len)
-				return (long)(uintptr_t)(f->data + foff);
-		}
-	}
-
-#if LXP_ENABLE_DEV
-	/* A real /dev fd with a driver .mmap op (e.g. /dev/fb0) is mapped to
-	 * the device's own buffer — lxp_dev_mmap parks on DEVW_MMAP and the coordinator
-	 * installs the unprivileged MPU region + resumes with the mapped address. Devices
-	 * without an .mmap op return -ENODEV and fall through to the anonymous-arena copy. */
-	if (fd >= 0 && !(flags & LXP_MAP_ANONYMOUS)) {
-		lxp_ofd_t *s = lxp_fd_description(p, fd);
-		if (s && s->kind == LXP_FD_DEV) {
-			long r = lxp_dev_mmap(p, s->file_idx, len, pgoff);
+		if (!s)
+			return -LXP_EBADF;
+		/* A file map reads the file; a shared writable one would also write it. */
+		if (!lxp_vfs_readable(s) ||
+		    ((flags & LXP_MAP_SHARED) && (prot & LXP_PROT_WRITE) && !lxp_vfs_writable(s)))
+			return -LXP_EACCES;
+		const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+		if (ops && ops->mmap) {
+			long r = ops->mmap(p, s, len, prot, pgoff);
 			if (r != -LXP_ENODEV)
 				return r;
 		}
 	}
-#endif
 
 	void *m = lxp_arena_alloc_tracked(p->mm->arena, len);
 	if (!m)
 		return -LXP_ENOMEM;
 	memset(m, 0, len); /* anon reads as zero; also zero-fills a file map's bss tail */
-	if (!(flags & LXP_MAP_ANONYMOUS) && fd >= 0) {
-		/* File-backed mapping: ld.so loads a .so's read-only segment (the symtab/hash/
-		 * text) this way on NOMMU — read the file's bytes at the page offset into the
-		 * freshly-allocated block. (Anonymous maps ignore the fd.) */
+	if (file) {
+		/* On NOMMU ld.so loads a .so's read-only segment (the symtab/hash/text) this
+		 * way: read the file's bytes at the page offset into the new block. */
 		long r = sys_pread(p, fd, m, len, pgoff * 4096u);
 		if (r < 0) {
 			(void)lxp_arena_free_tracked(p->mm->arena, m, len);

@@ -370,6 +370,31 @@ static void test_conf_mem(void **state)
 	}
 }
 
+/* File mappings: a read-only rootfs map is the image in place, a writable one a
+ * private copy, and the descriptor's access mode gates both (EACCES). */
+static void test_conf_mmap_files(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+	const long prot_r = 0x1, prot_rw = 0x3, map_private = 0x2;
+
+	long fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/etc/motd"),
+		     LXP_O_RDONLY, 0, 0, 0);
+	assert_true(fd >= 3);
+	long m = SC(&p, LXP_NR_mmap2, 0, 19, prot_r, map_private, fd, 0);
+	assert_int_equal(m, (long)(uintptr_t)k_motd); /* shared in place */
+	m = SC(&p, LXP_NR_mmap2, 0, 19, prot_rw, map_private, fd, 0);
+	assert_true(m > 0 && m != (long)(uintptr_t)k_motd); /* a private copy */
+	assert_memory_equal((const void *)(uintptr_t)m, k_motd, 19);
+	assert_int_equal(SC(&p, LXP_NR_mmap2, 0, 19, prot_rw, LXP_MAP_SHARED, fd, 0), -LXP_EACCES);
+
+	long wfd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/mm"),
+		      LXP_O_WRONLY | LXP_O_CREAT, 0644, 0, 0);
+	assert_true(wfd >= 3);
+	assert_int_equal(SC(&p, LXP_NR_mmap2, 0, 16, prot_r, map_private, wfd, 0), -LXP_EACCES);
+}
+
 /* =============================== stat family ========================================== */
 
 static void test_conf_stat(void **state)
@@ -1440,6 +1465,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_pread_files),
 		cmocka_unit_test(test_conf_pread_streams),
 		cmocka_unit_test(test_conf_mem),
+		cmocka_unit_test(test_conf_mmap_files),
 		cmocka_unit_test(test_conf_stat),
 		cmocka_unit_test(test_conf_open_flags),
 		cmocka_unit_test(test_conf_access_mode),
