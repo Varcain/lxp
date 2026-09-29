@@ -77,4 +77,10 @@ long lxp_sys_fstatfs64(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_getcwd(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_chdir(lxp_proc_t *proc, const long a[6]);
 
+/* ---- memory (src/sys/lxp_sys_mm.c) ---- */
+long lxp_sys_brk(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_mmap2(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_munmap(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_mprotect(lxp_proc_t *proc, const long a[6]);
+
 #endif /* LXP_SYS_H */
