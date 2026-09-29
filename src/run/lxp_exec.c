@@ -267,7 +267,7 @@ LXP_EXEC_TXN_LINKAGE void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t
 	lxp_slot_proc_reset(tx->slot);
 	slot_runnable_store(tx->slot, 0);
 	primary_slot_clear(tx->slot);
-	fork_child_guard_reset(tx->slot);
+	lxp_vfork_guard_reset(tx->slot);
 	tx->region_acquired = 0;
 	tx->phase = EXEC_TXN_ABORTED;
 }

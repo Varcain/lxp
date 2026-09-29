@@ -177,7 +177,12 @@ lxp_region_ref_t vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *parent,
 int vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *parent, lxp_region_ref_t snapshot,
 		  lxp_slot_ref_t child, uintptr_t parent_sp);
 void vfork_contain_stale(lxp_slot_ref_t child, lxp_proc_t *proc);
-void fork_child_guard_reset(int child_slot);
+void lxp_vfork_guard_reset(int slot);
+/* The slots whose live address space lies in region @p region. */
+unsigned lxp_region_live_users(int region);
+lxp_region_ref_t region_ref_at(int region);
+/* Forget every lease and snapshot guard at teardown; no guest survives it. */
+void lxp_region_runtime_reset(void);
 
 void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid);
 void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int slot);

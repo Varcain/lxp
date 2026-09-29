@@ -247,10 +247,7 @@ int lxp_diag_region_snapshot(int region, lxp_diag_region_t *out)
 	out->owner_slot = g_lxp_regions[region].lease_owner.index;
 	out->refs = g_lxp_regions[region].refs;
 	out->generation = g_lxp_regions[region].generation;
-	for (int slot = 0; slot < LXP_NSLOT; slot++)
-		if (g_lxp_slots[slot].proc.alive && g_lxp_slots[slot].proc.mm &&
-		    g_lxp_slots[slot].proc.mm->region.index == region)
-			out->live_users++;
+	out->live_users = lxp_region_live_users(region);
 	return LXP_OK;
 }
 
@@ -302,11 +299,7 @@ int lxp_validate_world(lxp_diag_error_t *error)
 		lxp_slot_ref_t lease = g_lxp_regions[region].lease_owner;
 		int owner = lease.index;
 		uint16_t refs = g_lxp_regions[region].refs;
-		unsigned live_users = 0;
-		for (int slot = 0; slot < LXP_NSLOT; slot++)
-			if (g_lxp_slots[slot].proc.alive && g_lxp_slots[slot].proc.mm &&
-			    g_lxp_slots[slot].proc.mm->region.index == region)
-				live_users++;
+		unsigned live_users = lxp_region_live_users(region);
 		if (refs == 0 && owner != -1)
 			return diag_error(error, LXP_DIAG_REGION_OWNER_WITHOUT_REFS, owner, region,
 					  (uint32_t)owner, UINT32_MAX);
@@ -381,12 +374,9 @@ int lxp_validate_world(lxp_diag_error_t *error)
 		if (p->mm->region.generation == 0 ||
 		    p->mm->region.generation != g_lxp_regions[region].generation)
 			return diag_error(error, LXP_DIAG_LIVE_TASK_STALE_REGION_REF, slot, region,
-					  p->mm->region.generation, g_lxp_regions[region].generation);
-		unsigned region_users = 0;
-		for (int peer = 0; peer < LXP_NSLOT; peer++)
-			if (g_lxp_slots[peer].proc.alive && g_lxp_slots[peer].proc.mm &&
-			    g_lxp_slots[peer].proc.mm->region.index == region)
-				region_users++;
+					  p->mm->region.generation,
+					  g_lxp_regions[region].generation);
+		unsigned region_users = lxp_region_live_users(region);
 		if (g_lxp_regions[region].refs < region_users)
 			return diag_error(error, LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL, slot, region,
 					  g_lxp_regions[region].refs, region_users);
@@ -448,8 +438,9 @@ void lxp_diag_size_report(lxp_diag_size_report_t *out)
 			     out->debug_record;
 	out->per_region_core = out->arena + sizeof(g_lxp_regions[0]);
 	out->slot_table = sizeof(g_lxp_slots);
-	out->coordinator_static = sizeof(g_lxp_slots) + sizeof(g_lxp_arenas) + sizeof(g_lxp_regions) +
-				  sizeof(g_lxp_vfork_guard) + lxp_primary_events_bytes() +
+	out->coordinator_static = sizeof(g_lxp_slots) + sizeof(g_lxp_arenas) +
+				  sizeof(g_lxp_regions) + sizeof(g_lxp_vfork_guard) +
+				  lxp_primary_events_bytes() +
 				  sizeof(g_lxp_dbg) + sizeof(g_sig_save) +
 				  sizeof(g_lxp_diag.native_present) + sizeof(g_lxp_diag.health);
 }

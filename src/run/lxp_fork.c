@@ -29,7 +29,7 @@ LXP_FORK_TXN_LINKAGE int fork_txn_prepare(struct fork_txn *tx, const lxp_os_ops_
 	deferred_slot_reassign(child_slot);
 	tx->child_ref = slot_ref_at(child_slot);
 	tx->parent_region = tx->parent->mm->region;
-	fork_child_guard_reset(child_slot);
+	lxp_vfork_guard_reset(child_slot);
 	if (region_get(tx->parent_region) != 0)
 		return -LXP_EAGAIN;
 	tx->region_acquired = 1;
@@ -121,7 +121,7 @@ LXP_FORK_TXN_LINKAGE void fork_txn_abort(struct fork_txn *tx, const lxp_os_ops_t
 	lxp_slot_signal_reset(tx->child_ref.index);
 	slot_runnable_store(tx->child_ref.index, 0);
 	primary_slot_clear(tx->child_ref.index);
-	fork_child_guard_reset(tx->child_ref.index);
+	lxp_vfork_guard_reset(tx->child_ref.index);
 	tx->region_acquired = 0;
 	tx->child_constructed = 0;
 	tx->maps_touched = 0;

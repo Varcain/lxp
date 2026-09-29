@@ -719,7 +719,7 @@ static int reset_state(void **state)
 	for (int r = 0; r < LXP_NREG; r++)
 		g_regions[r].lease_owner = lxp_slot_ref_none();
 	for (int s = 0; s < LXP_NSLOT; s++)
-		fork_child_guard_reset(s);
+		lxp_vfork_guard_reset(s);
 	lxp_console_set_fg_pgrp(0);
 	g_eng = &g_mock_eng;
 	g_cfg = NULL;
