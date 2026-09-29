@@ -567,17 +567,61 @@ static long procfs_mount_open(lxp_proc_t *p, const char *path, int flags)
 
 static long procfs_mount_stat(lxp_proc_t *p, const char *path, int follow, struct lxp_stat *st)
 {
-	(void)follow;
 	uint32_t mode = proc_mode(path, p);
 	if (mode == 0)
 		return -LXP_ENOENT;
+	if (follow && (mode & LXP_S_IFMT) == LXP_S_IFLNK) /* /proc/self: the caller's pid dir */
+		mode = LXP_S_IFDIR | 0555u;
 	lxp_stat_init(st, lxp_procfs_inode(path), mode, 0);
+	return 0;
+}
+
+/* /proc/self names the caller's pid and /proc/self/exe its program; nothing else in /proc
+ * is a symlink. */
+static long procfs_mount_readlink(lxp_proc_t *p, const char *path, char *out, size_t cap)
+{
+	char pid[12];
+	const char *target;
+	size_t n;
+	if (strcmp(path, "/proc/self") == 0) {
+		lxp_text_t pid_text = lxp_text_make(pid, sizeof(pid));
+		lxp_text_u64(&pid_text, (uint64_t)p->pid);
+		target = pid;
+		n = pid_text.length;
+	} else if (strcmp(path, "/proc/self/exe") == 0) {
+		/* The image execve re-runs for "/proc/self/exe" (exec_file_idx): programs
+		 * readlink() it to learn where they were launched from. */
+		int ei = p->exec_file_idx;
+		if (ei < 0 || ei >= p->fs_count)
+			return -LXP_ENOENT;
+		target = p->fs[ei].path;
+		n = strlen(target);
+	} else {
+		return proc_mode(path, p) ? -LXP_EINVAL : -LXP_ENOENT;
+	}
+	if (n > cap)
+		n = cap;
+	memcpy(out, target, n);
+	return (long)n;
+}
+
+/* Every /proc file is read-only; only its directories are searchable. */
+static long procfs_mount_access(lxp_proc_t *p, const char *path, int mode)
+{
+	struct lxp_stat st;
+	long rc = procfs_mount_stat(p, path, 1, &st);
+	if (rc < 0)
+		return rc;
+	if ((mode & 2) || ((mode & 1) && (st.mode & LXP_S_IFMT) != LXP_S_IFDIR))
+		return -LXP_EACCES;
 	return 0;
 }
 
 const lxp_mount_ops_t lxp_procfs_mount_ops = {
 	.open = procfs_mount_open,
 	.stat = procfs_mount_stat,
+	.readlink = procfs_mount_readlink,
+	.access = procfs_mount_access,
 	.magic = LXP_PROC_SUPER_MAGIC,
 	.name_errno = LXP_EPERM,
 };

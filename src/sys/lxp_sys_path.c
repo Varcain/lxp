@@ -18,8 +18,6 @@
 #include "lxp_guest.h"
 #include "lxp_internal.h"
 #include "lxp_linux_uapi.h"
-#include "lxp_text.h"
-#include "proc/lxp_procfs.h"
 #if LXP_ENABLE_FS
 #include "fs/lxp_hostfs.h"
 #endif
@@ -247,100 +245,6 @@ static long sys_stat_path(lxp_proc_t *p, const char *path, int follow, void *sta
 	return path_stat(p, abspath, follow, (uintptr_t)statbuf, 0);
 }
 
-/* readlink: write the symlink target (not NUL-terminated) + return its length. */
-static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufsiz)
-{
-	if (!lxp_guest_access_ok(p, buf, bufsiz, 1))
-		return -LXP_EFAULT; /* path is validated by resolve_path below */
-	char abspath[LXP_PATH_MAX];
-	long rr = resolve_path(p, path, abspath, sizeof(abspath));
-	if (rr < 0)
-		return rr;
-	if (strcmp(abspath, "/proc/self") == 0) { /* -> the running process's pid */
-		char tmp[12];
-		lxp_text_t pid_text = lxp_text_make(tmp, sizeof(tmp));
-		lxp_text_u64(&pid_text, (uint64_t)p->pid);
-		size_t n = pid_text.length;
-		if (n > bufsiz)
-			n = bufsiz;
-		if (lxp_copy_to_guest(p, (uintptr_t)buf, tmp, n) != 0)
-			return -LXP_EFAULT;
-		return (long)n;
-	}
-	if (strcmp(abspath, "/proc/self/exe") == 0) { /* -> the running program's path */
-		/* Same running image execve re-runs for "/proc/self/exe" (exec_file_idx). Programs
-		 * readlink() this to learn where they were launched from; without it they got ENOENT. */
-		int ei = p->exec_file_idx;
-		if (ei < 0 || ei >= p->fs_count)
-			return -LXP_ENOENT;
-		const char *exe = p->fs[ei].path;
-		size_t n = strlen(exe);
-		if (n > bufsiz)
-			n = bufsiz;
-		if (lxp_copy_to_guest(p, (uintptr_t)buf, exe, n) != 0)
-			return -LXP_EFAULT;
-		return (long)n;
-	}
-#if LXP_ENABLE_FS
-	if (lxp_hostfs_match(abspath))
-		return -LXP_EINVAL; /* The FAT-backed provider cannot contain symlinks. */
-#endif
-	int wi = wfs_find(abspath); /* a writable symlink (ln -s) shadows the rootfs */
-	if (wi >= 0) {
-		lxp_wnode_t *w = wnode_at(wi);
-		if ((w->mode & LXP_S_IFMT) != LXP_S_IFLNK || !w->data)
-			return -LXP_EINVAL;
-		size_t n = w->size > bufsiz ? bufsiz : w->size;
-		if (lxp_copy_to_guest(p, (uintptr_t)buf, w->data, n) != 0)
-			return -LXP_EFAULT;
-		return (long)n;
-	}
-	int idx = fs_lookup(p, abspath);
-	if (idx < 0)
-		return -LXP_ENOENT;
-	const lxp_file_t *lnk = &p->fs[idx];
-	if ((file_mode(lnk) & LXP_S_IFMT) != LXP_S_IFLNK || !lnk->data)
-		return -LXP_EINVAL;
-	size_t n = lnk->size > bufsiz ? bufsiz : lnk->size;
-	if (lxp_copy_to_guest(p, (uintptr_t)buf, lnk->data, n) != 0)
-		return -LXP_EFAULT;
-	return (long)n;
-}
-
-/* access/faccessat: permissions are synthetic, but read-only/noexec hostfs
- * policy must not claim that an operation can succeed when it cannot. */
-static long sys_access(lxp_proc_t *p, const char *path, int mode)
-{
-	if (!path)
-		return -LXP_EFAULT;
-	if ((mode & ~7) != 0)
-		return -LXP_EINVAL;
-	char abspath[LXP_PATH_MAX];
-	long rr = resolve_path(p, path, abspath, sizeof(abspath));
-	if (rr < 0)
-		return rr;
-	if (abspath[0] == '/' && abspath[1] == '\0')
-		return 0; /* root */
-	if (proc_is(abspath))
-		return proc_mode(abspath, p) ? 0 : -LXP_ENOENT;
-#if LXP_ENABLE_FS
-	if (lxp_hostfs_match(abspath)) {
-		lxp_fs_stat_t stat;
-		long result = lxp_hostfs_path_stat(p, abspath, &stat);
-		if (result < 0)
-			return result;
-		if ((mode & 2) != 0 && lxp_hostfs_is_read_only())
-			return -LXP_EROFS;
-		if ((mode & 1) != 0 && stat.type != LXP_FS_TYPE_DIR)
-			return -LXP_EACCES;
-		return 0;
-	}
-#endif
-	if (wfs_find(abspath) >= 0 || fs_lookup(p, abspath) >= 0)
-		return 0;
-	return -LXP_ENOENT;
-}
-
 /* What a name change on a mount without that operation means. */
 enum name_change {
 	NAME_CREATE, /* mkdir, symlink */
@@ -376,6 +280,47 @@ static long resolve_in_mount(lxp_proc_t *p, const char *path, char *abspath,
 		return rr;
 	*mount = lxp_mount_of(p, abspath);
 	return 0;
+}
+
+/* readlink: write the symlink target (not NUL-terminated) + return its length. */
+static long sys_readlink(lxp_proc_t *p, const char *path, char *buf, size_t bufsiz)
+{
+	if (!lxp_guest_access_ok(p, buf, bufsiz, 1))
+		return -LXP_EFAULT; /* path is validated by resolve_path below */
+	char abspath[LXP_PATH_MAX];
+	const lxp_mount_ops_t *m;
+	long rr = resolve_in_mount(p, path, abspath, &m);
+	if (rr < 0)
+		return rr;
+	char target[LXP_PATH_MAX];
+	size_t cap = bufsiz < sizeof(target) ? bufsiz : sizeof(target);
+	long n;
+	if (m->readlink) {
+		n = m->readlink(p, abspath, target, cap);
+	} else {
+		/* A mount without symlinks: EINVAL for a name that exists. */
+		struct lxp_stat st;
+		n = m->stat && m->stat(p, abspath, 0, &st) < 0 ? -LXP_ENOENT : -LXP_EINVAL;
+	}
+	if (n < 0)
+		return n;
+	return lxp_copy_to_guest(p, (uintptr_t)buf, target, (size_t)n) != 0 ? -LXP_EFAULT : n;
+}
+
+/* access/faccessat: permissions are synthetic, but each mount says what it cannot do. */
+static long sys_access(lxp_proc_t *p, const char *path, int mode)
+{
+	if ((mode & ~7) != 0)
+		return -LXP_EINVAL;
+	char abspath[LXP_PATH_MAX];
+	const lxp_mount_ops_t *m;
+	long rr = resolve_in_mount(p, path, abspath, &m);
+	if (rr < 0)
+		return rr;
+	if (m->access)
+		return m->access(p, abspath, mode);
+	struct lxp_stat st;
+	return m->stat(p, abspath, 1, &st);
 }
 
 static long sys_mkdir(lxp_proc_t *p, const char *path, uint32_t mode)
@@ -771,40 +716,19 @@ long lxp_sys_getcwd(lxp_proc_t *proc, const long a[6])
 
 long lxp_sys_chdir(lxp_proc_t *proc, const long a[6])
 {
-	const char *path = (const char *)(uintptr_t)a[0];
-	if (!path)
-		return -LXP_EFAULT;
 	char abspath[LXP_PATH_MAX];
-	long r = resolve_path(proc, path, abspath, sizeof(abspath));
-	if (r < 0)
-		return r;
-	/* "/" is always valid; else require an existing directory in either the
-	 * writable overlay or the read-only rootfs. */
-	if (!(abspath[0] == '/' && abspath[1] == '\0')) {
-#if LXP_ENABLE_FS
-		if (lxp_hostfs_match(abspath)) {
-			lxp_fs_stat_t stat;
-			long sr = lxp_hostfs_path_stat(proc, abspath, &stat);
-			if (sr < 0)
-				return sr;
-			if (stat.type != LXP_FS_TYPE_DIR)
-				return -LXP_ENOTDIR;
-			strcpy(proc->fs_context->cwd, abspath);
-			return 0;
-		}
-#endif
-		int wi = wfs_find(abspath);
-		if (wi >= 0) {
-			if ((wnode_at(wi)->mode & LXP_S_IFMT) != LXP_S_IFDIR)
-				return -LXP_ENOTDIR;
-		} else {
-			int idx = fs_lookup(proc, abspath);
-			if (idx < 0)
-				return -LXP_ENOENT;
-			if ((file_mode(&proc->fs[idx]) & LXP_S_IFMT) != LXP_S_IFDIR)
-				return -LXP_ENOTDIR;
-		}
-	}
+	const lxp_mount_ops_t *m;
+	long rr = resolve_in_mount(proc, (const char *)(uintptr_t)a[0], abspath, &m);
+	if (rr < 0)
+		return rr;
+	if (m->chdir)
+		return m->chdir(proc, abspath);
+	struct lxp_stat st;
+	long rc = m->stat(proc, abspath, 1, &st);
+	if (rc < 0)
+		return rc;
+	if ((st.mode & LXP_S_IFMT) != LXP_S_IFDIR)
+		return -LXP_ENOTDIR;
 	strcpy(proc->fs_context->cwd, abspath);
 	return 0;
 }

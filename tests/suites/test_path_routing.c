@@ -341,6 +341,8 @@ enum op {
 	OP_STATFS,
 	OP_READLINK,
 	OP_ACCESS,
+	OP_ACCESS_W,
+	OP_ACCESS_X,
 	OP_CHDIR,
 	OP_EXEC,
 	OP_RENAME,
@@ -349,7 +351,8 @@ enum op {
 
 static const char *const g_op_name[] = {
 	"open",    "creat",  "stat",     "lstat",  "mkdir", "unlink", "rmdir",  "symlink", "chmod",
-	"utimens", "statfs", "readlink", "access", "chdir", "exec",   "rename", "link",
+	"utimens", "statfs", "readlink", "access", "w_ok",  "x_ok",   "chdir",  "exec",
+	"rename",  "link",
 };
 
 static long run_op(lxp_proc_t *p, lxp_conf_t *fx, enum op op, const char *path, const char *path2)
@@ -401,9 +404,14 @@ static long run_op(lxp_proc_t *p, lxp_conf_t *fx, enum op op, const char *path, 
 	case OP_READLINK:
 		return call(p, LXP_NR_readlink, gp, b, 64, 0);
 	case OP_ACCESS:
-		return call(p, LXP_NR_access, gp, 0, 0, 0);
+	case OP_ACCESS_W:
+	case OP_ACCESS_X:
+		rc = op == OP_ACCESS_W ? 2 : op == OP_ACCESS_X ? 1 : 0; /* W_OK, X_OK, F_OK */
+		rc = call(p, LXP_NR_access, gp, rc, 0, 0);
+		return p->wait.kind == LXP_WAIT_NETFS ? NET : rc;
 	case OP_CHDIR:
-		return call(p, LXP_NR_chdir, gp, 0, 0, 0);
+		rc = call(p, LXP_NR_chdir, gp, 0, 0, 0);
+		return p->wait.kind == LXP_WAIT_NETFS ? NET : rc;
 	case OP_EXEC:
 		rc = call(p, LXP_NR_execve, gp, 0, 0, 0);
 		return p->wait.kind == LXP_WAIT_NETFS ? NET : rc;
@@ -455,6 +463,11 @@ static int check(enum op op, const char *path, const char *path2, long expect)
 struct row4 {
 	const char *path;
 	long cell[4];
+};
+
+struct row6 {
+	const char *path;
+	long cell[6];
 };
 
 struct row7 {
@@ -518,29 +531,29 @@ static const struct row7 g_names[] = {
 	{"/nope",      {TMP,      E(NOENT), E(NOENT),  TMP,          E(NOENT), E(NOENT), E(NOENT)}},
 };
 
-/* readlink (the returned length), access(F_OK), chdir, execve. */
-static const struct row4 g_lookup[] = {
-	/* path         readlink  access    chdir      exec */
-	{"/",          {E(INVAL), 0,        0,         E(ACCES)}},
-	{"/proc",      {E(INVAL), 0,        0,         E(ACCES)}},
-	{"/proc/self", {1,        0,        E(NOENT),  E(NOENT)}},
-	{"/proc/stat", {E(NOENT), 0,        E(NOENT),  E(NOENT)}},
-	{"/proc/nope", {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
-	{"/data",      {E(INVAL), 0,        0,         E(ACCES)}},
-	{"/data/f",    {E(INVAL), 0,        E(NOTDIR), E(NOENT)}},
-	{"/data/nope", {E(INVAL), E(NOENT), E(NOENT),  E(NOENT)}},
-	{"/dev",       {E(INVAL), 0,        0,         E(ACCES)}},
-	{"/dev/null",  {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
-	{"/dev/ptmx",  {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
-	{"/dev/rtest", {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
-	{"/mnt/pi",    {E(INVAL), 0,        0,         NET}},
-	{"/mnt/pi/f",  {E(NOENT), E(NOENT), E(NOENT),  NET}},
-	{"/tmp/w",     {E(INVAL), 0,        E(NOTDIR), E(NOENT)}},
-	{"/tmp/wd",    {E(INVAL), 0,        0,         E(NOENT)}},
-	{"/etc/hosts", {E(INVAL), 0,        E(NOTDIR), SKIP}},
-	{"/bin/sh",    {7,        0,        E(NOTDIR), SKIP}},
-	{"/etclink",   {3,        0,        E(NOTDIR), E(ACCES)}},
-	{"/nope",      {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
+/* readlink (the returned length), access (F_OK, W_OK, X_OK), chdir, execve. */
+static const struct row6 g_lookup[] = {
+	/* path         readlink  access    w_ok      x_ok      chdir      exec */
+	{"/",          {E(INVAL), 0,        0,        0,        0,         E(ACCES)}},
+	{"/proc",      {E(INVAL), 0,        E(ACCES), 0,        0,         E(ACCES)}},
+	{"/proc/self", {1,        0,        E(ACCES), 0,        0,         E(NOENT)}},
+	{"/proc/stat", {E(INVAL), 0,        E(ACCES), E(ACCES), E(NOTDIR), E(NOENT)}},
+	{"/proc/nope", {E(NOENT), E(NOENT), E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
+	{"/data",      {E(INVAL), 0,        0,        0,        0,         E(ACCES)}},
+	{"/data/f",    {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(NOENT)}},
+	{"/data/nope", {E(NOENT), E(NOENT), E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
+	{"/dev",       {E(INVAL), 0,        0,        0,        0,         E(ACCES)}},
+	{"/dev/null",  {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(NOENT)}},
+	{"/dev/ptmx",  {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(NOENT)}},
+	{"/dev/rtest", {E(INVAL), 0,        0,        E(ACCES), E(NOTDIR), E(NOENT)}},
+	{"/mnt/pi",    {E(INVAL), NET,      E(ROFS),  NET,      NET,       NET}},
+	{"/mnt/pi/f",  {E(INVAL), NET,      E(ROFS),  NET,      NET,       NET}},
+	{"/tmp/w",     {E(INVAL), 0,        0,        0,        E(NOTDIR), E(NOENT)}},
+	{"/tmp/wd",    {E(INVAL), 0,        0,        0,        0,         E(NOENT)}},
+	{"/etc/hosts", {E(INVAL), 0,        E(ROFS),  0,        E(NOTDIR), SKIP}},
+	{"/bin/sh",    {7,        0,        E(ROFS),  0,        E(NOTDIR), SKIP}},
+	{"/etclink",   {3,        0,        E(ROFS),  0,        0,         E(ACCES)}},
+	{"/nope",      {E(NOENT), E(NOENT), E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
 };
 
 static const struct pair g_renames[] = {
@@ -602,7 +615,8 @@ static void test_route_namespace_operations(void **state)
 static void test_route_lookups(void **state)
 {
 	(void)state;
-	static const enum op ops[] = {OP_READLINK, OP_ACCESS, OP_CHDIR, OP_EXEC};
+	static const enum op ops[] = {OP_READLINK, OP_ACCESS, OP_ACCESS_W,
+				      OP_ACCESS_X, OP_CHDIR,  OP_EXEC};
 	int bad = 0;
 	for (size_t r = 0; r < COUNT(g_lookup); r++)
 		for (size_t c = 0; c < COUNT(ops); c++)
@@ -650,6 +664,23 @@ static void test_dev_nodes_stat_as_devices(void **state)
 	world_end(&g_proc);
 }
 
+/* chdir through a rootfs symlink lands where it leads, so relative paths resolve from the
+ * real directory. */
+static void test_chdir_follows_symlinks(void **state)
+{
+	(void)state;
+	lxp_conf_t *fx = world_begin(&g_proc);
+	assert_non_null(fx);
+	long link = (long)(uintptr_t)lxp_conf_str(fx, "/etclink");
+	assert_int_equal(call(&g_proc, LXP_NR_chdir, link, 0, 0, 0), 0);
+	assert_string_equal(g_proc.fs_context->cwd, "/etc");
+	long hosts = (long)(uintptr_t)lxp_conf_str(fx, "hosts");
+	long fd = call(&g_proc, LXP_NR_openat, LXP_AT_FDCWD, hosts, LXP_O_RDONLY, 0);
+	assert_true(fd >= 0);
+	assert_int_equal(call(&g_proc, LXP_NR_close, fd, 0, 0, 0), 0);
+	world_end(&g_proc);
+}
+
 static int group_setup(void **state)
 {
 	(void)state;
@@ -686,6 +717,7 @@ int test_path_routing_run(void)
 		cmocka_unit_test(test_route_namespace_operations),
 		cmocka_unit_test(test_route_lookups),
 		cmocka_unit_test(test_dev_nodes_stat_as_devices),
+		cmocka_unit_test(test_chdir_follows_symlinks),
 	};
 	return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

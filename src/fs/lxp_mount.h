@@ -44,6 +44,16 @@ typedef struct lxp_mount_ops {
 	/** statfs of a path; when NULL, a synthetic record of type @c magic. */
 	long (*statfs)(lxp_proc_t *p, const char *path, struct lxp_statfs64 *st);
 
+	/* Lookups. */
+	/** readlink: the target (not NUL-terminated) into @p out, cut at @p cap; its length,
+	 *  or EINVAL for a name that is not a symlink. NULL: the mount holds no symlinks. */
+	long (*readlink)(lxp_proc_t *p, const char *path, char *out, size_t cap);
+	/** access(2) for @p mode (R_OK 4, W_OK 2, X_OK 1). NULL: existence only. */
+	long (*access)(lxp_proc_t *p, const char *path, int mode);
+	/** chdir(2): make the directory at @p path the cwd, or park to do so. NULL: stat it,
+	 *  following a symlink, and require a directory. */
+	long (*chdir)(lxp_proc_t *p, const char *path);
+
 	/** statfs f_type for a mount without a statfs operation. */
 	uint32_t magic;
 	/** The errno for a name change the mount does not take: EPERM, or EROFS for a

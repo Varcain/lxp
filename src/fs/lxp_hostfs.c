@@ -793,6 +793,21 @@ static long hostfs_mount_statfs(lxp_proc_t *p, const char *path, struct lxp_stat
 	return lxp_hostfs_statfs(p, st);
 }
 
+/* Permissions are synthetic, but a read-only or noexec mount must not claim that an
+ * operation can succeed when it cannot. */
+static long hostfs_mount_access(lxp_proc_t *p, const char *path, int mode)
+{
+	lxp_fs_stat_t stat;
+	long result = lxp_hostfs_path_stat(p, path, &stat);
+	if (result < 0)
+		return result;
+	if ((mode & 2) != 0 && lxp_hostfs_is_read_only())
+		return -LXP_EROFS;
+	if ((mode & 1) != 0 && stat.type != LXP_FS_TYPE_DIR)
+		return -LXP_EACCES;
+	return 0;
+}
+
 const lxp_mount_ops_t lxp_hostfs_mount_ops = {
 	.open = hostfs_mount_open,
 	.stat = hostfs_mount_stat,
@@ -804,6 +819,7 @@ const lxp_mount_ops_t lxp_hostfs_mount_ops = {
 	.chmod = hostfs_mount_chmod,
 	.utimens = hostfs_mount_attr,
 	.statfs = hostfs_mount_statfs,
+	.access = hostfs_mount_access,
 	.magic = LXP_MSDOS_SUPER_MAGIC,
 	.name_errno = LXP_EROFS,
 };

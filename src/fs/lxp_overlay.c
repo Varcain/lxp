@@ -202,6 +202,67 @@ static long overlay_utimens(lxp_proc_t *p, const char *path)
 	return overlay_exists(p, path) ? 0 : -LXP_ENOENT;
 }
 
+/* The target of a tmpfs or rootfs symlink. */
+static long overlay_readlink(lxp_proc_t *p, const char *path, char *out, size_t cap)
+{
+	uint32_t mode;
+	const uint8_t *data;
+	size_t size;
+	int wi = wfs_find(path);
+	if (wi >= 0) {
+		mode = wnode_at(wi)->mode;
+		data = wnode_at(wi)->data;
+		size = wnode_at(wi)->size;
+	} else {
+		int fi = fs_lookup(p, path);
+		if (fi < 0)
+			return overlay_exists(p, path) ? -LXP_EINVAL : -LXP_ENOENT;
+		mode = file_mode(&p->fs[fi]);
+		data = p->fs[fi].data;
+		size = p->fs[fi].size;
+	}
+	if ((mode & LXP_S_IFMT) != LXP_S_IFLNK || !data)
+		return -LXP_EINVAL;
+	size_t n = size < cap ? size : cap;
+	memcpy(out, data, n);
+	return (long)n;
+}
+
+/* A rootfs file cannot be written, but a directory can take new names. */
+static long overlay_access(lxp_proc_t *p, const char *path, int mode)
+{
+	struct lxp_stat st;
+	long rc = overlay_stat(p, path, 0, &st);
+	if (rc < 0)
+		return rc;
+	if ((mode & 2) && wfs_find(path) < 0 && !is_dir(st.mode))
+		return -LXP_EROFS;
+	return 0;
+}
+
+/* A rootfs symlink is followed, and the cwd names the directory it leads to: paths do
+ * not resolve symlinks in their leading components, so the link's own name would not
+ * work as a base for relative paths. */
+static long overlay_chdir(lxp_proc_t *p, const char *path)
+{
+	struct lxp_stat st;
+	long rc = overlay_stat(p, path, 1, &st);
+	if (rc < 0)
+		return rc;
+	if (!is_dir(st.mode))
+		return -LXP_ENOTDIR;
+	const char *dir = path;
+	if (wfs_find(path) < 0) {
+		int fi = fs_follow(p, fs_lookup(p, path));
+		if (fi >= 0)
+			dir = p->fs[fi].path;
+	}
+	if (strlen(dir) >= sizeof(p->fs_context->cwd))
+		return -LXP_ENAMETOOLONG;
+	strcpy(p->fs_context->cwd, dir);
+	return 0;
+}
+
 const lxp_mount_ops_t lxp_overlay_mount_ops = {
 	.open = overlay_open,
 	.stat = overlay_stat,
@@ -212,6 +273,9 @@ const lxp_mount_ops_t lxp_overlay_mount_ops = {
 	.rename = overlay_rename,
 	.chmod = overlay_chmod,
 	.utimens = overlay_utimens,
+	.readlink = overlay_readlink,
+	.access = overlay_access,
+	.chdir = overlay_chdir,
 	.magic = LXP_TMPFS_MAGIC,
 	.name_errno = LXP_EROFS,
 };

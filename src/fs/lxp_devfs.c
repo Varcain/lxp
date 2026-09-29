@@ -169,11 +169,21 @@ static long devfs_stat(lxp_proc_t *p, const char *path, int follow, struct lxp_s
 	return -LXP_ENOENT;
 }
 
+static long devfs_access(lxp_proc_t *p, const char *path, int mode)
+{
+	struct lxp_stat st;
+	long rc = devfs_stat(p, path, 1, &st);
+	if (rc < 0)
+		return rc;
+	return (mode & 1) ? -LXP_EACCES : 0; /* a device node is not executable */
+}
+
 /* The nodes are fixed: they take no new names and cannot be removed or renamed. */
 const lxp_mount_ops_t lxp_devfs_mount_ops = {
 	.holds = devfs_holds,
 	.open = devfs_open,
 	.stat = devfs_stat,
+	.access = devfs_access,
 	.magic = LXP_TMPFS_MAGIC, /* devtmpfs reports tmpfs */
 	.name_errno = LXP_EPERM,
 };
