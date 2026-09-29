@@ -161,16 +161,40 @@ target_compile_definitions(lxp_coord_test PRIVATE
 target_link_libraries(lxp_coord_test PRIVATE cmocka-static pthread rt m)
 add_test(NAME lxp_unit_coord COMMAND lxp_coord_test)
 
+# ---- networking off -------------------------------------------------------------
+# poll/select readiness and waiting must not depend on the socket layer: the same
+# module sources built with LXP_ENABLE_NET=0 and ptys on.
+add_executable(lxp_nonet_test
+  ${LXP_TEST_MODULE_SRC}
+  "${CMAKE_CURRENT_SOURCE_DIR}/stub_lnx_run.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_poll_nonet.c"
+)
+target_include_directories(lxp_nonet_test PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${LXP_ROOT}/include"
+  "${LXP_ROOT}/src"
+  "${LXP_ROOT}/fuzz"
+  "${cmocka_SOURCE_DIR}/include"
+)
+target_compile_definitions(lxp_nonet_test PRIVATE
+  LXP_RESOURCE_POOL_COUNT=64
+  LXP_ENABLE_PTY=1
+)
+target_compile_options(lxp_nonet_test PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(lxp_nonet_test PRIVATE cmocka-static pthread rt m)
+add_test(NAME lxp_unit_nonet COMMAND lxp_nonet_test)
+
 # ---- suite-wide settings ---------------------------------------------------------
 # One target builds every test executable: `cmake --build build --target lxp_tests`.
 add_custom_target(lxp_tests
-  DEPENDS lxp_test_stub lxp_async_gate_test lxp_host_test lxp_coord_test)
+  DEPENDS lxp_test_stub lxp_async_gate_test lxp_host_test lxp_coord_test lxp_nonet_test)
 
 # Opt-in ASan+UBSan (-DLXP_SANITIZE=ON) for every test executable, so the CI
 # sanitizer job covers the same binaries as the plain host job.
 option(LXP_SANITIZE "Build the host tests with AddressSanitizer + UBSan" OFF)
 if(LXP_SANITIZE)
-  foreach(target lxp_test_stub lxp_async_gate_test lxp_host_test lxp_coord_test)
+  foreach(target lxp_test_stub lxp_async_gate_test lxp_host_test lxp_coord_test
+                 lxp_nonet_test)
     target_compile_options(${target} PRIVATE
       -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_link_options(${target} PRIVATE -fsanitize=address,undefined)
@@ -187,4 +211,5 @@ set_tests_properties(
   lxp_unit_async_gate
   lxp_unit_host
   lxp_unit_coord
+  lxp_unit_nonet
   PROPERTIES LABELS lxp)
