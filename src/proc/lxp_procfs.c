@@ -578,4 +578,6 @@ static long procfs_mount_stat(lxp_proc_t *p, const char *path, int follow, struc
 const lxp_mount_ops_t lxp_procfs_mount_ops = {
 	.open = procfs_mount_open,
 	.stat = procfs_mount_stat,
+	.magic = LXP_PROC_SUPER_MAGIC,
+	.name_errno = LXP_EPERM,
 };

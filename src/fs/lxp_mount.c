@@ -73,3 +73,19 @@ const lxp_mount_ops_t *lxp_mount_of(const lxp_proc_t *p, const char *path)
 		below = best_len;
 	}
 }
+
+int lxp_mount_occupied(const char *path)
+{
+	for (size_t i = 0; i < sizeof(g_mounts) / sizeof(g_mounts[0]); i++) {
+		const char *point = g_mounts[i].point();
+		if (!point || g_mounts[i].ops == &lxp_overlay_mount_ops)
+			continue;
+#if LXP_ENABLE_FS
+		if (g_mounts[i].ops == &lxp_hostfs_mount_ops)
+			continue;
+#endif
+		if (lxp_path_under(path, point))
+			return 1;
+	}
+	return 0;
+}

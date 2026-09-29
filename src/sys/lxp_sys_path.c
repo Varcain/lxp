@@ -163,6 +163,8 @@ static long sys_mount(lxp_proc_t *p, const char *source, const char *target,
 	}
 	if (!source)
 		return -LXP_EINVAL;
+	if (lxp_mount_occupied(target_path))
+		return -LXP_EBUSY; /* /proc, /dev and the netfs mount cannot be covered */
 	if (strcmp(target_path, "/") == 0 || !mount_target_is_dir(p, target_path))
 		return -LXP_ENOTDIR;
 	char source_path[LXP_PATH_MAX];
@@ -339,236 +341,145 @@ static long sys_access(lxp_proc_t *p, const char *path, int mode)
 	return -LXP_ENOENT;
 }
 
-static long sys_mkdir(lxp_proc_t *p, const char *path, uint32_t mode)
+/* What a name change on a mount without that operation means. */
+enum name_change {
+	NAME_CREATE, /* mkdir, symlink */
+	NAME_REMOVE, /* unlink, rmdir, rename, link */
+	NAME_ATTR,   /* chmod, utimensat */
+};
+
+/* Where the mount can say whether the name exists, creating an existing name is EEXIST,
+ * touching a missing one ENOENT and an attribute change is accepted, inert; anything
+ * else is the mount's refusal (EPERM, or EROFS for a read-only mount). */
+static long name_unsupported(lxp_proc_t *p, const lxp_mount_ops_t *m, const char *path,
+			     enum name_change change)
+{
+	if (!m->stat)
+		return -(long)m->name_errno;
+	struct lxp_stat st;
+	int exists = m->stat(p, path, 0, &st) == 0;
+	if (change == NAME_CREATE)
+		return exists ? -LXP_EEXIST : -(long)m->name_errno;
+	if (!exists)
+		return -LXP_ENOENT;
+	return change == NAME_ATTR ? 0 : -(long)m->name_errno;
+}
+
+/* Resolve a guest path into abspath[LXP_PATH_MAX]; *mount answers it. */
+static long resolve_in_mount(lxp_proc_t *p, const char *path, char *abspath,
+			     const lxp_mount_ops_t **mount)
 {
 	if (!path)
 		return -LXP_EFAULT;
-	char abspath[LXP_PATH_MAX];
-	long rr = resolve_path(p, path, abspath, sizeof(abspath));
+	long rr = resolve_path(p, path, abspath, LXP_PATH_MAX);
 	if (rr < 0)
 		return rr;
-#if LXP_ENABLE_FS
-	if (lxp_hostfs_match(abspath))
-		return lxp_hostfs_mkdir(p, abspath);
-#endif
-	if (wfs_find(abspath) >= 0 || fs_lookup(p, abspath) >= 0)
-		return -LXP_EEXIST;
-	if (wfs_create(abspath, LXP_S_IFDIR | (mode & 0777u)) < 0)
-		return -LXP_ENOSPC;
+	*mount = lxp_mount_of(p, abspath);
 	return 0;
 }
 
-/* unlink (is_rmdir=0) / rmdir (is_rmdir=1) on a writable node. */
-static long sys_unlink(lxp_proc_t *p, const char *path, int is_rmdir)
+static long sys_mkdir(lxp_proc_t *p, const char *path, uint32_t mode)
 {
-	if (!path)
-		return -LXP_EFAULT;
 	char abspath[LXP_PATH_MAX];
-	long rr = resolve_path(p, path, abspath, sizeof(abspath));
+	const lxp_mount_ops_t *m;
+	long rr = resolve_in_mount(p, path, abspath, &m);
 	if (rr < 0)
 		return rr;
-#if LXP_ENABLE_FS
-	if (lxp_hostfs_match(abspath))
-		return is_rmdir ? lxp_hostfs_rmdir(p, abspath) : lxp_hostfs_unlink(p, abspath);
-#endif
-	int wi = wfs_find(abspath);
-	if (wi < 0)
-		return (fs_lookup(p, abspath) >= 0) ? -LXP_EROFS : -LXP_ENOENT;
-	int isdir = (wnode_at(wi)->mode & LXP_S_IFMT) == LXP_S_IFDIR;
-	if (is_rmdir && !isdir)
-		return -LXP_ENOTDIR;
-	if (!is_rmdir && isdir)
-		return -LXP_EISDIR;
-	if (isdir) {
-		for (int j = 0; j < LXP_NWNODE; j++)
-			if (wnode_at(j)->used && lxp_path_child_name(abspath, wnode_at(j)->path))
-				return -LXP_ENOTEMPTY;
-	}
-	wfs_free(wi); /* reclaim the node + its pool bytes */
-	return 0;
+	return m->mkdir ? m->mkdir(p, abspath, mode) : name_unsupported(p, m, abspath, NAME_CREATE);
+}
+
+/* unlink (is_rmdir = 0) or rmdir (is_rmdir = 1). */
+static long sys_unlink(lxp_proc_t *p, const char *path, int is_rmdir)
+{
+	char abspath[LXP_PATH_MAX];
+	const lxp_mount_ops_t *m;
+	long rr = resolve_in_mount(p, path, abspath, &m);
+	if (rr < 0)
+		return rr;
+	return m->remove ? m->remove(p, abspath, is_rmdir)
+			 : name_unsupported(p, m, abspath, NAME_REMOVE);
+}
+
+/* rename and link: resolve both names; a pair that spans two mounts is EXDEV. */
+static long two_names(lxp_proc_t *p, const char *oldp, const char *newp, char *oldabs,
+		      char *newabs, const lxp_mount_ops_t **m)
+{
+	const lxp_mount_ops_t *to;
+	long rr = resolve_in_mount(p, oldp, oldabs, m);
+	if (rr < 0)
+		return rr;
+	rr = resolve_in_mount(p, newp, newabs, &to);
+	if (rr < 0)
+		return rr;
+	return *m == to ? 0 : -LXP_EXDEV;
 }
 
 static long sys_rename(lxp_proc_t *p, const char *oldp, const char *newp, unsigned flags)
 {
-	if (!oldp || !newp)
-		return -LXP_EFAULT;
 	char oldabs[LXP_PATH_MAX], newabs[LXP_PATH_MAX];
-	long r1 = resolve_path(p, oldp, oldabs, sizeof(oldabs));
-	if (r1 < 0)
-		return r1;
-	long r2 = resolve_path(p, newp, newabs, sizeof(newabs));
-	if (r2 < 0)
-		return r2;
-	if (flags != 0)
-		return -LXP_EINVAL;
-#if LXP_ENABLE_FS
-	int old_host = lxp_hostfs_match(oldabs);
-	int new_host = lxp_hostfs_match(newabs);
-	if (old_host != new_host)
-		return -LXP_EXDEV;
-	if (old_host)
-		return lxp_hostfs_rename(p, oldabs, newabs);
-#endif
-	int wi = wfs_find(oldabs);
-	if (wi < 0)
-		return (fs_lookup(p, oldabs) >= 0) ? -LXP_EROFS : -LXP_ENOENT;
-	return wfs_rename(wi, newabs);
+	const lxp_mount_ops_t *m;
+	long rr = two_names(p, oldp, newp, oldabs, newabs, &m);
+	if (rr == 0 && flags != 0)
+		rr = -LXP_EINVAL;
+	if (rr < 0)
+		return rr;
+	return m->rename ? m->rename(p, oldabs, newabs)
+			 : name_unsupported(p, m, oldabs, NAME_REMOVE);
 }
 
 static long sys_symlink(lxp_proc_t *p, const char *target, const char *linkp)
 {
-	if (!target || !linkp)
+	if (!target)
 		return -LXP_EFAULT;
 	char tbuf[LXP_PATH_MAX]; /* the target is stored verbatim */
 	size_t tl;
 	if (lxp_copy_string_from_guest(p, tbuf, sizeof(tbuf), (uintptr_t)target, &tl) != 0)
 		return -LXP_EFAULT;
 	char linkabs[LXP_PATH_MAX];
-	long rr = resolve_path(p, linkp, linkabs, sizeof(linkabs));
+	const lxp_mount_ops_t *m;
+	long rr = resolve_in_mount(p, linkp, linkabs, &m);
 	if (rr < 0)
 		return rr;
-#if LXP_ENABLE_FS
-	if (lxp_hostfs_match(linkabs))
-		return -LXP_EOPNOTSUPP; /* FAT provider contract has no symlink primitive. */
-#endif
-	if (wfs_find(linkabs) >= 0 || fs_lookup(p, linkabs) >= 0)
-		return -LXP_EEXIST;
-	int wi = wfs_create(linkabs, LXP_S_IFLNK | 0777u);
-	if (wi < 0)
-		return -LXP_ENOSPC;
-	if (wfs_reserve(wi, tl) < 0) {
-		wfs_free(wi); /* roll back the just-created node (its data is still NULL) */
-		return -LXP_ENOSPC;
-	}
-	memcpy(wnode_at(wi)->data, tbuf, tl);
-	wnode_at(wi)->size = tl;
-	return 0;
+	return m->symlink ? m->symlink(p, tbuf, tl, linkabs)
+			  : name_unsupported(p, m, linkabs, NAME_CREATE);
 }
 
-/*
- * link(oldpath, newpath): make newpath name oldpath's file.
- *
- * The writable overlay has no shared-inode / link-count model (st_nlink is always
- * reported as 1), so a true hard link is not representable. We satisfy the call by
- * creating newpath as an independent writable copy of oldpath's current bytes — enough
- * for the only realistic uses on this read-only-rootfs target: `ln a b`, and the
- * write-temp / link / unlink-temp atomic-replace idiom (dropbear host-key generation,
- * mkstemp-based writers, editors). oldpath may live in the RO rootfs or the overlay;
- * directories are rejected with EPERM, matching Linux. The final path component is not
- * dereferenced — link() does not follow a symlink at oldpath.
- */
 static long sys_link(lxp_proc_t *p, const char *oldp, const char *newp)
 {
-	if (!oldp || !newp)
-		return -LXP_EFAULT;
 	char oldabs[LXP_PATH_MAX], newabs[LXP_PATH_MAX];
-	long r1 = resolve_path(p, oldp, oldabs, sizeof(oldabs));
-	if (r1 < 0)
-		return r1;
-	long r2 = resolve_path(p, newp, newabs, sizeof(newabs));
-	if (r2 < 0)
-		return r2;
-#if LXP_ENABLE_FS
-	int old_host = lxp_hostfs_match(oldabs);
-	int new_host = lxp_hostfs_match(newabs);
-	if (old_host != new_host)
-		return -LXP_EXDEV;
-	if (old_host)
-		return -LXP_EOPNOTSUPP; /* Host provider intentionally exposes no hard links. */
-#endif
-	if (strlen(newabs) >= LXP_PATH_MAX)
-		return -LXP_ENAMETOOLONG;
-	if (wfs_find(newabs) >= 0 || fs_lookup(p, newabs) >= 0)
-		return -LXP_EEXIST;
-
-	/* Source bytes: writable overlay first, then the RO rootfs. */
-	const uint8_t *src;
-	size_t srclen;
-	uint32_t srcmode;
-	int wi = wfs_find(oldabs);
-	if (wi >= 0) {
-		src = wnode_at(wi)->data;
-		srclen = wnode_at(wi)->size;
-		srcmode = wnode_at(wi)->mode;
-	} else {
-		int idx = fs_lookup(p, oldabs);
-		if (idx < 0)
-			return -LXP_ENOENT;
-		src = p->fs[idx].data;
-		srclen = p->fs[idx].size;
-		srcmode = file_mode(&p->fs[idx]);
-	}
-	if ((srcmode & LXP_S_IFMT) == LXP_S_IFDIR)
-		return -LXP_EPERM; /* hard links to directories are not permitted */
-
-	int ni = wfs_create(newabs, LXP_S_IFREG | (srcmode & 0777u));
-	if (ni < 0)
-		return -LXP_ENOSPC;
-	if (srclen > 0) {
-		if (wfs_reserve(ni, srclen) < 0) {
-			wfs_free(ni); /* roll back the just-created node (its data is still NULL) */
-			return -LXP_ENOSPC;
-		}
-		memcpy(wnode_at(ni)->data, src,
-		       srclen); /* the arena never moves the source block */
-		wnode_at(ni)->size = srclen;
-	}
-	return 0;
+	const lxp_mount_ops_t *m;
+	long rr = two_names(p, oldp, newp, oldabs, newabs, &m);
+	if (rr < 0)
+		return rr;
+	return m->link ? m->link(p, oldabs, newabs) : name_unsupported(p, m, oldabs, NAME_REMOVE);
 }
 
 static long sys_chmod(lxp_proc_t *p, const char *path, uint32_t mode)
 {
-	if (!path)
-		return -LXP_EFAULT;
 	char abspath[LXP_PATH_MAX];
-	long rr = resolve_path(p, path, abspath, sizeof(abspath));
+	const lxp_mount_ops_t *m;
+	long rr = resolve_in_mount(p, path, abspath, &m);
 	if (rr < 0)
 		return rr;
-#if LXP_ENABLE_FS
-	if (lxp_hostfs_match(abspath)) {
-		lxp_fs_stat_t stat;
-		if (lxp_hostfs_is_read_only())
-			return -LXP_EROFS;
-		return lxp_hostfs_path_stat(p, abspath, &stat); /* FAT mode bits are inert. */
-	}
-#endif
-	int wi = wfs_find(abspath);
-	if (wi >= 0) {
-		wnode_at(wi)->mode = (wnode_at(wi)->mode & LXP_S_IFMT) | (mode & 0777u);
-		return 0;
-	}
-	return (fs_lookup(p, abspath) >= 0) ? 0 : -LXP_ENOENT; /* rootfs: accept, inert */
+	return m->chmod ? m->chmod(p, abspath, mode) : name_unsupported(p, m, abspath, NAME_ATTR);
 }
 
-/* utimensat: times are not tracked, but the existence check must be honest —
- * `touch` probes with utimensat first and only creates the file on -ENOENT. */
 static long sys_utimensat(lxp_proc_t *p, const char *path)
 {
 	if (!path) /* futimens(fd): operate on the open fd — accept */
 		return 0;
 	char abspath[LXP_PATH_MAX];
-	long rr = resolve_path(p, path, abspath, sizeof(abspath));
+	const lxp_mount_ops_t *m;
+	long rr = resolve_in_mount(p, path, abspath, &m);
 	if (rr < 0)
 		return rr;
-#if LXP_ENABLE_FS
-	if (lxp_hostfs_match(abspath)) {
-		lxp_fs_stat_t stat;
-		if (lxp_hostfs_is_read_only())
-			return -LXP_EROFS;
-		return lxp_hostfs_path_stat(p, abspath,
-					    &stat); /* Provider does not expose timestamps. */
-	}
-#endif
-	if ((abspath[0] == '/' && abspath[1] == '\0') || wfs_find(abspath) >= 0 ||
-	    fs_lookup(p, abspath) >= 0)
-		return 0;
-	return -LXP_ENOENT;
+	return m->utimens ? m->utimens(p, abspath) : name_unsupported(p, m, abspath, NAME_ATTR);
 }
 
-static void statfs_synthetic(struct lxp_statfs64 *st)
+static void statfs_synthetic(struct lxp_statfs64 *st, uint32_t magic)
 {
 	memset(st, 0, sizeof(*st));
-	st->f_type = LXP_TMPFS_MAGIC;
+	st->f_type = magic;
 	st->f_bsize = 4096;
 	st->f_frsize = 4096;
 	st->f_blocks = 256;
@@ -593,18 +504,19 @@ static long sys_statfs_path(lxp_proc_t *p, const char *path, size_t size, void *
 	if (!lxp_guest_access_ok(p, buf, sizeof(struct lxp_statfs64), 1))
 		return -LXP_EFAULT;
 	char abspath[LXP_PATH_MAX];
-	long rc = resolve_path(p, path, abspath, sizeof(abspath));
+	const lxp_mount_ops_t *m;
+	long rc = resolve_in_mount(p, path, abspath, &m);
 	if (rc < 0)
 		return rc;
 	struct lxp_statfs64 st;
-#if LXP_ENABLE_FS
-	if (lxp_hostfs_match(abspath)) {
-		rc = lxp_hostfs_statfs(p, &st);
-		return rc < 0 ? rc : statfs_copy(p, size, buf, &st);
+	if (m->statfs) {
+		rc = m->statfs(p, abspath, &st);
+	} else {
+		struct lxp_stat unused;
+		rc = m->stat ? m->stat(p, abspath, 1, &unused) : 0; /* the name must exist */
+		statfs_synthetic(&st, m->magic);
 	}
-#endif
-	statfs_synthetic(&st);
-	return statfs_copy(p, size, buf, &st);
+	return rc < 0 ? rc : statfs_copy(p, size, buf, &st);
 }
 
 static long sys_fstatfs(lxp_proc_t *p, int fd, size_t size, void *buf)
@@ -620,7 +532,7 @@ static long sys_fstatfs(lxp_proc_t *p, int fd, size_t size, void *buf)
 		long rc = ops->fstatfs(p, slot, &st);
 		return rc < 0 ? rc : statfs_copy(p, size, buf, &st);
 	}
-	statfs_synthetic(&st);
+	statfs_synthetic(&st, LXP_TMPFS_MAGIC);
 	return statfs_copy(p, size, buf, &st);
 }
 

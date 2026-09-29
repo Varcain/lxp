@@ -67,6 +67,8 @@ LXP_STATIC_ASSERT(offsetof(struct lxp_statfs64, f_namelen) == 56,
 
 #define LXP_TMPFS_MAGIC 0x01021994u
 #define LXP_MSDOS_SUPER_MAGIC 0x00004d44u
+#define LXP_PROC_SUPER_MAGIC 0x00009fa0u
+#define LXP_V9FS_MAGIC 0x01021997u
 #define LXP_ST_RDONLY 0x0001u
 #define LXP_ST_NOSUID 0x0002u
 #define LXP_ST_NODEV 0x0004u

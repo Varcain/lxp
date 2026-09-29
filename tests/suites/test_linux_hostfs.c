@@ -887,6 +887,10 @@ static void test_mount_semantics_read_only_and_proc_reporting(void **state)
 				     (long)(uintptr_t)"/mnt", (long)(uintptr_t)"vfat", 0,
 				     (long)(uintptr_t)"uid=0", 0),
 			 -LXP_EOPNOTSUPP);
+	/* /dev (like /proc and the netfs mount) cannot be covered by another mount. */
+	assert_int_equal(lxp_syscall(&proc, LXP_NR_mount, (long)(uintptr_t)"/dev/mmcblk0",
+				     (long)(uintptr_t)"/dev", (long)(uintptr_t)"vfat", 0, 0, 0),
+			 -LXP_EBUSY);
 	assert_int_equal(lxp_syscall(&proc, LXP_NR_mount, (long)(uintptr_t)"/dev/mmcblk0",
 				     (long)(uintptr_t)"/mnt", (long)(uintptr_t)"vfat", 0,
 				     (long)(uintptr_t)"ro,noexec", 0),

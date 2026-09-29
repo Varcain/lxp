@@ -742,9 +742,70 @@ static long hostfs_mount_stat(lxp_proc_t *p, const char *path, int follow, struc
 	return 0;
 }
 
+static long hostfs_mount_mkdir(lxp_proc_t *p, const char *path, uint32_t mode)
+{
+	(void)mode; /* FAT mode bits are inert */
+	return lxp_hostfs_mkdir(p, path);
+}
+
+static long hostfs_mount_remove(lxp_proc_t *p, const char *path, int dir)
+{
+	return dir ? lxp_hostfs_rmdir(p, path) : lxp_hostfs_unlink(p, path);
+}
+
+static long hostfs_mount_symlink(lxp_proc_t *p, const char *target, size_t target_len,
+				 const char *path)
+{
+	(void)p;
+	(void)target;
+	(void)target_len;
+	(void)path;
+	return -LXP_EOPNOTSUPP; /* the FAT provider contract has no symlink primitive */
+}
+
+static long hostfs_mount_link(lxp_proc_t *p, const char *from, const char *to)
+{
+	(void)p;
+	(void)from;
+	(void)to;
+	return -LXP_EOPNOTSUPP; /* the host provider exposes no hard links */
+}
+
+/* chmod and utimensat: the provider keeps neither mode bits nor timestamps, so the
+ * call only checks that the name exists and the mount is writable. */
+static long hostfs_mount_attr(lxp_proc_t *p, const char *path)
+{
+	if (lxp_hostfs_is_read_only())
+		return -LXP_EROFS;
+	lxp_fs_stat_t stat;
+	return lxp_hostfs_path_stat(p, path, &stat);
+}
+
+static long hostfs_mount_chmod(lxp_proc_t *p, const char *path, uint32_t mode)
+{
+	(void)mode;
+	return hostfs_mount_attr(p, path);
+}
+
+static long hostfs_mount_statfs(lxp_proc_t *p, const char *path, struct lxp_statfs64 *st)
+{
+	(void)path;
+	return lxp_hostfs_statfs(p, st);
+}
+
 const lxp_mount_ops_t lxp_hostfs_mount_ops = {
 	.open = hostfs_mount_open,
 	.stat = hostfs_mount_stat,
+	.mkdir = hostfs_mount_mkdir,
+	.remove = hostfs_mount_remove,
+	.symlink = hostfs_mount_symlink,
+	.link = hostfs_mount_link,
+	.rename = lxp_hostfs_rename,
+	.chmod = hostfs_mount_chmod,
+	.utimens = hostfs_mount_attr,
+	.statfs = hostfs_mount_statfs,
+	.magic = LXP_MSDOS_SUPER_MAGIC,
+	.name_errno = LXP_EROFS,
 };
 
 #endif /* LXP_ENABLE_FS */

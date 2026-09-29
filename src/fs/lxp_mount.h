@@ -30,10 +30,33 @@ typedef struct lxp_mount_ops {
 	/** A stat answered later, in place of @c stat: parks the caller, whose kstat64 (or
 	 * statx when @p statx) at guest address @p buf is filled on completion. */
 	long (*stat_park)(lxp_proc_t *p, const char *path, uintptr_t buf, int statx);
+
+	/* Name changes, each 0 or a negated errno; NULL where the mount takes none. Both
+	 * names of a link or rename lie in this mount (the caller answers EXDEV). */
+	long (*mkdir)(lxp_proc_t *p, const char *path, uint32_t mode);
+	/** unlink(2), or rmdir(2) when @p dir. */
+	long (*remove)(lxp_proc_t *p, const char *path, int dir);
+	long (*symlink)(lxp_proc_t *p, const char *target, size_t target_len, const char *path);
+	long (*link)(lxp_proc_t *p, const char *from, const char *to);
+	long (*rename)(lxp_proc_t *p, const char *from, const char *to);
+	long (*chmod)(lxp_proc_t *p, const char *path, uint32_t mode);
+	long (*utimens)(lxp_proc_t *p, const char *path);
+	/** statfs of a path; when NULL, a synthetic record of type @c magic. */
+	long (*statfs)(lxp_proc_t *p, const char *path, struct lxp_statfs64 *st);
+
+	/** statfs f_type for a mount without a statfs operation. */
+	uint32_t magic;
+	/** The errno for a name change the mount does not take: EPERM, or EROFS for a
+	 * read-only mount that cannot tell synchronously whether the name exists. */
+	uint8_t name_errno;
 } lxp_mount_ops_t;
 
 /** The mount that answers the normalized absolute @p path; never NULL. */
 const lxp_mount_ops_t *lxp_mount_of(const lxp_proc_t *p, const char *path);
+
+/** Whether @p path is at or below a mountpoint that mount(2) cannot cover: /proc, /dev
+ * and the netfs mount. The root and the hostfs point (which mount(2) moves) are free. */
+int lxp_mount_occupied(const char *path);
 
 /* The mounts, each defined by the subsystem that owns its namespace. */
 extern const lxp_mount_ops_t lxp_procfs_mount_ops;  /* src/proc/lxp_procfs.c */

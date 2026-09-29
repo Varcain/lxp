@@ -1624,9 +1624,12 @@ const lxp_file_ops_t lxp_netfs_fops = {
 	.close = fop_close_netfs,
 };
 
+/* A read-only browse mount: every name change is EROFS. */
 const lxp_mount_ops_t lxp_netfs_mount_ops = {
 	.open = lxp_netfs_open,
 	.stat_park = lxp_netfs_stat,
+	.magic = LXP_V9FS_MAGIC,
+	.name_errno = LXP_EROFS,
 };
 
 #endif /* LXP_ENABLE_NETFS */

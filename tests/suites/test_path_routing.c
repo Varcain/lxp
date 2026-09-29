@@ -7,7 +7,7 @@
  * Golden path routing: which namespace answers each path-name syscall, pinned per path
  * so a change to the routing shows up as a changed cell. Every cell runs one syscall
  * against a fresh world:
- *   rootfs  /, /bin, /bin/busybox, /bin/sh -> busybox, /etc, /etc/passwd, /etclink -> etc,
+ *   rootfs  /, /bin, /bin/busybox, /bin/sh -> busybox, /etc, /etc/hosts, /etclink -> etc,
  *           and the empty mount-point directories /dev, /proc, /tmp, /data, /mnt, /mnt/pi
  *   tmpfs   /tmp/w (file) and /tmp/wd (directory)
  *   hostfs  a fake provider at /data holding the file /f and the directory /d
@@ -41,7 +41,6 @@ enum {
 	DEV,	     /* registered character device */
 	HOST,	     /* hostfs provider at /data */
 	NET,	     /* netfs at /mnt/pi: the call parked on a 9P request */
-	SYN,	     /* statfs: the synthetic in-memory record */
 	SKIP,	     /* not exercised here */
 };
 #define E(name) (-LXP_E##name)
@@ -188,7 +187,7 @@ static const struct lxp_dev_ops g_rtest_ops = {0};
 static const struct lxp_dev g_rtest = {.path = "/dev/rtest", .ops = &g_rtest_ops, .major = 10};
 
 static const uint8_t g_busybox[] = "BB";
-static const uint8_t g_passwd[] = "root::0:0:root:/:/bin/sh\n";
+static const uint8_t g_hosts[] = "127.0.0.1 localhost\n";
 
 #define ROOTFS_FILE(p, d, m) {.path = (p), .data = (d), .size = sizeof(d) - 1u, .mode = (m)}
 #define ROOTFS_DIR(p) {.path = (p), .mode = LXP_S_IFDIR | 0755u}
@@ -204,7 +203,7 @@ static const lxp_file_t g_rootfs[] = {
 	ROOTFS_DIR("/data"),
 	ROOTFS_DIR("/dev"),
 	ROOTFS_DIR("/etc"),
-	ROOTFS_FILE("/etc/passwd", g_passwd, LXP_S_IFREG | 0644u),
+	ROOTFS_FILE("/etc/hosts", g_hosts, LXP_S_IFREG | 0644u),
 	ROOTFS_LINK("/etclink", "etc"),
 	ROOTFS_DIR("/mnt"),
 	ROOTFS_DIR("/mnt/pi"),
@@ -387,9 +386,18 @@ static long run_op(lxp_proc_t *p, lxp_conf_t *fx, enum op op, const char *path, 
 		rc = call(p, LXP_NR_statfs64, gp, (long)sizeof(struct lxp_statfs64), b, 0);
 		if (rc < 0)
 			return rc;
-		return lxp_view_u32(buf, 0) == LXP_MSDOS_SUPER_MAGIC ? HOST
-		       : lxp_view_u32(buf, 0) == LXP_TMPFS_MAGIC     ? SYN
-								     : 0;
+		switch (lxp_view_u32(buf, 0)) {
+		case LXP_MSDOS_SUPER_MAGIC:
+			return HOST;
+		case LXP_PROC_SUPER_MAGIC:
+			return PROC;
+		case LXP_V9FS_MAGIC:
+			return NET;
+		case LXP_TMPFS_MAGIC:
+			return TMP;
+		default:
+			return 0;
+		}
 	case OP_READLINK:
 		return call(p, LXP_NR_readlink, gp, b, 64, 0);
 	case OP_ACCESS:
@@ -415,8 +423,8 @@ static long run_op(lxp_proc_t *p, lxp_conf_t *fx, enum op op, const char *path, 
 
 static void outcome_text(long v, char *out, size_t n)
 {
-	static const char *const route[] = {"ROOT", "TMP", "PROC", "CONS", "PTY",
-					    "DEV",  "HOST", "NET",  "SYN",  "SKIP"};
+	static const char *const route[] = {"ROOT", "TMP",  "PROC", "CONS", "PTY",
+					    "DEV",  "HOST", "NET",  "SKIP"};
 	if (v >= ROOT && v <= SKIP)
 		snprintf(out, n, "%s", route[v - ROOT]);
 	else
@@ -462,77 +470,77 @@ struct pair {
 
 /* open(O_RDONLY), open(O_WRONLY | O_CREAT), stat, lstat. */
 static const struct row4 g_open_stat[] = {
-	/* path           open      creat     stat      lstat */
-	{"/",            {ROOT,     E(ISDIR), ROOT,     ROOT}},
-	{"/proc",        {PROC,     E(ISDIR), PROC,     PROC}},
-	{"/proc/self",   {E(NOENT), E(ACCES), PROC,     PROC}},
-	{"/proc/uptime", {PROC,     E(ACCES), PROC,     PROC}},
-	{"/proc/nope",   {E(NOENT), E(ACCES), E(NOENT), E(NOENT)}},
-	{"/data",        {HOST,     E(ISDIR), HOST,     HOST}},
-	{"/data/f",      {HOST,     HOST,     HOST,     HOST}},
-	{"/data/nope",   {E(NOENT), HOST,     E(NOENT), E(NOENT)}},
-	{"/dev",         {ROOT,     E(ISDIR), ROOT,     ROOT}},
-	{"/dev/null",    {CONS,     CONS,     DEV,      DEV}},
-	{"/dev/ptmx",    {PTY,      PTY,      DEV,      DEV}},
-	{"/dev/rtest",   {DEV,      DEV,      DEV,      DEV}},
-	{"/mnt/pi",      {NET,      E(ROFS),  NET,      NET}},
-	{"/mnt/pi/f",    {NET,      E(ROFS),  NET,      NET}},
-	{"/tmp/w",       {TMP,      TMP,      TMP,      TMP}},
-	{"/tmp/wd",      {TMP,      E(ISDIR), TMP,      TMP}},
-	{"/etc/passwd",  {ROOT,     E(ROFS),  ROOT,     ROOT}},
-	{"/bin/sh",      {ROOT,     E(ROFS),  ROOT,     ROOT}},
-	{"/etclink",     {ROOT,     E(ISDIR), ROOT,     ROOT}},
-	{"/nope",        {E(NOENT), TMP,      E(NOENT), E(NOENT)}},
+	/* path         open      creat     stat      lstat */
+	{"/",          {ROOT,     E(ISDIR), ROOT,     ROOT}},
+	{"/proc",      {PROC,     E(ISDIR), PROC,     PROC}},
+	{"/proc/self", {E(NOENT), E(ACCES), PROC,     PROC}},
+	{"/proc/stat", {PROC,     E(ACCES), PROC,     PROC}},
+	{"/proc/nope", {E(NOENT), E(ACCES), E(NOENT), E(NOENT)}},
+	{"/data",      {HOST,     E(ISDIR), HOST,     HOST}},
+	{"/data/f",    {HOST,     HOST,     HOST,     HOST}},
+	{"/data/nope", {E(NOENT), HOST,     E(NOENT), E(NOENT)}},
+	{"/dev",       {ROOT,     E(ISDIR), ROOT,     ROOT}},
+	{"/dev/null",  {CONS,     CONS,     DEV,      DEV}},
+	{"/dev/ptmx",  {PTY,      PTY,      DEV,      DEV}},
+	{"/dev/rtest", {DEV,      DEV,      DEV,      DEV}},
+	{"/mnt/pi",    {NET,      E(ROFS),  NET,      NET}},
+	{"/mnt/pi/f",  {NET,      E(ROFS),  NET,      NET}},
+	{"/tmp/w",     {TMP,      TMP,      TMP,      TMP}},
+	{"/tmp/wd",    {TMP,      E(ISDIR), TMP,      TMP}},
+	{"/etc/hosts", {ROOT,     E(ROFS),  ROOT,     ROOT}},
+	{"/bin/sh",    {ROOT,     E(ROFS),  ROOT,     ROOT}},
+	{"/etclink",   {ROOT,     E(ISDIR), ROOT,     ROOT}},
+	{"/nope",      {E(NOENT), TMP,      E(NOENT), E(NOENT)}},
 };
 
 /* mkdir, unlink, rmdir, symlink (as the link name), chmod, utimensat, statfs. */
 static const struct row7 g_names[] = {
-	/* path           mkdir     unlink    rmdir      symlink       chmod     utimens   statfs */
-	{"/",            {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        SYN}},
-	{"/proc",        {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        SYN}},
-	{"/proc/self",   {TMP,      E(NOENT), E(NOENT),  TMP,          E(NOENT), E(NOENT), SYN}},
-	{"/proc/uptime",{TMP,      E(NOENT), E(NOENT),  TMP,          E(NOENT), E(NOENT), SYN}},
-	{"/proc/nope",   {TMP,      E(NOENT), E(NOENT),  TMP,          E(NOENT), E(NOENT), SYN}},
-	{"/data",        {E(EXIST), E(BUSY),  E(BUSY),   E(OPNOTSUPP), 0,        0,        HOST}},
-	{"/data/f",      {E(EXIST), HOST,     E(NOTDIR), E(OPNOTSUPP), 0,        0,        HOST}},
-	{"/data/nope",   {HOST,     E(NOENT), E(NOENT),  E(OPNOTSUPP), E(NOENT), E(NOENT), HOST}},
-	{"/dev",         {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        SYN}},
-	{"/dev/null",    {TMP,      E(NOENT), E(NOENT),  TMP,          E(NOENT), E(NOENT), SYN}},
-	{"/dev/ptmx",    {TMP,      E(NOENT), E(NOENT),  TMP,          E(NOENT), E(NOENT), SYN}},
-	{"/dev/rtest",   {TMP,      E(NOENT), E(NOENT),  TMP,          E(NOENT), E(NOENT), SYN}},
-	{"/mnt/pi",      {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        SYN}},
-	{"/mnt/pi/f",    {TMP,      E(NOENT), E(NOENT),  TMP,          E(NOENT), E(NOENT), SYN}},
-	{"/tmp/w",       {E(EXIST), TMP,      E(NOTDIR), E(EXIST),     0,        0,        SYN}},
-	{"/tmp/wd",      {E(EXIST), E(ISDIR), TMP,       E(EXIST),     0,        0,        SYN}},
-	{"/etc/passwd",  {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        SYN}},
-	{"/bin/sh",      {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        SYN}},
-	{"/etclink",     {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        SYN}},
-	{"/nope",        {TMP,      E(NOENT), E(NOENT),  TMP,          E(NOENT), E(NOENT), SYN}},
+	/* path         mkdir     unlink    rmdir      symlink       chmod     utimens   statfs */
+	{"/",          {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        TMP}},
+	{"/proc",      {E(EXIST), E(PERM),  E(PERM),   E(EXIST),     0,        0,        PROC}},
+	{"/proc/self", {E(EXIST), E(PERM),  E(PERM),   E(EXIST),     0,        0,        PROC}},
+	{"/proc/stat", {E(EXIST), E(PERM),  E(PERM),   E(EXIST),     0,        0,        PROC}},
+	{"/proc/nope", {E(PERM),  E(NOENT), E(NOENT),  E(PERM),      E(NOENT), E(NOENT), E(NOENT)}},
+	{"/data",      {E(EXIST), E(BUSY),  E(BUSY),   E(OPNOTSUPP), 0,        0,        HOST}},
+	{"/data/f",    {E(EXIST), HOST,     E(NOTDIR), E(OPNOTSUPP), 0,        0,        HOST}},
+	{"/data/nope", {HOST,     E(NOENT), E(NOENT),  E(OPNOTSUPP), E(NOENT), E(NOENT), HOST}},
+	{"/dev",       {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        TMP}},
+	{"/dev/null",  {E(EXIST), E(PERM),  E(PERM),   E(EXIST),     0,        0,        TMP}},
+	{"/dev/ptmx",  {E(EXIST), E(PERM),  E(PERM),   E(EXIST),     0,        0,        TMP}},
+	{"/dev/rtest", {E(EXIST), E(PERM),  E(PERM),   E(EXIST),     0,        0,        TMP}},
+	{"/mnt/pi",    {E(ROFS),  E(ROFS),  E(ROFS),   E(ROFS),      E(ROFS),  E(ROFS),  NET}},
+	{"/mnt/pi/f",  {E(ROFS),  E(ROFS),  E(ROFS),   E(ROFS),      E(ROFS),  E(ROFS),  NET}},
+	{"/tmp/w",     {E(EXIST), TMP,      E(NOTDIR), E(EXIST),     0,        0,        TMP}},
+	{"/tmp/wd",    {E(EXIST), E(ISDIR), TMP,       E(EXIST),     0,        0,        TMP}},
+	{"/etc/hosts", {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        TMP}},
+	{"/bin/sh",    {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        TMP}},
+	{"/etclink",   {E(EXIST), E(ROFS),  E(ROFS),   E(EXIST),     0,        0,        TMP}},
+	{"/nope",      {TMP,      E(NOENT), E(NOENT),  TMP,          E(NOENT), E(NOENT), E(NOENT)}},
 };
 
 /* readlink (the returned length), access(F_OK), chdir, execve. */
 static const struct row4 g_lookup[] = {
-	/* path           readlink  access    chdir      exec */
-	{"/",            {E(INVAL), 0,        0,         E(ACCES)}},
-	{"/proc",        {E(INVAL), 0,        0,         E(ACCES)}},
-	{"/proc/self",   {1,        0,        E(NOENT),  E(NOENT)}},
-	{"/proc/uptime",{E(NOENT), 0,        E(NOENT),  E(NOENT)}},
-	{"/proc/nope",   {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
-	{"/data",        {E(INVAL), 0,        0,         E(ACCES)}},
-	{"/data/f",      {E(INVAL), 0,        E(NOTDIR), E(NOENT)}},
-	{"/data/nope",   {E(INVAL), E(NOENT), E(NOENT),  E(NOENT)}},
-	{"/dev",         {E(INVAL), 0,        0,         E(ACCES)}},
-	{"/dev/null",    {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
-	{"/dev/ptmx",    {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
-	{"/dev/rtest",   {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
-	{"/mnt/pi",      {E(INVAL), 0,        0,         NET}},
-	{"/mnt/pi/f",    {E(NOENT), E(NOENT), E(NOENT),  NET}},
-	{"/tmp/w",       {E(INVAL), 0,        E(NOTDIR), E(NOENT)}},
-	{"/tmp/wd",      {E(INVAL), 0,        0,         E(NOENT)}},
-	{"/etc/passwd",  {E(INVAL), 0,        E(NOTDIR), SKIP}},
-	{"/bin/sh",      {7,        0,        E(NOTDIR), SKIP}},
-	{"/etclink",     {3,        0,        E(NOTDIR), E(ACCES)}},
-	{"/nope",        {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
+	/* path         readlink  access    chdir      exec */
+	{"/",          {E(INVAL), 0,        0,         E(ACCES)}},
+	{"/proc",      {E(INVAL), 0,        0,         E(ACCES)}},
+	{"/proc/self", {1,        0,        E(NOENT),  E(NOENT)}},
+	{"/proc/stat", {E(NOENT), 0,        E(NOENT),  E(NOENT)}},
+	{"/proc/nope", {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
+	{"/data",      {E(INVAL), 0,        0,         E(ACCES)}},
+	{"/data/f",    {E(INVAL), 0,        E(NOTDIR), E(NOENT)}},
+	{"/data/nope", {E(INVAL), E(NOENT), E(NOENT),  E(NOENT)}},
+	{"/dev",       {E(INVAL), 0,        0,         E(ACCES)}},
+	{"/dev/null",  {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
+	{"/dev/ptmx",  {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
+	{"/dev/rtest", {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
+	{"/mnt/pi",    {E(INVAL), 0,        0,         NET}},
+	{"/mnt/pi/f",  {E(NOENT), E(NOENT), E(NOENT),  NET}},
+	{"/tmp/w",     {E(INVAL), 0,        E(NOTDIR), E(NOENT)}},
+	{"/tmp/wd",    {E(INVAL), 0,        0,         E(NOENT)}},
+	{"/etc/hosts", {E(INVAL), 0,        E(NOTDIR), SKIP}},
+	{"/bin/sh",    {7,        0,        E(NOTDIR), SKIP}},
+	{"/etclink",   {3,        0,        E(NOTDIR), E(ACCES)}},
+	{"/nope",      {E(NOENT), E(NOENT), E(NOENT),  E(NOENT)}},
 };
 
 static const struct pair g_renames[] = {
@@ -540,26 +548,26 @@ static const struct pair g_renames[] = {
 	{"/tmp/w", "/data/x", E(XDEV)},
 	{"/data/f", "/data/g", HOST},
 	{"/data/f", "/tmp/x", E(XDEV)},
-	{"/etc/passwd", "/tmp/x", E(ROFS)},
+	{"/etc/hosts", "/tmp/x", E(ROFS)},
 	{"/nope", "/tmp/x", E(NOENT)},
-	{"/proc/uptime", "/tmp/x", E(NOENT)},
-	{"/mnt/pi/f", "/tmp/x", E(NOENT)},
-	{"/tmp/w", "/proc/x", TMP},
-	{"/tmp/w", "/mnt/pi/x", TMP},
-	{"/tmp/w", "/dev/null", TMP},
-	{"/tmp/w", "/etc/passwd", TMP},
+	{"/proc/stat", "/tmp/x", E(XDEV)},
+	{"/mnt/pi/f", "/tmp/x", E(XDEV)},
+	{"/tmp/w", "/proc/x", E(XDEV)},
+	{"/tmp/w", "/mnt/pi/x", E(XDEV)},
+	{"/tmp/w", "/dev/null", E(XDEV)},
+	{"/tmp/w", "/etc/hosts", E(ROFS)},
 };
 
 static const struct pair g_links[] = {
 	{"/tmp/w", "/tmp/w2", TMP},
-	{"/etc/passwd", "/tmp/p", TMP},
+	{"/etc/hosts", "/tmp/p", TMP},
 	{"/data/f", "/data/g", E(OPNOTSUPP)},
 	{"/data/f", "/tmp/x", E(XDEV)},
 	{"/tmp/wd", "/tmp/x", E(PERM)},
-	{"/tmp/w", "/etc/passwd", E(EXIST)},
-	{"/mnt/pi/f", "/tmp/x", E(NOENT)},
-	{"/tmp/w", "/proc/x", TMP},
-	{"/tmp/w", "/mnt/pi/x", TMP},
+	{"/tmp/w", "/etc/hosts", E(EXIST)},
+	{"/mnt/pi/f", "/tmp/x", E(XDEV)},
+	{"/tmp/w", "/proc/x", E(XDEV)},
+	{"/tmp/w", "/mnt/pi/x", E(XDEV)},
 };
 
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
@@ -613,9 +621,8 @@ static void test_dev_nodes_stat_as_devices(void **state)
 	uint32_t *ptn = lxp_conf_alloc(fx, sizeof(*ptn));
 	long b = (long)(uintptr_t)buf;
 
-	assert_int_equal(call(&g_proc, LXP_NR_stat64, (long)(uintptr_t)lxp_conf_str(fx, "/dev/null"),
-			      b, 0, 0),
-			 0);
+	long null_path = (long)(uintptr_t)lxp_conf_str(fx, "/dev/null");
+	assert_int_equal(call(&g_proc, LXP_NR_stat64, null_path, b, 0, 0), 0);
 	lxp_stat_view_t null_node = lxp_view_kstat64(buf);
 	assert_int_equal(null_node.mode, LXP_S_IFCHR | 0666u);
 	assert_int_equal(null_node.rdev, (1u << 8) | 3u);
@@ -623,9 +630,8 @@ static void test_dev_nodes_stat_as_devices(void **state)
 	long master = call(&g_proc, LXP_NR_openat, LXP_AT_FDCWD,
 			   (long)(uintptr_t)lxp_conf_str(fx, "/dev/ptmx"), LXP_O_RDWR, 0);
 	assert_true(master >= 0);
-	assert_int_equal(call(&g_proc, LXP_NR_ioctl, master, (long)LXP_TIOCGPTN, (long)(uintptr_t)ptn,
-			      0),
-			 0);
+	long ptn_arg = (long)(uintptr_t)ptn;
+	assert_int_equal(call(&g_proc, LXP_NR_ioctl, master, (long)LXP_TIOCGPTN, ptn_arg, 0), 0);
 	char name[24];
 	snprintf(name, sizeof(name), "/dev/pts/%u", *ptn);
 	long pts = (long)(uintptr_t)lxp_conf_str(fx, name);

@@ -16,6 +16,8 @@
 #include "lxp_linux_uapi.h"
 #include "sys/lxp_sys.h"
 
+#include <string.h>
+
 static int is_dir(uint32_t mode)
 {
 	return (mode & LXP_S_IFMT) == LXP_S_IFDIR;
@@ -68,13 +70,148 @@ static long overlay_stat(lxp_proc_t *p, const char *path, int follow, struct lxp
 	int fi = fs_lookup(p, path);
 	if (fi >= 0 && follow)
 		fi = fs_follow(p, fi);
-	if (fi < 0)
-		return -LXP_ENOENT;
-	lxp_stat_init(st, LXP_INO_ROOTFS + (uint32_t)fi, file_mode(&p->fs[fi]), p->fs[fi].size);
+	if (fi >= 0) {
+		lxp_stat_init(st, LXP_INO_ROOTFS + (uint32_t)fi, file_mode(&p->fs[fi]),
+			      p->fs[fi].size);
+		return 0;
+	}
+	if (path[0] == '/' && path[1] == '\0') {
+		/* An image without a "." entry: the root, numbered after the rootfs entries. */
+		lxp_stat_init(st, LXP_INO_ROOTFS + (uint32_t)p->fs_count, LXP_S_IFDIR | 0755u, 0);
+		return 0;
+	}
+	return -LXP_ENOENT;
+}
+
+static int overlay_exists(lxp_proc_t *p, const char *path)
+{
+	struct lxp_stat st;
+	return overlay_stat(p, path, 0, &st) == 0;
+}
+
+static long overlay_mkdir(lxp_proc_t *p, const char *path, uint32_t mode)
+{
+	if (overlay_exists(p, path))
+		return -LXP_EEXIST;
+	return wfs_create(path, LXP_S_IFDIR | (mode & 0777u)) < 0 ? -LXP_ENOSPC : 0;
+}
+
+/* unlink (dir = 0) or rmdir (dir = 1) of a tmpfs node; rootfs entries stay. */
+static long overlay_remove(lxp_proc_t *p, const char *path, int dir)
+{
+	int wi = wfs_find(path);
+	if (wi < 0)
+		return fs_lookup(p, path) >= 0 ? -LXP_EROFS : -LXP_ENOENT;
+	int node_is_dir = is_dir(wnode_at(wi)->mode);
+	if (dir && !node_is_dir)
+		return -LXP_ENOTDIR;
+	if (!dir && node_is_dir)
+		return -LXP_EISDIR;
+	for (int j = 0; node_is_dir && j < LXP_NWNODE; j++)
+		if (wnode_at(j)->used && lxp_path_child_name(path, wnode_at(j)->path))
+			return -LXP_ENOTEMPTY;
+	wfs_free(wi); /* reclaim the node and its pool bytes */
 	return 0;
+}
+
+static long overlay_symlink(lxp_proc_t *p, const char *target, size_t target_len,
+			    const char *path)
+{
+	if (overlay_exists(p, path))
+		return -LXP_EEXIST;
+	int wi = wfs_create(path, LXP_S_IFLNK | 0777u);
+	if (wi < 0)
+		return -LXP_ENOSPC;
+	if (wfs_reserve(wi, target_len) < 0) {
+		wfs_free(wi); /* roll back the just-created node (its data is still NULL) */
+		return -LXP_ENOSPC;
+	}
+	memcpy(wnode_at(wi)->data, target, target_len);
+	wnode_at(wi)->size = target_len;
+	return 0;
+}
+
+/*
+ * link(from, to): tmpfs has no shared-inode / link-count model (st_nlink is always 1), so
+ * a true hard link is not representable. The call makes @p to an independent copy of
+ * @p from's current bytes -- enough for `ln a b` and the write-temp / link / unlink-temp
+ * idiom (dropbear host keys, mkstemp-based writers, editors). @p from may be a rootfs or
+ * tmpfs file; a directory is EPERM, as on Linux, and a trailing symlink is not followed.
+ */
+static long overlay_link(lxp_proc_t *p, const char *from, const char *to)
+{
+	if (overlay_exists(p, to))
+		return -LXP_EEXIST;
+	const uint8_t *src;
+	size_t len;
+	uint32_t mode;
+	int wi = wfs_find(from);
+	if (wi >= 0) {
+		src = wnode_at(wi)->data;
+		len = wnode_at(wi)->size;
+		mode = wnode_at(wi)->mode;
+	} else {
+		int fi = fs_lookup(p, from);
+		if (fi < 0)
+			return -LXP_ENOENT;
+		src = p->fs[fi].data;
+		len = p->fs[fi].size;
+		mode = file_mode(&p->fs[fi]);
+	}
+	if (is_dir(mode))
+		return -LXP_EPERM;
+	int ni = wfs_create(to, LXP_S_IFREG | (mode & 0777u));
+	if (ni < 0)
+		return -LXP_ENOSPC;
+	if (len > 0) {
+		if (wfs_reserve(ni, len) < 0) {
+			wfs_free(ni);
+			return -LXP_ENOSPC;
+		}
+		memcpy(wnode_at(ni)->data, src, len); /* the arena never moves the source block */
+		wnode_at(ni)->size = len;
+	}
+	return 0;
+}
+
+static long overlay_rename(lxp_proc_t *p, const char *from, const char *to)
+{
+	int wi = wfs_find(from);
+	if (wi < 0)
+		return fs_lookup(p, from) >= 0 ? -LXP_EROFS : -LXP_ENOENT;
+	if (wfs_find(to) < 0 && fs_lookup(p, to) >= 0)
+		return -LXP_EROFS; /* it would replace a name the rootfs holds */
+	return wfs_rename(wi, to);
+}
+
+/* Permission bits stick on a tmpfs node and are accepted, inert, on a rootfs entry. */
+static long overlay_chmod(lxp_proc_t *p, const char *path, uint32_t mode)
+{
+	int wi = wfs_find(path);
+	if (wi >= 0) {
+		wnode_at(wi)->mode = (wnode_at(wi)->mode & LXP_S_IFMT) | (mode & 0777u);
+		return 0;
+	}
+	return overlay_exists(p, path) ? 0 : -LXP_ENOENT;
+}
+
+/* Times are not tracked, but the existence check must be honest: `touch` probes with
+ * utimensat first and only creates the file on ENOENT. */
+static long overlay_utimens(lxp_proc_t *p, const char *path)
+{
+	return overlay_exists(p, path) ? 0 : -LXP_ENOENT;
 }
 
 const lxp_mount_ops_t lxp_overlay_mount_ops = {
 	.open = overlay_open,
 	.stat = overlay_stat,
+	.mkdir = overlay_mkdir,
+	.remove = overlay_remove,
+	.symlink = overlay_symlink,
+	.link = overlay_link,
+	.rename = overlay_rename,
+	.chmod = overlay_chmod,
+	.utimens = overlay_utimens,
+	.magic = LXP_TMPFS_MAGIC,
+	.name_errno = LXP_EROFS,
 };
