@@ -43,4 +43,38 @@ long lxp_sys_getdents(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_getdents64(lxp_proc_t *proc, const long a[6]);
 long lxp_sys_eventfd2(lxp_proc_t *proc, const long a[6]);
 
+/* ---- path names, stat and mounts (src/sys/lxp_sys_path.c) ---- */
+long lxp_sys_open(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_openat(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_fstat64(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_stat64(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_lstat64(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_fstatat64(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_statx(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_readlink(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_readlinkat(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_access(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_faccessat(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_mkdir(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_mkdirat(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_rmdir(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_unlink(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_unlinkat(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_rename(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_renameat(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_renameat2(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_symlink(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_symlinkat(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_link(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_linkat(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_chmod(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_fchmodat(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_utimensat(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_mount(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_umount2(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_statfs64(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_fstatfs64(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_getcwd(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_chdir(lxp_proc_t *proc, const long a[6]);
+
 #endif /* LXP_SYS_H */
