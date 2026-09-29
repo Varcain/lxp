@@ -1712,6 +1712,1204 @@ static long sys_ioctl(lxp_proc_t *proc, long a0, long a1, long a2)
 	return -LXP_ENOTTY; /* not a tty / char device / socket */
 }
 
+/* ---- syscall handlers: (proc, the six argument registers) → result ---------- */
+
+static long sc_read(lxp_proc_t *proc, const long a[6])
+{
+	return sys_read(proc, (int)a[0], (void *)(uintptr_t)a[1], (size_t)a[2]);
+}
+
+static long sc_write(lxp_proc_t *proc, const long a[6])
+{
+	return sys_write(proc, (int)a[0], (const void *)(uintptr_t)a[1], (size_t)a[2]);
+}
+
+static long sc_writev(lxp_proc_t *proc, const long a[6])
+{
+	return sys_writev(proc, (int)a[0], (const lxp_iovec *)(uintptr_t)a[1], (int)a[2]);
+}
+
+static long sc_brk(lxp_proc_t *proc, const long a[6])
+{
+	return sys_brk(proc, (uintptr_t)a[0]);
+}
+
+static long sc_mmap2(lxp_proc_t *proc, const long a[6])
+{
+	return sys_mmap2(proc, (uintptr_t)a[0], (size_t)a[1], (int)a[2], (int)a[3], (int)a[4],
+			 (uint32_t)a[5]);
+}
+
+static long sc_munmap(lxp_proc_t *proc, const long a[6])
+{
+	return sys_munmap(proc, (uintptr_t)a[0], (size_t)a[1]);
+}
+
+/* NOMMU: RELRO/protection is a no-op */
+static long sc_mprotect(lxp_proc_t *proc, const long a[6])
+{
+	(void)proc;
+	return sys_mprotect((uintptr_t)a[0], (size_t)a[1], (int)a[2]);
+}
+
+/* (fd, buf, count, [pad a3], off_lo a4, off_hi a5) */
+static long sc_pread64(lxp_proc_t *proc, const long a[6])
+{
+	return sys_pread(proc, (int)a[0], (void *)(uintptr_t)a[1], (size_t)a[2],
+			 (uint64_t)(uint32_t)a[4] | ((uint64_t)(uint32_t)a[5] << 32));
+}
+
+/* (fd, buf, count, [pad a3], off_lo a4, off_hi a5) */
+static long sc_pwrite64(lxp_proc_t *proc, const long a[6])
+{
+	return sys_pwrite(proc, (int)a[0], (const void *)(uintptr_t)a[1], (size_t)a[2],
+			  (uint64_t)(uint32_t)a[4] | ((uint64_t)(uint32_t)a[5] << 32));
+}
+
+/* legacy open(path, flags, mode): dirfd = cwd */
+static long sc_open(lxp_proc_t *proc, const long a[6])
+{
+	return sys_openat(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], (int)a[1]);
+}
+
+/* (path, argv, envp) */
+static long sc_execve(lxp_proc_t *proc, const long a[6])
+{
+	return sys_execve(proc, (const char *)(uintptr_t)a[0], (char *const *)(uintptr_t)a[1],
+			  (char *const *)(uintptr_t)a[2]);
+}
+
+static long sc_openat(lxp_proc_t *proc, const long a[6])
+{
+	return sys_openat(proc, (int)a[0], (const char *)(uintptr_t)a[1], (int)a[2]);
+}
+
+static long sc_close(lxp_proc_t *proc, const long a[6])
+{
+	return sys_close(proc, (int)a[0]);
+}
+
+static long sc_pipe(lxp_proc_t *proc, const long a[6])
+{
+	return sys_pipe(proc, (int *)(uintptr_t)a[0], 0);
+}
+
+/* (fds, flags) — flags carries O_CLOEXEC and/or O_NONBLOCK */
+static long sc_pipe2(lxp_proc_t *proc, const long a[6])
+{
+	return sys_pipe(proc, (int *)(uintptr_t)a[0], (int)a[1]);
+}
+
+static long sc_dup(lxp_proc_t *proc, const long a[6])
+{
+	return sys_dup(proc, (int)a[0]);
+}
+
+static long sc_dup2(lxp_proc_t *proc, const long a[6])
+{
+	return sys_dup2(proc, (int)a[0], (int)a[1]);
+}
+
+/* (old, new, flags) — flags carries O_CLOEXEC on the new fd */
+static long sc_dup3(lxp_proc_t *proc, const long a[6])
+{
+	if ((int)a[0] == (int)a[1]) /* dup3 (unlike dup2) rejects oldfd == newfd */
+		return -LXP_EINVAL;
+	return lxp_fd_dup_to(proc, (int)a[0], (int)a[1], ((int)a[2] & LXP_O_CLOEXEC) != 0);
+}
+
+static long sc_lseek(lxp_proc_t *proc, const long a[6])
+{
+	return sys_lseek(proc, (int)a[0], a[1], (int)a[2]);
+}
+
+static long sc_llseek(lxp_proc_t *proc, const long a[6])
+{
+	return sys_llseek(proc, (int)a[0], (unsigned long)a[1], (unsigned long)a[2],
+			  (uint64_t *)(uintptr_t)a[3], (unsigned int)a[4]);
+}
+
+static long sc_ftruncate64(lxp_proc_t *proc, const long a[6])
+{
+	/* 64-bit length is register-pair aligned on ARM: fd=a[0], len=(a[2],a[3]). */
+	return sys_ftruncate(proc, (int)a[0],
+			     (uint64_t)(uint32_t)a[2] | ((uint64_t)(uint32_t)a[3] << 32));
+}
+
+static long sc_fsync(lxp_proc_t *proc, const long a[6])
+{
+	return sys_sync_fd(proc, (int)a[0]);
+}
+
+static long sc_sync(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	(void)proc;
+#if LXP_ENABLE_FS
+	(void)lxp_hostfs_sync_all();
+#endif
+	return 0;
+}
+
+static long sc_syncfs(lxp_proc_t *proc, const long a[6])
+{
+	lxp_ofd_t *slot = lxp_fd_description(proc, (int)a[0]);
+	if (!slot)
+		return -LXP_EBADF;
+#if LXP_ENABLE_FS
+	if (slot->kind == LXP_FD_HOSTFS)
+		return lxp_hostfs_sync_all();
+#endif
+	return 0;
+}
+
+static long sc_fstat64(lxp_proc_t *proc, const long a[6])
+{
+	return sys_fstat64(proc, (int)a[0], (void *)(uintptr_t)a[1]);
+}
+
+/* (path, statbuf) — follows symlinks */
+static long sc_stat64(lxp_proc_t *proc, const long a[6])
+{
+	return sys_stat_path(proc, (const char *)(uintptr_t)a[0], 1, (void *)(uintptr_t)a[1]);
+}
+
+/* (path, statbuf) — does NOT follow */
+static long sc_lstat64(lxp_proc_t *proc, const long a[6])
+{
+	return sys_stat_path(proc, (const char *)(uintptr_t)a[0], 0, (void *)(uintptr_t)a[1]);
+}
+
+/* (dirfd, path, statbuf, flags) */
+static long sc_fstatat64(lxp_proc_t *proc, const long a[6])
+{
+	return sys_stat_path(proc, (const char *)(uintptr_t)a[1],
+			     !((int)a[3] & LXP_AT_SYMLINK_NOFOLLOW), (void *)(uintptr_t)a[2]);
+}
+
+/* (path, buf, bufsiz) */
+static long sc_readlink(lxp_proc_t *proc, const long a[6])
+{
+	return sys_readlink(proc, (const char *)(uintptr_t)a[0], (char *)(uintptr_t)a[1],
+			    (size_t)a[2]);
+}
+
+/* (dirfd, path, buf, bufsiz) */
+static long sc_readlinkat(lxp_proc_t *proc, const long a[6])
+{
+	return sys_readlink(proc, (const char *)(uintptr_t)a[1], (char *)(uintptr_t)a[2],
+			    (size_t)a[3]);
+}
+
+/* (path, mode) */
+static long sc_access(lxp_proc_t *proc, const long a[6])
+{
+	return sys_access(proc, (const char *)(uintptr_t)a[0], (int)a[1]);
+}
+
+/* (dirfd, path, mode) */
+/* (dirfd, path, mode, flags) */
+static long sc_faccessat(lxp_proc_t *proc, const long a[6])
+{
+	return sys_access(proc, (const char *)(uintptr_t)a[1], (int)a[2]);
+}
+
+/* (path, mode) */
+static long sc_mkdir(lxp_proc_t *proc, const long a[6])
+{
+	return sys_mkdir(proc, (const char *)(uintptr_t)a[0], (uint32_t)a[1]);
+}
+
+/* (dirfd, path, mode) */
+static long sc_mkdirat(lxp_proc_t *proc, const long a[6])
+{
+	return sys_mkdir(proc, (const char *)(uintptr_t)a[1], (uint32_t)a[2]);
+}
+
+/* (path) */
+static long sc_rmdir(lxp_proc_t *proc, const long a[6])
+{
+	return sys_unlink(proc, (const char *)(uintptr_t)a[0], 1);
+}
+
+/* (path) */
+static long sc_unlink(lxp_proc_t *proc, const long a[6])
+{
+	return sys_unlink(proc, (const char *)(uintptr_t)a[0], 0);
+}
+
+/* (dirfd, path, flags) */
+static long sc_unlinkat(lxp_proc_t *proc, const long a[6])
+{
+	if (((int)a[2] & ~LXP_AT_REMOVEDIR) != 0)
+		return -LXP_EINVAL;
+	return sys_unlink(proc, (const char *)(uintptr_t)a[1],
+			  ((int)a[2] & LXP_AT_REMOVEDIR) ? 1 : 0);
+}
+
+/* (oldpath, newpath) */
+static long sc_rename(lxp_proc_t *proc, const long a[6])
+{
+	return sys_rename(proc, (const char *)(uintptr_t)a[0], (const char *)(uintptr_t)a[1],
+			  0);
+}
+
+/* (olddirfd, old, newdirfd, new) */
+static long sc_renameat(lxp_proc_t *proc, const long a[6])
+{
+	return sys_rename(proc, (const char *)(uintptr_t)a[1], (const char *)(uintptr_t)a[3],
+			  0);
+}
+
+/* (olddirfd, old, newdirfd, new, flags) */
+static long sc_renameat2(lxp_proc_t *proc, const long a[6])
+{
+	return sys_rename(proc, (const char *)(uintptr_t)a[1], (const char *)(uintptr_t)a[3],
+			  (unsigned)a[4]);
+}
+
+/* (target, linkpath) */
+static long sc_symlink(lxp_proc_t *proc, const long a[6])
+{
+	return sys_symlink(proc, (const char *)(uintptr_t)a[0], (const char *)(uintptr_t)a[1]);
+}
+
+/* (target, newdirfd, linkpath) */
+static long sc_symlinkat(lxp_proc_t *proc, const long a[6])
+{
+	return sys_symlink(proc, (const char *)(uintptr_t)a[0], (const char *)(uintptr_t)a[2]);
+}
+
+/* (oldpath, newpath) */
+static long sc_link(lxp_proc_t *proc, const long a[6])
+{
+	return sys_link(proc, (const char *)(uintptr_t)a[0], (const char *)(uintptr_t)a[1]);
+}
+
+/* (olddirfd, oldpath, newdirfd, newpath, flags) */
+static long sc_linkat(lxp_proc_t *proc, const long a[6])
+{
+	return sys_link(proc, (const char *)(uintptr_t)a[1], (const char *)(uintptr_t)a[3]);
+}
+
+/* (path, mode) */
+static long sc_chmod(lxp_proc_t *proc, const long a[6])
+{
+	return sys_chmod(proc, (const char *)(uintptr_t)a[0], (uint32_t)a[1]);
+}
+
+/* (dirfd, path, mode) */
+static long sc_fchmodat(lxp_proc_t *proc, const long a[6])
+{
+	return sys_chmod(proc, (const char *)(uintptr_t)a[1], (uint32_t)a[2]);
+}
+
+/* (dirfd, path, times, flags) — times not tracked */
+/* time64 variant uClibc-ng issues for touch */
+static long sc_utimensat(lxp_proc_t *proc, const long a[6])
+{
+	return sys_utimensat(proc, (const char *)(uintptr_t)a[1]);
+}
+
+static long sc_mount(lxp_proc_t *proc, const long a[6])
+{
+	return sys_mount(proc, (const char *)(uintptr_t)a[0], (const char *)(uintptr_t)a[1],
+			 (const char *)(uintptr_t)a[2], (unsigned long)a[3],
+			 (const char *)(uintptr_t)a[4]);
+}
+
+static long sc_umount2(lxp_proc_t *proc, const long a[6])
+{
+	return sys_umount(proc, (const char *)(uintptr_t)a[0], (int)a[1]);
+}
+
+/* (path, sz, buf) */
+static long sc_statfs64(lxp_proc_t *proc, const long a[6])
+{
+	return sys_statfs_path(proc, (const char *)(uintptr_t)a[0], (size_t)a[1],
+			       (void *)(uintptr_t)a[2]);
+}
+
+/* (fd, sz, buf) */
+static long sc_fstatfs64(lxp_proc_t *proc, const long a[6])
+{
+	return sys_fstatfs(proc, (int)a[0], (size_t)a[1], (void *)(uintptr_t)a[2]);
+}
+
+/* (buf, count, flags) */
+static long sc_getrandom(lxp_proc_t *proc, const long a[6])
+{
+	return sys_getrandom(proc, (void *)(uintptr_t)a[0], (size_t)a[1], (unsigned)a[2]);
+}
+
+/* (initval, flags) — curl's threaded-resolver wakeup */
+static long sc_eventfd2(lxp_proc_t *proc, const long a[6])
+{
+	return lxp_eventfd_open(proc, (unsigned)a[0], (int)a[1]);
+}
+
+/* uptime + ram totals (uptime/free read this) */
+static long sc_sysinfo(lxp_proc_t *proc, const long a[6])
+{
+	struct lxp_sysinfo {
+		int32_t uptime;
+		uint32_t loads[3];
+		uint32_t totalram, freeram, sharedram, bufferram, totalswap, freeswap;
+		uint16_t procs, pad;
+		uint32_t totalhigh, freehigh, mem_unit;
+		char _f[8];
+	} *si = (void *)(uintptr_t)a[0];
+	LXP_STATIC_ASSERT(sizeof(struct lxp_sysinfo) == 64, "sysinfo ABI size drifted");
+	if (!lxp_guest_access_ok(proc, si, sizeof(*si), 1))
+		return -LXP_EFAULT;
+	memset(si, 0, sizeof(*si));
+	uint64_t ns = 0;
+	lxp_time_ns(&ns);
+	si->uptime = (int32_t)(ns / 1000000000ull);
+	struct lxp_resource_stats resources;
+	lxp_get_resource_stats(&resources);
+	/* ARM's sysinfo fields are 32-bit. Pick the smallest power-of-two
+	 * byte unit that represents the guest capacity. freeram is the
+	 * effective capacity remaining after both slot and region limits. */
+	uint64_t largest = resources.total_bytes > resources.available_bytes
+				   ? resources.total_bytes
+				   : resources.available_bytes;
+	uint32_t unit = 1;
+	while (largest / unit > UINT32_MAX && unit <= UINT32_MAX / 2u)
+		unit *= 2u;
+	uint64_t total_units = resources.total_bytes / unit;
+	uint64_t free_units = resources.available_bytes / unit;
+	si->totalram = (uint32_t)(total_units > UINT32_MAX ? UINT32_MAX : total_units);
+	si->freeram = (uint32_t)(free_units > UINT32_MAX ? UINT32_MAX : free_units);
+	si->mem_unit = unit;
+	/* The coordinator contributes its aggregate without exposing the
+	 * writable process table to syscall subsystems. Direct host tests
+	 * have no coordinator, so retain one for the caller. */
+	unsigned live = resources.processes;
+	si->procs = (uint16_t)(live > UINT16_MAX ? UINT16_MAX : (live ? live : 1u));
+	return 0;
+}
+
+/* old 32-bit fcntl: same dispatch as fcntl64 here */
+static long sc_fcntl(lxp_proc_t *proc, const long a[6])
+{
+	return sys_fcntl(proc, a[0], a[1], a[2]);
+}
+
+/* 32-bit linux_dirent (uClibc readdir on this target) */
+static long sc_getdents(lxp_proc_t *proc, const long a[6])
+{
+	return sys_getdents64(proc, (int)a[0], (void *)(uintptr_t)a[1], (size_t)a[2], 0);
+}
+
+static long sc_getdents64(lxp_proc_t *proc, const long a[6])
+{
+	return sys_getdents64(proc, (int)a[0], (void *)(uintptr_t)a[1], (size_t)a[2], 1);
+}
+
+/* (dirfd, path, flags, mask, buf); mask ignored */
+static long sc_statx(lxp_proc_t *proc, const long a[6])
+{
+	return sys_statx(proc, (int)a[0], (const char *)(uintptr_t)a[1], (int)a[2],
+			 (void *)(uintptr_t)a[4]);
+}
+
+static long sc_exit(lxp_proc_t *proc, const long a[6])
+{
+	return sys_exit(proc, (int)a[0], 0);
+}
+
+static long sc_exit_group(lxp_proc_t *proc, const long a[6])
+{
+	return sys_exit(proc, (int)a[0], 1);
+}
+
+/* ---- libc-init / identity stubs: enough for a static uClibc program to start ---- */
+
+static long sc_getpid(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	return proc->group ? proc->group->tgid : proc->pid;
+}
+
+static long sc_nice(lxp_proc_t *proc, const long a[6])
+{
+	int64_t requested = (int64_t)lxp_proc_nice_get(proc) + (int32_t)a[0];
+	lxp_proc_nice_set(proc, requested < -20	 ? -20
+				: requested > 19 ? 19
+						 : (int)requested);
+	/* Linux's raw nice(2) syscall returns zero on success. Returning the
+	 * resulting negative nice value would cross the -errno ABI boundary and
+	 * make libc report a successful priority raise as an error. */
+	return 0;
+}
+
+static long sc_getpriority(lxp_proc_t *proc, const long a[6])
+{
+	if ((int)a[0] != 0 || ((int)a[1] != 0 && (int)a[1] != proc->pid))
+		return (int)a[0] < 0 || (int)a[0] > 2 || (int)a[1] < 0 ? -LXP_EINVAL : -LXP_ESRCH;
+	return 20 - lxp_proc_nice_get(proc); /* raw Linux syscall encoding */
+}
+
+static long sc_setpriority(lxp_proc_t *proc, const long a[6])
+{
+	if ((int)a[0] != 0 || ((int)a[1] != 0 && (int)a[1] != proc->pid))
+		return (int)a[0] < 0 || (int)a[0] > 2 || (int)a[1] < 0 ? -LXP_EINVAL : -LXP_ESRCH;
+	lxp_proc_nice_set(proc, (int)a[2]);
+	return 0;
+}
+
+static long sc_getppid(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	return proc->group ? proc->group->ppid : 0;
+}
+
+static long sc_getcwd(lxp_proc_t *proc, const long a[6])
+{
+	/* getcwd(buf, size): write the cwd; the raw syscall returns the length
+	 * including the NUL terminator. */
+	char *buf = (char *)(uintptr_t)a[0];
+	if (!buf)
+		return -LXP_EFAULT;
+	size_t len = strlen(proc->fs_context->cwd) + 1;
+	if ((size_t)a[1] < len)
+		return -LXP_ERANGE;
+	if (lxp_copy_to_guest(proc, (uintptr_t)buf, proc->fs_context->cwd, len) != 0)
+		return -LXP_EFAULT;
+	return (long)len;
+}
+
+static long sc_chdir(lxp_proc_t *proc, const long a[6])
+{
+	const char *path = (const char *)(uintptr_t)a[0];
+	if (!path)
+		return -LXP_EFAULT;
+	char abspath[LXP_PATH_MAX];
+	long r = resolve_path(proc, path, abspath, sizeof(abspath));
+	if (r < 0)
+		return r;
+	/* "/" is always valid; else require an existing directory in either the
+	 * writable overlay or the read-only rootfs. */
+	if (!(abspath[0] == '/' && abspath[1] == '\0')) {
+#if LXP_ENABLE_FS
+		if (lxp_hostfs_match(abspath)) {
+			lxp_fs_stat_t stat;
+			long sr = lxp_hostfs_path_stat(proc, abspath, &stat);
+			if (sr < 0)
+				return sr;
+			if (stat.type != LXP_FS_TYPE_DIR)
+				return -LXP_ENOTDIR;
+			strcpy(proc->fs_context->cwd, abspath);
+			return 0;
+		}
+#endif
+		int wi = wfs_find(abspath);
+		if (wi >= 0) {
+			if ((wnode_at(wi)->mode & LXP_S_IFMT) != LXP_S_IFDIR)
+				return -LXP_ENOTDIR;
+		} else {
+			int idx = fs_lookup(proc, abspath);
+			if (idx < 0)
+				return -LXP_ENOENT;
+			if ((file_mode(&proc->fs[idx]) & LXP_S_IFMT) != LXP_S_IFDIR)
+				return -LXP_ENOTDIR;
+		}
+	}
+	strcpy(proc->fs_context->cwd, abspath);
+	return 0;
+}
+
+/* set the file-creation mask, return the previous (per-proc, inherited) */
+static long sc_umask(lxp_proc_t *proc, const long a[6])
+{
+	int old = proc->fs_context->umask;
+	proc->fs_context->umask = (unsigned short)(a[0] & 0777);
+	return old;
+}
+
+/* (pid, pgid) — job control: put a process into a group */
+static long sc_setpgid(lxp_proc_t *proc, const long a[6])
+{
+	int tpid = (int)a[0], tpgid = (int)a[1];
+	/* Only a self-target is tracked here (pid 0, or my own pid); pgid 0 means "use my
+	 * pid" (become group leader). A child sets its OWN group via setpgid(0, …) after
+	 * fork, so a cross-proc setpgid is accepted inert (no proc table at this layer). */
+	if (tpid == 0 || tpid == proc->pid)
+		proc->group->pgid = (tpgid == 0) ? proc->pid : tpgid;
+	return 0;
+}
+
+/* Process-control and fs-mode setup, accepted and inert: prctl; sched_yield (a hint —
+ * host preemption/admission owns fairness); fchmod/fchown32/chown32 (modes and
+ * ownership are not tracked: login chmods the tty, dropbear chowns the pty over SSH);
+ * and the uid/gid calls, whose policy is not implemented — login's credential drop
+ * and dropbear's post-auth privilege drop must not abort (a failed drop is fatal to
+ * an SSH server). CPU privilege remains engine-enforced (nPRIV/user). */
+static long sc_inert(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	(void)proc;
+	return 0;
+}
+
+/* (ruid*, euid*, suid*) — all root (0) on this tier */
+static long sc_getresid(lxp_proc_t *proc, const long a[6])
+{
+	uint32_t *r = (uint32_t *)(uintptr_t)a[0], *e = (uint32_t *)(uintptr_t)a[1],
+		 *s = (uint32_t *)(uintptr_t)a[2];
+	if ((r && !lxp_guest_access_ok(proc, r, sizeof(*r), 1)) ||
+	    (e && !lxp_guest_access_ok(proc, e, sizeof(*e), 1)) ||
+	    (s && !lxp_guest_access_ok(proc, s, sizeof(*s), 1)))
+		return -LXP_EFAULT;
+	if (r)
+		*r = 0;
+	if (e)
+		*e = 0;
+	if (s)
+		*s = 0;
+	return 0;
+}
+
+/* (pid, resource, new_limit, old_limit) — report a sane finite limit; a "new" limit
+ * is accepted (inert). getty/login and dropbear query RLIMIT_NOFILE etc. */
+static long sc_prlimit64(lxp_proc_t *proc, const long a[6])
+{
+	void *uold = (void *)(uintptr_t)a[3];
+	if (uold) {
+		if (!lxp_guest_access_ok(proc, uold, 2 * sizeof(uint64_t), 1))
+			return -LXP_EFAULT;
+		/* Report the TRUTH for RLIMIT_NOFILE: the fd table is LXP_MAX_FDS, so
+		 * advertising more just hands a guest a lie that turns into a surprise
+		 * EMFILE at the (LXP_MAX_FDS)th open. Other resources keep a finite,
+		 * never-RLIM_INFINITY default (a close-all-fds loop would else spin to 2^64). */
+		uint64_t v = ((int)a[1] == 7 /* RLIMIT_NOFILE */) ? LXP_MAX_FDS : 1024;
+		uint64_t *lim = (uint64_t *)uold; /* rlim_cur, rlim_max */
+		lim[0] = lim[1] = v;
+	}
+	return 0;
+}
+
+/* (struct tms*) — CPU-time accounting; dropbear mixes it into its RNG pool. Report
+ * uptime ticks (100 Hz) + zero the per-proc breakdown (not tracked here). Must be >= 0
+ * (glibc treats -1 as error). */
+static long sc_times(lxp_proc_t *proc, const long a[6])
+{
+	void *ubuf = (void *)(uintptr_t)a[0];
+	uint64_t us = 0;
+	lxp_time_us(&us);
+	long ticks = (long)(us / 10000u); /* CLK_TCK = 100 */
+	if (ubuf) {
+		if (!lxp_guest_access_ok(proc, ubuf, 4 * sizeof(long), 1))
+			return -LXP_EFAULT;
+		long *tms = (long *)ubuf; /* tms_utime, tms_stime, tms_cutime, tms_cstime */
+		tms[0] = ticks;
+		tms[1] = tms[2] = tms[3] = 0;
+	}
+	return ticks;
+}
+
+/* (which, new, old) — ITIMER_REAL -> SIGALRM (alarm()) */
+static long sc_setitimer(lxp_proc_t *proc, const long a[6])
+{
+	int which = (int)a[0];
+	const void *unew = (const void *)(uintptr_t)a[1];
+	void *uold = (void *)(uintptr_t)a[2];
+	if (which != LXP_ITIMER_REAL)
+		return 0; /* only the real-time timer (login timeout, ping interval) */
+	/* struct itimerval { timeval it_interval; timeval it_value; }; ARM32 long=4,
+	 * so it is 4 x u32: [interval_sec, interval_usec, value_sec, value_usec]. */
+	uint64_t now = 0;
+	lxp_time_us(&now);
+	if (uold) {
+		uint32_t ov[4] = {0, 0, 0, 0};
+		uint64_t rem = (proc->alarm_deadline_us && proc->alarm_deadline_us > now)
+				       ? proc->alarm_deadline_us - now
+				       : 0;
+		ov[0] = (uint32_t)(proc->alarm_interval_us / 1000000u);
+		ov[1] = (uint32_t)(proc->alarm_interval_us % 1000000u);
+		ov[2] = (uint32_t)(rem / 1000000u);
+		ov[3] = (uint32_t)(rem % 1000000u);
+		if (lxp_copy_to_guest(proc, (uintptr_t)uold, ov, sizeof(ov)) != 0)
+			return -LXP_EFAULT;
+	}
+	if (!unew)
+		return 0;
+	uint32_t nv[4];
+	if (lxp_copy_from_guest(proc, nv, (uintptr_t)unew, sizeof(nv)) != 0)
+		return -LXP_EFAULT;
+	proc->alarm_interval_us = (uint64_t)nv[0] * 1000000u + nv[1];
+	uint64_t val_us = (uint64_t)nv[2] * 1000000u + nv[3];
+	proc->alarm_deadline_us = val_us ? now + val_us : 0; /* it_value 0 disarms */
+	return 0;
+}
+
+/* shell job control: the caller's process group */
+static long sc_getpgrp(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	return proc->group->pgid;
+}
+
+/* getty/login start a new session: the caller leads its own group */
+static long sc_setsid(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	proc->group->pgid = proc->pid;
+	return proc->pid;
+}
+
+/* reboot(magic1, magic2, cmd, arg) — cmd is a2 */
+static long sc_reboot(lxp_proc_t *proc, const long a[6])
+{
+	unsigned cmd = (unsigned)a[2];
+	/* Only an actual halt/poweroff/restart stops the system; init calls
+	 * reboot(CAD_OFF=0) at startup to disable Ctrl-Alt-Del — a no-op here. */
+	if (cmd == 0x01234567u /* RESTART */ || cmd == 0xcdef0123u /* HALT */ ||
+	    cmd == 0x4321fedcu /* POWER_OFF */ || cmd == 0xa1b2c3d4u /* RESTART2 */) {
+		lxp_request_halt();
+		(void)lxp_intent_exit(proc, 0);
+		proc->exit_status = 0;
+		proc->exit_reason = LXP_EXIT_REASON_NORMAL;
+	}
+	return 0;
+}
+
+static long sc_gettid(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	return proc->pid;
+}
+
+/* (clockid, struct timespec*) — 32-bit time_t */
+static long sc_clock_gettime(lxp_proc_t *proc, const long a[6])
+{
+	int32_t *ts = (int32_t *)(uintptr_t)a[1];
+	if (!lxp_guest_access_ok(proc, ts, 2 * sizeof(int32_t), 1))
+		return -LXP_EFAULT;
+	uint64_t sec;
+	uint32_t nsec;
+	now_sec_nsec((int)a[0], &sec, &nsec);
+	ts[0] = (int32_t)sec;
+	ts[1] = (int32_t)nsec;
+	return 0;
+}
+
+/* (clockid, struct __kernel_timespec*) — 64-bit */
+static long sc_clock_gettime64(lxp_proc_t *proc, const long a[6])
+{
+	int64_t *ts = (int64_t *)(uintptr_t)a[1];
+	if (!lxp_guest_access_ok(proc, ts, 2 * sizeof(int64_t), 1))
+		return -LXP_EFAULT;
+	uint64_t sec;
+	uint32_t nsec;
+	now_sec_nsec((int)a[0], &sec, &nsec);
+	ts[0] = (int64_t)sec;
+	ts[1] = (int64_t)nsec;
+	return 0;
+}
+
+/* (struct timeval*, tz) */
+static long sc_gettimeofday(lxp_proc_t *proc, const long a[6])
+{
+	int32_t *tv = (int32_t *)(uintptr_t)a[0];
+	if (!lxp_guest_access_ok(proc, tv, 2 * sizeof(int32_t), 1))
+		return -LXP_EFAULT;
+	uint64_t sec;
+	uint32_t nsec;
+	now_sec_nsec(0, &sec, &nsec);
+	tv[0] = (int32_t)sec;
+	tv[1] = (int32_t)(nsec / 1000u);
+	return 0;
+}
+
+/* Record a wake deadline and ask the run loop to park + delay this proc (the trap
+ * context cannot block). The run loop aborts the slot for the duration so the RTOS
+ * idle/kernel/other threads run and real time + CPU stats advance — which is what
+ * top needs between its two samples. @p reqp is a time32 or (time64) time64 timespec. */
+static long sleep_for(lxp_proc_t *proc, uintptr_t reqp, int time64)
+{
+	if (!lxp_guest_access_ok(proc, (const void *)reqp, time64 ? 16u : 8u, 0))
+		return -LXP_EFAULT;
+	uint64_t sec, nsec;
+	if (time64) {
+		const int64_t *t = (const int64_t *)reqp; /* time64 {sec, nsec} */
+		sec = (uint64_t)t[0];
+		nsec = (uint64_t)t[1];
+	} else {
+		const int32_t *t = (const int32_t *)reqp; /* time32 {sec, nsec} */
+		sec = (uint64_t)(uint32_t)t[0];
+		nsec = (uint64_t)(uint32_t)t[1];
+	}
+	uint64_t dur_us = sec * 1000000ull + nsec / 1000ull;
+	if (dur_us > 100000000ull)
+		dur_us = 100000000ull; /* clamp to 100 s */
+	/* The coordinator evaluates deadlines with lxp_time_us(), so construct
+	 * them in that same cross-idle clock domain. */
+	uint64_t now_us = 0;
+	lxp_time_us(&now_us);
+	lxp_wait_t wait = {
+		.kind = LXP_WAIT_TIMER,
+		.data.timer.deadline_us = now_us + dur_us,
+	};
+	if (lxp_wait_begin(proc, &wait) != 0)
+		return -LXP_EAGAIN;
+	return 0;
+}
+
+/* (req, rem) */
+static long sc_nanosleep(lxp_proc_t *proc, const long a[6])
+{
+	return sleep_for(proc, (uintptr_t)a[0], 0);
+}
+
+/* (clockid, flags, req, rem) */
+static long sc_clock_nanosleep(lxp_proc_t *proc, const long a[6])
+{
+	return sleep_for(proc, (uintptr_t)a[2], 0);
+}
+
+static long sc_clock_nanosleep_time64(lxp_proc_t *proc, const long a[6])
+{
+	return sleep_for(proc, (uintptr_t)a[2], 1);
+}
+static long sc_uname(lxp_proc_t *proc, const long a[6])
+{
+	/* struct utsname: 6 fixed 65-byte fields (sysname, nodename, release,
+	 * version, machine, domainname). The shell reads these at startup. */
+	char *u = (char *)(uintptr_t)a[0];
+	if (!lxp_guest_access_ok(proc, u, 6 * 65, 1))
+		return -LXP_EFAULT;
+	const char *const f[6] = {"Linux",  "overtos", "6.1.0", lxp_system_version(),
+				  "armv7l", "(none)"};
+	memset(u, 0, 6 * 65);
+	for (int i = 0; i < 6; i++) {
+		size_t l = 0;
+		while (l < 64 && f[i][l])
+			l++;
+		memcpy(u + i * 65, f[i], l);
+	}
+	return 0;
+}
+
+static long sc_rt_sigaction(lxp_proc_t *proc, const long a[6])
+{
+	/* Record the per-signal disposition; the engine seam delivers it.
+	 * struct sigaction: sa_handler@0, sa_flags@4, sa_restorer@8. */
+	int sig = (int)a[0];
+	if (sig < 1 || sig >= LXP_NSIG)
+		return -LXP_EINVAL;
+	const uint32_t *act = (const uint32_t *)(uintptr_t)a[1];
+	uint32_t *oact = (uint32_t *)(uintptr_t)a[2];
+	if (act && !lxp_guest_access_ok(proc, act, 3 * sizeof(uint32_t), 0))
+		return -LXP_EFAULT;
+	if (oact && !lxp_guest_access_ok(proc, oact, 3 * sizeof(uint32_t), 1))
+		return -LXP_EFAULT;
+	if (oact) {
+		oact[0] = (uint32_t)lxp_sig_handler_get(proc, sig);
+		oact[2] = (uint32_t)lxp_sig_restorer_get(proc);
+	}
+	if (act) {
+		proc->sighand->handler[sig] = act[0];
+		proc->sighand->restorer = act[2];
+	}
+	return 0;
+}
+
+/* (nfds, readfds, writefds, exceptfds, timeout, sigmask) */
+static long sc_pselect6_time64(lxp_proc_t *proc, const long a[6])
+{
+	return lxp_sys_pselect6(proc, (int)a[0], (uintptr_t)a[1], (uintptr_t)a[2], (uintptr_t)a[3],
+				(uintptr_t)a[4]);
+}
+
+static long sc_poll(lxp_proc_t *proc, const long a[6])
+{
+	return lxp_sys_poll(proc, LXP_NR_poll, a[0], a[1], a[2]);
+}
+
+static long sc_ppoll_time64(lxp_proc_t *proc, const long a[6])
+{
+	return lxp_sys_poll(proc, LXP_NR_ppoll_time64, a[0], a[1], a[2]);
+}
+static long sc_wait4(lxp_proc_t *proc, const long a[6])
+{
+	if (a[1] && !lxp_guest_access_ok(proc, (void *)(uintptr_t)a[1], sizeof(int), 1))
+		return -LXP_EFAULT; /* the kernel WRITES *status */
+	int options = (int)a[2];
+	int wpid = (int)a[0];
+	int *status = (int *)(uintptr_t)a[1];
+	/* Report the first queued child state-change this call is allowed to see (FIFO):
+	 * an exited zombie always; a STOPPED notification only with WUNTRACED (job control).
+	 * A pid filter (wpid > 0) must match. A STOPPED entry leaves live_children intact —
+	 * the child is alive, only the notice is consumed. Else, if children are still live,
+	 * block in a CHILD wait until the coordinator observes a change. None → -ECHILD. */
+	lxp_thread_group_t *group = proc->group;
+	if (!group)
+		return -LXP_ECHILD;
+	for (int i = 0; i < group->child_count; i++) {
+		if (wpid > 0 && group->child_pid[i] != wpid)
+			continue;
+		if (group->child_kind[i] == LXP_CHILD_STOPPED && !(options & LXP_WUNTRACED))
+			continue;
+		int pid = group->child_pid[i];
+		int code = group->child_status[i];
+		int kind = group->child_kind[i];
+		for (int j = i + 1; j < group->child_count; j++) {
+			group->child_pid[j - 1] = group->child_pid[j];
+			group->child_status[j - 1] = group->child_status[j];
+			group->child_kind[j - 1] = group->child_kind[j];
+		}
+		group->child_count--;
+		if (status)
+			*status = (kind == LXP_CHILD_STOPPED) ? lxp_encode_wstopped(code)
+							      : lxp_encode_wstatus(code);
+		return pid;
+	}
+	if (group->live_children == 0)
+		return -LXP_ECHILD;
+	if (options & LXP_WNOHANG) /* children live but none ready */
+		return 0;
+	lxp_wait_t wait = {
+		.kind = LXP_WAIT_CHILD,
+		.data.child.pid = wpid,
+		.data.child.options = options,
+		.data.child.status = (uintptr_t)a[1],
+	};
+	if (lxp_wait_begin(proc, &wait) != 0)
+		return -LXP_EAGAIN;
+	return 0; /* dispatch parks; the coordinator's resume supplies the real r0 */
+}
+
+static long sc_getuid_root(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	(void)proc;
+	return 0; /* run as root */
+}
+
+static long sc_ioctl(lxp_proc_t *proc, const long a[6])
+{
+	return sys_ioctl(proc, a[0], a[1], a[2]);
+}
+
+/* (unewset, sigsetsize) */
+static long sc_rt_sigsuspend(lxp_proc_t *proc, const long a[6])
+{
+	/* LinuxThreads suspend(): block until a signal (the restart) is delivered. If one is
+	 * already pending (a restart that beat us here), fall through so the dispatch delivers
+	 * it now; otherwise ask the run loop to park us — the coordinator runs the handler on
+	 * the restart kill() and resumes us. sigsuspend always "returns" -EINTR.
+	 *
+	 * INSTALL the mask arg (POSIX: atomically set the signal mask for the wait): the whole
+	 * point of the restart protocol is that the caller BLOCKS the restart signal normally and
+	 * sigsuspend UNBLOCKS it only while waiting. If we ignore the mask, the restart stays
+	 * blocked, the coordinator's pending_deliverable skips it, and the parked thread is never
+	 * woken (deadlock — curl's LinuxThreads resolver: manager, main, and a sigwait thread all
+	 * stuck). The prior mask is restored when the delivered handler returns (sig_restore). */
+	const uint32_t *uset = (const uint32_t *)(uintptr_t)a[0];
+	size_t sz = (size_t)a[1];
+	if (sz != 8)
+		return -LXP_EINVAL; /* Linux: sigsetsize must equal sizeof(kernel sigset_t) */
+	if (!uset || !lxp_guest_access_ok(proc, uset, sz, 0))
+		return -LXP_EFAULT; /* validate the whole 8-byte mask before reading either word */
+	uint64_t m = (uint64_t)uset[0] | ((uint64_t)uset[1] << 32);
+	m &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP)); /* never blockable */
+	proc->sigsuspend_saved_mask = proc->sig_blocked;
+	proc->sig_blocked = m;
+	proc->sigsuspend_active = 1;
+	/* Park unless a signal that is deliverable UNDER THE NEW MASK is already pending — then
+	 * fall through so the dispatch delivers it now. A signal pending but blocked by the new
+	 * mask must NOT keep us running (it stays pending until the mask is restored). Mirrors
+	 * the run loop's pending_deliverable, which is static there. */
+	int deliverable = 0;
+	for (int sig = 1; sig < LXP_NSIG; sig++)
+		if ((proc->pending_sigs & lxp_sig_bit(sig)) &&
+		    !lxp_sig_blocked(proc, sig)) {
+			deliverable = 1;
+			break;
+		}
+	if (!deliverable) {
+		lxp_wait_t wait = {.kind = LXP_WAIT_SIGSUSPEND};
+		if (lxp_wait_begin(proc, &wait) != 0)
+			return -LXP_EAGAIN;
+	}
+	return -LXP_EINTR;
+}
+
+/* (set, info, timeout, sigsetsize) */
+static long sc_rt_sigtimedwait_time64(lxp_proc_t *proc, const long a[6])
+{
+	/* Poll variant: return a pending signal that is in `set` (dequeuing it), else report
+	 * a timeout. Blocking for the timeout is not modeled — this is enough for libc/shell
+	 * startup, which drains pending signals with sigtimedwait and must see -EAGAIN (not
+	 * -ENOSYS) to finish and continue to the interactive read. */
+	const uint32_t *uset = (const uint32_t *)(uintptr_t)a[0];
+	size_t sz = (size_t)a[3];
+	if (sz > 8)
+		return -LXP_EINVAL;
+	uint64_t set = 0;
+	if (uset) {
+		if (!lxp_guest_access_ok(proc, uset, sz, 0))
+			return -LXP_EFAULT;
+		if (sz >= 4)
+			set |= (uint64_t)uset[0];
+		if (sz >= 8)
+			set |= (uint64_t)uset[1] << 32;
+	}
+	uint64_t ready = proc->pending_sigs & set;
+	if (ready) {
+		int sig = __builtin_ctzll(ready) + 1; /* lowest pending signal in the set */
+		proc->pending_sigs &= ~lxp_sig_bit(sig);
+		(void)a[1]; /* siginfo output omitted; the return value carries the signo */
+		return sig;
+	}
+	return -LXP_EAGAIN;
+}
+
+/* (how, set, oldset, sigsetsize) */
+static long sc_rt_sigprocmask(lxp_proc_t *proc, const long a[6])
+{
+	int how = (int)a[0];
+	const uint32_t *uset = (const uint32_t *)(uintptr_t)a[1];
+	uint32_t *uold = (uint32_t *)(uintptr_t)a[2];
+	size_t sz = (size_t)a[3]; /* bytes of the guest sigset_t (8 for the 64-bit mask) */
+	if (sz > 8)
+		return -LXP_EINVAL;
+	if (uset && !lxp_guest_access_ok(proc, uset, sz, 0))
+		return -LXP_EFAULT;
+	if (uold && !lxp_guest_access_ok(proc, uold, sz, 1))
+		return -LXP_EFAULT;
+	/* Read the new set BEFORE writing oldset — the guest may alias them, the legal
+	 * sigprocmask(SIG_SETMASK, &m, &m) swap — and validate `how` up front so an invalid
+	 * value has no side effects. */
+	uint64_t nv = 0;
+	if (uset) {
+		if (how != LXP_SIG_BLOCK && how != LXP_SIG_UNBLOCK &&
+		    how != LXP_SIG_SETMASK)
+			return -LXP_EINVAL;
+		if (sz >= 4)
+			nv |= (uint64_t)uset[0];
+		if (sz >= 8)
+			nv |= (uint64_t)uset[1] << 32;
+	}
+	uint64_t old = proc->sig_blocked;
+	if (uold) { /* report the previous mask, low word then high, within sigsetsize */
+		if (sz >= 4)
+			uold[0] = (uint32_t)old;
+		if (sz >= 8)
+			uold[1] = (uint32_t)(old >> 32);
+	}
+	if (uset) {
+		proc->sig_blocked = how == LXP_SIG_BLOCK     ? old | nv
+				    : how == LXP_SIG_UNBLOCK ? old & ~nv
+							     : nv; /* LXP_SIG_SETMASK */
+		/* SIGKILL and SIGSTOP can never be blocked. */
+		proc->sig_blocked &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP));
+	}
+	return 0;
+}
+
+static long sc_set_tid_address(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	(void)proc;
+	return 1; /* our single thread's tid */
+}
+
+static long sc_set_robust_list(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	(void)proc;
+	return 0;
+}
+
+/* futex / futex_time64 are intercepted by the coordinator (src/lxp_run.c, lxp_futex):
+ * a co-running thread's WAIT parks on the uaddr and a peer's WAKE resumes it. They
+ * never reach the dispatcher. */
+
+#if LXP_ENABLE_NET
+/* (domain, type, protocol) */
+static long sc_socket(lxp_proc_t *proc, const long a[6])
+{
+	long oi = lxp_sock_new((int)a[0], (int)a[1], (int)a[2]);
+	if (oi < 0)
+		return oi;
+	/* SOCK_NONBLOCK / SOCK_CLOEXEC share O_NONBLOCK / O_CLOEXEC's values. */
+	int fd = fd_alloc(proc, LXP_FD_SOCKET, (int)oi, 0,
+			  LXP_O_RDWR | ((int)a[1] & (LXP_O_NONBLOCK | LXP_O_CLOEXEC)));
+	if (fd < 0) {
+		lxp_sock_close((int)oi);
+		return -LXP_EMFILE;
+	}
+	return fd;
+}
+
+/* (fd, addr, addrlen) */
+static long sc_connect(lxp_proc_t *proc, const long a[6])
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_connect(proc, oi, (const void *)(uintptr_t)a[1], (unsigned)a[2]);
+}
+
+/* send/sendto on socket fd a[0]; @p dest/@p destlen are sendto's address. */
+static long sock_send_common(lxp_proc_t *proc, const long a[6], const void *dest,
+			     unsigned destlen)
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_send(proc, oi, (const void *)(uintptr_t)a[1], (size_t)a[2], (int)a[3], dest,
+			     destlen);
+}
+
+/* (fd, buf, len, flags) */
+static long sc_send(lxp_proc_t *proc, const long a[6])
+{
+	return sock_send_common(proc, a, NULL, (unsigned)a[5]);
+}
+
+/* (fd, buf, len, flags, dest, destlen) */
+static long sc_sendto(lxp_proc_t *proc, const long a[6])
+{
+	return sock_send_common(proc, a, (const void *)(uintptr_t)a[4], (unsigned)a[5]);
+}
+/* recv/recvfrom on socket fd a[0]; @p src/@p srclen are recvfrom's address out. */
+static long sock_recv_common(lxp_proc_t *proc, const long a[6], void *src, void *srclen)
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_recv(proc, oi, (void *)(uintptr_t)a[1], (size_t)a[2], (int)a[3], src,
+			     srclen);
+}
+
+/* (fd, buf, len, flags) */
+static long sc_recv(lxp_proc_t *proc, const long a[6])
+{
+	return sock_recv_common(proc, a, NULL, NULL);
+}
+
+/* (fd, buf, len, flags, src, srclen) */
+static long sc_recvfrom(lxp_proc_t *proc, const long a[6])
+{
+	return sock_recv_common(proc, a, (void *)(uintptr_t)a[4], (void *)(uintptr_t)a[5]);
+}
+/* (fd, how) */
+static long sc_shutdown(lxp_proc_t *proc, const long a[6])
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_shutdown(oi, (int)a[1]);
+}
+
+/* (fd, addr, addrlen) */
+static long sc_getsockname(lxp_proc_t *proc, const long a[6])
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_getsockname(proc, oi, (void *)(uintptr_t)a[1], (void *)(uintptr_t)a[2]);
+}
+
+/* (fd, addr, addrlen) */
+static long sc_getpeername(lxp_proc_t *proc, const long a[6])
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_getpeername(proc, oi, (void *)(uintptr_t)a[1], (void *)(uintptr_t)a[2]);
+}
+
+/* (fd, level, optname, optval, optlen) */
+static long sc_setsockopt(lxp_proc_t *proc, const long a[6])
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_setsockopt(proc, oi, (int)a[1], (int)a[2], (const void *)(uintptr_t)a[3],
+				   (unsigned)a[4]);
+}
+
+/* (fd, level, optname, optval, optlen) */
+static long sc_getsockopt(lxp_proc_t *proc, const long a[6])
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_getsockopt(proc, oi, (int)a[1], (int)a[2], (void *)(uintptr_t)a[3],
+				   (void *)(uintptr_t)a[4]);
+}
+
+/* (fd, addr, addrlen) */
+static long sc_bind(lxp_proc_t *proc, const long a[6])
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_bind(proc, oi, (const void *)(uintptr_t)a[1], (unsigned)a[2]);
+}
+
+/* (fd, backlog) */
+static long sc_listen(lxp_proc_t *proc, const long a[6])
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_listen(oi, (int)a[1]);
+}
+
+/* accept/accept4 on socket fd a[0] with accept4's @p flags. */
+static long sock_accept_common(lxp_proc_t *proc, const long a[6], int flags)
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return lxp_sock_accept(proc, oi, (void *)(uintptr_t)a[1], (void *)(uintptr_t)a[2], flags);
+}
+
+/* (fd, addr, addrlen) */
+static long sc_accept(lxp_proc_t *proc, const long a[6])
+{
+	return sock_accept_common(proc, a, 0);
+}
+
+/* (fd, addr, addrlen, flags) */
+static long sc_accept4(lxp_proc_t *proc, const long a[6])
+{
+	return sock_accept_common(proc, a, (int)a[3]);
+}
+/* (fd, msghdr, flags) */
+static long sc_sendmsg(lxp_proc_t *proc, const long a[6])
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return sys_sendmsg(proc, oi, (const lxp_msghdr *)(uintptr_t)a[1], (int)a[2]);
+}
+
+/* (fd, msghdr, flags) */
+static long sc_recvmsg(lxp_proc_t *proc, const long a[6])
+{
+	int oi = sock_slot(proc, (int)a[0]);
+	if (oi < 0)
+		return -LXP_ENOTSOCK;
+	return sys_recvmsg(proc, oi, (lxp_msghdr *)(uintptr_t)a[1], (int)a[2]);
+}
+
+/* fd-passing (SCM_RIGHTS) unsupported */
+static long sc_socketpair(lxp_proc_t *proc, const long a[6])
+{
+	(void)a;
+	(void)proc;
+	return -LXP_EOPNOTSUPP;
+}
+
+#endif /* LXP_ENABLE_NET */
+
 long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, long a4, long a5)
 {
 #if LXP_ENABLE_FS
@@ -1749,794 +2947,277 @@ long lxp_syscall(lxp_proc_t *proc, long nr, long a0, long a1, long a2, long a3, 
 		break;
 	}
 
+	const long a[6] = {a0, a1, a2, a3, a4, a5};
 	switch (nr) {
 	case LXP_NR_read:
-		return sys_read(proc, (int)a0, (void *)(uintptr_t)a1, (size_t)a2);
+		return sc_read(proc, a);
 	case LXP_NR_write:
-		return sys_write(proc, (int)a0, (const void *)(uintptr_t)a1, (size_t)a2);
+		return sc_write(proc, a);
 	case LXP_NR_writev:
-		return sys_writev(proc, (int)a0, (const lxp_iovec *)(uintptr_t)a1, (int)a2);
+		return sc_writev(proc, a);
 	case LXP_NR_brk:
-		return sys_brk(proc, (uintptr_t)a0);
+		return sc_brk(proc, a);
 	case LXP_NR_mmap2:
-		return sys_mmap2(proc, (uintptr_t)a0, (size_t)a1, (int)a2, (int)a3, (int)a4,
-				 (uint32_t)a5);
+		return sc_mmap2(proc, a);
 	case LXP_NR_munmap:
-		return sys_munmap(proc, (uintptr_t)a0, (size_t)a1);
-	case LXP_NR_mprotect: /* NOMMU: RELRO/protection is a no-op */
-		return sys_mprotect((uintptr_t)a0, (size_t)a1, (int)a2);
-	case LXP_NR_pread64: /* (fd, buf, count, [pad a3], off_lo a4, off_hi a5) */
-		return sys_pread(proc, (int)a0, (void *)(uintptr_t)a1, (size_t)a2,
-				 (uint64_t)(uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32));
-	case LXP_NR_pwrite64: /* (fd, buf, count, [pad a3], off_lo a4, off_hi a5) */
-		return sys_pwrite(proc, (int)a0, (const void *)(uintptr_t)a1, (size_t)a2,
-				  (uint64_t)(uint32_t)a4 | ((uint64_t)(uint32_t)a5 << 32));
-	case LXP_NR_open: /* legacy open(path, flags, mode): dirfd = cwd */
-		return sys_openat(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a0, (int)a1);
-	case LXP_NR_execve: /* (path, argv, envp) */
-		return sys_execve(proc, (const char *)(uintptr_t)a0, (char *const *)(uintptr_t)a1,
-				  (char *const *)(uintptr_t)a2);
+		return sc_munmap(proc, a);
+	case LXP_NR_mprotect:
+		return sc_mprotect(proc, a);
+	case LXP_NR_pread64:
+		return sc_pread64(proc, a);
+	case LXP_NR_pwrite64:
+		return sc_pwrite64(proc, a);
+	case LXP_NR_open:
+		return sc_open(proc, a);
+	case LXP_NR_execve:
+		return sc_execve(proc, a);
 	case LXP_NR_openat:
-		return sys_openat(proc, (int)a0, (const char *)(uintptr_t)a1, (int)a2);
+		return sc_openat(proc, a);
 	case LXP_NR_close:
-		return sys_close(proc, (int)a0);
+		return sc_close(proc, a);
 	case LXP_NR_pipe:
-		return sys_pipe(proc, (int *)(uintptr_t)a0, 0);
-	case LXP_NR_pipe2: /* (fds, flags) — flags carries O_CLOEXEC and/or O_NONBLOCK */
-		return sys_pipe(proc, (int *)(uintptr_t)a0, (int)a1);
+		return sc_pipe(proc, a);
+	case LXP_NR_pipe2:
+		return sc_pipe2(proc, a);
 	case LXP_NR_dup:
-		return sys_dup(proc, (int)a0);
+		return sc_dup(proc, a);
 	case LXP_NR_dup2:
-		return sys_dup2(proc, (int)a0, (int)a1);
-	case LXP_NR_dup3: { /* (old, new, flags) — flags carries O_CLOEXEC on the new fd */
-		if ((int)a0 == (int)a1) /* dup3 (unlike dup2) rejects oldfd == newfd */
-			return -LXP_EINVAL;
-		return lxp_fd_dup_to(proc, (int)a0, (int)a1, ((int)a2 & LXP_O_CLOEXEC) != 0);
-	}
+		return sc_dup2(proc, a);
+	case LXP_NR_dup3:
+		return sc_dup3(proc, a);
 	case LXP_NR_lseek:
-		return sys_lseek(proc, (int)a0, a1, (int)a2);
+		return sc_lseek(proc, a);
 	case LXP_NR__llseek:
-		return sys_llseek(proc, (int)a0, (unsigned long)a1, (unsigned long)a2,
-				  (uint64_t *)(uintptr_t)a3, (unsigned int)a4);
+		return sc_llseek(proc, a);
 	case LXP_NR_ftruncate64:
-		/* 64-bit length is register-pair aligned on ARM: fd=a0, len=(a2,a3). */
-		return sys_ftruncate(proc, (int)a0,
-				     (uint64_t)(uint32_t)a2 | ((uint64_t)(uint32_t)a3 << 32));
+		return sc_ftruncate64(proc, a);
 	case LXP_NR_fsync:
+		return sc_fsync(proc, a);
 	case LXP_NR_fdatasync:
-		return sys_sync_fd(proc, (int)a0);
+		return sc_fsync(proc, a);
 	case LXP_NR_sync:
-#if LXP_ENABLE_FS
-		(void)lxp_hostfs_sync_all();
-#endif
-		return 0;
-	case LXP_NR_syncfs: {
-		lxp_ofd_t *slot = lxp_fd_description(proc, (int)a0);
-		if (!slot)
-			return -LXP_EBADF;
-#if LXP_ENABLE_FS
-		if (slot->kind == LXP_FD_HOSTFS)
-			return lxp_hostfs_sync_all();
-#endif
-		return 0;
-	}
+		return sc_sync(proc, a);
+	case LXP_NR_syncfs:
+		return sc_syncfs(proc, a);
 	case LXP_NR_fstat64:
-		return sys_fstat64(proc, (int)a0, (void *)(uintptr_t)a1);
-	case LXP_NR_stat64: /* (path, statbuf) — follows symlinks */
-		return sys_stat_path(proc, (const char *)(uintptr_t)a0, 1, (void *)(uintptr_t)a1);
-	case LXP_NR_lstat64: /* (path, statbuf) — does NOT follow */
-		return sys_stat_path(proc, (const char *)(uintptr_t)a0, 0, (void *)(uintptr_t)a1);
-	case LXP_NR_fstatat64: /* (dirfd, path, statbuf, flags) */
-		return sys_stat_path(proc, (const char *)(uintptr_t)a1,
-				     !((int)a3 & LXP_AT_SYMLINK_NOFOLLOW), (void *)(uintptr_t)a2);
-	case LXP_NR_readlink: /* (path, buf, bufsiz) */
-		return sys_readlink(proc, (const char *)(uintptr_t)a0, (char *)(uintptr_t)a1,
-				    (size_t)a2);
-	case LXP_NR_readlinkat: /* (dirfd, path, buf, bufsiz) */
-		return sys_readlink(proc, (const char *)(uintptr_t)a1, (char *)(uintptr_t)a2,
-				    (size_t)a3);
-	case LXP_NR_access: /* (path, mode) */
-		return sys_access(proc, (const char *)(uintptr_t)a0, (int)a1);
-	case LXP_NR_faccessat:	/* (dirfd, path, mode) */
-	case LXP_NR_faccessat2: /* (dirfd, path, mode, flags) */
-		return sys_access(proc, (const char *)(uintptr_t)a1, (int)a2);
-	case LXP_NR_mkdir: /* (path, mode) */
-		return sys_mkdir(proc, (const char *)(uintptr_t)a0, (uint32_t)a1);
-	case LXP_NR_mkdirat: /* (dirfd, path, mode) */
-		return sys_mkdir(proc, (const char *)(uintptr_t)a1, (uint32_t)a2);
-	case LXP_NR_rmdir: /* (path) */
-		return sys_unlink(proc, (const char *)(uintptr_t)a0, 1);
-	case LXP_NR_unlink: /* (path) */
-		return sys_unlink(proc, (const char *)(uintptr_t)a0, 0);
-	case LXP_NR_unlinkat: /* (dirfd, path, flags) */
-		if (((int)a2 & ~LXP_AT_REMOVEDIR) != 0)
-			return -LXP_EINVAL;
-		return sys_unlink(proc, (const char *)(uintptr_t)a1,
-				  ((int)a2 & LXP_AT_REMOVEDIR) ? 1 : 0);
-	case LXP_NR_rename: /* (oldpath, newpath) */
-		return sys_rename(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a1,
-				  0);
-	case LXP_NR_renameat: /* (olddirfd, old, newdirfd, new) */
-		return sys_rename(proc, (const char *)(uintptr_t)a1, (const char *)(uintptr_t)a3,
-				  0);
-	case LXP_NR_renameat2: /* (olddirfd, old, newdirfd, new, flags) */
-		return sys_rename(proc, (const char *)(uintptr_t)a1, (const char *)(uintptr_t)a3,
-				  (unsigned)a4);
-	case LXP_NR_symlink: /* (target, linkpath) */
-		return sys_symlink(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a1);
-	case LXP_NR_symlinkat: /* (target, newdirfd, linkpath) */
-		return sys_symlink(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a2);
-	case LXP_NR_link: /* (oldpath, newpath) */
-		return sys_link(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a1);
-	case LXP_NR_linkat: /* (olddirfd, oldpath, newdirfd, newpath, flags) */
-		return sys_link(proc, (const char *)(uintptr_t)a1, (const char *)(uintptr_t)a3);
-	case LXP_NR_chmod: /* (path, mode) */
-		return sys_chmod(proc, (const char *)(uintptr_t)a0, (uint32_t)a1);
-	case LXP_NR_fchmodat: /* (dirfd, path, mode) */
-		return sys_chmod(proc, (const char *)(uintptr_t)a1, (uint32_t)a2);
-	case LXP_NR_utimensat:	      /* (dirfd, path, times, flags) — times not tracked */
-	case LXP_NR_utimensat_time64: /* time64 variant uClibc-ng issues for touch */
-		return sys_utimensat(proc, (const char *)(uintptr_t)a1);
+		return sc_fstat64(proc, a);
+	case LXP_NR_stat64:
+		return sc_stat64(proc, a);
+	case LXP_NR_lstat64:
+		return sc_lstat64(proc, a);
+	case LXP_NR_fstatat64:
+		return sc_fstatat64(proc, a);
+	case LXP_NR_readlink:
+		return sc_readlink(proc, a);
+	case LXP_NR_readlinkat:
+		return sc_readlinkat(proc, a);
+	case LXP_NR_access:
+		return sc_access(proc, a);
+	case LXP_NR_faccessat:
+		return sc_faccessat(proc, a);
+	case LXP_NR_faccessat2:
+		return sc_faccessat(proc, a);
+	case LXP_NR_mkdir:
+		return sc_mkdir(proc, a);
+	case LXP_NR_mkdirat:
+		return sc_mkdirat(proc, a);
+	case LXP_NR_rmdir:
+		return sc_rmdir(proc, a);
+	case LXP_NR_unlink:
+		return sc_unlink(proc, a);
+	case LXP_NR_unlinkat:
+		return sc_unlinkat(proc, a);
+	case LXP_NR_rename:
+		return sc_rename(proc, a);
+	case LXP_NR_renameat:
+		return sc_renameat(proc, a);
+	case LXP_NR_renameat2:
+		return sc_renameat2(proc, a);
+	case LXP_NR_symlink:
+		return sc_symlink(proc, a);
+	case LXP_NR_symlinkat:
+		return sc_symlinkat(proc, a);
+	case LXP_NR_link:
+		return sc_link(proc, a);
+	case LXP_NR_linkat:
+		return sc_linkat(proc, a);
+	case LXP_NR_chmod:
+		return sc_chmod(proc, a);
+	case LXP_NR_fchmodat:
+		return sc_fchmodat(proc, a);
+	case LXP_NR_utimensat:
+		return sc_utimensat(proc, a);
+	case LXP_NR_utimensat_time64:
+		return sc_utimensat(proc, a);
 	case LXP_NR_mount:
-		return sys_mount(proc, (const char *)(uintptr_t)a0, (const char *)(uintptr_t)a1,
-				 (const char *)(uintptr_t)a2, (unsigned long)a3,
-				 (const char *)(uintptr_t)a4);
+		return sc_mount(proc, a);
 	case LXP_NR_umount2:
-		return sys_umount(proc, (const char *)(uintptr_t)a0, (int)a1);
-	case LXP_NR_statfs64: /* (path, sz, buf) */
-		return sys_statfs_path(proc, (const char *)(uintptr_t)a0, (size_t)a1,
-				       (void *)(uintptr_t)a2);
-	case LXP_NR_fstatfs64: /* (fd, sz, buf) */
-		return sys_fstatfs(proc, (int)a0, (size_t)a1, (void *)(uintptr_t)a2);
-	case LXP_NR_getrandom: /* (buf, count, flags) */
-		return sys_getrandom(proc, (void *)(uintptr_t)a0, (size_t)a1, (unsigned)a2);
-	case LXP_NR_eventfd2: /* (initval, flags) — curl's threaded-resolver wakeup */
-		return lxp_eventfd_open(proc, (unsigned)a0, (int)a1);
-	case LXP_NR_sysinfo: { /* uptime + ram totals (uptime/free read this) */
-		struct lxp_sysinfo {
-			int32_t uptime;
-			uint32_t loads[3];
-			uint32_t totalram, freeram, sharedram, bufferram, totalswap, freeswap;
-			uint16_t procs, pad;
-			uint32_t totalhigh, freehigh, mem_unit;
-			char _f[8];
-		} *si = (void *)(uintptr_t)a0;
-		LXP_STATIC_ASSERT(sizeof(struct lxp_sysinfo) == 64, "sysinfo ABI size drifted");
-		if (!lxp_guest_access_ok(proc, si, sizeof(*si), 1))
-			return -LXP_EFAULT;
-		memset(si, 0, sizeof(*si));
-		uint64_t ns = 0;
-		lxp_time_ns(&ns);
-		si->uptime = (int32_t)(ns / 1000000000ull);
-		struct lxp_resource_stats resources;
-		lxp_get_resource_stats(&resources);
-		/* ARM's sysinfo fields are 32-bit. Pick the smallest power-of-two
-		 * byte unit that represents the guest capacity. freeram is the
-		 * effective capacity remaining after both slot and region limits. */
-		uint64_t largest = resources.total_bytes > resources.available_bytes
-					   ? resources.total_bytes
-					   : resources.available_bytes;
-		uint32_t unit = 1;
-		while (largest / unit > UINT32_MAX && unit <= UINT32_MAX / 2u)
-			unit *= 2u;
-		uint64_t total_units = resources.total_bytes / unit;
-		uint64_t free_units = resources.available_bytes / unit;
-		si->totalram = (uint32_t)(total_units > UINT32_MAX ? UINT32_MAX : total_units);
-		si->freeram = (uint32_t)(free_units > UINT32_MAX ? UINT32_MAX : free_units);
-		si->mem_unit = unit;
-		/* The coordinator contributes its aggregate without exposing the
-		 * writable process table to syscall subsystems. Direct host tests
-		 * have no coordinator, so retain one for the caller. */
-		unsigned live = resources.processes;
-		si->procs = (uint16_t)(live > UINT16_MAX ? UINT16_MAX : (live ? live : 1u));
-		return 0;
-	}
-	case LXP_NR_fcntl: /* old 32-bit fcntl: same dispatch as fcntl64 here */
+		return sc_umount2(proc, a);
+	case LXP_NR_statfs64:
+		return sc_statfs64(proc, a);
+	case LXP_NR_fstatfs64:
+		return sc_fstatfs64(proc, a);
+	case LXP_NR_getrandom:
+		return sc_getrandom(proc, a);
+	case LXP_NR_eventfd2:
+		return sc_eventfd2(proc, a);
+	case LXP_NR_sysinfo:
+		return sc_sysinfo(proc, a);
+	case LXP_NR_fcntl:
+		return sc_fcntl(proc, a);
 	case LXP_NR_fcntl64:
-		return sys_fcntl(proc, a0, a1, a2);
-	case LXP_NR_getdents: /* 32-bit linux_dirent (uClibc readdir on this target) */
-		return sys_getdents64(proc, (int)a0, (void *)(uintptr_t)a1, (size_t)a2, 0);
+		return sc_fcntl(proc, a);
+	case LXP_NR_getdents:
+		return sc_getdents(proc, a);
 	case LXP_NR_getdents64:
-		return sys_getdents64(proc, (int)a0, (void *)(uintptr_t)a1, (size_t)a2, 1);
-	case LXP_NR_statx: /* (dirfd, path, flags, mask, buf); mask ignored */
-		return sys_statx(proc, (int)a0, (const char *)(uintptr_t)a1, (int)a2,
-				 (void *)(uintptr_t)a4);
+		return sc_getdents64(proc, a);
+	case LXP_NR_statx:
+		return sc_statx(proc, a);
 	case LXP_NR_exit:
-		return sys_exit(proc, (int)a0, 0);
+		return sc_exit(proc, a);
 	case LXP_NR_exit_group:
-		return sys_exit(proc, (int)a0, 1);
-	/* libc-init / identity stubs: enough for a static uClibc program to start. */
+		return sc_exit_group(proc, a);
 	case LXP_NR_getpid:
-		return proc->group ? proc->group->tgid : proc->pid;
-	case LXP_NR_nice: {
-		int64_t requested = (int64_t)lxp_proc_nice_get(proc) + (int32_t)a0;
-		lxp_proc_nice_set(proc, requested < -20	 ? -20
-					: requested > 19 ? 19
-							 : (int)requested);
-		/* Linux's raw nice(2) syscall returns zero on success. Returning the
-		 * resulting negative nice value would cross the -errno ABI boundary and
-		 * make libc report a successful priority raise as an error. */
-		return 0;
-	}
+		return sc_getpid(proc, a);
+	case LXP_NR_nice:
+		return sc_nice(proc, a);
 	case LXP_NR_getpriority:
-		if ((int)a0 != 0 || ((int)a1 != 0 && (int)a1 != proc->pid))
-			return (int)a0 < 0 || (int)a0 > 2 || (int)a1 < 0 ? -LXP_EINVAL : -LXP_ESRCH;
-		return 20 - lxp_proc_nice_get(proc); /* raw Linux syscall encoding */
+		return sc_getpriority(proc, a);
 	case LXP_NR_setpriority:
-		if ((int)a0 != 0 || ((int)a1 != 0 && (int)a1 != proc->pid))
-			return (int)a0 < 0 || (int)a0 > 2 || (int)a1 < 0 ? -LXP_EINVAL : -LXP_ESRCH;
-		lxp_proc_nice_set(proc, (int)a2);
-		return 0;
+		return sc_setpriority(proc, a);
 	case LXP_NR_getppid:
-		return proc->group ? proc->group->ppid : 0;
-	case LXP_NR_getcwd: {
-		/* getcwd(buf, size): write the cwd; the raw syscall returns the length
-		 * including the NUL terminator. */
-		char *buf = (char *)(uintptr_t)a0;
-		if (!buf)
-			return -LXP_EFAULT;
-		size_t len = strlen(proc->fs_context->cwd) + 1;
-		if ((size_t)a1 < len)
-			return -LXP_ERANGE;
-		if (lxp_copy_to_guest(proc, (uintptr_t)buf, proc->fs_context->cwd, len) != 0)
-			return -LXP_EFAULT;
-		return (long)len;
-	}
-	case LXP_NR_chdir: {
-		const char *path = (const char *)(uintptr_t)a0;
-		if (!path)
-			return -LXP_EFAULT;
-		char abspath[LXP_PATH_MAX];
-		long r = resolve_path(proc, path, abspath, sizeof(abspath));
-		if (r < 0)
-			return r;
-		/* "/" is always valid; else require an existing directory in either the
-		 * writable overlay or the read-only rootfs. */
-		if (!(abspath[0] == '/' && abspath[1] == '\0')) {
-#if LXP_ENABLE_FS
-			if (lxp_hostfs_match(abspath)) {
-				lxp_fs_stat_t stat;
-				long sr = lxp_hostfs_path_stat(proc, abspath, &stat);
-				if (sr < 0)
-					return sr;
-				if (stat.type != LXP_FS_TYPE_DIR)
-					return -LXP_ENOTDIR;
-				strcpy(proc->fs_context->cwd, abspath);
-				return 0;
-			}
-#endif
-			int wi = wfs_find(abspath);
-			if (wi >= 0) {
-				if ((wnode_at(wi)->mode & LXP_S_IFMT) != LXP_S_IFDIR)
-					return -LXP_ENOTDIR;
-			} else {
-				int idx = fs_lookup(proc, abspath);
-				if (idx < 0)
-					return -LXP_ENOENT;
-				if ((file_mode(&proc->fs[idx]) & LXP_S_IFMT) != LXP_S_IFDIR)
-					return -LXP_ENOTDIR;
-			}
-		}
-		strcpy(proc->fs_context->cwd, abspath);
-		return 0;
-	}
-	case LXP_NR_umask: { /* set the file-creation mask, return the previous (per-proc, inherited) */
-		int old = proc->fs_context->umask;
-		proc->fs_context->umask = (unsigned short)(a0 & 0777);
-		return old;
-	}
-	case LXP_NR_setpgid: { /* (pid, pgid) — job control: put a process into a group */
-		int tpid = (int)a0, tpgid = (int)a1;
-		/* Only a self-target is tracked here (pid 0, or my own pid); pgid 0 means "use my
-		 * pid" (become group leader). A child sets its OWN group via setpgid(0, …) after
-		 * fork, so a cross-proc setpgid is accepted inert (no proc table at this layer). */
-		if (tpid == 0 || tpid == proc->pid)
-			proc->group->pgid = (tpgid == 0) ? proc->pid : tpgid;
-		return 0;
-	}
+		return sc_getppid(proc, a);
+	case LXP_NR_getcwd:
+		return sc_getcwd(proc, a);
+	case LXP_NR_chdir:
+		return sc_chdir(proc, a);
+	case LXP_NR_umask:
+		return sc_umask(proc, a);
+	case LXP_NR_setpgid:
+		return sc_setpgid(proc, a);
 	case LXP_NR_prctl:
-	case LXP_NR_sched_yield: /* accepted hint; host preemption/admission owns fairness */
-	case LXP_NR_fchmod:	 /* modes/ownership not tracked (login chmods the tty) */
+		return sc_inert(proc, a);
+	case LXP_NR_sched_yield:
+		return sc_inert(proc, a);
+	case LXP_NR_fchmod:
+		return sc_inert(proc, a);
 	case LXP_NR_fchown32:
-	case LXP_NR_chown32: /* dropbear chowns the pty over SSH; ownership not enforced (inert) */
-	case LXP_NR_setgroups32: /* uid/gid policy is not implemented (login's credential drop is */
-	case LXP_NR_setuid32: /* accepted inert; CPU privilege remains engine-enforced nPRIV/user) */
+		return sc_inert(proc, a);
+	case LXP_NR_chown32:
+		return sc_inert(proc, a);
+	case LXP_NR_setgroups32:
+		return sc_inert(proc, a);
+	case LXP_NR_setuid32:
+		return sc_inert(proc, a);
 	case LXP_NR_setgid32:
-	case LXP_NR_setreuid32: /* dropbear's post-auth privilege drop: accept (inert) so it */
-	case LXP_NR_setregid32: /* does not abort — a failed drop is fatal to an SSH server */
+		return sc_inert(proc, a);
+	case LXP_NR_setreuid32:
+		return sc_inert(proc, a);
+	case LXP_NR_setregid32:
+		return sc_inert(proc, a);
 	case LXP_NR_setresuid32:
+		return sc_inert(proc, a);
 	case LXP_NR_setresgid32:
-		return 0;	 /* process-control / fs-mode setup accepted (inert) */
-	case LXP_NR_getresuid32: /* (ruid*, euid*, suid*) — all root (0) on this tier */
-	case LXP_NR_getresgid32: {
-		uint32_t *r = (uint32_t *)(uintptr_t)a0, *e = (uint32_t *)(uintptr_t)a1,
-			 *s = (uint32_t *)(uintptr_t)a2;
-		if ((r && !lxp_guest_access_ok(proc, r, sizeof(*r), 1)) ||
-		    (e && !lxp_guest_access_ok(proc, e, sizeof(*e), 1)) ||
-		    (s && !lxp_guest_access_ok(proc, s, sizeof(*s), 1)))
-			return -LXP_EFAULT;
-		if (r)
-			*r = 0;
-		if (e)
-			*e = 0;
-		if (s)
-			*s = 0;
-		return 0;
-	}
-	case LXP_NR_prlimit64: { /* (pid, resource, new_limit, old_limit) — report a sane
-				     * finite limit; a "new" limit is accepted (inert). getty/login
-				     * and dropbear query RLIMIT_NOFILE etc. */
-		void *uold = (void *)(uintptr_t)a3;
-		if (uold) {
-			if (!lxp_guest_access_ok(proc, uold, 2 * sizeof(uint64_t), 1))
-				return -LXP_EFAULT;
-			/* Report the TRUTH for RLIMIT_NOFILE: the fd table is LXP_MAX_FDS, so
-			 * advertising more just hands a guest a lie that turns into a surprise
-			 * EMFILE at the (LXP_MAX_FDS)th open. Other resources keep a finite,
-			 * never-RLIM_INFINITY default (a close-all-fds loop would else spin to 2^64). */
-			uint64_t v = ((int)a1 == 7 /* RLIMIT_NOFILE */) ? LXP_MAX_FDS : 1024;
-			uint64_t *lim = (uint64_t *)uold; /* rlim_cur, rlim_max */
-			lim[0] = lim[1] = v;
-		}
-		return 0;
-	}
-	case LXP_NR_times: { /* (struct tms*) — CPU-time accounting; dropbear mixes it into
-				 * its RNG pool. Report uptime ticks (100 Hz) + zero the per-proc
-				 * breakdown (not tracked here). Must be >=0 (glibc treats -1 as error). */
-		void *ubuf = (void *)(uintptr_t)a0;
-		uint64_t us = 0;
-		lxp_time_us(&us);
-		long ticks = (long)(us / 10000u); /* CLK_TCK = 100 */
-		if (ubuf) {
-			if (!lxp_guest_access_ok(proc, ubuf, 4 * sizeof(long), 1))
-				return -LXP_EFAULT;
-			long *tms = (long *)ubuf; /* tms_utime, tms_stime, tms_cutime, tms_cstime */
-			tms[0] = ticks;
-			tms[1] = tms[2] = tms[3] = 0;
-		}
-		return ticks;
-	}
-	case LXP_NR_setitimer: { /* (which, new, old) — ITIMER_REAL -> SIGALRM (alarm()) */
-		int which = (int)a0;
-		const void *unew = (const void *)(uintptr_t)a1;
-		void *uold = (void *)(uintptr_t)a2;
-		if (which != LXP_ITIMER_REAL)
-			return 0; /* only the real-time timer (login timeout, ping interval) */
-		/* struct itimerval { timeval it_interval; timeval it_value; }; ARM32 long=4,
-		 * so it is 4 x u32: [interval_sec, interval_usec, value_sec, value_usec]. */
-		uint64_t now = 0;
-		lxp_time_us(&now);
-		if (uold) {
-			uint32_t ov[4] = {0, 0, 0, 0};
-			uint64_t rem = (proc->alarm_deadline_us && proc->alarm_deadline_us > now)
-					       ? proc->alarm_deadline_us - now
-					       : 0;
-			ov[0] = (uint32_t)(proc->alarm_interval_us / 1000000u);
-			ov[1] = (uint32_t)(proc->alarm_interval_us % 1000000u);
-			ov[2] = (uint32_t)(rem / 1000000u);
-			ov[3] = (uint32_t)(rem % 1000000u);
-			if (lxp_copy_to_guest(proc, (uintptr_t)uold, ov, sizeof(ov)) != 0)
-				return -LXP_EFAULT;
-		}
-		if (!unew)
-			return 0;
-		uint32_t nv[4];
-		if (lxp_copy_from_guest(proc, nv, (uintptr_t)unew, sizeof(nv)) != 0)
-			return -LXP_EFAULT;
-		proc->alarm_interval_us = (uint64_t)nv[0] * 1000000u + nv[1];
-		uint64_t val_us = (uint64_t)nv[2] * 1000000u + nv[3];
-		proc->alarm_deadline_us = val_us ? now + val_us : 0; /* it_value 0 disarms */
-		return 0;
-	}
-	case LXP_NR_getpgrp: /* shell job control: the caller's process group */
-		return proc->group->pgid;
-	case LXP_NR_setsid: /* getty/login start a new session: the caller leads its own group */
-		proc->group->pgid = proc->pid;
-		return proc->pid;
-	case LXP_NR_reboot: { /* reboot(magic1, magic2, cmd, arg) — cmd is a2 */
-		unsigned cmd = (unsigned)a2;
-		/* Only an actual halt/poweroff/restart stops the system; init calls
-		 * reboot(CAD_OFF=0) at startup to disable Ctrl-Alt-Del — a no-op here. */
-		if (cmd == 0x01234567u /* RESTART */ || cmd == 0xcdef0123u /* HALT */ ||
-		    cmd == 0x4321fedcu /* POWER_OFF */ || cmd == 0xa1b2c3d4u /* RESTART2 */) {
-			lxp_request_halt();
-			(void)lxp_intent_exit(proc, 0);
-			proc->exit_status = 0;
-			proc->exit_reason = LXP_EXIT_REASON_NORMAL;
-		}
-		return 0;
-	}
+		return sc_inert(proc, a);
+	case LXP_NR_getresuid32:
+		return sc_getresid(proc, a);
+	case LXP_NR_getresgid32:
+		return sc_getresid(proc, a);
+	case LXP_NR_prlimit64:
+		return sc_prlimit64(proc, a);
+	case LXP_NR_times:
+		return sc_times(proc, a);
+	case LXP_NR_setitimer:
+		return sc_setitimer(proc, a);
+	case LXP_NR_getpgrp:
+		return sc_getpgrp(proc, a);
+	case LXP_NR_setsid:
+		return sc_setsid(proc, a);
+	case LXP_NR_reboot:
+		return sc_reboot(proc, a);
 	case LXP_NR_gettid:
-		return proc->pid;
-	case LXP_NR_clock_gettime: { /* (clockid, struct timespec*) — 32-bit time_t */
-		int32_t *ts = (int32_t *)(uintptr_t)a1;
-		if (!lxp_guest_access_ok(proc, ts, 2 * sizeof(int32_t), 1))
-			return -LXP_EFAULT;
-		uint64_t sec;
-		uint32_t nsec;
-		now_sec_nsec((int)a0, &sec, &nsec);
-		ts[0] = (int32_t)sec;
-		ts[1] = (int32_t)nsec;
-		return 0;
-	}
-	case LXP_NR_clock_gettime64: { /* (clockid, struct __kernel_timespec*) — 64-bit */
-		int64_t *ts = (int64_t *)(uintptr_t)a1;
-		if (!lxp_guest_access_ok(proc, ts, 2 * sizeof(int64_t), 1))
-			return -LXP_EFAULT;
-		uint64_t sec;
-		uint32_t nsec;
-		now_sec_nsec((int)a0, &sec, &nsec);
-		ts[0] = (int64_t)sec;
-		ts[1] = (int64_t)nsec;
-		return 0;
-	}
-	case LXP_NR_gettimeofday: { /* (struct timeval*, tz) */
-		int32_t *tv = (int32_t *)(uintptr_t)a0;
-		if (!lxp_guest_access_ok(proc, tv, 2 * sizeof(int32_t), 1))
-			return -LXP_EFAULT;
-		uint64_t sec;
-		uint32_t nsec;
-		now_sec_nsec(0, &sec, &nsec);
-		tv[0] = (int32_t)sec;
-		tv[1] = (int32_t)(nsec / 1000u);
-		return 0;
-	}
-	case LXP_NR_nanosleep:	     /* (req, rem) */
-	case LXP_NR_clock_nanosleep: /* (clockid, flags, req, rem) */
-	case LXP_NR_clock_nanosleep_time64: {
-		/* Record a wake deadline and ask the run loop to park + delay this proc
-		 * (the trap context cannot block). The run loop aborts the slot for the
-		 * duration so the RTOS idle/kernel/other threads run and real time + CPU
-		 * stats advance — which is what top needs between its two samples. */
-		uintptr_t reqp = (nr == LXP_NR_nanosleep) ? (uintptr_t)a0 : (uintptr_t)a2;
-		if (!lxp_guest_access_ok(proc, (const void *)reqp,
-					 (nr == LXP_NR_clock_nanosleep_time64) ? 16u : 8u, 0))
-			return -LXP_EFAULT;
-		uint64_t sec, nsec;
-		if (nr == LXP_NR_clock_nanosleep_time64) {
-			const int64_t *t = (const int64_t *)reqp; /* time64 {sec, nsec} */
-			sec = (uint64_t)t[0];
-			nsec = (uint64_t)t[1];
-		} else {
-			const int32_t *t = (const int32_t *)reqp; /* time32 {sec, nsec} */
-			sec = (uint64_t)(uint32_t)t[0];
-			nsec = (uint64_t)(uint32_t)t[1];
-		}
-		uint64_t dur_us = sec * 1000000ull + nsec / 1000ull;
-		if (dur_us > 100000000ull)
-			dur_us = 100000000ull; /* clamp to 100 s */
-		/* The coordinator evaluates deadlines with lxp_time_us(), so construct
-		 * them in that same cross-idle clock domain. */
-		uint64_t now_us = 0;
-		lxp_time_us(&now_us);
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_TIMER,
-			.data.timer.deadline_us = now_us + dur_us,
-		};
-		if (lxp_wait_begin(proc, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0;
-	}
-	case LXP_NR_uname: {
-		/* struct utsname: 6 fixed 65-byte fields (sysname, nodename, release,
-		 * version, machine, domainname). The shell reads these at startup. */
-		char *u = (char *)(uintptr_t)a0;
-		if (!lxp_guest_access_ok(proc, u, 6 * 65, 1))
-			return -LXP_EFAULT;
-		const char *const f[6] = {"Linux",  "overtos", "6.1.0", lxp_system_version(),
-					  "armv7l", "(none)"};
-		memset(u, 0, 6 * 65);
-		for (int i = 0; i < 6; i++) {
-			size_t l = 0;
-			while (l < 64 && f[i][l])
-				l++;
-			memcpy(u + i * 65, f[i], l);
-		}
-		return 0;
-	}
-	case LXP_NR_rt_sigaction: {
-		/* Record the per-signal disposition; the engine seam delivers it.
-		 * struct sigaction: sa_handler@0, sa_flags@4, sa_restorer@8. */
-		int sig = (int)a0;
-		if (sig < 1 || sig >= LXP_NSIG)
-			return -LXP_EINVAL;
-		const uint32_t *act = (const uint32_t *)(uintptr_t)a1;
-		uint32_t *oact = (uint32_t *)(uintptr_t)a2;
-		if (act && !lxp_guest_access_ok(proc, act, 3 * sizeof(uint32_t), 0))
-			return -LXP_EFAULT;
-		if (oact && !lxp_guest_access_ok(proc, oact, 3 * sizeof(uint32_t), 1))
-			return -LXP_EFAULT;
-		if (oact) {
-			oact[0] = (uint32_t)lxp_sig_handler_get(proc, sig);
-			oact[2] = (uint32_t)lxp_sig_restorer_get(proc);
-		}
-		if (act) {
-			proc->sighand->handler[sig] = act[0];
-			proc->sighand->restorer = act[2];
-		}
-		return 0;
-	}
-	case LXP_NR_pselect6_time64: /* (nfds, readfds, writefds, exceptfds, timeout, sigmask) */
-		return lxp_sys_pselect6(proc, (int)a0, (uintptr_t)a1, (uintptr_t)a2, (uintptr_t)a3,
-					(uintptr_t)a4);
+		return sc_gettid(proc, a);
+	case LXP_NR_clock_gettime:
+		return sc_clock_gettime(proc, a);
+	case LXP_NR_clock_gettime64:
+		return sc_clock_gettime64(proc, a);
+	case LXP_NR_gettimeofday:
+		return sc_gettimeofday(proc, a);
+	case LXP_NR_nanosleep:
+		return sc_nanosleep(proc, a);
+	case LXP_NR_clock_nanosleep:
+		return sc_clock_nanosleep(proc, a);
+	case LXP_NR_clock_nanosleep_time64:
+		return sc_clock_nanosleep_time64(proc, a);
+	case LXP_NR_uname:
+		return sc_uname(proc, a);
+	case LXP_NR_rt_sigaction:
+		return sc_rt_sigaction(proc, a);
+	case LXP_NR_pselect6_time64:
+		return sc_pselect6_time64(proc, a);
 	case LXP_NR_poll:
+		return sc_poll(proc, a);
 	case LXP_NR_ppoll_time64:
-		return lxp_sys_poll(proc, nr, a0, a1, a2);
-	case LXP_NR_wait4: {
-		if (a1 && !lxp_guest_access_ok(proc, (void *)(uintptr_t)a1, sizeof(int), 1))
-			return -LXP_EFAULT; /* the kernel WRITES *status */
-		int options = (int)a2;
-		int wpid = (int)a0;
-		int *status = (int *)(uintptr_t)a1;
-		/* Report the first queued child state-change this call is allowed to see (FIFO):
-		 * an exited zombie always; a STOPPED notification only with WUNTRACED (job control).
-		 * A pid filter (wpid > 0) must match. A STOPPED entry leaves live_children intact —
-		 * the child is alive, only the notice is consumed. Else, if children are still live,
-		 * block in a CHILD wait until the coordinator observes a change. None → -ECHILD. */
-		lxp_thread_group_t *group = proc->group;
-		if (!group)
-			return -LXP_ECHILD;
-		for (int i = 0; i < group->child_count; i++) {
-			if (wpid > 0 && group->child_pid[i] != wpid)
-				continue;
-			if (group->child_kind[i] == LXP_CHILD_STOPPED && !(options & LXP_WUNTRACED))
-				continue;
-			int pid = group->child_pid[i];
-			int code = group->child_status[i];
-			int kind = group->child_kind[i];
-			for (int j = i + 1; j < group->child_count; j++) {
-				group->child_pid[j - 1] = group->child_pid[j];
-				group->child_status[j - 1] = group->child_status[j];
-				group->child_kind[j - 1] = group->child_kind[j];
-			}
-			group->child_count--;
-			if (status)
-				*status = (kind == LXP_CHILD_STOPPED) ? lxp_encode_wstopped(code)
-								      : lxp_encode_wstatus(code);
-			return pid;
-		}
-		if (group->live_children == 0)
-			return -LXP_ECHILD;
-		if (options & LXP_WNOHANG) /* children live but none ready */
-			return 0;
-		lxp_wait_t wait = {
-			.kind = LXP_WAIT_CHILD,
-			.data.child.pid = wpid,
-			.data.child.options = options,
-			.data.child.status = (uintptr_t)a1,
-		};
-		if (lxp_wait_begin(proc, &wait) != 0)
-			return -LXP_EAGAIN;
-		return 0; /* dispatch parks; the coordinator's resume supplies the real r0 */
-	}
+		return sc_ppoll_time64(proc, a);
+	case LXP_NR_wait4:
+		return sc_wait4(proc, a);
 	case LXP_NR_getuid32:
+		return sc_getuid_root(proc, a);
 	case LXP_NR_geteuid32:
+		return sc_getuid_root(proc, a);
 	case LXP_NR_getgid32:
+		return sc_getuid_root(proc, a);
 	case LXP_NR_getegid32:
-		return 0; /* run as root */
+		return sc_getuid_root(proc, a);
 	case LXP_NR_ioctl:
-		return sys_ioctl(proc, a0, a1, a2);
-	case LXP_NR_rt_sigsuspend: { /* (unewset, sigsetsize) */
-		/* LinuxThreads suspend(): block until a signal (the restart) is delivered. If one is
-		 * already pending (a restart that beat us here), fall through so the dispatch delivers
-		 * it now; otherwise ask the run loop to park us — the coordinator runs the handler on
-		 * the restart kill() and resumes us. sigsuspend always "returns" -EINTR.
-		 *
-		 * INSTALL the mask arg (POSIX: atomically set the signal mask for the wait): the whole
-		 * point of the restart protocol is that the caller BLOCKS the restart signal normally and
-		 * sigsuspend UNBLOCKS it only while waiting. If we ignore the mask, the restart stays
-		 * blocked, the coordinator's pending_deliverable skips it, and the parked thread is never
-		 * woken (deadlock — curl's LinuxThreads resolver: manager, main, and a sigwait thread all
-		 * stuck). The prior mask is restored when the delivered handler returns (sig_restore). */
-		const uint32_t *uset = (const uint32_t *)(uintptr_t)a0;
-		size_t sz = (size_t)a1;
-		if (sz != 8)
-			return -LXP_EINVAL; /* Linux: sigsetsize must equal sizeof(kernel sigset_t) */
-		if (!uset || !lxp_guest_access_ok(proc, uset, sz, 0))
-			return -LXP_EFAULT; /* validate the whole 8-byte mask before reading either word */
-		uint64_t m = (uint64_t)uset[0] | ((uint64_t)uset[1] << 32);
-		m &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP)); /* never blockable */
-		proc->sigsuspend_saved_mask = proc->sig_blocked;
-		proc->sig_blocked = m;
-		proc->sigsuspend_active = 1;
-		/* Park unless a signal that is deliverable UNDER THE NEW MASK is already pending — then
-		 * fall through so the dispatch delivers it now. A signal pending but blocked by the new
-		 * mask must NOT keep us running (it stays pending until the mask is restored). Mirrors
-		 * the run loop's pending_deliverable, which is static there. */
-		int deliverable = 0;
-		for (int sig = 1; sig < LXP_NSIG; sig++)
-			if ((proc->pending_sigs & lxp_sig_bit(sig)) &&
-			    !lxp_sig_blocked(proc, sig)) {
-				deliverable = 1;
-				break;
-			}
-		if (!deliverable) {
-			lxp_wait_t wait = {.kind = LXP_WAIT_SIGSUSPEND};
-			if (lxp_wait_begin(proc, &wait) != 0)
-				return -LXP_EAGAIN;
-		}
-		return -LXP_EINTR;
-	}
-	case LXP_NR_rt_sigtimedwait_time64: { /* (set, info, timeout, sigsetsize) */
-		/* Poll variant: return a pending signal that is in `set` (dequeuing it), else report
-		 * a timeout. Blocking for the timeout is not modeled — this is enough for libc/shell
-		 * startup, which drains pending signals with sigtimedwait and must see -EAGAIN (not
-		 * -ENOSYS) to finish and continue to the interactive read. */
-		const uint32_t *uset = (const uint32_t *)(uintptr_t)a0;
-		size_t sz = (size_t)a3;
-		if (sz > 8)
-			return -LXP_EINVAL;
-		uint64_t set = 0;
-		if (uset) {
-			if (!lxp_guest_access_ok(proc, uset, sz, 0))
-				return -LXP_EFAULT;
-			if (sz >= 4)
-				set |= (uint64_t)uset[0];
-			if (sz >= 8)
-				set |= (uint64_t)uset[1] << 32;
-		}
-		uint64_t ready = proc->pending_sigs & set;
-		if (ready) {
-			int sig = __builtin_ctzll(ready) + 1; /* lowest pending signal in the set */
-			proc->pending_sigs &= ~lxp_sig_bit(sig);
-			(void)a1; /* siginfo output omitted; the return value carries the signo */
-			return sig;
-		}
-		return -LXP_EAGAIN;
-	}
-	case LXP_NR_rt_sigprocmask: { /* (how, set, oldset, sigsetsize) */
-		int how = (int)a0;
-		const uint32_t *uset = (const uint32_t *)(uintptr_t)a1;
-		uint32_t *uold = (uint32_t *)(uintptr_t)a2;
-		size_t sz = (size_t)a3; /* bytes of the guest sigset_t (8 for the 64-bit mask) */
-		if (sz > 8)
-			return -LXP_EINVAL;
-		if (uset && !lxp_guest_access_ok(proc, uset, sz, 0))
-			return -LXP_EFAULT;
-		if (uold && !lxp_guest_access_ok(proc, uold, sz, 1))
-			return -LXP_EFAULT;
-		/* Read the new set BEFORE writing oldset — the guest may alias them, the legal
-		 * sigprocmask(SIG_SETMASK, &m, &m) swap — and validate `how` up front so an invalid
-		 * value has no side effects. */
-		uint64_t nv = 0;
-		if (uset) {
-			if (how != LXP_SIG_BLOCK && how != LXP_SIG_UNBLOCK &&
-			    how != LXP_SIG_SETMASK)
-				return -LXP_EINVAL;
-			if (sz >= 4)
-				nv |= (uint64_t)uset[0];
-			if (sz >= 8)
-				nv |= (uint64_t)uset[1] << 32;
-		}
-		uint64_t old = proc->sig_blocked;
-		if (uold) { /* report the previous mask, low word then high, within sigsetsize */
-			if (sz >= 4)
-				uold[0] = (uint32_t)old;
-			if (sz >= 8)
-				uold[1] = (uint32_t)(old >> 32);
-		}
-		if (uset) {
-			proc->sig_blocked = how == LXP_SIG_BLOCK     ? old | nv
-					    : how == LXP_SIG_UNBLOCK ? old & ~nv
-								     : nv; /* LXP_SIG_SETMASK */
-			/* SIGKILL and SIGSTOP can never be blocked. */
-			proc->sig_blocked &= ~(lxp_sig_bit(LXP_SIGKILL) | lxp_sig_bit(LXP_SIGSTOP));
-		}
-		return 0;
-	}
+		return sc_ioctl(proc, a);
+	case LXP_NR_rt_sigsuspend:
+		return sc_rt_sigsuspend(proc, a);
+	case LXP_NR_rt_sigtimedwait_time64:
+		return sc_rt_sigtimedwait_time64(proc, a);
+	case LXP_NR_rt_sigprocmask:
+		return sc_rt_sigprocmask(proc, a);
 	case LXP_NR_set_tid_address:
-		return 1; /* our single thread's tid */
+		return sc_set_tid_address(proc, a);
 	case LXP_NR_set_robust_list:
-		return 0;
-		/* futex / futex_time64 are intercepted by the coordinator (src/lxp_run.c, lxp_futex):
-	 * a co-running thread's WAIT parks on the uaddr and a peer's WAKE resumes it. They
-	 * never reach this switch. */
+		return sc_set_robust_list(proc, a);
 #if LXP_ENABLE_NET
-	case LXP_NR_socket: { /* (domain, type, protocol) */
-		long oi = lxp_sock_new((int)a0, (int)a1, (int)a2);
-		if (oi < 0)
-			return oi;
-		/* SOCK_NONBLOCK / SOCK_CLOEXEC share O_NONBLOCK / O_CLOEXEC's values. */
-		int fd = fd_alloc(proc, LXP_FD_SOCKET, (int)oi, 0,
-				  LXP_O_RDWR | ((int)a1 & (LXP_O_NONBLOCK | LXP_O_CLOEXEC)));
-		if (fd < 0) {
-			lxp_sock_close((int)oi);
-			return -LXP_EMFILE;
-		}
-		return fd;
-	}
-	case LXP_NR_connect: { /* (fd, addr, addrlen) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		return lxp_sock_connect(proc, oi, (const void *)(uintptr_t)a1, (unsigned)a2);
-	}
-	case LXP_NR_send:     /* (fd, buf, len, flags) */
-	case LXP_NR_sendto: { /* (fd, buf, len, flags, dest, destlen) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		const void *dest = (nr == LXP_NR_sendto) ? (const void *)(uintptr_t)a4 : NULL;
-		return lxp_sock_send(proc, oi, (const void *)(uintptr_t)a1, (size_t)a2, (int)a3,
-				     dest, (unsigned)a5);
-	}
-	case LXP_NR_recv:	/* (fd, buf, len, flags) */
-	case LXP_NR_recvfrom: { /* (fd, buf, len, flags, src, srclen) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		void *src = (nr == LXP_NR_recvfrom) ? (void *)(uintptr_t)a4 : NULL;
-		void *srclen = (nr == LXP_NR_recvfrom) ? (void *)(uintptr_t)a5 : NULL;
-		return lxp_sock_recv(proc, oi, (void *)(uintptr_t)a1, (size_t)a2, (int)a3, src,
-				     srclen);
-	}
-	case LXP_NR_shutdown: { /* (fd, how) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		return lxp_sock_shutdown(oi, (int)a1);
-	}
-	case LXP_NR_getsockname: { /* (fd, addr, addrlen) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		return lxp_sock_getsockname(proc, oi, (void *)(uintptr_t)a1, (void *)(uintptr_t)a2);
-	}
-	case LXP_NR_getpeername: { /* (fd, addr, addrlen) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		return lxp_sock_getpeername(proc, oi, (void *)(uintptr_t)a1, (void *)(uintptr_t)a2);
-	}
-	case LXP_NR_setsockopt: { /* (fd, level, optname, optval, optlen) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		return lxp_sock_setsockopt(proc, oi, (int)a1, (int)a2, (const void *)(uintptr_t)a3,
-					   (unsigned)a4);
-	}
-	case LXP_NR_getsockopt: { /* (fd, level, optname, optval, optlen) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		return lxp_sock_getsockopt(proc, oi, (int)a1, (int)a2, (void *)(uintptr_t)a3,
-					   (void *)(uintptr_t)a4);
-	}
-	case LXP_NR_bind: { /* (fd, addr, addrlen) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		return lxp_sock_bind(proc, oi, (const void *)(uintptr_t)a1, (unsigned)a2);
-	}
-	case LXP_NR_listen: { /* (fd, backlog) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		return lxp_sock_listen(oi, (int)a1);
-	}
-	case LXP_NR_accept:    /* (fd, addr, addrlen) */
-	case LXP_NR_accept4: { /* (fd, addr, addrlen, flags) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		int flags = (nr == LXP_NR_accept4) ? (int)a3 : 0;
-		return lxp_sock_accept(proc, oi, (void *)(uintptr_t)a1, (void *)(uintptr_t)a2,
-				       flags);
-	}
-	case LXP_NR_sendmsg: { /* (fd, msghdr, flags) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		return sys_sendmsg(proc, oi, (const lxp_msghdr *)(uintptr_t)a1, (int)a2);
-	}
-	case LXP_NR_recvmsg: { /* (fd, msghdr, flags) */
-		int oi = sock_slot(proc, (int)a0);
-		if (oi < 0)
-			return -LXP_ENOTSOCK;
-		return sys_recvmsg(proc, oi, (lxp_msghdr *)(uintptr_t)a1, (int)a2);
-	}
-	case LXP_NR_socketpair: /* fd-passing (SCM_RIGHTS) unsupported */
-		return -LXP_EOPNOTSUPP;
+	case LXP_NR_socket:
+		return sc_socket(proc, a);
+	case LXP_NR_connect:
+		return sc_connect(proc, a);
+	case LXP_NR_send:
+		return sc_send(proc, a);
+	case LXP_NR_sendto:
+		return sc_sendto(proc, a);
+	case LXP_NR_recv:
+		return sc_recv(proc, a);
+	case LXP_NR_recvfrom:
+		return sc_recvfrom(proc, a);
+	case LXP_NR_shutdown:
+		return sc_shutdown(proc, a);
+	case LXP_NR_getsockname:
+		return sc_getsockname(proc, a);
+	case LXP_NR_getpeername:
+		return sc_getpeername(proc, a);
+	case LXP_NR_setsockopt:
+		return sc_setsockopt(proc, a);
+	case LXP_NR_getsockopt:
+		return sc_getsockopt(proc, a);
+	case LXP_NR_bind:
+		return sc_bind(proc, a);
+	case LXP_NR_listen:
+		return sc_listen(proc, a);
+	case LXP_NR_accept:
+		return sc_accept(proc, a);
+	case LXP_NR_accept4:
+		return sc_accept4(proc, a);
+	case LXP_NR_sendmsg:
+		return sc_sendmsg(proc, a);
+	case LXP_NR_recvmsg:
+		return sc_recvmsg(proc, a);
+	case LXP_NR_socketpair:
+		return sc_socketpair(proc, a);
 #endif
 	default:
 		return -LXP_ENOSYS;
