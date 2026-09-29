@@ -8,6 +8,7 @@
  * and lossless directory paging without depending on a host filesystem.
  */
 #include "../framework/lxp_test.h"
+#include "../framework/lxp_stat_view.h"
 
 #include "lxp/lxp_fs_ops.h"
 #include "lxp/lxp_block_ops.h"
@@ -525,6 +526,37 @@ static void test_hostfs_write_stat_and_chdir(void **state)
 	assert_int_equal(call(&proc, LXP_NR_access, (long)(uintptr_t)"/data/hello.txt", 0, 0), 0);
 }
 
+/* fstat64 and statx(AT_EMPTY_PATH) on one hostfs descriptor. */
+static void test_hostfs_stat_fd_both(void **state)
+{
+	(void)state;
+	lxp_proc_t proc;
+	lxp_arena_t arena;
+	setup(&proc, &arena);
+
+	long fd = call(&proc, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/data/hello.txt",
+		       LXP_O_RDONLY);
+	assert_true(fd >= 0);
+	uint8_t buf[256] = {0};
+	assert_int_equal(call(&proc, LXP_NR_fstat64, fd, (long)(uintptr_t)buf, 0), 0);
+	lxp_stat_view_t k = lxp_view_kstat64(buf);
+	memset(buf, 0, sizeof(buf));
+	assert_int_equal(lxp_syscall(&proc, LXP_NR_statx, fd, (long)(uintptr_t)"", LXP_AT_EMPTY_PATH,
+				     0, (long)(uintptr_t)buf, 0),
+			 0);
+	lxp_stat_view_t x = lxp_view_statx(buf);
+
+	assert_int_equal(k.mode, LXP_S_IFREG | 0666u);
+	assert_int_equal(k.dev, (uint64_t)LXP_HOSTFS_DEV_MAJOR << 8);
+	assert_int_equal(k.mtime, 123);
+	assert_int_equal(x.mode, k.mode);
+	assert_int_equal(x.ino, k.ino);
+	assert_int_equal(x.size, k.size);
+	assert_int_equal(x.dev, k.dev);
+	assert_int_equal(x.mtime, 0); /* statx does not report the provider mtime */
+	assert_int_equal(call(&proc, LXP_NR_close, fd, 0, 0), 0);
+}
+
 static void test_hostfs_inode_is_stable_across_open_slots(void **state)
 {
 	(void)state;
@@ -895,6 +927,7 @@ int test_linux_hostfs_run(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_hostfs_file_lifetime_and_io),
 		cmocka_unit_test(test_hostfs_write_stat_and_chdir),
+		cmocka_unit_test(test_hostfs_stat_fd_both),
 		cmocka_unit_test(test_hostfs_inode_is_stable_across_open_slots),
 		cmocka_unit_test(test_hostfs_volume_stats_and_syncfs),
 		cmocka_unit_test(test_hostfs_directory_paging_and_mount_boundary),

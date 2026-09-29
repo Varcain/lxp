@@ -21,6 +21,7 @@
 
 #include "../framework/lxp_test.h"
 #include "../framework/lxp_proc_fixture.h"
+#include "../framework/lxp_stat_view.h"
 
 #include "dev/lxp_dev.h" /* lxp_guest_access_ok: assert the host canary is outside the guest ranges */
 
@@ -442,6 +443,118 @@ static void test_conf_stat(void **state)
 	assert_int_equal(SC(&p, LXP_NR_fstat64, 1, (long)(uintptr_t)lxp_conf_bad_ptr(fx), 0, 0, 0,
 			    0),
 			 -LXP_EFAULT);
+}
+
+/* fstat64 and statx(AT_EMPTY_PATH) on one descriptor, through @p buf (256 bytes). */
+static void stat_fd_both(lxp_proc_t *p, lxp_conf_t *fx, long fd, uint8_t *buf, lxp_stat_view_t *k,
+			 lxp_stat_view_t *x)
+{
+	memset(buf, 0, 256);
+	assert_int_equal(SC(p, LXP_NR_fstat64, fd, (long)(uintptr_t)buf, 0, 0, 0, 0), 0);
+	*k = lxp_view_kstat64(buf);
+	memset(buf, 0, 256);
+	assert_int_equal(SC(p, LXP_NR_statx, fd, (long)(uintptr_t)lxp_conf_str(fx, ""),
+			    LXP_AT_EMPTY_PATH, 0, (long)(uintptr_t)buf, 0),
+			 0);
+	*x = lxp_view_statx(buf);
+}
+
+#define INO_BASE(ino) ((ino) & ~(uint64_t)0xfffffu)
+
+/* What fstat64 and statx report for a descriptor of each local kind. */
+static void test_conf_stat_kinds(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+	uint8_t *buf = lxp_conf_alloc(fx, 256);
+	lxp_stat_view_t k, x;
+
+	/* rootfs file and directory: inode = rootfs index + 1. */
+	long fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/etc/motd"),
+		     LXP_O_RDONLY, 0, 0, 0);
+	stat_fd_both(&p, fx, fd, buf, &k, &x);
+	assert_int_equal(k.mode, LXP_S_IFREG | 0644u);
+	assert_int_equal(k.ino, 3);
+	assert_int_equal(k.size, 19);
+	assert_int_equal(k.nlink, 1);
+	assert_int_equal(x.mode, k.mode);
+	assert_int_equal(x.ino, k.ino);
+	assert_int_equal(x.size, k.size);
+	assert_int_equal(x.nlink, k.nlink);
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/etc"),
+		LXP_O_RDONLY | LXP_O_DIRECTORY, 0, 0, 0);
+	stat_fd_both(&p, fx, fd, buf, &k, &x);
+	assert_int_equal(k.mode, LXP_S_IFDIR);
+	assert_int_equal(k.ino, 2);
+	assert_int_equal(x.mode, k.mode);
+	assert_int_equal(x.ino, k.ino);
+
+	/* tmpfs file, then the same file unlinked while open. */
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/st"),
+		LXP_O_RDWR | LXP_O_CREAT, 0600, 0, 0);
+	assert_true(fd >= 3);
+	assert_int_equal(SC(&p, LXP_NR_write, fd, (long)(uintptr_t)lxp_conf_str(fx, "abc"), 3, 0, 0,
+			    0),
+			 3);
+	stat_fd_both(&p, fx, fd, buf, &k, &x);
+	assert_int_equal(k.mode & LXP_S_IFMT, LXP_S_IFREG);
+	assert_int_equal(k.size, 3);
+	assert_int_equal(k.nlink, 1);
+	assert_int_equal(INO_BASE(k.ino), 0x100000);
+	assert_int_equal(x.mode, k.mode);
+	assert_int_equal(x.ino, k.ino);
+	assert_int_equal(x.size, k.size);
+	assert_int_equal(x.nlink, k.nlink);
+	assert_int_equal(SC(&p, LXP_NR_unlink, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/st"), 0, 0,
+			    0, 0, 0),
+			 0);
+	stat_fd_both(&p, fx, fd, buf, &k, &x);
+	assert_int_equal(k.nlink, 0);
+	assert_int_equal(x.nlink, 1); /* statx does not see the unlink */
+
+	/* /proc file and directory: statx reports a character device. */
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/proc/version"),
+		LXP_O_RDONLY, 0, 0, 0);
+	stat_fd_both(&p, fx, fd, buf, &k, &x);
+	assert_int_equal(k.mode, LXP_S_IFREG | 0444u);
+	assert_int_equal(INO_BASE(k.ino), 0x200000);
+	assert_int_equal(x.mode, LXP_S_IFCHR | 0620u);
+	assert_int_equal(INO_BASE(x.ino), 0x300000);
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/proc"),
+		LXP_O_RDONLY | LXP_O_DIRECTORY, 0, 0, 0);
+	stat_fd_both(&p, fx, fd, buf, &k, &x);
+	assert_int_equal(k.mode, LXP_S_IFDIR | 0555u);
+	assert_int_equal(x.mode, LXP_S_IFCHR | 0620u);
+
+	/* console, pipe and eventfd: a bare character device from both. */
+	stat_fd_both(&p, fx, 0, buf, &k, &x);
+	assert_int_equal(k.mode, LXP_S_IFCHR | 0620u);
+	assert_int_equal(k.ino, 0x300000);
+	assert_int_equal(x.mode, k.mode);
+	assert_int_equal(x.ino, k.ino);
+	int *fds = lxp_conf_alloc(fx, 2 * sizeof(int));
+	assert_int_equal(SC(&p, LXP_NR_pipe2, (long)(uintptr_t)fds, 0, 0, 0, 0, 0), 0);
+	stat_fd_both(&p, fx, fds[0], buf, &k, &x);
+	assert_int_equal(k.mode, LXP_S_IFCHR | 0620u);
+	assert_int_equal(INO_BASE(k.ino), 0x300000);
+	assert_int_equal(x.mode, k.mode);
+	assert_int_equal(x.ino, k.ino);
+	fd = SC(&p, LXP_NR_eventfd2, 0, 0, 0, 0, 0, 0);
+	stat_fd_both(&p, fx, fd, buf, &k, &x);
+	assert_int_equal(k.mode, LXP_S_IFCHR | 0620u);
+	assert_int_equal(x.mode, k.mode);
+	assert_int_equal(x.ino, k.ino);
+
+	/* pty master: statx uses the default inode range instead of the pty one. */
+	fd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/dev/ptmx"),
+		LXP_O_RDWR, 0, 0, 0);
+	assert_true(fd >= 3);
+	stat_fd_both(&p, fx, fd, buf, &k, &x);
+	assert_int_equal(k.mode, LXP_S_IFCHR | 0620u);
+	assert_int_equal(INO_BASE(k.ino), 0x500000);
+	assert_int_equal(x.mode, k.mode);
+	assert_int_equal(INO_BASE(x.ino), 0x300000);
 }
 
 /* =============================== directory entries ==================================== */
@@ -1194,6 +1307,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_pread_streams),
 		cmocka_unit_test(test_conf_mem),
 		cmocka_unit_test(test_conf_stat),
+		cmocka_unit_test(test_conf_stat_kinds),
 		cmocka_unit_test(test_conf_dirent),
 		cmocka_unit_test(test_conf_dirent_records),
 		cmocka_unit_test(test_conf_pathmeta),
