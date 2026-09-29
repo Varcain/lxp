@@ -91,6 +91,7 @@ set(LXP_DEV_INPUT_SOURCES
 )
 set(LXP_NET_SOURCES
     "${LXP_SOURCE_ROOT}/src/net/lxp_net.c"
+    "${LXP_SOURCE_ROOT}/src/net/lxp_net_sys.c"
 )
 set(LXP_NETFS_SOURCES
     "${LXP_SOURCE_ROOT}/src/netfs/lxp_netfs.c"

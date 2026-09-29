@@ -125,4 +125,24 @@ long lxp_sys_rt_sigtimedwait_time64(lxp_proc_t *proc, const long a[6]);
 /* ---- exec (src/sys/lxp_sys_exec.c) ---- */
 long lxp_sys_execve(lxp_proc_t *proc, const long a[6]);
 
+/* ---- sockets (src/net/lxp_net_sys.c) ---- */
+long lxp_sys_socket(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_connect(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_send(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_sendto(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_recv(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_recvfrom(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_shutdown(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_getsockname(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_getpeername(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_setsockopt(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_getsockopt(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_bind(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_listen(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_accept(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_accept4(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_sendmsg(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_recvmsg(lxp_proc_t *proc, const long a[6]);
+long lxp_sys_socketpair(lxp_proc_t *proc, const long a[6]);
+
 #endif /* LXP_SYS_H */

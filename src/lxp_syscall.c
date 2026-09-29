@@ -70,114 +70,6 @@ LXP_STATIC_ASSERT(sizeof(struct lxp_pollfd) == 8, "pollfd ABI size drifted");
 /* The pipe subsystem (ring buffer + read/write/poll ops) lives in src/fs/lxp_pipe.c;
  * this dispatcher calls it via fs/lxp_pipe.h. */
 
-#if LXP_ENABLE_NET
-/* Resolve @p fd to its socket open-pool index, or -1 if @p fd is not a socket. Collapses
- * descriptor lookup + kind check that the socket syscalls all repeat. */
-static int sock_slot(lxp_proc_t *p, int fd)
-{
-	lxp_ofd_t *s = lxp_fd_description(p, fd);
-	return (s && s->kind == LXP_FD_SOCKET) ? s->file_idx : -1;
-}
-
-/* sendmsg(2): gather the message's iovec segments out over the socket. Ancillary data
- * (msg_control) is not interpreted — SCM_RIGHTS fd-passing is unsupported — so only the
- * ordinary payload is sent. Mirrors sys_writev: each segment goes through lxp_sock_send,
- * accumulating; a short segment ends the gather (a short sendmsg is legal). msg_name, when
- * present, is the datagram destination. If a later segment would block after earlier ones
- * were sent, the accumulated count is returned rather than parking mid-gather (the single-
- * buffer park cannot resume a partially-gathered message); a first-segment block parks as
- * usual and the coordinator retry completes it. */
-static long sys_sendmsg(lxp_proc_t *p, int oi, const lxp_msghdr *umsg, int flags)
-{
-	lxp_msghdr m;
-	if (lxp_copy_from_guest(p, &m, (uintptr_t)umsg, sizeof(m)) != 0)
-		return -LXP_EFAULT;
-	if (m.msg_iovlen > LXP_SYSCALL_MAX_IOV) /* bound before iovlen*sizeof(iovec) overflows */
-		return -LXP_EINVAL;
-	const lxp_iovec *iov = m.msg_iov;
-	if (m.msg_iovlen && !lxp_guest_access_ok(p, iov, m.msg_iovlen * sizeof(*iov), 0))
-		return -LXP_EFAULT; /* the iov array; each iov_base is checked in lxp_sock_send */
-	const void *dest = (m.msg_name && m.msg_namelen) ? m.msg_name : NULL;
-
-	/* A datagram is one message: gather every segment into a single packet, or a per-segment
-	 * send would fragment it into several datagrams. Stream sockets keep the per-segment loop
-	 * below (byte-stream, so segment boundaries don't matter). */
-	if (m.msg_iovlen > 1 && lxp_sock_is_dgram(oi))
-		return lxp_sock_sendmsg(p, oi, iov, (int)m.msg_iovlen, flags, dest, m.msg_namelen);
-
-	long total = 0;
-	size_t budget = LXP_SYSCALL_QUANTUM_BYTES;
-	for (size_t i = 0; i < m.msg_iovlen; i++) {
-		lxp_iovec entry;
-		if (lxp_copy_from_guest(p, &entry, (uintptr_t)&iov[i], sizeof(entry)) != 0)
-			return -LXP_EFAULT;
-		if (entry.iov_len == 0)
-			continue;
-		size_t len = entry.iov_len < budget ? entry.iov_len : budget;
-		long r = lxp_sock_send(p, oi, entry.iov_base, len, flags, dest, m.msg_namelen);
-		if (r < 0)
-			return total ? total : r;
-		if ((size_t)r > len)
-			return total ? total
-				     : -LXP_EIO; /* host backend violated the write contract */
-		if (p->wait.kind == LXP_WAIT_SOCKET) { /* this segment parked */
-			if (total >
-			    0) { /* earlier segments already sent: short send, do not park */
-				(void)lxp_wait_cancel(p);
-				return total;
-			}
-			return 0; /* first segment: let the coordinator retry complete it */
-		}
-		total += r;
-		budget -= (size_t)r;
-		if ((size_t)r < len || len < entry.iov_len || budget == 0)
-			break; /* short send */
-	}
-	return total;
-}
-
-/* recvmsg(2): scatter received bytes into the message's iovec. A single underlying recv
- * fills the first non-empty segment — a short read is always legal, and it keeps the
- * blocking recv's single-buffer park valid on the resume. No ancillary data is produced
- * (msg_controllen/msg_flags are cleared); msg_name, when present, is filled with the
- * source address (and msg_namelen updated) as recvfrom does. */
-static long sys_recvmsg(lxp_proc_t *p, int oi, lxp_msghdr *umsg, int flags)
-{
-	lxp_msghdr m;
-	if (lxp_copy_from_guest(p, &m, (uintptr_t)umsg, sizeof(m)) != 0)
-		return -LXP_EFAULT;
-	if (m.msg_iovlen > LXP_SYSCALL_MAX_IOV)
-		return -LXP_EINVAL;
-	const lxp_iovec *iov = m.msg_iov;
-	if (m.msg_iovlen && !lxp_guest_access_ok(p, iov, m.msg_iovlen * sizeof(*iov), 0))
-		return -LXP_EFAULT;
-	m.msg_controllen = 0; /* no ancillary data is ever produced */
-	m.msg_flags = 0;
-	if (lxp_copy_to_guest(p, (uintptr_t)umsg, &m, sizeof(m)) != 0)
-		return -LXP_EFAULT;
-
-	/* Receive into the first non-empty segment only. A blocking recv parks with a single
-	 * guest buffer, so a multi-segment scatter cannot be resumed after a park — and the
-	 * transport does not report a datagram's true length, so MSG_TRUNC cannot be set. This is
-	 * a legal short read for a stream socket; for a datagram it means the tail of a message
-	 * larger than the first segment is lost. Callers that need the whole datagram should pass
-	 * a single sufficiently large segment. */
-	void *src = (m.msg_name && m.msg_namelen) ? m.msg_name : NULL;
-	void *srclen = src ? &umsg->msg_namelen : NULL;
-	for (size_t i = 0; i < m.msg_iovlen; i++) {
-		lxp_iovec entry;
-		if (lxp_copy_from_guest(p, &entry, (uintptr_t)&iov[i], sizeof(entry)) != 0)
-			return -LXP_EFAULT;
-		if (entry.iov_len == 0)
-			continue;
-		size_t len = entry.iov_len;
-		if (len > LXP_SYSCALL_QUANTUM_BYTES)
-			len = LXP_SYSCALL_QUANTUM_BYTES;
-		return lxp_sock_recv(p, oi, entry.iov_base, len, flags, src, srclen);
-	}
-	return 0; /* no buffer space in the iov: nothing received */
-}
-#endif
 
 /* ---- syscall handlers: (proc, the six argument registers) → result ---------- */
 
@@ -201,187 +93,6 @@ static long sc_ppoll_time64(lxp_proc_t *proc, const long a[6])
  * a co-running thread's WAIT parks on the uaddr and a peer's WAKE resumes it. They
  * never reach the dispatcher. */
 
-#if LXP_ENABLE_NET
-/* (domain, type, protocol) */
-static long sc_socket(lxp_proc_t *proc, const long a[6])
-{
-	long oi = lxp_sock_new((int)a[0], (int)a[1], (int)a[2]);
-	if (oi < 0)
-		return oi;
-	/* SOCK_NONBLOCK / SOCK_CLOEXEC share O_NONBLOCK / O_CLOEXEC's values. */
-	int fd = lxp_sys_fd_alloc(proc, LXP_FD_SOCKET, (int)oi, 0,
-			  LXP_O_RDWR | ((int)a[1] & (LXP_O_NONBLOCK | LXP_O_CLOEXEC)));
-	if (fd < 0) {
-		lxp_sock_close((int)oi);
-		return -LXP_EMFILE;
-	}
-	return fd;
-}
-
-/* (fd, addr, addrlen) */
-static long sc_connect(lxp_proc_t *proc, const long a[6])
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_connect(proc, oi, (const void *)(uintptr_t)a[1], (unsigned)a[2]);
-}
-
-/* send/sendto on socket fd a[0]; @p dest/@p destlen are sendto's address. */
-static long sock_send_common(lxp_proc_t *proc, const long a[6], const void *dest,
-			     unsigned destlen)
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_send(proc, oi, (const void *)(uintptr_t)a[1], (size_t)a[2], (int)a[3], dest,
-			     destlen);
-}
-
-/* (fd, buf, len, flags) */
-static long sc_send(lxp_proc_t *proc, const long a[6])
-{
-	return sock_send_common(proc, a, NULL, (unsigned)a[5]);
-}
-
-/* (fd, buf, len, flags, dest, destlen) */
-static long sc_sendto(lxp_proc_t *proc, const long a[6])
-{
-	return sock_send_common(proc, a, (const void *)(uintptr_t)a[4], (unsigned)a[5]);
-}
-/* recv/recvfrom on socket fd a[0]; @p src/@p srclen are recvfrom's address out. */
-static long sock_recv_common(lxp_proc_t *proc, const long a[6], void *src, void *srclen)
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_recv(proc, oi, (void *)(uintptr_t)a[1], (size_t)a[2], (int)a[3], src,
-			     srclen);
-}
-
-/* (fd, buf, len, flags) */
-static long sc_recv(lxp_proc_t *proc, const long a[6])
-{
-	return sock_recv_common(proc, a, NULL, NULL);
-}
-
-/* (fd, buf, len, flags, src, srclen) */
-static long sc_recvfrom(lxp_proc_t *proc, const long a[6])
-{
-	return sock_recv_common(proc, a, (void *)(uintptr_t)a[4], (void *)(uintptr_t)a[5]);
-}
-/* (fd, how) */
-static long sc_shutdown(lxp_proc_t *proc, const long a[6])
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_shutdown(oi, (int)a[1]);
-}
-
-/* (fd, addr, addrlen) */
-static long sc_getsockname(lxp_proc_t *proc, const long a[6])
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_getsockname(proc, oi, (void *)(uintptr_t)a[1], (void *)(uintptr_t)a[2]);
-}
-
-/* (fd, addr, addrlen) */
-static long sc_getpeername(lxp_proc_t *proc, const long a[6])
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_getpeername(proc, oi, (void *)(uintptr_t)a[1], (void *)(uintptr_t)a[2]);
-}
-
-/* (fd, level, optname, optval, optlen) */
-static long sc_setsockopt(lxp_proc_t *proc, const long a[6])
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_setsockopt(proc, oi, (int)a[1], (int)a[2], (const void *)(uintptr_t)a[3],
-				   (unsigned)a[4]);
-}
-
-/* (fd, level, optname, optval, optlen) */
-static long sc_getsockopt(lxp_proc_t *proc, const long a[6])
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_getsockopt(proc, oi, (int)a[1], (int)a[2], (void *)(uintptr_t)a[3],
-				   (void *)(uintptr_t)a[4]);
-}
-
-/* (fd, addr, addrlen) */
-static long sc_bind(lxp_proc_t *proc, const long a[6])
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_bind(proc, oi, (const void *)(uintptr_t)a[1], (unsigned)a[2]);
-}
-
-/* (fd, backlog) */
-static long sc_listen(lxp_proc_t *proc, const long a[6])
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_listen(oi, (int)a[1]);
-}
-
-/* accept/accept4 on socket fd a[0] with accept4's @p flags. */
-static long sock_accept_common(lxp_proc_t *proc, const long a[6], int flags)
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return lxp_sock_accept(proc, oi, (void *)(uintptr_t)a[1], (void *)(uintptr_t)a[2], flags);
-}
-
-/* (fd, addr, addrlen) */
-static long sc_accept(lxp_proc_t *proc, const long a[6])
-{
-	return sock_accept_common(proc, a, 0);
-}
-
-/* (fd, addr, addrlen, flags) */
-static long sc_accept4(lxp_proc_t *proc, const long a[6])
-{
-	return sock_accept_common(proc, a, (int)a[3]);
-}
-/* (fd, msghdr, flags) */
-static long sc_sendmsg(lxp_proc_t *proc, const long a[6])
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return sys_sendmsg(proc, oi, (const lxp_msghdr *)(uintptr_t)a[1], (int)a[2]);
-}
-
-/* (fd, msghdr, flags) */
-static long sc_recvmsg(lxp_proc_t *proc, const long a[6])
-{
-	int oi = sock_slot(proc, (int)a[0]);
-	if (oi < 0)
-		return -LXP_ENOTSOCK;
-	return sys_recvmsg(proc, oi, (lxp_msghdr *)(uintptr_t)a[1], (int)a[2]);
-}
-
-/* fd-passing (SCM_RIGHTS) unsupported */
-static long sc_socketpair(lxp_proc_t *proc, const long a[6])
-{
-	(void)a;
-	(void)proc;
-	return -LXP_EOPNOTSUPP;
-}
-
-#endif /* LXP_ENABLE_NET */
 
 /* ---- the syscall table ------------------------------------------------------
  * One row per syscall the dispatcher answers, indexed by number, with its flags
@@ -512,24 +223,24 @@ static const struct lxp_sys_entry g_lxp_sys_table[LXP_SYS_TABLE_SIZE] = {
 	[LXP_NR_set_tid_address] = {lxp_sys_set_tid_address, LXP_SYS_FAST},
 	[LXP_NR_set_robust_list] = {lxp_sys_set_robust_list, LXP_SYS_FAST},
 #if LXP_ENABLE_NET
-	[LXP_NR_socket] = {sc_socket, 0},
-	[LXP_NR_connect] = {sc_connect, 0},
-	[LXP_NR_send] = {sc_send, LXP_SYS_CLAMP_A2},
-	[LXP_NR_sendto] = {sc_sendto, LXP_SYS_CLAMP_A2},
-	[LXP_NR_recv] = {sc_recv, LXP_SYS_CLAMP_A2},
-	[LXP_NR_recvfrom] = {sc_recvfrom, LXP_SYS_CLAMP_A2},
-	[LXP_NR_shutdown] = {sc_shutdown, 0},
-	[LXP_NR_getsockname] = {sc_getsockname, 0},
-	[LXP_NR_getpeername] = {sc_getpeername, 0},
-	[LXP_NR_setsockopt] = {sc_setsockopt, 0},
-	[LXP_NR_getsockopt] = {sc_getsockopt, 0},
-	[LXP_NR_bind] = {sc_bind, 0},
-	[LXP_NR_listen] = {sc_listen, 0},
-	[LXP_NR_accept] = {sc_accept, 0},
-	[LXP_NR_accept4] = {sc_accept4, 0},
-	[LXP_NR_sendmsg] = {sc_sendmsg, 0},
-	[LXP_NR_recvmsg] = {sc_recvmsg, 0},
-	[LXP_NR_socketpair] = {sc_socketpair, 0},
+	[LXP_NR_socket] = {lxp_sys_socket, 0},
+	[LXP_NR_connect] = {lxp_sys_connect, 0},
+	[LXP_NR_send] = {lxp_sys_send, LXP_SYS_CLAMP_A2},
+	[LXP_NR_sendto] = {lxp_sys_sendto, LXP_SYS_CLAMP_A2},
+	[LXP_NR_recv] = {lxp_sys_recv, LXP_SYS_CLAMP_A2},
+	[LXP_NR_recvfrom] = {lxp_sys_recvfrom, LXP_SYS_CLAMP_A2},
+	[LXP_NR_shutdown] = {lxp_sys_shutdown, 0},
+	[LXP_NR_getsockname] = {lxp_sys_getsockname, 0},
+	[LXP_NR_getpeername] = {lxp_sys_getpeername, 0},
+	[LXP_NR_setsockopt] = {lxp_sys_setsockopt, 0},
+	[LXP_NR_getsockopt] = {lxp_sys_getsockopt, 0},
+	[LXP_NR_bind] = {lxp_sys_bind, 0},
+	[LXP_NR_listen] = {lxp_sys_listen, 0},
+	[LXP_NR_accept] = {lxp_sys_accept, 0},
+	[LXP_NR_accept4] = {lxp_sys_accept4, 0},
+	[LXP_NR_sendmsg] = {lxp_sys_sendmsg, 0},
+	[LXP_NR_recvmsg] = {lxp_sys_recvmsg, 0},
+	[LXP_NR_socketpair] = {lxp_sys_socketpair, 0},
 #else
 	[LXP_NR_socket] = {NULL, LXP_SYS_QUIET_ENOSYS}, /* libc probes for networking */
 #endif
