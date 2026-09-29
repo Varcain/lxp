@@ -27,5 +27,6 @@ LXP_SUITE(linux_net,     "Linux personality: socket layer")
 LXP_SUITE(linux_netfs,   "Linux personality: remote filesystem (9P)")
 LXP_SUITE(linux_hostfs,  "Linux personality: host writable filesystem")
 LXP_SUITE(linux_pty,     "Linux personality: pseudo-terminal layer")
+LXP_SUITE(path_routing,  "Linux personality: path routing across mounts")
 
 #undef LXP_SUITE

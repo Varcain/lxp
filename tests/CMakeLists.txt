@@ -48,6 +48,7 @@ add_executable(lxp_test_stub
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_netfs.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_hostfs.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_linux_pty.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_path_routing.c"
 )
 
 target_include_directories(lxp_test_stub PRIVATE

@@ -77,5 +77,6 @@ int test_linux_net_run(void);
 int test_linux_netfs_run(void);
 int test_linux_hostfs_run(void);
 int test_linux_pty_run(void);
+int test_path_routing_run(void);
 
 #endif /* LXP_TEST_H */
