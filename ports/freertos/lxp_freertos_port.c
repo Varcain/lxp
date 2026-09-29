@@ -221,11 +221,17 @@ static void freertos_sched_task_entry(void *arg)
 
 static void lxp_freertos_tick(void)
 {
-	int current = current_slot();
-	if (!lxp_trap_active() || current < 0) {
+	if (!lxp_trap_active()) {
 		freertos_tick_budget_reset();
 		return;
 	}
+	/* A tick that finds host work running (a higher-priority task, the coordinator) pauses
+	 * the guest's budget. Resetting it instead let a frequent host wakeup keep a heavily
+	 * weighted guest from ever using up its quantum, so it never rotated out and starved
+	 * every other guest. */
+	int current = current_slot();
+	if (current < 0)
+		return;
 	if (g_tick_budget_owner != g_slots[current].tid) {
 		g_tick_budget_owner = g_slots[current].tid;
 		g_tick_budget_ticks = 0;
