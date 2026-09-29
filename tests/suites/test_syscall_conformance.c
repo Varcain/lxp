@@ -248,8 +248,8 @@ static void assert_positioned_io_rejected(lxp_proc_t *p, long fd, uint8_t *buf, 
 }
 
 /* Positioned I/O on the in-memory file kinds: rootfs and /proc read at an absolute
- * offset without moving the fd, directories report EISDIR, and the read-only rootfs is
- * not positioned-writable. */
+ * offset without moving the fd, directories report EISDIR, and a descriptor not open
+ * for writing rejects pwrite with EBADF (a stream would be ESPIPE). */
 static void test_conf_pread_files(void **state)
 {
 	(void)state;
@@ -262,7 +262,7 @@ static void test_conf_pread_files(void **state)
 		       LXP_O_RDONLY, 0, 0, 0);
 	assert_true(motd >= 3);
 	assert_int_equal(SC(&p, LXP_NR_pwrite64, motd, (long)(uintptr_t)buf, 1, 0, 0, 0),
-			 -LXP_ESPIPE);
+			 -LXP_EBADF);
 	assert_int_equal(SC(&p, LXP_NR_pread64, motd, (long)(uintptr_t)buf, 4, 0, 64, 0), 0);
 
 	long etc = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/etc"),
@@ -282,7 +282,7 @@ static void test_conf_pread_files(void **state)
 	assert_int_equal(SC(&p, LXP_NR_read, ver, (long)(uintptr_t)seq, 4, 0, 0, 0), 4);
 	assert_memory_equal(buf, seq, 4);
 	assert_int_equal(SC(&p, LXP_NR_pwrite64, ver, (long)(uintptr_t)buf, 1, 0, 0, 0),
-			 -LXP_ESPIPE);
+			 -LXP_EBADF);
 
 	long proc = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/proc"),
 		       LXP_O_RDONLY | LXP_O_DIRECTORY, 0, 0, 0);
@@ -466,6 +466,55 @@ static void test_conf_open_flags(void **state)
 	assert_int_equal(SC(&p, LXP_NR_fcntl64, fd, LXP_F_GETFD, 0, 0, 0, 0), LXP_FD_CLOEXEC);
 	fd = SC(&p, LXP_NR_eventfd2, 0, 0, 0, 0, 0, 0);
 	assert_int_equal(SC(&p, LXP_NR_fcntl64, fd, LXP_F_GETFD, 0, 0, 0, 0), 0);
+}
+
+/* The access mode recorded at open gates every read and write path, and F_GETFL
+ * reports it; F_SETFL changes only O_NONBLOCK. */
+static void test_conf_access_mode(void **state)
+{
+	(void)state;
+	lxp_proc_t p;
+	CONF_BEGIN(fx, p, k_rootfs, K_ROOTFS_N);
+	char *path = lxp_conf_str(fx, "/tmp/acc");
+	uint8_t *buf = lxp_conf_alloc(fx, 16);
+
+	long wfd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)path,
+		      LXP_O_WRONLY | LXP_O_CREAT, 0644, 0, 0);
+	assert_true(wfd >= 3);
+	assert_int_equal(SC(&p, LXP_NR_write, wfd, (long)(uintptr_t)lxp_conf_str(fx, "data"), 4, 0,
+			    0, 0),
+			 4);
+	assert_int_equal(SC(&p, LXP_NR_read, wfd, (long)(uintptr_t)buf, 4, 0, 0, 0), -LXP_EBADF);
+	assert_int_equal(SC(&p, LXP_NR_pread64, wfd, (long)(uintptr_t)buf, 4, 0, 0, 0),
+			 -LXP_EBADF);
+	assert_int_equal(SC(&p, LXP_NR_fcntl64, wfd, LXP_F_GETFL, 0, 0, 0, 0), LXP_O_WRONLY);
+
+	/* A tmpfs file opened read-only cannot be written, positioned-written or truncated. */
+	long rfd = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)path, LXP_O_RDONLY, 0, 0,
+		      0);
+	assert_true(rfd >= 3);
+	assert_int_equal(SC(&p, LXP_NR_write, rfd, (long)(uintptr_t)buf, 1, 0, 0, 0), -LXP_EBADF);
+	assert_int_equal(SC(&p, LXP_NR_pwrite64, rfd, (long)(uintptr_t)buf, 1, 0, 0, 0),
+			 -LXP_EBADF);
+	assert_int_equal(SC(&p, LXP_NR_ftruncate64, rfd, 0, 0, 0, 0, 0), -LXP_EINVAL);
+	assert_int_equal(SC(&p, LXP_NR_read, rfd, (long)(uintptr_t)buf, 16, 0, 0, 0), 4);
+	assert_memory_equal(buf, "data", 4);
+	assert_int_equal(SC(&p, LXP_NR_fcntl64, rfd, LXP_F_GETFL, 0, 0, 0, 0), LXP_O_RDONLY);
+
+	/* F_SETFL toggles O_NONBLOCK and keeps the access mode. */
+	assert_int_equal(SC(&p, LXP_NR_fcntl64, rfd, LXP_F_SETFL, LXP_O_NONBLOCK, 0, 0, 0), 0);
+	assert_int_equal(SC(&p, LXP_NR_fcntl64, rfd, LXP_F_GETFL, 0, 0, 0, 0),
+			 LXP_O_RDONLY | LXP_O_NONBLOCK);
+
+	/* /dev/null opened read-only is not writable; stdio and eventfds are read-write. */
+	long null = SC(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, "/dev/null"),
+		       LXP_O_RDONLY, 0, 0, 0);
+	assert_true(null >= 3);
+	assert_int_equal(SC(&p, LXP_NR_write, null, (long)(uintptr_t)buf, 1, 0, 0, 0), -LXP_EBADF);
+	assert_int_equal(SC(&p, LXP_NR_fcntl64, 1, LXP_F_GETFL, 0, 0, 0, 0), LXP_O_RDWR);
+	long efd = SC(&p, LXP_NR_eventfd2, 0, LXP_EFD_NONBLOCK, 0, 0, 0, 0);
+	assert_int_equal(SC(&p, LXP_NR_fcntl64, efd, LXP_F_GETFL, 0, 0, 0, 0),
+			 LXP_O_RDWR | LXP_O_NONBLOCK);
 }
 
 /* fstat64 and statx(AT_EMPTY_PATH) on one descriptor, through @p buf (256 bytes). */
@@ -1393,6 +1442,7 @@ int test_syscall_conformance_run(void)
 		cmocka_unit_test(test_conf_mem),
 		cmocka_unit_test(test_conf_stat),
 		cmocka_unit_test(test_conf_open_flags),
+		cmocka_unit_test(test_conf_access_mode),
 		cmocka_unit_test(test_conf_stat_kinds),
 		cmocka_unit_test(test_conf_inode_identity),
 		cmocka_unit_test(test_conf_dirent),

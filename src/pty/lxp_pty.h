@@ -66,9 +66,8 @@ unsigned lxp_pty_poll(int idx, int is_master);
 
 /** True if this pty end is O_NONBLOCK (an empty/full ring returns EAGAIN, not park). */
 int lxp_pty_nonblock(int idx, int is_master);
-/** fcntl F_SETFL / F_GETFL for an FD_PTY end (tracks O_NONBLOCK). */
+/** fcntl F_SETFL for an FD_PTY end (tracks O_NONBLOCK). */
 void lxp_pty_setfl(int idx, int is_master, int flags);
-int lxp_pty_getfl(int idx, int is_master);
 
 /** fstat(2): report a character device (S_IFCHR) with zero size. */
 void lxp_pty_fstat(uint32_t *mode, uint64_t *size);

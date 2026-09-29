@@ -214,10 +214,8 @@ static long sys_write(lxp_proc_t *p, int fd, const void *buf, size_t len)
 	if (!lxp_guest_access_ok(p, buf, len,
 				 0)) /* the kernel READS buf → reject a bad source pointer */
 		return -LXP_EFAULT;
-#if LXP_ENABLE_FS
-	if (s->kind == LXP_FD_HOSTFS && s->accmode == LXP_O_RDONLY)
+	if (!lxp_vfs_writable(s))
 		return -LXP_EBADF;
-#endif
 	/* A guest may write this buffer through a cacheable MPU view while the privileged host reads
 	 * the same SDRAM through an uncached background view.  Publish dirty guest lines before any
 	 * console/filesystem/device backend dereferences the payload.  Socket sends use the same hook
@@ -284,10 +282,8 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
 	if (!lxp_guest_access_ok(p, buf, len,
 				 1)) /* the kernel WRITES buf → reject a bad destination pointer */
 		return -LXP_EFAULT;
-#if LXP_ENABLE_FS
-	if (s->kind == LXP_FD_HOSTFS && s->accmode == LXP_O_WRONLY)
+	if (!lxp_vfs_readable(s))
 		return -LXP_EBADF;
-#endif
 	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
 	if (ops && ops->read)
 		return ops->read(p, s, buf, len);
@@ -298,7 +294,8 @@ static long sys_read(lxp_proc_t *p, int fd, void *buf, size_t len)
  * pread64(fd, buf, count, offset): a positioned read that does NOT move the fd offset.
  * ld.so uses it to pull each PT_LOAD of a .so out of the rootfs into the anonymous memory
  * it mapped (the NOMMU path: MAP_FIXED-file mmap fails, so it mmaps anon + preads). Kinds
- * without a pread file operation are streams and return ESPIPE.
+ * without a pread file operation are streams and return ESPIPE; a descriptor not open
+ * for reading is EBADF.
  */
 static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint64_t off)
 {
@@ -310,14 +307,16 @@ static long sys_pread(lxp_proc_t *p, int fd, void *buf, size_t len, uint64_t off
 	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
 	if (!ops || !ops->pread)
 		return -LXP_ESPIPE; /* a stream: console, pipe, eventfd, socket, pty, 9P */
+	if (!lxp_vfs_readable(s))
+		return -LXP_EBADF;
 	return ops->pread(p, s, buf, len, off);
 }
 
 /*
  * pwrite64(fd, buf, count, offset): a positioned write that does NOT move the fd offset.
  * LVGL's fbdev driver (LV_LINUX_FBDEV_MMAP=0) writes each framebuffer scanline this way.
- * Device fds route to the driver; the writable overlay writes at the offset; kinds
- * without a pwrite file operation (streams, the read-only rootfs) return ESPIPE.
+ * Device fds route to the driver; the writable overlay writes at the offset. Streams
+ * return ESPIPE; a descriptor not open for writing (e.g. any rootfs file) is EBADF.
  */
 static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint64_t off)
 {
@@ -327,8 +326,10 @@ static long sys_pwrite(lxp_proc_t *p, int fd, const void *buf, size_t len, uint6
 	if (!lxp_guest_access_ok(p, buf, len, 0))
 		return -LXP_EFAULT;
 	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
-	if (!ops || !ops->pwrite)
-		return -LXP_ESPIPE; /* a stream, or the read-only rootfs */
+	if (!ops || (!ops->pread && !ops->pwrite))
+		return -LXP_ESPIPE; /* a stream: console, pipe, eventfd, socket, pty, 9P */
+	if (!lxp_vfs_writable(s) || !ops->pwrite)
+		return -LXP_EBADF;
 	return ops->pwrite(p, s, buf, len, off);
 }
 
@@ -699,8 +700,8 @@ static long sys_llseek(lxp_proc_t *p, int fd, unsigned long off_hi, unsigned lon
 	return 0;
 }
 
-/* ftruncate64(fd, length): a negative length, and kinds without a truncate file
- * operation (the read-only rootfs, streams), are EINVAL. */
+/* ftruncate64(fd, length): a negative length, a descriptor not open for writing and
+ * kinds without a truncate file operation (streams) are EINVAL, as on Linux. */
 static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 {
 	if ((int64_t)length < 0)
@@ -709,8 +710,8 @@ static long sys_ftruncate(lxp_proc_t *p, int fd, uint64_t length)
 	if (!s)
 		return -LXP_EBADF;
 	const lxp_file_ops_t *ops = lxp_vfs_ops(s);
-	if (!ops || !ops->ftruncate)
-		return -LXP_EINVAL; /* the rootfs is read-only; console/pipe N/A */
+	if (!lxp_vfs_writable(s) || !ops || !ops->ftruncate)
+		return -LXP_EINVAL; /* not open for writing, or not truncatable (console/pipe) */
 	return ops->ftruncate(p, s, length);
 }
 
@@ -1700,62 +1701,22 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 			from = 0;
 		return lxp_fd_dup_min(proc, (int)a0, from, (int)a1 == LXP_F_DUPFD_CLOEXEC);
 	}
-#if LXP_ENABLE_DEV
-	/* A device fd honours F_SETFL/F_GETFL so O_NONBLOCK takes effect (LVGL's
-		 * evdev opens blocking, then fcntl(F_SETFL, O_NONBLOCK)). */
-	if (s->kind == LXP_FD_DEV) {
-		if ((int)a1 == LXP_F_SETFL) {
-			lxp_dev_setfl(s->file_idx, (int)a2);
-			return 0;
-		}
-		if ((int)a1 == LXP_F_GETFL)
-			return lxp_dev_getfl(s->file_idx);
+	/* F_SETFL changes only O_NONBLOCK here (the access mode is fixed at open); kinds
+	 * that park on their own copy of the flag mirror it (LVGL's evdev opens blocking,
+	 * then sets O_NONBLOCK; dropbear drives its pty master and SIGCHLD self-pipe
+	 * non-blocking). */
+	if ((int)a1 == LXP_F_SETFL) {
+		s->nonblock = ((int)a2 & LXP_O_NONBLOCK) ? 1 : 0;
+		const lxp_file_ops_t *ops = lxp_vfs_ops(s);
+		if (ops && ops->setfl)
+			ops->setfl(proc, s);
+		return 0;
 	}
-#endif
-#if LXP_ENABLE_NET
-	/* A socket fd honours F_SETFL/F_GETFL so O_NONBLOCK gates parking. */
-	if (s->kind == LXP_FD_SOCKET) {
-		if ((int)a1 == LXP_F_SETFL) {
-			lxp_sock_setfl(s->file_idx, (int)a2);
-			return 0;
-		}
-		if ((int)a1 == LXP_F_GETFL)
-			return lxp_sock_getfl(s->file_idx);
-	}
-#endif
-#if LXP_ENABLE_PTY
-	/* A pty fd honours F_SETFL/F_GETFL so O_NONBLOCK gates parking (dropbear sets
-		 * the master non-blocking and drives it with select). */
-	if (s->kind == LXP_FD_PTY) {
-		if ((int)a1 == LXP_F_SETFL) {
-			lxp_pty_setfl(s->file_idx, s->rw, (int)a2);
-			return 0;
-		}
-		if ((int)a1 == LXP_F_GETFL)
-			return lxp_pty_getfl(s->file_idx, s->rw);
-	}
-#endif
-	/* A pipe fd honours F_SETFL/F_GETFL so O_NONBLOCK gates parking (dropbear sets its
-		 * SIGCHLD self-pipe non-blocking and drains it with a read-until-EAGAIN loop). */
-	if (s->kind == LXP_FD_PIPE) {
-		if ((int)a1 == LXP_F_SETFL) {
-			s->nonblock = ((int)a2 & LXP_O_NONBLOCK) ? 1 : 0;
-			return 0;
-		}
-		if ((int)a1 == LXP_F_GETFL)
-			return (s->rw ? LXP_O_WRONLY : LXP_O_RDONLY) |
-			       (s->nonblock ? LXP_O_NONBLOCK : 0);
-	}
-#if LXP_ENABLE_FS
-	if (s->kind == LXP_FD_HOSTFS) {
-		if ((int)a1 == LXP_F_SETFL) {
-			s->nonblock = ((int)a2 & LXP_O_NONBLOCK) ? 1 : 0;
-			return 0;
-		}
-		if ((int)a1 == LXP_F_GETFL)
-			return s->accmode | (s->nonblock ? LXP_O_NONBLOCK : 0);
-	}
-#endif
+	/* F_GETFL reports the access mode recorded at open. uClibc's fdopen() validates the
+	 * FILE* mode against it, so a writable fd reported read-only fails fdopen(fd, "w")
+	 * (dropbearkey's .pub write) and a socket must report O_RDWR (wget's fdopen). */
+	if ((int)a1 == LXP_F_GETFL)
+		return s->accmode | (s->nonblock ? LXP_O_NONBLOCK : 0);
 	/* F_SETFD/F_GETFD track close-on-exec (dropbear sets FD_CLOEXEC on its exec-status
 		 * pipe and detects a successful shell exec by that fd closing on execve). */
 	if ((int)a1 == LXP_F_SETFD) {
@@ -1765,26 +1726,6 @@ static long sys_fcntl(lxp_proc_t *proc, long a0, long a1, long a2)
 		int cloexec = lxp_fd_get_cloexec(proc, (int)a0);
 		return cloexec > 0 ? LXP_FD_CLOEXEC : cloexec;
 	}
-	/* F_GETFL must report a truthful access mode. uClibc's fdopen() validates
-		 * the FILE* mode against it, so answering O_RDONLY (0) for a writable fd
-		 * fails fdopen(fd, "w") with EINVAL — which is how dropbearkey's .pub
-		 * write died while the key itself generated fine. The remaining kinds do not
-		 * record their open flags, so report what the kind can actually do; that is
-		 * enough for fdopen, which only checks the access mode. */
-	if ((int)a1 == LXP_F_GETFL) {
-		int acc;
-		switch (s->kind) {
-		case LXP_FD_TMPFS:   /* the writable overlay */
-		case LXP_FD_CONSOLE: /* stdin/stdout/stderr */
-			acc = LXP_O_RDWR;
-			break;
-		default: /* read-only rootfs file, and anything not handled above */
-			acc = LXP_O_RDONLY;
-			break;
-		}
-		return acc | (s->nonblock ? LXP_O_NONBLOCK : 0);
-	}
-	/* F_SETFL on a stdio/other fd: benign. */
 	return 0;
 }
 

@@ -159,19 +159,6 @@ long lxp_dev_open_new(lxp_proc_t *p, int devidx, int flags)
 	return oi;
 }
 
-void lxp_dev_setfl(int oi, int flags)
-{
-	struct lxp_dev_open *o = open_slot(oi);
-	if (o)
-		o->oflags = (uint16_t)flags;
-}
-
-int lxp_dev_getfl(int oi)
-{
-	struct lxp_dev_open *o = open_slot(oi);
-	return o ? o->oflags : 0;
-}
-
 void lxp_dev_close(int oi)
 {
 	struct lxp_dev_open *o = open_slot(oi);
@@ -644,6 +631,16 @@ static long fop_fsync_dev(lxp_proc_t *p, lxp_ofd_t *s)
 	return lxp_dev_sync(p, s->file_idx);
 }
 
+/* F_SETFL: only O_NONBLOCK changes; the access mode recorded at open stays. */
+static void fop_setfl_dev(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	struct lxp_dev_open *o = open_slot(s->file_idx);
+	if (o)
+		o->oflags = (uint16_t)((o->oflags & ~LXP_O_NONBLOCK) |
+				       (s->nonblock ? LXP_O_NONBLOCK : 0));
+}
+
 static void fop_close_dev(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
@@ -672,6 +669,7 @@ const lxp_file_ops_t lxp_dev_fops = {
 	.close = fop_close_dev,
 	.ioctl = fop_ioctl_dev,
 	.poll = fop_poll_dev,
+	.setfl = fop_setfl_dev,
 };
 
 #endif /* LXP_ENABLE_DEV */

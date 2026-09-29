@@ -137,9 +137,6 @@ typedef struct lxp_rtentry {
 long lxp_sock_new(int domain, int type, int protocol);
 /** Drop a reference on open @p oi (close/exit); close the provider handle at the last. */
 void lxp_sock_close(int oi);
-/** fcntl F_SETFL / F_GETFL: the open's status flags (O_NONBLOCK gates parking). */
-void lxp_sock_setfl(int oi, int flags);
-int lxp_sock_getfl(int oi);
 
 /** connect(2). @p uaddr / @p addrlen are the guest's sockaddr. Returns 0, a
  *  negative Linux errno, or parks in an @c LXP_WAIT_SOCKET state. */

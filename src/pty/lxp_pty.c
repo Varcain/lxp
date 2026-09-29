@@ -339,12 +339,6 @@ void lxp_pty_setfl(int idx, int is_master, int flags)
 		g_ptys[idx].s_nb = nb;
 }
 
-int lxp_pty_getfl(int idx, int is_master)
-{
-	int nb = lxp_pty_nonblock(idx, is_master);
-	return LXP_O_RDWR | (nb ? LXP_O_NONBLOCK : 0);
-}
-
 long lxp_pty_retry(lxp_proc_t *p)
 {
 	if (!p || p->wait.kind != LXP_WAIT_PTY)
@@ -487,6 +481,13 @@ static long fop_fstat_pty(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 	return 0;
 }
 
+/* F_SETFL: O_NONBLOCK gates parking on this end. */
+static void fop_setfl_pty(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	lxp_pty_setfl(s->file_idx, s->rw, s->nonblock ? LXP_O_NONBLOCK : 0);
+}
+
 static void fop_close_pty(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
@@ -511,6 +512,7 @@ const lxp_file_ops_t lxp_pty_fops = {
 	.close = fop_close_pty,
 	.ioctl = fop_ioctl_pty,
 	.poll = fop_poll_pty,
+	.setfl = fop_setfl_pty,
 };
 
 #endif /* LXP_ENABLE_PTY */

@@ -175,10 +175,6 @@ int lxp_dev_lookup(const char *abspath);
 long lxp_dev_open_new(lxp_proc_t *p, int devidx, int flags);
 /** Drop a reference on open @p oi (close/exit); @c ops->release at the last. */
 void lxp_dev_close(int oi);
-/** fcntl F_SETFL / F_GETFL: the open's status flags (O_NONBLOCK gates blocking;
- *  LVGL's evdev sets O_NONBLOCK via fcntl after open). */
-void lxp_dev_setfl(int oi, int flags);
-int lxp_dev_getfl(int oi);
 long lxp_dev_read(lxp_proc_t *p, int oi, void *buf, size_t len);
 long lxp_dev_write(lxp_proc_t *p, int oi, const void *buf, size_t len);
 /** Positioned read/write at @p off without moving the fd cursor (pread/pwrite;

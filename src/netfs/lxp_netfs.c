@@ -1583,15 +1583,6 @@ static long fop_read_netfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 	return lxp_netfs_read(p, s->file_idx, buf, len);
 }
 
-static long fop_write_netfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len)
-{
-	(void)p;
-	(void)s;
-	(void)buf;
-	(void)len;
-	return -LXP_EROFS; /* read-only remote mount */
-}
-
 static long fop_lseek_netfs(lxp_proc_t *p, lxp_ofd_t *s, long off, int whence)
 {
 	(void)p;
@@ -1621,10 +1612,9 @@ static void fop_close_netfs(lxp_proc_t *p, lxp_ofd_t *s)
 	lxp_netfs_close(s->file_idx); /* enqueue Tclunk for the backing fid */
 }
 
-/* Read-only mount: write is an explicit -EROFS rather than NULL (-EBADF). */
+/* Read-only mount: opens for writing fail with EROFS, so there is no write. */
 const lxp_file_ops_t lxp_netfs_fops = {
 	.read = fop_read_netfs,
-	.write = fop_write_netfs,
 	.lseek = fop_lseek_netfs,
 	.getdents = fop_getdents_netfs,
 	.fstat = fop_fstat_netfs,

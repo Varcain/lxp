@@ -671,12 +671,12 @@ static void test_netfs_browse(void **state)
 			 0);
 	lxp_syscall(&p, LXP_NR_close, dfd, 0, 0, 0, 0, 0);
 
-	/* a write to a netfs fd is rejected read-only. */
+	/* a netfs fd is open read-only, so a write is EBADF. */
 	long wfd = call_pump(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/mnt/pi/hello.txt",
 			     LXP_O_RDONLY, 0, 0, 0);
 	assert_true(wfd >= 3);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_write, wfd, (long)(uintptr_t)"x", 1, 0, 0, 0),
-			 -LXP_EROFS);
+			 -LXP_EBADF);
 	lxp_syscall(&p, LXP_NR_close, wfd, 0, 0, 0, 0, 0);
 
 	/* an O_WRONLY open of a netfs path is rejected read-only. */

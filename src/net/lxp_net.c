@@ -193,21 +193,6 @@ void lxp_sock_close(int oi)
 	o->used = 0;
 }
 
-void lxp_sock_setfl(int oi, int flags)
-{
-	struct sock_open *o = open_slot(oi);
-	if (o)
-		o->oflags = (uint16_t)flags;
-}
-
-int lxp_sock_getfl(int oi)
-{
-	struct sock_open *o = open_slot(oi);
-	/* A socket is bidirectional → O_RDWR. uClibc fdopen(fd,"r+") checks F_GETFL's
-	 * access mode and returns EINVAL (which busybox wget reports as "out of memory")
-	 * if it looks read-only — so the access bits must be present, not just oflags. */
-	return o ? (LXP_O_RDWR | (int)o->oflags) : -LXP_EBADF;
-}
 
 /* ---- connect / send / recv (with deferred-block park) ---------------------- */
 
@@ -881,6 +866,16 @@ static long fop_fstat_socket(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 	return 0;
 }
 
+/* F_SETFL: O_NONBLOCK gates parking in the socket calls. */
+static void fop_setfl_socket(lxp_proc_t *p, lxp_ofd_t *s)
+{
+	(void)p;
+	struct sock_open *o = open_slot(s->file_idx);
+	if (o)
+		o->oflags = (uint16_t)((o->oflags & ~LXP_O_NONBLOCK) |
+				       (s->nonblock ? LXP_O_NONBLOCK : 0));
+}
+
 static void fop_close_socket(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
@@ -906,6 +901,7 @@ const lxp_file_ops_t lxp_socket_fops = {
 	.close = fop_close_socket,
 	.ioctl = fop_ioctl_socket,
 	.poll = fop_poll_socket,
+	.setfl = fop_setfl_socket,
 };
 
 #endif /* LXP_ENABLE_NET */

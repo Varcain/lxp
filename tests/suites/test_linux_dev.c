@@ -696,6 +696,15 @@ static void test_dev_deferred_block(void **state)
 			 -LXP_EAGAIN);
 	assert_int_equal(p.wait.kind, LXP_WAIT_NONE);
 
+	/* F_SETFL(O_NONBLOCK) makes the blocking fd non-blocking and leaves it writable. */
+	assert_int_equal(lxp_syscall(&p, LXP_NR_fcntl64, fd, LXP_F_SETFL, LXP_O_NONBLOCK, 0, 0, 0),
+			 0);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_read, fd, (long)(uintptr_t)rb, sizeof(rb), 0, 0, 0),
+			 -LXP_EAGAIN);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_write, fd, (long)(uintptr_t)"w", 1, 0, 0, 0), 1);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_fcntl64, fd, LXP_F_GETFL, 0, 0, 0, 0),
+			 LXP_O_RDWR | LXP_O_NONBLOCK);
+
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 	lxp_syscall(&p, LXP_NR_close, fd2, 0, 0, 0, 0, 0);
 }

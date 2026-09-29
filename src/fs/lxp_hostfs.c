@@ -634,16 +634,12 @@ static long fop_write_hostfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_
 
 static long fop_pread_hostfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len, uint64_t off)
 {
-	if (s->accmode == LXP_O_WRONLY)
-		return -LXP_EBADF;
 	return lxp_hostfs_pread(p, s->file_idx, buf, len, off);
 }
 
 static long fop_pwrite_hostfs(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t len,
 			      uint64_t off)
 {
-	if (s->accmode == LXP_O_RDONLY)
-		return -LXP_EBADF;
 	if (len)
 		lxp_cache_clean(buf, len);
 	return lxp_hostfs_pwrite(p, s->file_idx, buf, len, off);
@@ -697,8 +693,6 @@ static long fop_fstatfs_hostfs(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_statfs64 
 
 static long fop_ftruncate_hostfs(lxp_proc_t *p, lxp_ofd_t *s, uint64_t length)
 {
-	if (s->accmode == LXP_O_RDONLY)
-		return -LXP_EINVAL;
 	return lxp_hostfs_truncate(p, s->file_idx, length);
 }
 

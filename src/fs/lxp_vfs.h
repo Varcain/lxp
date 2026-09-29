@@ -76,6 +76,9 @@ struct lxp_file_ops {
 	/** poll/select readiness: the ready bits (LXP_POLLIN | LXP_POLLOUT) for this fd
 	 *  right now. NULL means the kind is always ready (a regular file). */
 	unsigned (*poll)(lxp_proc_t *p, lxp_ofd_t *f);
+	/** fcntl(F_SETFL) changed @p f->nonblock: mirror it into state the kind keeps
+	 *  itself. NULL means the open-file description's flag is the only state. */
+	void (*setfl)(lxp_proc_t *p, lxp_ofd_t *f);
 };
 
 typedef struct lxp_file_ops lxp_file_ops_t;
@@ -88,6 +91,18 @@ extern const lxp_file_ops_t *const g_lxp_file_ops[LXP_FD_KIND_COUNT];
 static inline const lxp_file_ops_t *lxp_vfs_ops(const lxp_ofd_t *ofd)
 {
 	return ofd && ofd->kind < LXP_FD_KIND_COUNT ? g_lxp_file_ops[ofd->kind] : NULL;
+}
+
+/* The access mode recorded at open: whether the description may be read or written
+ * (read, pread and ftruncate/write, pwrite check these before the kind's operation). */
+static inline int lxp_vfs_readable(const lxp_ofd_t *ofd)
+{
+	return (ofd->accmode & LXP_O_ACCMODE) != LXP_O_WRONLY;
+}
+
+static inline int lxp_vfs_writable(const lxp_ofd_t *ofd)
+{
+	return (ofd->accmode & LXP_O_ACCMODE) != LXP_O_RDONLY;
 }
 
 /* Per-kind operation tables. */
