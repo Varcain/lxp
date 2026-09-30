@@ -20,7 +20,6 @@
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_display_ops.h"
 #include "proc/lxp_proc.h"
-#include "dev/lxp_dev_input.h"
 #include "lxp_uapi.h"
 #include "lxp_internal.h"
 #include "lxp_provider.h"
@@ -30,15 +29,9 @@
 #define LXP_DEFAULT_DISPLAY_WIDTH 480
 #define LXP_DEFAULT_DISPLAY_HEIGHT 272
 
-/* Display geometry used by the provider-neutral touch clamps. */
+/* The touch extent: the run's framebuffer size, set when the device registers. */
 static int g_disp_w = LXP_DEFAULT_DISPLAY_WIDTH;
 static int g_disp_h = LXP_DEFAULT_DISPLAY_HEIGHT;
-
-void lxp_display_set_geometry(int width, int height)
-{
-	g_disp_w = width > 0 ? width : LXP_DEFAULT_DISPLAY_WIDTH;
-	g_disp_h = height > 0 ? height : LXP_DEFAULT_DISPLAY_HEIGHT;
-}
 
 /* A shared monotonic event ring; each open() tracks its own tail cursor. */
 #define LXP_IN_RING 64
@@ -261,7 +254,7 @@ static void touch_provider_tick(uint64_t now_us)
 		return;
 	g_touch_last_us = now_us;
 	int x, y, pressed;
-	if (g_lxp_display_ops->touch_read(&x, &y, &pressed) == 0) {
+	if (g_lxp_display_ops->touch->read(&x, &y, &pressed) == 0) {
 		if (pressed || g_touch_last_pressed)
 			lxp_input_report_touch(x, y, pressed);
 		g_touch_last_pressed = pressed;
@@ -276,6 +269,11 @@ void lxp_dev_autoreg_input(void)
 	g_touch_last_us = 0;
 	g_touch_last_pressed = 0;
 	g_touch_ready = 0;
+	g_disp_w = LXP_DEFAULT_DISPLAY_WIDTH;
+	g_disp_h = LXP_DEFAULT_DISPLAY_HEIGHT;
+#if LXP_ENABLE_DEV_FB
+	(void)lxp_dev_fb_extent(&g_disp_w, &g_disp_h);
+#endif
 #if LXP_ENABLE_DEV_INPUT_TESTPAD
 	g_testpad_t0 = 0;
 	g_testpad_last_us = 0;
@@ -293,7 +291,8 @@ void lxp_dev_autoreg_input(void)
 	 * fallback for QEMU (no touch HW) or a panel that does not probe. Registering
 	 * both would let two sources drive one /dev/input/event0 — garbage. */
 #if LXP_ENABLE_TOUCH
-	if (g_lxp_display_ops->touch_init() == 0) {
+	const lxp_touch_ops_t *touch = g_lxp_display_ops ? g_lxp_display_ops->touch : NULL;
+	if (touch && touch->init() == 0) {
 		lxp_dev_tick_register(touch_provider_tick);
 		g_touch_ready = 1;
 	}
@@ -307,8 +306,8 @@ void lxp_dev_autoreg_input(void)
 void lxp_dev_input_run_end(void)
 {
 #if LXP_ENABLE_TOUCH
-	if (g_touch_ready && g_lxp_display_ops && g_lxp_display_ops->touch_deinit)
-		g_lxp_display_ops->touch_deinit();
+	if (g_touch_ready && g_lxp_display_ops && g_lxp_display_ops->touch)
+		g_lxp_display_ops->touch->deinit();
 #endif
 	g_touch_ready = 0;
 	g_touch_last_pressed = 0;

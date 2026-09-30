@@ -35,7 +35,6 @@
 #if LXP_ENABLE_DEV
 #include "dev/lxp_dev.h" /* device-layer park/retry + autoreg + tick + kick */
 #include "lxp/lxp_display_ops.h"
-#include "dev/lxp_dev_input.h"
 #endif
 #if LXP_ENABLE_NET
 #include "net/lxp_net.h" /* socket-layer park/retry + fork/exit fd lifecycle */
@@ -1152,12 +1151,6 @@ int lxp_run(const lxp_providers_t *providers, const lxp_run_config_t *run_config
 	if (rc != LXP_OK)
 		goto out;
 	block_entered = 1;
-#endif
-#if LXP_ENABLE_DEV_INPUT
-	/* Publish this run's geometry including explicit zero-to-default semantics,
-	 * so sequential runs cannot inherit a predecessor's panel dimensions. */
-	lxp_display_set_geometry(run_config->launch.display_width,
-				 run_config->launch.display_height);
 #endif
 
 	if (os_ops->rootfs_window)

@@ -302,8 +302,6 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 		.env = env,
 		.on_guest_exit = mock_exit,
 		.guest_exit_ctx = &io_cookie,
-		.display_width = 800,
-		.display_height = 480,
 		.rt_scope_read = mock_rt_scope,
 		.rt_scope_ctx = &host,
 	};
@@ -326,8 +324,6 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	assert_ptr_equal(g_capture.run_config.launch.env, env);
 	assert_ptr_equal(g_capture.run_config.launch.on_guest_exit, mock_exit);
 	assert_ptr_equal(g_capture.run_config.launch.guest_exit_ctx, &io_cookie);
-	assert_int_equal(g_capture.run_config.launch.display_width, 800);
-	assert_int_equal(g_capture.run_config.launch.display_height, 480);
 	assert_ptr_equal(g_capture.run_config.launch.rt_scope_read, mock_rt_scope);
 	assert_ptr_equal(g_capture.run_config.launch.rt_scope_ctx, &host);
 	assert_ptr_equal(g_capture.run_config.launch.console.subscribe, mock_console_subscribe);

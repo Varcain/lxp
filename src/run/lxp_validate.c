@@ -88,21 +88,20 @@ int lxp_net_ops_valid(const lxp_net_ops_t *ops)
 
 int lxp_display_ops_valid(const lxp_display_ops_t *ops)
 {
-#if LXP_ENABLE_DEV_FB || LXP_ENABLE_DEV_DMA2D || LXP_ENABLE_TOUCH
-	if (!ops || ops->abi_version != LXP_DISPLAY_OPS_ABI_VERSION ||
-	    ops->struct_size != sizeof(*ops))
-		return 0;
-#endif
+	/* Every piece is optional; one that is present must be complete. */
 #if LXP_ENABLE_DEV_FB
-	if (!ops->fb_init || !ops->fb_get_info || !ops->fb_get_buffer || !ops->fb_present)
+	const lxp_fb_ops_t *fb = ops ? ops->fb : NULL;
+	if (fb && (!fb->init || !fb->get_info || !fb->get_buffer || !fb->present))
 		return 0;
 #endif
 #if LXP_ENABLE_DEV_DMA2D
-	if (!ops->dma2d_init || !ops->dma2d_submit)
+	const lxp_dma2d_ops_t *dma2d = ops ? ops->dma2d : NULL;
+	if (dma2d && (!dma2d->init || !dma2d->submit))
 		return 0;
 #endif
 #if LXP_ENABLE_TOUCH
-	if (!ops->touch_init || !ops->touch_read || !ops->touch_deinit)
+	const lxp_touch_ops_t *touch = ops ? ops->touch : NULL;
+	if (touch && (!touch->init || !touch->read || !touch->deinit))
 		return 0;
 #endif
 	(void)ops;

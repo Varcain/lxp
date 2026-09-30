@@ -5,11 +5,12 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * The display/input port for the Linux personality. The /dev/fb0 and
- * /dev/input/event0 class drivers reach the panel + touch controller only through
- * these ops, so the personality carries no direct dependency on a particular
- * framebuffer / touch HAL. Display geometry is run-scoped policy taken from
- * lxp_run_config_t (display_width / display_height).
+ * The display/input port for the Linux personality. The /dev/fb0, /dev/dma2d and
+ * /dev/input/event0 class drivers reach the panel, the 2D accelerator and the touch
+ * controller only through these ops, so the personality carries no direct dependency
+ * on a particular framebuffer, accelerator or touch HAL. Touch coordinates are in
+ * framebuffer pixels: LXP clamps and reports them in the framebuffer's size, or
+ * 480x272 without one.
  */
 
 #ifndef LXP_DISPLAY_OPS_H
@@ -21,8 +22,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define LXP_DISPLAY_OPS_ABI_VERSION 2u
 
 typedef struct lxp_fb_info {
 	uint16_t width, height, stride_bytes;
@@ -44,25 +43,37 @@ typedef struct lxp_dma2d_op {
 	uint32_t bg_offset, bg_cf, bg_color, bg_alpha_mode, bg_alpha;
 } lxp_dma2d_op_t;
 
-/* fb_* are required when /dev/fb0 is built; touch_* may be NULL when no touch
- * controller is present. */
-typedef struct lxp_display_ops {
-	uint32_t abi_version; /**< Must be LXP_DISPLAY_OPS_ABI_VERSION. */
-	uint32_t struct_size; /**< Must be sizeof(lxp_display_ops_t). */
-
-	int (*fb_init)(void);
-	int (*fb_get_info)(lxp_fb_info_t *info);
-	void *(*fb_get_buffer)(void);
+/** The framebuffer behind /dev/fb0. */
+typedef struct lxp_fb_ops {
+	int (*init)(void);
+	int (*get_info)(lxp_fb_info_t *info);
+	void *(*get_buffer)(void);
 	/** Present one LXP-coalesced dirty rectangle. The provider owns any cache
 	 * publication and physical scanout/update required by the panel. */
-	void (*fb_present)(int x, int y, int w, int h);
-	/* Optional 2D-accelerator submit (/dev/dma2d); NULL if the board has no
-	 * DMA2D, in which case the guest falls back to software rendering. */
-	int (*dma2d_init)(void);
-	int (*dma2d_submit)(const lxp_dma2d_op_t *op);
-	int (*touch_init)(void);
-	int (*touch_read)(int *x, int *y, int *pressed);
-	void (*touch_deinit)(void);
+	void (*present)(int x, int y, int w, int h);
+} lxp_fb_ops_t;
+
+/** The 2D accelerator behind /dev/dma2d and the framebuffer blit ioctl. */
+typedef struct lxp_dma2d_ops {
+	int (*init)(void);
+	int (*submit)(const lxp_dma2d_op_t *op);
+} lxp_dma2d_ops_t;
+
+/** The touch controller behind /dev/input/event0. */
+typedef struct lxp_touch_ops {
+	int (*init)(void);
+	int (*read)(int *x, int *y, int *pressed);
+	void (*deinit)(void);
+} lxp_touch_ops_t;
+
+/** The display hardware a run offers its guests. Each piece is optional: without a
+ * framebuffer there is no /dev/fb0, without an accelerator guests render in software,
+ * and without a touch panel a build with the test pad synthesizes input. A piece that is
+ * present fills every member of its table. */
+typedef struct lxp_display_ops {
+	const lxp_fb_ops_t *fb;
+	const lxp_dma2d_ops_t *dma2d;
+	const lxp_touch_ops_t *touch;
 } lxp_display_ops_t;
 
 #ifdef __cplusplus

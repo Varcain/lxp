@@ -231,15 +231,19 @@ static int mock_dma2d_submit(const lxp_dma2d_op_t *op)
 	g_mock_dma2d_calls++;
 	return 0;
 }
+static const lxp_fb_ops_t g_mock_fb_ops = {
+	.init = mock_fb_init,
+	.get_info = mock_fb_get_info,
+	.get_buffer = mock_fb_get_buffer,
+	.present = mock_fb_present,
+};
+static const lxp_dma2d_ops_t g_mock_dma2d_ops = {
+	.init = mock_dma2d_init,
+	.submit = mock_dma2d_submit,
+};
 static const lxp_display_ops_t g_mock_disp = {
-	.abi_version = LXP_DISPLAY_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_display_ops_t),
-	.fb_init = mock_fb_init,
-	.fb_get_info = mock_fb_get_info,
-	.fb_get_buffer = mock_fb_get_buffer,
-	.fb_present = mock_fb_present,
-	.dma2d_init = mock_dma2d_init,
-	.dma2d_submit = mock_dma2d_submit,
+	.fb = &g_mock_fb_ops,
+	.dma2d = &g_mock_dma2d_ops,
 };
 const lxp_display_ops_t *lxp_test_display_ops(void)
 {

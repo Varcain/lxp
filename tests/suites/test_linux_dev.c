@@ -19,7 +19,6 @@
 #include "lxp/lxp_display_ops.h"
 #include "lxp/lxp_port.h" /* LXP_MAP_NC */
 #include "lxp_syscall.h"
-#include "../../src/dev/lxp_dev_input.h"
 #include "../../src/dev/lxp_uapi.h" /* struct lxp_dma2d_submit + LXP_DMA2D_* */
 #include "../../src/lxp_provider.h"
 
@@ -313,40 +312,49 @@ static void test_dev_input_eviocgname_size(void **state)
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }
 
-static void test_dev_input_geometry_resets_to_run_defaults(void **state)
+static void input_extent(lxp_proc_t *p, int *max_x, int *max_y)
+{
+	long fd = lxp_syscall(p, LXP_NR_openat, LXP_AT_FDCWD,
+			      (long)(uintptr_t)"/dev/input/event0", LXP_O_RDONLY, 0, 0, 0);
+	assert_true(fd >= 3);
+	struct lxp_input_absinfo info;
+	assert_int_equal(lxp_syscall(p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_X),
+				     (long)(uintptr_t)&info, 0, 0, 0),
+			 0);
+	*max_x = info.maximum;
+	assert_int_equal(lxp_syscall(p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_Y),
+				     (long)(uintptr_t)&info, 0, 0, 0),
+			 0);
+	*max_y = info.maximum;
+	lxp_syscall(p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+}
+
+/* Touch reports in framebuffer pixels: the extent is the run's framebuffer size, and
+ * 480x272 for a run without one. */
+static void test_dev_input_extent_follows_the_framebuffer(void **state)
 {
 	(void)state;
 	lxp_arena_t arena;
 	lxp_proc_t p;
 	setup(&p, &arena);
+	int max_x = 0, max_y = 0;
+	lxp_dev_autoreg_fb(); /* the stub's 64x64 panel */
 	lxp_dev_autoreg_input();
-	long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD,
-			      (long)(uintptr_t)"/dev/input/event0", LXP_O_RDONLY, 0, 0, 0);
-	assert_true(fd >= 3);
+	input_extent(&p, &max_x, &max_y);
+	assert_int_equal(max_x, 63);
+	assert_int_equal(max_y, 63);
 
-	struct lxp_input_absinfo info;
-	lxp_display_set_geometry(800, 480);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_X),
-				     (long)(uintptr_t)&info, 0, 0, 0),
-			 0);
-	assert_int_equal(info.maximum, 799);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_Y),
-				     (long)(uintptr_t)&info, 0, 0, 0),
-			 0);
-	assert_int_equal(info.maximum, 479);
+	const lxp_display_ops_t *saved = g_lxp_display_ops;
+	const lxp_display_ops_t no_panel = {0};
+	lxp_providers_publish(g_lxp_net_ops, &no_panel, g_lxp_fs_ops, g_lxp_block_ops);
+	lxp_dev_autoreg_fb();
+	lxp_dev_autoreg_input();
+	input_extent(&p, &max_x, &max_y);
+	assert_int_equal(max_x, 479);
+	assert_int_equal(max_y, 271);
 
-	/* A later zero-initialized run config must not inherit 800x480. */
-	lxp_display_set_geometry(0, 0);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_X),
-				     (long)(uintptr_t)&info, 0, 0, 0),
-			 0);
-	assert_int_equal(info.maximum, 479);
-	assert_int_equal(lxp_syscall(&p, LXP_NR_ioctl, fd, EVIOCGABS_CMD(LXP_ABS_Y),
-				     (long)(uintptr_t)&info, 0, 0, 0),
-			 0);
-	assert_int_equal(info.maximum, 271);
-
-	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
+	lxp_providers_publish(g_lxp_net_ops, saved, g_lxp_fs_ops, g_lxp_block_ops);
+	lxp_dev_autoreg_fb();
 }
 
 /* When the reader falls more than a ring behind, the dropped events must be flagged with a
@@ -405,7 +413,7 @@ static void test_dev_input_write_injects_touch(void **state)
 	memset(report, 0, sizeof(report));
 	report[0].type = LXP_EV_ABS;
 	report[0].code = LXP_ABS_X;
-	report[0].value = 123;
+	report[0].value = 23; /* inside the stub's 64x64 panel */
 	report[1].type = LXP_EV_ABS;
 	report[1].code = LXP_ABS_Y;
 	report[1].value = 45;
@@ -425,7 +433,7 @@ static void test_dev_input_write_injects_touch(void **state)
 			 sizeof(out));
 	assert_int_equal(out[0].type, LXP_EV_ABS);
 	assert_int_equal(out[0].code, LXP_ABS_X);
-	assert_int_equal(out[0].value, 123);
+	assert_int_equal(out[0].value, 23);
 	assert_int_equal(out[1].type, LXP_EV_ABS);
 	assert_int_equal(out[1].code, LXP_ABS_Y);
 	assert_int_equal(out[1].value, 45);
@@ -1102,7 +1110,7 @@ int test_linux_dev_run(void)
 		cmocka_unit_test(test_dev_read_write),
 		cmocka_unit_test(test_dev_ioctl),
 		cmocka_unit_test(test_dev_input_eviocgname_size),
-		cmocka_unit_test(test_dev_input_geometry_resets_to_run_defaults),
+		cmocka_unit_test(test_dev_input_extent_follows_the_framebuffer),
 		cmocka_unit_test(test_dev_input_syn_dropped_on_overrun),
 		cmocka_unit_test(test_dev_input_write_injects_touch),
 		cmocka_unit_test(test_dev_accmode_enforced),

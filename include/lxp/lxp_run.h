@@ -83,11 +83,6 @@ typedef struct lxp_launch_config {
 	 * before the slot is reused. It must return within a host-defined finite bound. */
 	lxp_guest_exit_fn on_guest_exit;
 	void *guest_exit_ctx; /**< Opaque, passed to @p on_guest_exit. */
-	/** Touch/input coordinate extent for this run. Zero selects the module default
-	 * (480x272) independently for each dimension. These fields configure no static
-	 * storage; process counts and pool sizes remain compile-time properties. */
-	uint16_t display_width;
-	uint16_t display_height;
 	/** Optional host real-time snapshot exposed verbatim as /proc/rt_scope. */
 	lxp_rt_scope_read_fn rt_scope_read;
 	void *rt_scope_ctx; /**< Opaque, passed to @p rt_scope_read. */

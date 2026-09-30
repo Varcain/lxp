@@ -135,7 +135,7 @@ static long dma2d_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p
 	(void)o;
 	if (LXP_DMA2D_IOC_TYPE(cmd) != LXP_DMA2D_IOC_D)
 		return -LXP_ENOTTY;
-	if (!g_lxp_display_ops || !g_lxp_display_ops->dma2d_submit)
+	if (!g_lxp_display_ops || !g_lxp_display_ops->dma2d)
 		return -LXP_ENOSYS; /* no DMA2D on this board → guest renders in software */
 
 	unsigned long nr = LXP_DMA2D_IOC_NR(cmd);
@@ -148,7 +148,7 @@ static long dma2d_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p
 		long r = dma2d_prepare_op(p, &s, &op);
 		if (r)
 			return r;
-		return lxp_errno_from_err(g_lxp_display_ops->dma2d_submit(&op));
+		return lxp_errno_from_err(g_lxp_display_ops->dma2d->submit(&op));
 	}
 
 	return -LXP_ENOTTY;
@@ -160,8 +160,8 @@ static const struct lxp_dev_ops dma2d_ops = {
 
 void lxp_dev_autoreg_dma2d(void)
 {
-	if (!g_lxp_display_ops || !g_lxp_display_ops->dma2d_init ||
-	    !g_lxp_display_ops->dma2d_submit || g_lxp_display_ops->dma2d_init() != 0)
+	const lxp_dma2d_ops_t *dma2d = g_lxp_display_ops ? g_lxp_display_ops->dma2d : NULL;
+	if (!dma2d || dma2d->init() != 0)
 		return; /* board has no DMA2D accelerator */
 	struct lxp_dev dev = {
 		.path = "/dev/dma2d",

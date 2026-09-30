@@ -217,8 +217,11 @@ void lxp_dev_run_end(void);
 long lxp_dev_retry(lxp_proc_t *p);
 /** Coordinator-thread periodic work (fb present, touch poll). @p now_us is monotonic. */
 void lxp_dev_tick(uint64_t now_us);
-/** Register the Kconfig-enabled class drivers (run once on the coordinator thread). */
+/** Register the Kconfig-enabled class drivers (run once on the coordinator thread). The
+ *  framebuffer registers before the input device, which takes its extent from it. */
 void lxp_dev_autoreg_all(void);
+/** The registered framebuffer's size in pixels; nonzero when this run has no /dev/fb0. */
+int lxp_dev_fb_extent(int *width, int *height);
 
 #ifdef __cplusplus
 }
