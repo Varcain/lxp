@@ -27,14 +27,15 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 	if (!host)
 		return LXP_ERR_INVALID_PARAM;
 	memset(host, 0, sizeof(*host));
-	if (!config || !config->os_ops || config->os_ops->abi_version != LXP_OS_OPS_ABI_VERSION ||
-	    config->os_ops->struct_size != sizeof(*config->os_ops) || !config->rootfs_image ||
+	const lxp_os_ops_t *os_ops = config ? config->providers.os : NULL;
+	if (!os_ops || os_ops->abi_version != LXP_OS_OPS_ABI_VERSION ||
+	    os_ops->struct_size != sizeof(*os_ops) || !config->rootfs_image ||
 	    config->rootfs_image_size == 0u || !config->rootfs_storage ||
 	    config->rootfs_capacity <= 0 || !config->rootfs_name_storage ||
 	    config->rootfs_name_capacity == 0u)
 		return LXP_ERR_INVALID_PARAM;
 #if LXP_ENABLE_NET
-	if (config->netif && !config->net_ops)
+	if (config->netif && !config->providers.net)
 		return LXP_ERR_INVALID_PARAM;
 #else
 	if (config->netif)
@@ -42,7 +43,7 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 #endif
 #if LXP_ENABLE_NETFS
 	if (config->netfs_config &&
-	    (!config->net_ops || !lxp_netfs_config_valid(config->netfs_config)))
+	    (!config->providers.net || !lxp_netfs_config_valid(config->netfs_config)))
 		return LXP_ERR_INVALID_PARAM;
 #else
 	if (config->netfs_config)
@@ -56,8 +57,8 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 	/* Some targets must change MPU/cache attributes before even parsing an
 	 * external-memory archive. lxp_run() repeats this publication per launch so
 	 * a port can also restore a run-scoped coordinator mapping. */
-	if (config->os_ops->rootfs_window)
-		config->os_ops->rootfs_window(config->rootfs_image, config->rootfs_image_size);
+	if (os_ops->rootfs_window)
+		os_ops->rootfs_window(config->rootfs_image, config->rootfs_image_size);
 
 	int count = lxp_cpio_to_rootfs(config->rootfs_image, config->rootfs_image_size,
 				       config->rootfs_storage, config->rootfs_capacity,
@@ -65,11 +66,7 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 	if (count <= 0)
 		return LXP_ERR_INVALID_PARAM;
 
-	host->os_ops = config->os_ops;
-	host->net_ops = config->net_ops;
-	host->display_ops = config->display_ops;
-	host->fs_ops = config->fs_ops;
-	host->block_ops = config->block_ops;
+	host->providers = config->providers;
 	host->rootfs = config->rootfs_storage;
 	host->rootfs_count = count;
 	host->rootfs_image = config->rootfs_image;
@@ -132,8 +129,7 @@ int lxp_host_run(const lxp_host_t *host, const lxp_launch_config_t *launch_confi
 		config.console_unsubscribe = launch_config->console_unsubscribe;
 	}
 
-	return lxp_run(host->os_ops, host->net_ops, host->display_ops, host->fs_ops,
-		       host->block_ops, &config, path, argc, argv);
+	return lxp_run(&host->providers, &config, path, argc, argv);
 }
 
 int lxp_host_observe(const lxp_host_t *host, lxp_host_observation_t *out)
@@ -154,10 +150,10 @@ int lxp_host_observe(const lxp_host_t *host, lxp_host_observation_t *out)
 	lxp_diag_size_report(&out->sizes);
 	lxp_diag_health(&out->diagnostics);
 
-	if (host->os_ops->guest_stack_usage) {
+	if (host->providers.os->guest_stack_usage) {
 		size_t used = 0u;
 		size_t size = 0u;
-		if (host->os_ops->guest_stack_usage(&used, &size) == LXP_OK && size != 0u &&
+		if (host->providers.os->guest_stack_usage(&used, &size) == LXP_OK && size != 0u &&
 		    used <= size) {
 			out->guest_stack.used = used;
 			out->guest_stack.size = size;

@@ -259,7 +259,8 @@ static void coordinator_task(void *arg)
 	const char *const argv[] = {"hello", NULL};
 	int argc = 1;
 #endif
-	int rc = lxp_run(&g_lxp_host_engine, NULL, NULL, NULL, NULL, &cfg, entry, argc, argv);
+	const lxp_providers_t providers = {.os = &g_lxp_host_engine};
+	int rc = lxp_run(&providers, &cfg, entry, argc, argv);
 #if LXP_MILESTONE == 9
 	/* The guest's zero status proves bounded weighted progress. This separate
 	 * minimum proves the 1 kHz native interference was present throughout it. */

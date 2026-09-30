@@ -24,5 +24,7 @@ int lxp_display_ops_valid(const lxp_display_ops_t *ops);
 int lxp_fs_ops_valid(const lxp_fs_ops_t *ops);
 int lxp_block_ops_valid(const lxp_block_ops_t *ops);
 int lxp_run_config_valid(const lxp_run_config_t *cfg);
+/* Every table of the bundle, each as above. */
+int lxp_providers_valid(const lxp_providers_t *providers);
 
 #endif /* LXP_RUN_VALIDATE_H */

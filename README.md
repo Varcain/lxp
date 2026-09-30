@@ -91,8 +91,10 @@ optional network, display, writable-filesystem, and raw-block providers. The low
 remains available for integrations that already own a parsed rootfs:
 
 ```c
-int rc = lxp_run(&os_ops, &net_ops, &display_ops, &fs_ops, &block_ops, &run_cfg,
-		 "/sbin/init", argc, argv);
+const lxp_providers_t providers = {
+	.os = &os_ops, .net = &net_ops, .display = &display_ops, .fs = &fs_ops, .block = &block_ops,
+};
+int rc = lxp_run(&providers, &run_cfg, "/sbin/init", argc, argv);
 ```
 
 For CPIO-backed systems, prefer the zero-heap host facade in `include/lxp/lxp_host.h`.

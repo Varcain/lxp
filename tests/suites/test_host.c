@@ -23,11 +23,7 @@ static struct {
 	const void *rootfs_window_base;
 	size_t rootfs_window_size;
 	unsigned run_calls;
-	const lxp_os_ops_t *os_ops;
-	const lxp_net_ops_t *net_ops;
-	const lxp_display_ops_t *display_ops;
-	const lxp_fs_ops_t *fs_ops;
-	const lxp_block_ops_t *block_ops;
+	lxp_providers_t providers;
 	lxp_run_config_t run_config;
 	lxp_netfs_config_t netfs_config;
 	char netfs_mountpoint[LXP_NETFS_MOUNTPOINT_CAP];
@@ -109,20 +105,21 @@ static const lxp_net_ops_t g_net_ops;
 static const lxp_display_ops_t g_display_ops;
 static const lxp_fs_ops_t g_fs_ops;
 static const lxp_block_ops_t g_block_ops;
+static const lxp_providers_t g_all_providers = {
+	.os = &g_os_ops,
+	.net = &g_net_ops,
+	.display = &g_display_ops,
+	.fs = &g_fs_ops,
+	.block = &g_block_ops,
+};
 
 /* lxp_host_run() owns composition; this focused test substitutes the lower
  * coordinator entry so every forwarded field can be checked directly. */
-int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
-	    const lxp_display_ops_t *display_ops, const lxp_fs_ops_t *fs_ops,
-	    const lxp_block_ops_t *block_ops, const lxp_run_config_t *run_config, const char *path,
-	    int argc, const char *const argv[])
+int lxp_run(const lxp_providers_t *providers, const lxp_run_config_t *run_config,
+	    const char *path, int argc, const char *const argv[])
 {
 	g_capture.run_calls++;
-	g_capture.os_ops = os_ops;
-	g_capture.net_ops = net_ops;
-	g_capture.display_ops = display_ops;
-	g_capture.fs_ops = fs_ops;
-	g_capture.block_ops = block_ops;
+	g_capture.providers = *providers;
 	g_capture.run_config = *run_config;
 	if (run_config->netfs_config) {
 		g_capture.netfs_config = *run_config->netfs_config;
@@ -260,11 +257,7 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 		.uname = uname,
 	};
 	const lxp_host_config_t config = {
-		.os_ops = &g_os_ops,
-		.net_ops = &g_net_ops,
-		.display_ops = &g_display_ops,
-		.fs_ops = &g_fs_ops,
-		.block_ops = &g_block_ops,
+		.providers = g_all_providers,
 		.rootfs_image = image,
 		.rootfs_image_size = image_size,
 		.rootfs_storage = rootfs,
@@ -314,11 +307,11 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	};
 	assert_int_equal(lxp_host_run(&host, &launch, "/bin/init", 1, argv), 37);
 	assert_int_equal(g_capture.run_calls, 1);
-	assert_ptr_equal(g_capture.os_ops, &g_os_ops);
-	assert_ptr_equal(g_capture.net_ops, &g_net_ops);
-	assert_ptr_equal(g_capture.display_ops, &g_display_ops);
-	assert_ptr_equal(g_capture.fs_ops, &g_fs_ops);
-	assert_ptr_equal(g_capture.block_ops, &g_block_ops);
+	assert_ptr_equal(g_capture.providers.os, &g_os_ops);
+	assert_ptr_equal(g_capture.providers.net, &g_net_ops);
+	assert_ptr_equal(g_capture.providers.display, &g_display_ops);
+	assert_ptr_equal(g_capture.providers.fs, &g_fs_ops);
+	assert_ptr_equal(g_capture.providers.block, &g_block_ops);
 	assert_ptr_equal(g_capture.run_config.rootfs, rootfs);
 	assert_int_equal(g_capture.run_config.rootfs_count, 2);
 	assert_ptr_equal(g_capture.run_config.rootfs_image, image);
@@ -353,11 +346,11 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	 * preceding invocation. Host-owned providers and topology remain present. */
 	assert_int_equal(lxp_host_run(&host, NULL, "/bin/init", 1, argv), 37);
 	assert_int_equal(g_capture.run_calls, 2);
-	assert_ptr_equal(g_capture.os_ops, &g_os_ops);
-	assert_ptr_equal(g_capture.net_ops, &g_net_ops);
-	assert_ptr_equal(g_capture.display_ops, &g_display_ops);
-	assert_ptr_equal(g_capture.fs_ops, &g_fs_ops);
-	assert_ptr_equal(g_capture.block_ops, &g_block_ops);
+	assert_ptr_equal(g_capture.providers.os, &g_os_ops);
+	assert_ptr_equal(g_capture.providers.net, &g_net_ops);
+	assert_ptr_equal(g_capture.providers.display, &g_display_ops);
+	assert_ptr_equal(g_capture.providers.fs, &g_fs_ops);
+	assert_ptr_equal(g_capture.providers.block, &g_block_ops);
 	assert_null(g_capture.run_config.write_fn);
 	assert_null(g_capture.run_config.read_fn);
 	assert_null(g_capture.run_config.io_ctx);
@@ -376,7 +369,7 @@ static void test_failed_reinit_clears_previous_host(void **state)
 	char names[64];
 	lxp_host_t host;
 	const lxp_host_config_t good = {
-		.os_ops = &g_os_ops,
+		.providers = {.os = &g_os_ops},
 		.rootfs_image = image,
 		.rootfs_image_size = make_rootfs(image),
 		.rootfs_storage = rootfs,
@@ -403,7 +396,7 @@ static void test_host_rejects_invalid_contract_before_rootfs_access(void **state
 	assert_int_equal(lxp_host_init_cpio(NULL, &config), LXP_ERR_INVALID_PARAM);
 	assert_int_equal(lxp_host_init_cpio(&host, &config), LXP_ERR_INVALID_PARAM);
 	bad_ops.abi_version++;
-	config.os_ops = &bad_ops;
+	config.providers.os = &bad_ops;
 	config.rootfs_image = &host;
 	config.rootfs_image_size = sizeof(host);
 	config.rootfs_storage = (lxp_file_t *)&host;
@@ -427,8 +420,7 @@ static void test_host_rejects_invalid_topology_before_rootfs_access(void **state
 		.port = 564,
 	};
 	lxp_host_config_t config = {
-		.os_ops = &g_os_ops,
-		.net_ops = &g_net_ops,
+		.providers = {.os = &g_os_ops, .net = &g_net_ops},
 		.rootfs_image = image,
 		.rootfs_image_size = make_rootfs(image),
 		.rootfs_storage = rootfs,
@@ -443,7 +435,7 @@ static void test_host_rejects_invalid_topology_before_rootfs_access(void **state
 	assert_int_equal(host.initialized, 0);
 
 	config.netfs_config = NULL;
-	config.net_ops = NULL;
+	config.providers.net = NULL;
 	config.netif = (lxp_netif_t)&host;
 	assert_int_equal(lxp_host_init_cpio(&host, &config), LXP_ERR_INVALID_PARAM);
 	assert_int_equal(g_capture.rootfs_window_calls, 0);
@@ -458,7 +450,7 @@ static void test_host_copies_one_coherent_observation(void **state)
 	lxp_host_t host;
 	lxp_host_observation_t observation;
 	const lxp_host_config_t config = {
-		.os_ops = &g_os_ops,
+		.providers = {.os = &g_os_ops},
 		.rootfs_image = image,
 		.rootfs_image_size = make_rootfs(image),
 		.rootfs_storage = rootfs,
@@ -525,7 +517,7 @@ static void test_host_observation_fails_closed(void **state)
 	lxp_file_t rootfs[4];
 	char names[64];
 	const lxp_host_config_t config = {
-		.os_ops = &g_os_ops,
+		.providers = {.os = &g_os_ops},
 		.rootfs_image = image,
 		.rootfs_image_size = make_rootfs(image),
 		.rootfs_storage = rootfs,

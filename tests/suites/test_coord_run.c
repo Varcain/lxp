@@ -233,20 +233,20 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	lxp_net_ops_t net_ops = *g_test_net_ops;
 	net_ops.run_begin = mock_net_begin;
 	net_ops.run_end = mock_net_end;
+	const lxp_providers_t providers = {.os = &g_mock_eng, .net = &net_ops,
+					   .fs = &g_mock_fs_ops};
 	lxp_net_ops_t invalid_net_ops = net_ops;
 	invalid_net_ops.run_end = NULL;
-	assert_int_equal(lxp_run(&g_mock_eng, &invalid_net_ops, NULL, &g_mock_fs_ops, NULL, &cfg,
-				 "/init", 1, argv),
-			 LXP_ERR_INVALID_PARAM);
+	lxp_providers_t invalid = providers;
+	invalid.net = &invalid_net_ops;
+	assert_int_equal(lxp_run(&invalid, &cfg, "/init", 1, argv), LXP_ERR_INVALID_PARAM);
 	assert_int_equal(g_mock.net_begin_calls, 0);
 	assert_int_equal(g_mock.prepare_calls, 0);
 
 	g_mock.prepare_result = LXP_ERR_IO;
 	g_mock.net_ready_fire_in_prepare = 1;
 	g_mock.fs_ready_fire_in_prepare = 1;
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
-			 1, argv),
-			 LXP_ERR_IO);
+	assert_int_equal(lxp_run(&providers, &cfg, "/init", 1, argv), LXP_ERR_IO);
 	assert_int_equal(g_mock.net_begin_calls, 1);
 	assert_int_equal(g_mock.net_end_calls, 1);
 	assert_int_equal(g_mock.fs_begin_calls, 1);
@@ -267,9 +267,7 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	/* A rejected provider acquisition never starts host preparation or releases
 	 * an already-active provider state through run_end(). */
 	g_mock.net_begin_result = LXP_ERR_WOULD_BLOCK;
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
-				 1, argv),
-			 LXP_ERR_WOULD_BLOCK);
+	assert_int_equal(lxp_run(&providers, &cfg, "/init", 1, argv), LXP_ERR_WOULD_BLOCK);
 	assert_int_equal(g_mock.net_begin_calls, 2);
 	assert_int_equal(g_mock.net_end_calls, 1);
 	assert_int_equal(g_mock.prepare_calls, 1);
@@ -294,16 +292,13 @@ static void test_run_reports_why_launch_failed(void **state)
 	lxp_net_ops_t net_ops = *g_test_net_ops;
 	net_ops.run_begin = mock_net_begin;
 	net_ops.run_end = mock_net_end;
+	const lxp_providers_t providers = {.os = &g_mock_eng, .net = &net_ops,
+					   .fs = &g_mock_fs_ops};
 
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
-				 0, argv),
-			 LXP_ERR_INVALID_PARAM);
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg,
-				 "/missing", 1, argv),
-			 LXP_ERR_NOT_FOUND);
-	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
-				 1, argv),
-			 LXP_ERR_NOT_SUPPORTED); /* one byte is not an executable */
+	assert_int_equal(lxp_run(&providers, &cfg, "/init", 0, argv), LXP_ERR_INVALID_PARAM);
+	assert_int_equal(lxp_run(&providers, &cfg, "/missing", 1, argv), LXP_ERR_NOT_FOUND);
+	/* One byte is not an executable. */
+	assert_int_equal(lxp_run(&providers, &cfg, "/init", 1, argv), LXP_ERR_NOT_SUPPORTED);
 	assert_int_equal(g_mock.teardown_calls, 2);
 }
 

@@ -28,11 +28,7 @@ extern "C" {
  * @p rootfs_name_storage receives its normalized absolute pathnames.
  */
 typedef struct lxp_host_config {
-	const lxp_os_ops_t *os_ops;
-	const lxp_net_ops_t *net_ops;
-	const lxp_display_ops_t *display_ops;
-	const lxp_fs_ops_t *fs_ops;
-	const lxp_block_ops_t *block_ops;
+	lxp_providers_t providers; /**< The services every run of this host uses. */
 	const void *rootfs_image;
 	size_t rootfs_image_size;
 	lxp_file_t *rootfs_storage;
@@ -68,11 +64,7 @@ typedef struct lxp_launch_config {
  * successful @ref lxp_host_init_cpio call. Sequential launches may reuse one
  * instance; concurrent @ref lxp_host_run calls are not supported. */
 typedef struct lxp_host {
-	const lxp_os_ops_t *os_ops;
-	const lxp_net_ops_t *net_ops;
-	const lxp_display_ops_t *display_ops;
-	const lxp_fs_ops_t *fs_ops;
-	const lxp_block_ops_t *block_ops;
+	lxp_providers_t providers;
 	const lxp_file_t *rootfs;
 	int rootfs_count;
 	const void *rootfs_image;

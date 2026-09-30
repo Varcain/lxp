@@ -128,6 +128,13 @@ int lxp_fs_ops_valid(const lxp_fs_ops_t *ops)
 	return 1;
 }
 
+int lxp_providers_valid(const lxp_providers_t *providers)
+{
+	return providers && lxp_os_ops_valid(providers->os) && lxp_net_ops_valid(providers->net) &&
+	       lxp_display_ops_valid(providers->display) && lxp_fs_ops_valid(providers->fs) &&
+	       lxp_block_ops_valid(providers->block);
+}
+
 int lxp_block_ops_valid(const lxp_block_ops_t *ops)
 {
 #if LXP_ENABLE_BLOCK

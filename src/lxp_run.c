@@ -1097,10 +1097,8 @@ launch_failed:
 
 /* THE port entry (see lxp_run.h). Validate and publish this run's exact
  * providers, then bracket the coordinator with optional host setup/teardown. */
-int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
-	    const lxp_display_ops_t *display_ops, const lxp_fs_ops_t *fs_ops,
-	    const lxp_block_ops_t *block_ops, const lxp_run_config_t *run_config, const char *path,
-	    int argc, const char *const argv[])
+int lxp_run(const lxp_providers_t *providers, const lxp_run_config_t *run_config,
+	    const char *path, int argc, const char *const argv[])
 {
 	int rc = LXP_OK;
 	int prepare_entered = 0;
@@ -1111,33 +1109,32 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	int console_entered = 0;
 	lxp_lat_reset(); /* counters describe THIS run, not a previous one */
 	lxp_diag_run_begin();
-	if (!lxp_os_ops_valid(os_ops) || !lxp_net_ops_valid(net_ops) ||
-	    !lxp_display_ops_valid(display_ops) || !lxp_fs_ops_valid(fs_ops) ||
-	    !lxp_block_ops_valid(block_ops) || !lxp_run_config_valid(run_config) || !path ||
+	if (!lxp_providers_valid(providers) || !lxp_run_config_valid(run_config) || !path ||
 	    argc < 1 || !argv)
 		return LXP_ERR_INVALID_PARAM;
+	const lxp_os_ops_t *os_ops = providers->os;
 
 	/* Assign even NULL providers so a later sequential run cannot inherit one. */
-	lxp_providers_publish(net_ops, display_ops, fs_ops, block_ops);
+	lxp_providers_publish(providers->net, providers->display, providers->fs, providers->block);
 #if LXP_ENABLE_DEV
 	lxp_dev_run_begin();
 	dev_entered = 1;
 #endif
 #if LXP_ENABLE_NET
-	rc = net_ops->run_begin(lxp_socket_ready, os_ops);
+	rc = providers->net->run_begin(lxp_socket_ready, os_ops);
 	if (rc != LXP_OK)
 		goto out;
 	net_entered = 1;
 	lxp_sock_run_begin(run_config->netif);
 #endif
 #if LXP_ENABLE_FS
-	rc = fs_ops->run_begin(lxp_fs_completion_ready, os_ops);
+	rc = providers->fs->run_begin(lxp_fs_completion_ready, os_ops);
 	if (rc != LXP_OK)
 		goto out;
 	fs_entered = 1;
 #endif
 #if LXP_ENABLE_BLOCK
-	rc = block_ops->run_begin(lxp_block_ready, os_ops);
+	rc = providers->block->run_begin(lxp_block_ready, os_ops);
 	if (rc != LXP_OK)
 		goto out;
 	block_entered = 1;
@@ -1182,20 +1179,20 @@ out:
 		os_ops->teardown();
 #if LXP_ENABLE_BLOCK
 	if (block_entered)
-		block_ops->run_end();
+		providers->block->run_end();
 #else
 	(void)block_entered;
 #endif
 #if LXP_ENABLE_FS
 	if (fs_entered)
-		fs_ops->run_end();
+		providers->fs->run_end();
 #else
 	(void)fs_entered;
 #endif
 #if LXP_ENABLE_NET
 	if (net_entered) {
 		lxp_sock_run_end();
-		net_ops->run_end();
+		providers->net->run_end();
 	}
 #else
 	(void)net_entered;

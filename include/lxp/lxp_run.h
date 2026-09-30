@@ -128,19 +128,26 @@ typedef struct lxp_run_config {
 	void *guest_exit_ctx; /**< Opaque, passed to @p on_guest_exit. */
 } lxp_run_config_t;
 
+/** The host services one run uses. The caller keeps every table alive until
+ * lxp_run() returns; a table for a feature the build leaves out is ignored. */
+typedef struct lxp_providers {
+	/** The engine / OS port (required): program-memory placement, task spawn and
+	 * abort, critical section, run-loop event wait/post, monotonic time, plus
+	 * optional cache, thread introspection, prepare and teardown. */
+	const lxp_os_ops_t *os;
+	const lxp_net_ops_t *net;         /**< Sockets (LXP_ENABLE_NET). */
+	const lxp_display_ops_t *display; /**< Framebuffer, DMA2D, touch (LXP_ENABLE_DEV_*). */
+	const lxp_fs_ops_t *fs;           /**< Writable filesystem (LXP_ENABLE_FS). */
+	const lxp_block_ops_t *block;     /**< Raw block media (LXP_ENABLE_BLOCK). */
+} lxp_providers_t;
+
 /**
  * Load @p path from the rootfs and run it as pid 1, driving the NOMMU process
  * model (vfork/exec/wait, signals, pipes) until it exits. This is THE port entry
  * (the lwIP sys_arch / FatFs diskio pattern): the host fills provider vtables and
  * passes them here rather than wiring module globals directly.
  *
- * @p os_ops     the engine / OS port (required): program-memory placement, task
- *               spawn/abort, critical section, run-loop event wait/post, monotonic
- *               time, + optional cache / thread-introspection / prepare / teardown.
- * @p net_ops    the handle-based socket port, or NULL when built without NET.
- * @p display_ops the framebuffer / touch port, or NULL when built without DEV.
- * @p fs_ops     the writable-filesystem port, or NULL when built without FS.
- * @p block_ops  the raw block-media port, or NULL when built without BLOCK.
+ * @p providers  the host services this run uses (required).
  * @p run_config the rootfs table, console callbacks, and optional display
  *               geometry (required).
  *
@@ -160,11 +167,8 @@ typedef struct lxp_run_config {
  * one that cannot be executed, @c LXP_ERR_NO_MEMORY); or @c LXP_ERR_TIMEOUT when every
  * process stays blocked with nothing left to wake it.
  */
-int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
-	    const lxp_display_ops_t *display_ops, const lxp_fs_ops_t *fs_ops,
-	    const lxp_block_ops_t *block_ops,
-	    const lxp_run_config_t *run_config, const char *path, int argc,
-	    const char *const argv[]);
+int lxp_run(const lxp_providers_t *providers, const lxp_run_config_t *run_config,
+	    const char *path, int argc, const char *const argv[]);
 
 /**
  * A read-only snapshot of coordinator liveness, for a host watchdog.
