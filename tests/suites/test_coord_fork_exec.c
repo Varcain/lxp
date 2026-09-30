@@ -676,7 +676,7 @@ static void test_image_publication_rejects_invalid_extent_generation_and_port_fa
 	tx.launch.copied_text_size = LXP_PROG_REGION_SIZE / 2u;
 	tx.proc.mm->copied_text_base = tx.launch.copied_text_base;
 	tx.proc.mm->copied_text_size = tx.launch.copied_text_size;
-	g_mock.publish_result = -LXP_EIO;
+	g_mock.publish_result = LXP_ERR_IO; /* the engine reports lxp_err_t */
 	assert_int_equal(lxp_image_txn_publish(&tx), -LXP_EIO);
 	assert_int_equal(g_mock.publish_executable_calls, 1);
 	assert_false(tx.executable_published);

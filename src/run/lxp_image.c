@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "lxp/lxp_bootstrap.h"
+#include "lxp_errno.h"
 #include "lxp_loader.h"
 #include "run/lxp_coordinator.h"
 #include "run/lxp_image.h"
@@ -190,7 +191,7 @@ int lxp_image_txn_publish(struct image_txn *tx)
 			return -LXP_EINVAL;
 		int rc = g_lxp_os_ops->publish_executable(tx->region, text_base, text_size);
 		if (rc != LXP_OK)
-			return rc;
+			return lxp_errno_from_err(rc);
 	}
 	tx->executable_published = 1;
 	int rc = lxp_slot_publish_image(tx->slot, &tx->proc, g_lxp_os_ops->exec_capture(tx->slot),

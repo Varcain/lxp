@@ -81,7 +81,7 @@ static int mock_spawn_launch(int sidx, uint32_t generation, int ridx,
 	g_mock.launch_observed_host_state = lxp_slot_host_state(sidx);
 	if (g_mock.launch_failures > 0) {
 		g_mock.launch_failures--;
-		return -LXP_EIO;
+		return LXP_ERR_IO; /* engines report lxp_err_t */
 	}
 	return LXP_OK;
 }
@@ -107,7 +107,7 @@ static int mock_spawn_resume(int sidx, uint32_t generation, int ridx, lxp_spawn_
 	}
 	if (g_mock.resume_failures > 0) {
 		g_mock.resume_failures--;
-		return -LXP_EIO;
+		return LXP_ERR_IO; /* engines report lxp_err_t */
 	}
 	return LXP_OK;
 }
@@ -120,7 +120,7 @@ static int mock_abort_slot(int sidx, uint32_t generation)
 	if (g_mock.abort_failures > 0 &&
 	    (g_mock.abort_fail_slot < 0 || g_mock.abort_fail_slot == sidx)) {
 		g_mock.abort_failures--;
-		return -LXP_EIO;
+		return LXP_ERR_IO; /* engines report lxp_err_t */
 	}
 	return LXP_OK;
 }
@@ -139,7 +139,7 @@ static int mock_park_slot(int sidx, uint32_t generation)
 	g_mock.park_generation = generation;
 	if (g_mock.park_failures > 0) {
 		g_mock.park_failures--;
-		return -LXP_EIO;
+		return LXP_ERR_IO; /* engines report lxp_err_t */
 	}
 	return LXP_OK;
 }

@@ -5,6 +5,7 @@
  * Private coordinator lifecycle module.
  */
 
+#include "lxp_errno.h"
 #include "run/lxp_coordinator.h"
 
 enum lxp_handler_outcome {
@@ -43,7 +44,8 @@ static void slot_transition_failed(int sidx, int transition, int rc)
 
 /* The sole applicator for native task lifecycle changes. Event handlers
  * describe the desired outcome; only this module invokes the RTOS callbacks
- * and publishes the resulting host/runnable state. */
+ * and publishes the resulting host/runnable state. It returns 0 or a negated errno,
+ * so the engine's lxp_err_t results are translated where they return. */
 static int lxp_lifecycle_apply(const struct lxp_lifecycle_request *request)
 {
 	if (!g_lxp_os_ops || !request || request->slot < 0 || request->slot >= LXP_NSLOT)
@@ -62,7 +64,7 @@ static int lxp_lifecycle_apply(const struct lxp_lifecycle_request *request)
 		if (!g_lxp_os_ops->abort_slot)
 			return -LXP_EINVAL;
 		lxp_slot_set_host_state(sidx, SLOT_EXITING);
-		rc = g_lxp_os_ops->abort_slot(sidx, lxp_slot_generation(sidx));
+		rc = lxp_errno_from_err(g_lxp_os_ops->abort_slot(sidx, lxp_slot_generation(sidx)));
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_DEAD);
 			lxp_slot_runnable_store(sidx, 0);
@@ -86,7 +88,7 @@ static int lxp_lifecycle_apply(const struct lxp_lifecycle_request *request)
 			return -LXP_EINVAL;
 		}
 		lxp_slot_set_host_state(sidx, SLOT_PARKING);
-		rc = g_lxp_os_ops->park_slot(sidx, lxp_slot_generation(sidx));
+		rc = lxp_errno_from_err(g_lxp_os_ops->park_slot(sidx, lxp_slot_generation(sidx)));
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_PARKED);
 			lxp_slot_runnable_store(sidx, 0);
@@ -118,9 +120,9 @@ static int lxp_lifecycle_apply(const struct lxp_lifecycle_request *request)
 		 * can make the task runnable. A higher-priority guest may issue an SVC
 		 * before spawn_resume() returns to the coordinator. */
 		lxp_slot_runnable_store(sidx, 1);
-		rc = g_lxp_os_ops->spawn_resume(sidx, lxp_slot_generation(sidx), request->region,
-						mode, request->data.resume.ctx,
-						request->data.resume.r0);
+		rc = lxp_errno_from_err(g_lxp_os_ops->spawn_resume(
+			sidx, lxp_slot_generation(sidx), request->region, mode,
+			request->data.resume.ctx, request->data.resume.r0));
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_RUNNING);
 			return LXP_OK;
@@ -145,8 +147,9 @@ static int lxp_lifecycle_apply(const struct lxp_lifecycle_request *request)
 		/* As with resume, publish before spawn_launch can start a task which
 		 * immediately traps back into the personality. */
 		lxp_slot_runnable_store(sidx, 1);
-		rc = g_lxp_os_ops->spawn_launch(sidx, lxp_slot_generation(sidx), request->region,
-						request->data.launch.launch);
+		rc = lxp_errno_from_err(g_lxp_os_ops->spawn_launch(sidx, lxp_slot_generation(sidx),
+								   request->region,
+								   request->data.launch.launch));
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_RUNNING);
 			return LXP_OK;
