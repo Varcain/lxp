@@ -45,7 +45,7 @@ int lxp_image_txn_prepare(struct image_txn *tx, const uint8_t *data, size_t len,
 	if (!cfg || slot < 0 || slot >= LXP_NSLOT || region_index < 0 || region_index >= LXP_NREG ||
 	    tx->region.generation == 0 || !lxp_region_lease_matches(tx->region, tx->owner, 1))
 		return -LXP_EINVAL;
-	uint8_t *region = g_lxp_os_ops->region(region_index);
+	uint8_t *region = g_lxp_os_ops->memory.region(region_index);
 	/* Every personality program is an FDPIC ELF. */
 	if (!(len >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F'))
 		return -LXP_ENOEXEC;
@@ -97,9 +97,9 @@ int lxp_image_txn_prepare(struct image_txn *tx, const uint8_t *data, size_t len,
 	size_t arena_size = LXP_PROG_ARENA_SIZE;
 	uint8_t *stack_lo = rw;
 	if (dynamic) {
-		if (!g_lxp_os_ops->dyn_pool)
+		if (!g_lxp_os_ops->memory.dyn_pool)
 			return -LXP_ENOMEM;
-		arena_mem = g_lxp_os_ops->dyn_pool(region_index, &arena_size);
+		arena_mem = g_lxp_os_ops->memory.dyn_pool(region_index, &arena_size);
 	} else {
 		if (LXP_PROG_ARENA_SIZE > (size_t)(rw_end - rw))
 			return -LXP_ENOMEM;
@@ -187,23 +187,23 @@ int lxp_image_txn_publish(struct image_txn *tx)
 	if (copied_text && text_size != LXP_PROG_REGION_SIZE / 2u)
 		return -LXP_EINVAL;
 	if (copied_text && !tx->executable_published) {
-		uint8_t *region = g_lxp_os_ops->region(tx->region.index);
+		uint8_t *region = g_lxp_os_ops->memory.region(tx->region.index);
 		uintptr_t region_lo = (uintptr_t)region;
 		uintptr_t region_hi = region_lo + LXP_PROG_REGION_SIZE;
 		if (!region || region_hi < region_lo || text_base != region_lo ||
 		    text_size >= LXP_PROG_REGION_SIZE)
 			return -LXP_EINVAL;
-		int rc = g_lxp_os_ops->publish_executable(tx->region, text_base, text_size);
+		int rc = g_lxp_os_ops->memory.publish_executable(tx->region, text_base, text_size);
 		if (rc != LXP_OK)
 			return lxp_errno_from_err(rc);
 	}
 	tx->executable_published = 1;
-	int rc = lxp_slot_publish_image(tx->slot, &tx->proc, g_lxp_os_ops->exec_capture(tx->slot),
-					&tx->debug);
+	int rc = lxp_slot_publish_image(tx->slot, &tx->proc,
+					g_lxp_os_ops->memory.exec_capture(tx->slot), &tx->debug);
 	if (rc != LXP_OK)
 		return rc;
-	if (g_lxp_os_ops->map_device)
-		(void)g_lxp_os_ops->map_device(tx->slot, 0, 0, 0);
+	if (g_lxp_os_ops->memory.map_device)
+		(void)g_lxp_os_ops->memory.map_device(tx->slot, 0, 0, 0);
 	tx->published = 1;
 	return lxp_lifecycle_failpoint_hit(LXP_FAIL_EXEC_PUBLISHED) ? -LXP_EIO : LXP_OK;
 }

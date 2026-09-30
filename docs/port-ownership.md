@@ -92,7 +92,7 @@ lifetime of coordinator diagnostics and latency counters. A caller takes one
 `lxp_host_observation_t` only while the host is quiescent; an active run returns
 `LXP_ERR_BUSY` rather than a cross-registry partial view. A port may publish an
 aggregate guest-task stack high-water mark through the optional
-`lxp_os_ops_t::guest_stack_usage` callback. LXP normalizes that result into the
+`lxp_os_ops_t::task.guest_stack_usage` callback. LXP normalizes that result into the
 host observation, so consumers do not include an RTOS port header. The host or
 application still decides when to sample, how to render the copy, whether to
 enforce a threshold, and how a watchdog reacts to the separate live heartbeat.

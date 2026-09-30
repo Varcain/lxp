@@ -48,7 +48,8 @@ int lxp_fork_txn_prepare(struct fork_txn *tx, int parent_slot, int child_slot,
 
 	/* Every slot owns its cold exec capture and active signal return chain even
 	 * when its process-wide objects are shared. */
-	lxp_proc_bind_exec_capture(tx->child, g_lxp_os_ops->exec_capture(tx->child_ref.index));
+	lxp_proc_bind_exec_capture(tx->child,
+				   g_lxp_os_ops->memory.exec_capture(tx->child_ref.index));
 	lxp_slot_signal_clone(tx->child_ref.index, tx->parent_ref.index);
 
 	/* Hardware mappings are installed while the record is still unpublished.
@@ -110,8 +111,8 @@ void lxp_fork_txn_abort(struct fork_txn *tx)
 		tx->parent->group->live_children--;
 	if (tx->child_constructed && tx->child->snapshot.index >= 0)
 		(void)lxp_region_release_if_owned(tx->child->snapshot, tx->child_ref);
-	if (tx->maps_touched && g_lxp_os_ops->map_device)
-		(void)g_lxp_os_ops->map_device(tx->child_ref.index, 0, 0, 0);
+	if (tx->maps_touched && g_lxp_os_ops->memory.map_device)
+		(void)g_lxp_os_ops->memory.map_device(tx->child_ref.index, 0, 0, 0);
 	if (tx->region_acquired)
 		(void)lxp_region_put(tx->parent_region);
 	if (tx->child_constructed)

@@ -98,8 +98,8 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 	/* Some targets must change MPU/cache attributes before even parsing an
 	 * external-memory archive. lxp_run() repeats this publication per launch so
 	 * a port can also restore a run-scoped coordinator mapping. */
-	if (os_ops->rootfs_window)
-		os_ops->rootfs_window(config->rootfs_image, config->rootfs_image_size);
+	if (os_ops->memory.rootfs_window)
+		os_ops->memory.rootfs_window(config->rootfs_image, config->rootfs_image_size);
 
 	int count = lxp_cpio_to_rootfs(config->rootfs_image, config->rootfs_image_size,
 				       config->rootfs_storage, config->rootfs_capacity,
@@ -177,11 +177,11 @@ int lxp_host_observe(const lxp_host_t *host, lxp_host_observation_t *out)
 	lxp_diag_size_report(&out->sizes);
 	lxp_diag_health(&out->diagnostics);
 
-	if (state->providers.os->guest_stack_usage) {
+	if (state->providers.os->task.guest_stack_usage) {
 		size_t used = 0u;
 		size_t size = 0u;
-		if (state->providers.os->guest_stack_usage(&used, &size) == LXP_OK && size != 0u &&
-		    used <= size) {
+		if (state->providers.os->task.guest_stack_usage(&used, &size) == LXP_OK &&
+		    size != 0u && used <= size) {
 			out->guest_stack.used = used;
 			out->guest_stack.size = size;
 			out->guest_stack.available = 1u;

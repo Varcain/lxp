@@ -146,9 +146,9 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out)
 	out->slots_total = LXP_NSLOT;
 	out->regions_total = LXP_NREG;
 	out->program_region_bytes = LXP_PROG_REGION_SIZE;
-	if (g_lxp_os_ops && g_lxp_os_ops->dyn_pool) {
+	if (g_lxp_os_ops && g_lxp_os_ops->memory.dyn_pool) {
 		size_t dyn_size = 0;
-		if (g_lxp_os_ops->dyn_pool(0, &dyn_size))
+		if (g_lxp_os_ops->memory.dyn_pool(0, &dyn_size))
 			out->dynamic_pool_bytes = dyn_size;
 	}
 
@@ -173,12 +173,12 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out)
 	out->available_bytes = region_bytes * allocatable;
 }
 /* Map guest region `ridx` cacheable into the coordinator before it services that
- * slot's deferred syscall / parked-op retry (see lxp_os_ops_t.coord_map). Only the
+ * slot's deferred syscall / parked-op retry (see lxp_os_ops_t.memory.coord_map). Only the
  * run loop's coordinator-context paths call it, so it stays file-local. */
 static void lxp_coord_map(int ridx)
 {
-	if (g_lxp_os_ops && g_lxp_os_ops->coord_map && ridx >= 0)
-		g_lxp_os_ops->coord_map(ridx);
+	if (g_lxp_os_ops && g_lxp_os_ops->memory.coord_map && ridx >= 0)
+		g_lxp_os_ops->memory.coord_map(ridx);
 }
 
 void lxp_guest_view_failure(int slot, int rc)
@@ -218,8 +218,8 @@ lxp_proc_t *lxp_slot_proc(int slot)
 static void lxp_console_ready(const void *context)
 {
 	const lxp_os_ops_t *eng = context;
-	if (eng && eng->event_post)
-		eng->event_post();
+	if (eng && eng->core.event_post)
+		eng->core.event_post();
 }
 
 #if LXP_ENABLE_NET
@@ -229,8 +229,8 @@ static void lxp_console_ready(const void *context)
 static void lxp_socket_ready(const void *context)
 {
 	const lxp_os_ops_t *eng = context;
-	if (eng && eng->event_post)
-		eng->event_post();
+	if (eng && eng->core.event_post)
+		eng->core.event_post();
 }
 #endif
 
@@ -239,8 +239,8 @@ void lxp_fs_completion_ready(const void *context)
 {
 	__atomic_store_n(&g_lxp_rt.fs_completion_ready, 1, __ATOMIC_RELEASE);
 	const lxp_os_ops_t *eng = context;
-	if (eng && eng->event_post)
-		eng->event_post();
+	if (eng && eng->core.event_post)
+		eng->core.event_post();
 }
 
 int lxp_fs_completion_hint_take(void)
@@ -253,8 +253,8 @@ int lxp_fs_completion_hint_take(void)
 static void lxp_block_ready(const void *context)
 {
 	const lxp_os_ops_t *eng = context;
-	if (eng && eng->event_post)
-		eng->event_post();
+	if (eng && eng->core.event_post)
+		eng->core.event_post();
 }
 #endif
 
@@ -627,17 +627,17 @@ int lxp_coordinator_restore_mm_maps(int sidx, const lxp_mm_t *mm)
 	for (int i = 0; mm && i < 2; i++)
 		if (mm->dev_map_hi[i] > mm->dev_map_lo[i])
 			has_maps = 1;
-	if (!g_lxp_os_ops->map_device)
+	if (!g_lxp_os_ops->memory.map_device)
 		return has_maps ? -LXP_ENODEV : 0;
-	if (g_lxp_os_ops->map_device(sidx, 0, 0, 0) != 0)
+	if (g_lxp_os_ops->memory.map_device(sidx, 0, 0, 0) != 0)
 		return -LXP_ENOMEM;
 	for (int i = 0; mm && i < 2; i++) {
 		if (mm->dev_map_hi[i] <= mm->dev_map_lo[i])
 			continue;
-		if (g_lxp_os_ops->map_device(sidx, mm->dev_map_lo[i],
+		if (g_lxp_os_ops->memory.map_device(sidx, mm->dev_map_lo[i],
 					     mm->dev_map_hi[i] - mm->dev_map_lo[i],
 					     mm->dev_map_attrs[i]) != 0) {
-			(void)g_lxp_os_ops->map_device(sidx, 0, 0, 0);
+			(void)g_lxp_os_ops->memory.map_device(sidx, 0, 0, 0);
 			return -LXP_ENOMEM;
 		}
 	}
@@ -651,12 +651,12 @@ int lxp_coordinator_restore_mm_maps(int sidx, const lxp_mm_t *mm)
 #if LXP_ENABLE_DEV
 int lxp_coordinator_map_mm_range(lxp_mm_t *mm, uintptr_t addr, size_t len, unsigned attrs)
 {
-	if (!g_lxp_os_ops->map_device)
+	if (!g_lxp_os_ops->memory.map_device)
 		return -LXP_ENODEV;
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		if (!g_lxp_rt.slots[s].proc.alive || g_lxp_rt.slots[s].proc.mm != mm)
 			continue;
-		if (g_lxp_os_ops->map_device(s, addr, len, attrs) != 0) {
+		if (g_lxp_os_ops->memory.map_device(s, addr, len, attrs) != 0) {
 			for (int r = 0; r < LXP_NSLOT; r++)
 				if (g_lxp_rt.slots[r].proc.alive && g_lxp_rt.slots[r].proc.mm == mm)
 					(void)lxp_coordinator_restore_mm_maps(r, mm);
@@ -832,7 +832,7 @@ static void coordinator_quiesce_all(void)
 {
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		while (lxp_coordinator_abort_slot(s) != LXP_OK)
-			g_lxp_os_ops->event_wait(1u);
+			g_lxp_os_ops->core.event_wait(1u);
 	}
 }
 
@@ -869,8 +869,8 @@ void lxp_coordinator_teardown_all(void)
 			lxp_netfs_cancel(p);
 #endif
 		lxp_proc_resources_put(p);
-		if (g_lxp_os_ops->map_device)
-			g_lxp_os_ops->map_device(s, 0, 0, 0);
+		if (g_lxp_os_ops->memory.map_device)
+			g_lxp_os_ops->memory.map_device(s, 0, 0, 0);
 		if (p->mm) {
 			p->mm->dev_map_lo[0] = p->mm->dev_map_hi[0] = 0;
 			p->mm->dev_map_lo[1] = p->mm->dev_map_hi[1] = 0;
@@ -900,11 +900,11 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			  int console_ready_events, const char *path, int argc,
 			  const char *const argv[])
 {
-	if (!eng || !eng->exec_capture || !cfg || !cfg->rootfs || !cfg->rootfs_image ||
+	if (!eng || !eng->memory.exec_capture || !cfg || !cfg->rootfs || !cfg->rootfs_image ||
 	    cfg->rootfs_image_size == 0u || !path || argc < 1 || !argv)
 		return LXP_ERR_INVALID_PARAM;
 	for (int s = 0; s < LXP_NSLOT; s++)
-		if (!eng->exec_capture(s))
+		if (!eng->memory.exec_capture(s))
 			return LXP_ERR_INVALID_PARAM;
 	g_lxp_rt.cfg = cfg;
 	lxp_os_publish(eng);
@@ -1093,7 +1093,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			if (d_ms < (uint64_t)to)
 				to = (unsigned)d_ms;
 		}
-		eng->event_wait(to);
+		eng->core.event_wait(to);
 	}
 	lxp_coordinator_teardown_all();
 	lxp_diag_refresh();
@@ -1152,16 +1152,17 @@ int lxp_run(const lxp_providers_t *providers, const lxp_run_config_t *run_config
 	block_entered = 1;
 #endif
 
-	if (os_ops->rootfs_window)
-		os_ops->rootfs_window(run_config->rootfs_image, run_config->rootfs_image_size);
+	if (os_ops->memory.rootfs_window)
+		os_ops->memory.rootfs_window(run_config->rootfs_image,
+					     run_config->rootfs_image_size);
 
-	if (os_ops->prepare) {
+	if (os_ops->core.prepare) {
 		prepare_entered = 1;
-		rc = os_ops->prepare();
+		rc = os_ops->core.prepare();
 		if (rc != LXP_OK)
 			goto out;
 	}
-	rc = os_ops->validate_memory_contract(os_ops->cpu_memory_contract);
+	rc = os_ops->memory.validate_memory_contract(os_ops->memory.cpu_memory_contract);
 	if (rc != LXP_OK)
 		goto out;
 	if (run_config->launch.console.subscribe) {
@@ -1183,8 +1184,8 @@ out:
 #else
 	(void)dev_entered;
 #endif
-	if (prepare_entered && os_ops->teardown)
-		os_ops->teardown();
+	if (prepare_entered && os_ops->core.teardown)
+		os_ops->core.teardown();
 #if LXP_ENABLE_BLOCK
 	if (block_entered)
 		providers->block->run_end();

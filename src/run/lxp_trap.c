@@ -89,7 +89,7 @@ void lxp_park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 	capture_ctx(slot, f);
 	void *token = lxp_lifecycle_prepare_park(slot, &g_lxp_rt.slots[slot].resume);
 	f->r[0] = (uint32_t)(uintptr_t)token;
-	f->r[15] = (uint32_t)((uintptr_t)g_lxp_os_ops->park_entry & ~(uintptr_t)1u);
+	f->r[15] = (uint32_t)((uintptr_t)g_lxp_os_ops->task.park_entry & ~(uintptr_t)1u);
 	f->xpsr |= (1u << 24);
 	lxp_event_post_slot(slot);
 }

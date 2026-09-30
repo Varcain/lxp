@@ -145,8 +145,8 @@ int lxp_exec_txn_commit(struct exec_txn *tx)
 	tx->new_ref = lxp_slot_ref_at(tx->slot);
 	if (lxp_region_lease_reassign(tx->region, tx->old_ref, tx->new_ref) != LXP_OK)
 		return -LXP_EIO;
-	if (g_lxp_os_ops->map_device)
-		(void)g_lxp_os_ops->map_device(tx->slot, 0, 0, 0);
+	if (g_lxp_os_ops->memory.map_device)
+		(void)g_lxp_os_ops->memory.map_device(tx->slot, 0, 0, 0);
 	return lxp_lifecycle_failpoint_hit(LXP_FAIL_EXEC_COMMITTED) ? -LXP_EIO : LXP_OK;
 }
 

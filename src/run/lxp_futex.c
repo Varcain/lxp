@@ -115,8 +115,8 @@ void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 				woken++;
 			}
 		}
-		if (woken && g_lxp_os_ops && g_lxp_os_ops->event_post)
-			g_lxp_os_ops->event_post();
+		if (woken && g_lxp_os_ops && g_lxp_os_ops->core.event_post)
+			g_lxp_os_ops->core.event_post();
 		f->r[0] = woken;
 		return;
 	}

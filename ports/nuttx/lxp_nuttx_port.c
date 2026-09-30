@@ -786,7 +786,7 @@ static int nuttx_thread_list(struct lxp_thread_info *o, size_t m, size_t *n)
 }
 
 /* Defined at end of file (they reference the MPU / IRQ helpers declared below);
- * the module's lxp_run() invokes them via g_lxp_host_engine.prepare/.teardown. */
+ * the module's lxp_run() invokes them via g_lxp_host_engine.core.prepare/.teardown. */
 static int nuttx_prepare(void);
 static void nuttx_teardown(void);
 static int nuttx_validate_memory_contract(const lxp_cpu_memory_contract_t *declared);
@@ -796,37 +796,50 @@ const lxp_cortex_m_port_common_t *const g_lxp_cortex_m_port_common = &PORT_CONFI
 const lxp_os_ops_t g_lxp_host_engine = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
-	.prepare = nuttx_prepare,
-	.teardown = nuttx_teardown,
-	.region = lxp_cortex_m_port_region,
-	.dyn_pool = lxp_cortex_m_port_dyn_pool,
-	.exec_capture = lxp_cortex_m_port_exec_capture,
-	.map_device = nuttx_map_device,
-	.spawn_launch = nuttx_spawn_launch,
-	.spawn_resume = nuttx_spawn_resume,
-	.abort_slot = nuttx_abort_slot,
-	.park_entry = nuttx_park_entry,
-	.park_prepare = nuttx_park_prepare,
-	.park_slot = nuttx_park_slot,
-	.crit_enter = nuttx_crit_enter,
-	.crit_exit = nuttx_crit_exit,
-	.event_post = nuttx_event_post,
-	.event_wait = nuttx_event_wait,
-	/* Ordinary CPU accesses are coherent because region 1 and the per-guest
-	 * overlays use matching attributes. Device/DMA transfers remain explicit. */
-	.time_us = lxp_cortex_m_port_time_us,
-	.time_ns = lxp_cortex_m_port_time_ns,
-	.thread_list = nuttx_thread_list,
-	.mem_stats = lxp_cortex_m_port_mem_stats,
-	.system_version = lxp_cortex_m_port_system_version,
-	.publish_executable = lxp_cortex_m_port_publish_executable,
-	.cpu_memory_contract = &PORT_CONFIG.common.cpu_memory_contract,
-	.validate_memory_contract = nuttx_validate_memory_contract,
-	.random_fill =
-		nuttx_random_fill, /* REQUIRED: without it exec() can't seed AT_RANDOM → no launch */
+	.core =
+		{
+			.prepare = nuttx_prepare,
+			.teardown = nuttx_teardown,
+			.crit_enter = nuttx_crit_enter,
+			.crit_exit = nuttx_crit_exit,
+			.event_post = nuttx_event_post,
+			.event_wait = nuttx_event_wait,
+		},
+	.task =
+		{
+			.spawn_launch = nuttx_spawn_launch,
+			.spawn_resume = nuttx_spawn_resume,
+			.abort_slot = nuttx_abort_slot,
+			.park_entry = nuttx_park_entry,
+			.park_prepare = nuttx_park_prepare,
+			.park_slot = nuttx_park_slot,
+		},
+	.memory =
+		{
+			.region = lxp_cortex_m_port_region,
+			.dyn_pool = lxp_cortex_m_port_dyn_pool,
+			.exec_capture = lxp_cortex_m_port_exec_capture,
 #if LXP_ENABLE_NETFS_EXEC
-	.exec_stage = lxp_cortex_m_port_exec_stage,
+			.exec_stage = lxp_cortex_m_port_exec_stage,
 #endif
+			.map_device = nuttx_map_device,
+			.publish_executable = lxp_cortex_m_port_publish_executable,
+			/* Ordinary CPU accesses are coherent because region 1 and the
+			 * per-guest overlays use matching attributes. Device/DMA transfers
+			 * remain explicit. */
+			.cpu_memory_contract = &PORT_CONFIG.common.cpu_memory_contract,
+			.validate_memory_contract = nuttx_validate_memory_contract,
+		},
+	.services =
+		{
+			.time_us = lxp_cortex_m_port_time_us,
+			.time_ns = lxp_cortex_m_port_time_ns,
+			.thread_list = nuttx_thread_list,
+			.mem_stats = lxp_cortex_m_port_mem_stats,
+			.system_version = lxp_cortex_m_port_system_version,
+			/* Required: without it exec() cannot seed AT_RANDOM, so no launch. */
+			.random_fill = nuttx_random_fill,
+		},
 };
 
 /* ---- unprivileged isolation: MPU region setup ------------------------------ */
@@ -1246,7 +1259,7 @@ static int nuttx_port_config_valid(void)
 
 /* Per-run bring-up / teardown (was the body of the old lxp_run() wrapper). The
  * public lxp_run() now lives in the module (src/lxp_run.c) and calls these via
- * g_lxp_host_engine.prepare()/.teardown() around the internal run loop. */
+ * g_lxp_host_engine.core.prepare()/.teardown() around the internal run loop. */
 static int nuttx_prepare(void)
 {
 	if (!nuttx_port_config_valid())

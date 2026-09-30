@@ -27,8 +27,8 @@ int lxp_signal_send(const lxp_proc_t *skip, int pid, int pgid, int sig)
 	/* Wake the coordinator now so it delivers the signal at once (the LinuxThreads
 	 * restart) instead of at its next poll: otherwise every thread wakeup costs up to one
 	 * event_wait timeout. */
-	if (recipients && g_lxp_os_ops && g_lxp_os_ops->event_post)
-		g_lxp_os_ops->event_post();
+	if (recipients && g_lxp_os_ops && g_lxp_os_ops->core.event_post)
+		g_lxp_os_ops->core.event_post();
 	return recipients;
 }
 

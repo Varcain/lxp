@@ -270,7 +270,7 @@ long lxp_dev_ioctl(lxp_proc_t *p, int oi, unsigned long cmd, unsigned long arg)
  * cache attrs (e.g. /dev/fb0 -> the LTDC framebuffer, Normal-NC), then we PARK on
  * DEVW_MMAP. Adding the unprivileged MPU region over that range is a domain/TCB edit
  * that is not safe from the svc-exception dispatch, so the run-loop coordinator does
- * it (eng->map_device) and resumes the proc with r0 = the mapped address. */
+ * it (eng->memory.map_device) and resumes the proc with r0 = the mapped address. */
 long lxp_dev_mmap(lxp_proc_t *p, int oi, size_t len, uint32_t pgoff)
 {
 	struct lxp_dev_open *o = open_slot(oi);

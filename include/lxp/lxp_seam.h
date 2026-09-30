@@ -103,9 +103,10 @@ static inline void lxp_resume_ctx_from_launch(struct lxp_resume_ctx *out,
 }
 
 /* The per-engine operations the shared run loop drives are the public port vtable
- * lxp_os_ops_t (lxp_port.h): region/spawn_launch/spawn_resume, task
- * park/abort, the crit/event primitives, dyn_pool/map_device, and the OS-service
- * hooks (time, thread_list, cache, rootfs_window, exec_stage) + prepare/teardown. */
+ * lxp_os_ops_t (lxp_port.h), grouped by role: core (prepare/teardown, the crit and
+ * event primitives), task (spawn, park, abort), memory (regions, pools, device
+ * maps, caches, the memory contract) and services (time, threads, version,
+ * entropy). */
 
 /* ---- narrow shared-core operations (defined in lxp_run.c) -------------- */
 /** Acquire the run-active publication gate before consulting slot state. */

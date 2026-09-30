@@ -100,8 +100,14 @@ static int mock_guest_stack_usage(size_t *used, size_t *size)
 static const lxp_os_ops_t g_os_ops = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
-	.rootfs_window = mock_rootfs_window,
-	.guest_stack_usage = mock_guest_stack_usage,
+	.task =
+		{
+			.guest_stack_usage = mock_guest_stack_usage,
+		},
+	.memory =
+		{
+			.rootfs_window = mock_rootfs_window,
+		},
 };
 static const lxp_net_ops_t g_net_ops;
 static const lxp_display_ops_t g_display_ops;

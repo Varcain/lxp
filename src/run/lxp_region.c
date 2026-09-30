@@ -218,9 +218,9 @@ lxp_region_ref_t lxp_vfork_snapshot(lxp_proc_t *par, lxp_slot_ref_t child, uintp
 		}
 	if (rsnap < 0)
 		return lxp_region_ref_none();
-	uint8_t *pr = g_lxp_os_ops->region(par->mm->region.index);
+	uint8_t *pr = g_lxp_os_ops->memory.region(par->mm->region.index);
 	size_t dlen = par->stack_lo - (uintptr_t)pr; /* in-region writable data, below the stack */
-	uint8_t *sr = g_lxp_os_ops->region(rsnap);
+	uint8_t *sr = g_lxp_os_ops->memory.region(rsnap);
 	if (sp < par->stack_lo || sp > par->mm->region_hi)
 		return lxp_region_ref_none();
 	lxp_region_ref_t snapshot = lxp_region_reserve(rsnap, child);
@@ -229,10 +229,10 @@ lxp_region_ref_t lxp_vfork_snapshot(lxp_proc_t *par, lxp_slot_ref_t child, uintp
 	snapshot_copy_span(sr, pr, dlen);
 	size_t slen = par->mm->region_hi - sp;
 	snapshot_copy_span(sr + (sp - (uintptr_t)pr), (const void *)sp, slen);
-	if (par->mm->is_dynamic && g_lxp_os_ops->dyn_pool) {
+	if (par->mm->is_dynamic && g_lxp_os_ops->memory.dyn_pool) {
 		size_t ds = 0;
-		uint8_t *pdp = g_lxp_os_ops->dyn_pool(par->mm->region.index, &ds);
-		uint8_t *sdp = g_lxp_os_ops->dyn_pool(rsnap, NULL);
+		uint8_t *pdp = g_lxp_os_ops->memory.dyn_pool(par->mm->region.index, &ds);
+		uint8_t *sdp = g_lxp_os_ops->memory.dyn_pool(rsnap, NULL);
 		snapshot_copy_span(sdp, pdp, ds);
 	}
 	g_lxp_rt.arenas[rsnap] =
@@ -264,18 +264,18 @@ int lxp_vfork_restore(lxp_proc_t *par, lxp_region_ref_t snapshot, lxp_slot_ref_t
 	    g_lxp_rt.regions[rsnap].refs != 1 ||
 	    g_lxp_rt.regions[rsnap].generation != snapshot.generation)
 		return -1;
-	uint8_t *pr = g_lxp_os_ops->region(par->mm->region.index);
+	uint8_t *pr = g_lxp_os_ops->memory.region(par->mm->region.index);
 	size_t dlen = par->stack_lo - (uintptr_t)pr;
-	uint8_t *sr = g_lxp_os_ops->region(rsnap);
+	uint8_t *sr = g_lxp_os_ops->memory.region(rsnap);
 	restore_copy_span(pr, sr, dlen);
 	if (sp >= par->stack_lo && sp <= par->mm->region_hi) {
 		size_t slen = par->mm->region_hi - sp;
 		restore_copy_span((void *)sp, sr + (sp - (uintptr_t)pr), slen);
 	}
-	if (par->mm->is_dynamic && g_lxp_os_ops->dyn_pool) {
+	if (par->mm->is_dynamic && g_lxp_os_ops->memory.dyn_pool) {
 		size_t ds = 0;
-		uint8_t *pdp = g_lxp_os_ops->dyn_pool(par->mm->region.index, &ds);
-		restore_copy_span(pdp, g_lxp_os_ops->dyn_pool(rsnap, NULL), ds);
+		uint8_t *pdp = g_lxp_os_ops->memory.dyn_pool(par->mm->region.index, &ds);
+		restore_copy_span(pdp, g_lxp_os_ops->memory.dyn_pool(rsnap, NULL), ds);
 	}
 	g_lxp_rt.arenas[par->mm->region.index] = g_lxp_rt.arenas[rsnap];
 	lxp_vfork_guard_reset(child.index);

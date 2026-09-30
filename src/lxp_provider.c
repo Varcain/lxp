@@ -81,40 +81,40 @@ void lxp_providers_clear(void)
  * (host adapter) fills the ops; the engine is published for the duration of a run. */
 int lxp_time_us(uint64_t *out)
 {
-	if (g_lxp_os_ops && g_lxp_os_ops->time_us)
-		return g_lxp_os_ops->time_us(out);
+	if (g_lxp_os_ops && g_lxp_os_ops->services.time_us)
+		return g_lxp_os_ops->services.time_us(out);
 	*out = 0;
 	return LXP_ERR_NOT_SUPPORTED;
 }
 int lxp_time_ns(uint64_t *out)
 {
-	if (g_lxp_os_ops && g_lxp_os_ops->time_ns)
-		return g_lxp_os_ops->time_ns(out);
+	if (g_lxp_os_ops && g_lxp_os_ops->services.time_ns)
+		return g_lxp_os_ops->services.time_ns(out);
 	*out = 0;
 	return LXP_ERR_NOT_SUPPORTED;
 }
 int lxp_random_fill(void *buf, size_t len)
 {
-	if ((!buf && len != 0u) || !g_lxp_os_ops || !g_lxp_os_ops->random_fill)
+	if ((!buf && len != 0u) || !g_lxp_os_ops || !g_lxp_os_ops->services.random_fill)
 		return (!buf && len != 0u) ? LXP_ERR_INVALID_PARAM : LXP_ERR_NOT_SUPPORTED;
-	return g_lxp_os_ops->random_fill(buf, len);
+	return g_lxp_os_ops->services.random_fill(buf, len);
 }
 uint8_t *lxp_exec_stage(size_t *cap)
 {
 	if (cap)
 		*cap = 0;
-	if (!g_lxp_os_ops || !g_lxp_os_ops->exec_stage)
+	if (!g_lxp_os_ops || !g_lxp_os_ops->memory.exec_stage)
 		return NULL;
-	return g_lxp_os_ops->exec_stage(cap);
+	return g_lxp_os_ops->memory.exec_stage(cap);
 }
 int lxp_mem_stats(struct lxp_mem_stats *out)
 {
 	if (!out)
 		return LXP_ERR_INVALID_PARAM;
 	memset(out, 0, sizeof(*out));
-	if (!g_lxp_os_ops || !g_lxp_os_ops->mem_stats)
+	if (!g_lxp_os_ops || !g_lxp_os_ops->services.mem_stats)
 		return LXP_ERR_NOT_SUPPORTED;
-	int rc = g_lxp_os_ops->mem_stats(out);
+	int rc = g_lxp_os_ops->services.mem_stats(out);
 	if (rc != LXP_OK) {
 		memset(out, 0, sizeof(*out));
 		return rc;
@@ -131,8 +131,8 @@ int lxp_mem_stats(struct lxp_mem_stats *out)
 }
 const char *lxp_system_version(void)
 {
-	if (g_lxp_os_ops && g_lxp_os_ops->system_version) {
-		const char *version = g_lxp_os_ops->system_version();
+	if (g_lxp_os_ops && g_lxp_os_ops->services.system_version) {
+		const char *version = g_lxp_os_ops->services.system_version();
 		if (version && version[0])
 			return version;
 	}
@@ -140,18 +140,18 @@ const char *lxp_system_version(void)
 }
 void lxp_cache_clean(const void *base, size_t len)
 {
-	if (g_lxp_os_ops && g_lxp_os_ops->cache_clean)
-		g_lxp_os_ops->cache_clean(base, len);
+	if (g_lxp_os_ops && g_lxp_os_ops->memory.cache_clean)
+		g_lxp_os_ops->memory.cache_clean(base, len);
 }
 void lxp_cache_invalidate(const void *base, size_t len)
 {
-	if (g_lxp_os_ops && g_lxp_os_ops->cache_invalidate)
-		g_lxp_os_ops->cache_invalidate(base, len);
+	if (g_lxp_os_ops && g_lxp_os_ops->memory.cache_invalidate)
+		g_lxp_os_ops->memory.cache_invalidate(base, len);
 }
 int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actual_count)
 {
-	if (g_lxp_os_ops && g_lxp_os_ops->thread_list)
-		return g_lxp_os_ops->thread_list(out, max_count, actual_count);
+	if (g_lxp_os_ops && g_lxp_os_ops->services.thread_list)
+		return g_lxp_os_ops->services.thread_list(out, max_count, actual_count);
 	if (actual_count)
 		*actual_count = 0;
 	return LXP_ERR_NOT_SUPPORTED;
@@ -162,7 +162,7 @@ int lxp_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actua
  * from its data-ready path). */
 void lxp_dev_kick(void)
 {
-	if (g_lxp_os_ops && g_lxp_os_ops->event_post)
-		g_lxp_os_ops->event_post();
+	if (g_lxp_os_ops && g_lxp_os_ops->core.event_post)
+		g_lxp_os_ops->core.event_post();
 }
 #endif

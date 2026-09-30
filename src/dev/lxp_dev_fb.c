@@ -222,7 +222,7 @@ static unsigned fb_poll(struct lxp_dev *d, struct lxp_dev_open *o)
  * with LV_LINUX_FBDEV_MMAP=1 writes pixels straight into it — replacing ~272 per-row
  * pwrite syscalls/frame with a userspace memcpy. Normal-NC: the guest's stores reach
  * SDRAM directly for the LTDC's continuous scanout, with no cache maintenance. The
- * run-loop coordinator installs the actual MPU region (eng->map_device). */
+ * run-loop coordinator installs the actual MPU region (eng->memory.map_device). */
 static long fb_mmap(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p, size_t len,
 		    uint32_t pgoff, uintptr_t *phys, unsigned *attrs)
 {

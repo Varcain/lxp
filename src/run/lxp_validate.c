@@ -47,22 +47,24 @@ static int cpu_memory_contract_valid(const lxp_cpu_memory_contract_t *contract)
 int lxp_os_ops_valid(const lxp_os_ops_t *ops)
 {
 	if (!ops || ops->abi_version != LXP_OS_OPS_ABI_VERSION ||
-	    ops->struct_size != sizeof(*ops) || !ops->region || !ops->spawn_launch ||
-	    !ops->spawn_resume || !ops->abort_slot || !ops->park_entry || !ops->park_prepare ||
-	    !ops->park_slot || !ops->crit_enter || !ops->crit_exit || !ops->event_post ||
-	    !ops->event_wait || !ops->time_us || !ops->time_ns || !ops->exec_capture ||
-	    !ops->random_fill || !ops->publish_executable || !ops->validate_memory_contract ||
-	    !cpu_memory_contract_valid(ops->cpu_memory_contract))
+	    ops->struct_size != sizeof(*ops) || !ops->memory.region || !ops->task.spawn_launch ||
+	    !ops->task.spawn_resume || !ops->task.abort_slot || !ops->task.park_entry ||
+	    !ops->task.park_prepare || !ops->task.park_slot || !ops->core.crit_enter ||
+	    !ops->core.crit_exit || !ops->core.event_post || !ops->core.event_wait ||
+	    !ops->services.time_us || !ops->services.time_ns || !ops->memory.exec_capture ||
+	    !ops->services.random_fill || !ops->memory.publish_executable ||
+	    !ops->memory.validate_memory_contract ||
+	    !cpu_memory_contract_valid(ops->memory.cpu_memory_contract))
 		return 0;
 #if LXP_ENABLE_NETFS_EXEC
-	if (!ops->exec_stage)
+	if (!ops->memory.exec_stage)
 		return 0;
 #endif
 	for (int r = 0; r < LXP_NREG; r++)
-		if (!ops->region(r))
+		if (!ops->memory.region(r))
 			return 0;
 	for (int s = 0; s < LXP_NSLOT; s++)
-		if (!ops->exec_capture(s))
+		if (!ops->memory.exec_capture(s))
 			return 0;
 	return 1;
 }

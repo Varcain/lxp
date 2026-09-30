@@ -133,14 +133,20 @@ static void mock_cache_invalidate(const void *base, size_t len)
 
 /* Only the OS-service hooks: nothing here runs a task, so the lifecycle ops stay NULL. */
 static const lxp_os_ops_t g_lxp_test_engine = {
-	.time_us = mock_time_us,
-	.time_ns = mock_time_ns,
-	.random_fill = mock_random_fill,
-	.exec_stage = mock_exec_stage,
-	.mem_stats = mock_mem_stats,
-	.system_version = mock_system_version,
-	.cache_clean = mock_cache_clean,
-	.cache_invalidate = mock_cache_invalidate,
+	.memory =
+		{
+			.exec_stage = mock_exec_stage,
+			.cache_clean = mock_cache_clean,
+			.cache_invalidate = mock_cache_invalidate,
+		},
+	.services =
+		{
+			.time_us = mock_time_us,
+			.time_ns = mock_time_ns,
+			.mem_stats = mock_mem_stats,
+			.system_version = mock_system_version,
+			.random_fill = mock_random_fill,
+		},
 };
 
 /* Every test and fuzz binary that links these stubs runs with the mock engine. */

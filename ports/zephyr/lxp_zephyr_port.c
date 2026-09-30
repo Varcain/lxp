@@ -1055,34 +1055,45 @@ const lxp_cortex_m_port_common_t *const g_lxp_cortex_m_port_common = &PORT_CONFI
 const lxp_os_ops_t g_lxp_host_engine = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
-	.prepare = zephyr_prepare,
-	.teardown = zephyr_teardown,
-	.region = lxp_cortex_m_port_region,
-	.dyn_pool = lxp_cortex_m_port_dyn_pool,
-	.exec_capture = lxp_cortex_m_port_exec_capture,
-	.random_fill = zephyr_random_fill,
-	.spawn_launch = zephyr_spawn_launch,
-	.spawn_resume = zephyr_spawn_resume,
-	.abort_slot = zephyr_abort_slot,
-	.park_entry = zephyr_park_entry,
-	.park_prepare = zephyr_park_prepare,
-	.park_slot = zephyr_park_slot,
-	.crit_enter = zephyr_crit_enter,
-	.crit_exit = zephyr_crit_exit,
-	.event_post = zephyr_event_post,
-	.event_wait = zephyr_event_wait,
-	/* OS-service ops (host adapter). */
-	.time_us = lxp_cortex_m_port_time_us,
-	.time_ns = lxp_cortex_m_port_time_ns,
-	.thread_list = lxp_seam_thread_list,
-	.mem_stats = lxp_cortex_m_port_mem_stats,
-	.system_version = lxp_cortex_m_port_system_version,
-	.publish_executable = lxp_cortex_m_port_publish_executable,
-	.cpu_memory_contract = &PORT_CONFIG.common.cpu_memory_contract,
-	.validate_memory_contract = lxp_cortex_m_port_validate_memory_contract,
+	.core =
+		{
+			.prepare = zephyr_prepare,
+			.teardown = zephyr_teardown,
+			.crit_enter = zephyr_crit_enter,
+			.crit_exit = zephyr_crit_exit,
+			.event_post = zephyr_event_post,
+			.event_wait = zephyr_event_wait,
+		},
+	.task =
+		{
+			.spawn_launch = zephyr_spawn_launch,
+			.spawn_resume = zephyr_spawn_resume,
+			.abort_slot = zephyr_abort_slot,
+			.park_entry = zephyr_park_entry,
+			.park_prepare = zephyr_park_prepare,
+			.park_slot = zephyr_park_slot,
+		},
+	.memory =
+		{
+			.region = lxp_cortex_m_port_region,
+			.dyn_pool = lxp_cortex_m_port_dyn_pool,
+			.exec_capture = lxp_cortex_m_port_exec_capture,
 #if LXP_ENABLE_NETFS_EXEC
-	.exec_stage = lxp_cortex_m_port_exec_stage,
+			.exec_stage = lxp_cortex_m_port_exec_stage,
 #endif
+			.publish_executable = lxp_cortex_m_port_publish_executable,
+			.cpu_memory_contract = &PORT_CONFIG.common.cpu_memory_contract,
+			.validate_memory_contract = lxp_cortex_m_port_validate_memory_contract,
+		},
+	.services =
+		{
+			.time_us = lxp_cortex_m_port_time_us,
+			.time_ns = lxp_cortex_m_port_time_ns,
+			.thread_list = lxp_seam_thread_list,
+			.mem_stats = lxp_cortex_m_port_mem_stats,
+			.system_version = lxp_cortex_m_port_system_version,
+			.random_fill = zephyr_random_fill,
+		},
 };
 
 /* The public lxp_run() now lives in the module (src/lxp_run.c). */

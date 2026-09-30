@@ -43,8 +43,8 @@ struct lxp_exit_result lxp_handle_exit(int slot)
 	lxp_slot_ref_t parent_ref = proc->vfork_parent;
 	int parent_slot = parent_ref.index;
 	lxp_proc_resources_put(proc);
-	if (g_lxp_os_ops->map_device)
-		(void)g_lxp_os_ops->map_device(slot, 0, 0, 0);
+	if (g_lxp_os_ops->memory.map_device)
+		(void)g_lxp_os_ops->memory.map_device(slot, 0, 0, 0);
 	g_lxp_sig_save[slot].depth = 0;
 
 	if (lxp_slot_ref_is_current(parent_ref) && proc->snapshot.index >= 0) {

@@ -45,8 +45,8 @@ void lxp_primary_events_reset(void)
 void lxp_event_post_slot(int slot)
 {
 	lxp_primary_slot_mark(slot);
-	if (g_lxp_os_ops && g_lxp_os_ops->event_post)
-		g_lxp_os_ops->event_post();
+	if (g_lxp_os_ops && g_lxp_os_ops->core.event_post)
+		g_lxp_os_ops->core.event_post();
 }
 
 /* Inspect one slot's highest-priority event. The caller holds the engine
@@ -118,10 +118,10 @@ struct lxp_claimed_event lxp_coordinator_claim_event(unsigned *cursor)
 		int s = (int)((*cursor + (unsigned)i) % LXP_NSLOT);
 		if (!lxp_primary_slot_pending(s))
 			continue;
-		lxp_critical_token_t critical_token = g_lxp_os_ops->crit_enter();
+		lxp_critical_token_t critical_token = g_lxp_os_ops->core.crit_enter();
 		lxp_primary_slot_clear(s);
 		int type = lxp_claim_slot_event(s);
-		g_lxp_os_ops->crit_exit(critical_token);
+		g_lxp_os_ops->core.crit_exit(critical_token);
 		if (type == LXP_EV_NONE)
 			continue;
 		claimed.slot = s;

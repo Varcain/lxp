@@ -87,7 +87,7 @@ typedef struct lxp_cpu_memory_contract {
 	uint32_t icache_size;
 } lxp_cpu_memory_contract_t;
 
-#define LXP_OS_OPS_ABI_VERSION 11u
+#define LXP_OS_OPS_ABI_VERSION 12u
 
 /* Opaque host critical-section state. Ports which use irq-save primitives
  * return the native key through this value; ports with internally nested
@@ -133,20 +133,36 @@ static inline int lxp_range_overlaps(uintptr_t first_base, size_t first_size,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * OS / engine port — the process-model substrate.
- *
- * The leading entries are the per-engine "how do I place program memory, spawn
- * a task, take a critical section" primitives the run loop drives on its hot
- * path. The trailing entries are genuine OS services (monotonic time, thread
- * introspection) and optional cache / rootfs / remote-exec hooks (NULL => the
- * feature quietly degrades).
+ * OS / engine port — the process-model substrate, grouped by role: the run
+ * loop's own machinery, guest tasks, guest memory, and host services.
+ * Optional entries are marked; NULL makes that feature quietly degrade.
  * ───────────────────────────────────────────────────────────────────────── */
-typedef struct lxp_os_ops {
-	uint32_t abi_version; /**< Must be LXP_OS_OPS_ABI_VERSION. */
-	uint32_t struct_size; /**< Must be sizeof(lxp_os_ops_t). */
 
-	/* The engine owns prog_regions[]; return region `ridx`'s base. */
-	uint8_t *(*region)(int ridx);
+/** The run loop's machinery: per-run bring-up, the coordinator critical section
+ *  and its wakeup. */
+typedef struct lxp_os_core_ops {
+	/* Optional per-run bring-up / teardown, invoked by lxp_run() around the run
+	 * loop. A host homes its engine-specific setup here — create the coordinator
+	 * semaphore, enable Bus/UsageFault, program the MPU, attach the svc IRQ — and its
+	 * restore in teardown. NULL => skipped. Once prepare() is entered, teardown()
+	 * runs exactly once even when prepare() returns an error, so prepare() may
+	 * acquire resources incrementally and rely on teardown() to roll back its
+	 * completed steps. prepare() returns LXP_OK or an lxp_err_t naming the cause,
+	 * which lxp_run() then returns. */
+	int (*prepare)(void);
+	void (*teardown)(void);
+	/* Coordinator critical section: mask the program svc exception. The token
+	 * belongs to this enter/exit pair and must not be retained by the core. */
+	lxp_critical_token_t (*crit_enter)(void);
+	void (*crit_exit)(lxp_critical_token_t token);
+	/* Run-loop wakeup: dispatch posts when a program parks; the coordinator
+	 * blocks in event_wait (ms timeout for sleeper deadlines / snapshot). */
+	void (*event_post)(void);
+	void (*event_wait)(unsigned ms);
+} lxp_os_core_ops_t;
+
+/** Guest tasks: create, resume, park and abort the native task behind a slot. */
+typedef struct lxp_os_task_ops {
 	/* Host task transitions are generation checked and synchronous. The engine
 	 * records the slot reference's generation when it creates a task and rejects
 	 * park/resume/abort requests for another slot incarnation. Return LXP_OK
@@ -159,86 +175,6 @@ typedef struct lxp_os_ops {
 	int (*spawn_resume)(lxp_slot_ref_t slot, int ridx, lxp_spawn_resume_mode_t mode,
 			    const struct lxp_resume_ctx *c, long r0val);
 	int (*abort_slot)(lxp_slot_ref_t slot);
-	/* Coordinator critical section: mask the program svc exception. The token
-	 * belongs to this enter/exit pair and must not be retained by the core. */
-	lxp_critical_token_t (*crit_enter)(void);
-	void (*crit_exit)(lxp_critical_token_t token);
-	/* Run-loop wakeup: dispatch posts when a program parks; the coordinator
-	 * blocks in event_wait (ms timeout for sleeper deadlines / snapshot). */
-	void (*event_post)(void);
-	void (*event_wait)(unsigned ms);
-	/* FDPIC dynamic-linking scratch pool for region `ridx` (ld.so mmaps libc
-	 * here). NULL => dynamic execs can't launch on that engine. */
-	uint8_t *(*dyn_pool)(int ridx, size_t *size);
-	/* Privileged cold storage for slot `sidx`'s transient execve argv/env
-	 * capture. Required by the coordinator; ports may place it in external RAM. */
-	lxp_exec_capture_t *(*exec_capture)(int sidx);
-	/* Map [addr,addr+size) RW into slot sidx's view with attrs (LXP_MAP_*).
-	 * NULL => a device mmap returns -ENODEV. */
-	int (*map_device)(int sidx, uintptr_t addr, size_t size, unsigned attrs);
-
-	/* Monotonic clock (required). *out = microseconds / nanoseconds since boot. */
-	int (*time_us)(uint64_t *out);
-	int (*time_ns)(uint64_t *out);
-	/* Host kernel-thread snapshot for the ps/top /proc view. NULL => omitted. */
-	int (*thread_list)(struct lxp_thread_info *out, size_t max, size_t *n);
-
-	/* Guest-memory cache maintenance (NULL => no-op; a coherent host needs none). */
-	void (*cache_clean)(const void *base, size_t len);
-	void (*cache_invalidate)(const void *base, size_t len);
-	/* Give the coordinator a coherent (cacheable) view of guest region `ridx`
-	 * (its program region + dyn_pool) before it services that guest's DEFERRED
-	 * syscalls / parked-op retries, so the coordinator's reads and writes of the
-	 * guest's buffers are coherent with the guest's own cached view (no per-call
-	 * clean/invalidate needed). Only the single active region need be mapped; the
-	 * coordinator services one slot at a time. On a host whose coordinator already
-	 * shares the guest's cacheable mapping this is a no-op (NULL). */
-	void (*coord_map)(int ridx);
-	/* Tell the engine where the (XIP) rootfs image lives, for PC discrimination. */
-	void (*rootfs_window)(const void *base, size_t len);
-	/* Staging buffer for fetching a remote exec image. NULL => no remote exec. */
-	uint8_t *(*exec_stage)(size_t *cap);
-
-	/* Optional per-run bring-up / teardown, invoked by lxp_run() around the run
-	 * loop. A host homes its engine-specific setup here — create the coordinator
-	 * semaphore, enable Bus/UsageFault, program the MPU, attach the svc IRQ — and its
-	 * restore in teardown. NULL => skipped. Once prepare() is entered, teardown()
-	 * runs exactly once even when prepare() returns an error, so prepare() may
-	 * acquire resources incrementally and rely on teardown() to roll back its
-	 * completed steps. prepare() returns LXP_OK or an lxp_err_t naming the cause,
-	 * which lxp_run() then returns. */
-	int (*prepare)(void);
-	void (*teardown)(void);
-
-	/* Fill every byte in [buf, buf+len) from a host entropy source. The callback
-	 * runs on the privileged coordinator task, must have a finite host-defined
-	 * deadline, and returns LXP_OK only when the entire buffer is valid. A port
-	 * without trustworthy entropy leaves this NULL; the guest then fails closed
-	 * instead of receiving a predictable in-core fallback. */
-	int (*random_fill)(void *buf, size_t len);
-
-	/* Host system-heap snapshot for sysinfo(2) and /proc/meminfo. NULL reports
-	 * zero memory rather than inventing a fixed total. */
-	int (*mem_stats)(struct lxp_mem_stats *out);
-
-	/* Immutable host identity for the utsname.version field and /proc/version,
-	 * e.g. "Zephyr 4.4.0 ove-1a2b3c4 lxp-5d6e7f8". The returned string must
-	 * remain valid for the run; lxp truncates it to Linux's 64-byte field. */
-	const char *(*system_version)(void);
-
-	/* Publish loader-written RAM text to instruction fetch while the
-	 * generation-qualified address-space lease is still exclusively owned by
-	 * the image transaction. The core validates [base, base+len) against that
-	 * address space and calls this exactly once for a non-empty copied-text
-	 * extent, before publishing the process or creating a native task.
-	 *
-	 * Every port must provide this operation. A machine which is genuinely
-	 * instruction/data coherent may implement an explicit validated no-op;
-	 * absence is never interpreted as coherence. Ordinary CPU data and
-	 * DMA/device ownership are outside this operation's contract. */
-	int (*publish_executable)(lxp_region_ref_t address_space, uintptr_t base,
-				  size_t len);
-
 	/* Persistent parked-task handoff. park_entry is the engine-owned,
 	 * guest-executable target installed in the parked exception frame.
 	 * park_prepare runs in the guest's svc exception and may return an opaque,
@@ -252,7 +188,54 @@ typedef struct lxp_os_ops {
 	void (*park_entry)(void *token);
 	void *(*park_prepare)(lxp_slot_ref_t slot, const struct lxp_resume_ctx *c);
 	int (*park_slot)(lxp_slot_ref_t slot);
+	/* Optional aggregate native stack high-water mark across guest tasks.
+	 * Both values are bytes. Return LXP_OK only when used <= size and the
+	 * measurement is meaningful; a NULL callback makes it unavailable. This
+	 * keeps engine-specific task introspection behind the port contract. */
+	int (*guest_stack_usage)(size_t *used, size_t *size);
+} lxp_os_task_ops_t;
 
+/** Guest memory: the storage the engine owns, how guests see it, and the
+ *  cache and MPU contract that keeps the coordinator's view coherent. */
+typedef struct lxp_os_memory_ops {
+	/* The engine owns prog_regions[]; return region `ridx`'s base. */
+	uint8_t *(*region)(int ridx);
+	/* FDPIC dynamic-linking scratch pool for region `ridx` (ld.so mmaps libc
+	 * here). NULL => dynamic execs can't launch on that engine. */
+	uint8_t *(*dyn_pool)(int ridx, size_t *size);
+	/* Privileged cold storage for slot `sidx`'s transient execve argv/env
+	 * capture. Required by the coordinator; ports may place it in external RAM. */
+	lxp_exec_capture_t *(*exec_capture)(int sidx);
+	/* Staging buffer for fetching a remote exec image. NULL => no remote exec. */
+	uint8_t *(*exec_stage)(size_t *cap);
+	/* Map [addr,addr+size) RW into slot sidx's view with attrs (LXP_MAP_*).
+	 * NULL => a device mmap returns -ENODEV. */
+	int (*map_device)(int sidx, uintptr_t addr, size_t size, unsigned attrs);
+	/* Publish loader-written RAM text to instruction fetch while the
+	 * generation-qualified address-space lease is still exclusively owned by
+	 * the image transaction. The core validates [base, base+len) against that
+	 * address space and calls this exactly once for a non-empty copied-text
+	 * extent, before publishing the process or creating a native task.
+	 *
+	 * Every port must provide this operation. A machine which is genuinely
+	 * instruction/data coherent may implement an explicit validated no-op;
+	 * absence is never interpreted as coherence. Ordinary CPU data and
+	 * DMA/device ownership are outside this operation's contract. */
+	int (*publish_executable)(lxp_region_ref_t address_space, uintptr_t base,
+				  size_t len);
+	/* Give the coordinator a coherent (cacheable) view of guest region `ridx`
+	 * (its program region + dyn_pool) before it services that guest's DEFERRED
+	 * syscalls / parked-op retries, so the coordinator's reads and writes of the
+	 * guest's buffers are coherent with the guest's own cached view (no per-call
+	 * clean/invalidate needed). Only the single active region need be mapped; the
+	 * coordinator services one slot at a time. On a host whose coordinator already
+	 * shares the guest's cacheable mapping this is a no-op (NULL). */
+	void (*coord_map)(int ridx);
+	/* Tell the engine where the (XIP) rootfs image lives, for PC discrimination. */
+	void (*rootfs_window)(const void *base, size_t len);
+	/* Guest-memory cache maintenance (NULL => no-op; a coherent host needs none). */
+	void (*cache_clean)(const void *base, size_t len);
+	void (*cache_invalidate)(const void *base, size_t len);
 	/* Immutable, separately versioned CPU-memory declaration plus its
 	 * live-hardware validator. lxp_run() first checks the portable contract,
 	 * then invokes validate_memory_contract after prepare() has installed the
@@ -260,12 +243,37 @@ typedef struct lxp_os_ops {
 	 * fails the run closed. The declaration must remain valid for the run. */
 	const lxp_cpu_memory_contract_t *cpu_memory_contract;
 	int (*validate_memory_contract)(const lxp_cpu_memory_contract_t *declared);
+} lxp_os_memory_ops_t;
 
-	/* Optional aggregate native stack high-water mark across guest tasks.
-	 * Both values are bytes. Return LXP_OK only when used <= size and the
-	 * measurement is meaningful; a NULL callback makes it unavailable. This
-	 * keeps engine-specific task introspection behind the port contract. */
-	int (*guest_stack_usage)(size_t *used, size_t *size);
+/** Host services the guest-visible system reports. */
+typedef struct lxp_os_services {
+	/* Monotonic clock (required). *out = microseconds / nanoseconds since boot. */
+	int (*time_us)(uint64_t *out);
+	int (*time_ns)(uint64_t *out);
+	/* Host kernel-thread snapshot for the ps/top /proc view. NULL => omitted. */
+	int (*thread_list)(struct lxp_thread_info *out, size_t max, size_t *n);
+	/* Host system-heap snapshot for sysinfo(2) and /proc/meminfo. NULL reports
+	 * zero memory rather than inventing a fixed total. */
+	int (*mem_stats)(struct lxp_mem_stats *out);
+	/* Immutable host identity for the utsname.version field and /proc/version,
+	 * e.g. "Zephyr 4.4.0 ove-1a2b3c4 lxp-5d6e7f8". The returned string must
+	 * remain valid for the run; lxp truncates it to Linux's 64-byte field. */
+	const char *(*system_version)(void);
+	/* Fill every byte in [buf, buf+len) from a host entropy source. The callback
+	 * runs on the privileged coordinator task, must have a finite host-defined
+	 * deadline, and returns LXP_OK only when the entire buffer is valid. A port
+	 * without trustworthy entropy leaves this NULL; the guest then fails closed
+	 * instead of receiving a predictable in-core fallback. */
+	int (*random_fill)(void *buf, size_t len);
+} lxp_os_services_t;
+
+typedef struct lxp_os_ops {
+	uint32_t abi_version; /**< Must be LXP_OS_OPS_ABI_VERSION. */
+	uint32_t struct_size; /**< Must be sizeof(lxp_os_ops_t). */
+	lxp_os_core_ops_t core;
+	lxp_os_task_ops_t task;
+	lxp_os_memory_ops_t memory;
+	lxp_os_services_t services;
 } lxp_os_ops_t;
 
 /** The engine table of the one OS port linked into the image. The port defines it; the

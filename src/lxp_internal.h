@@ -51,7 +51,7 @@ int lxp_console_poll_interrupts(void);
 /* Restore the console tty's defaults and discard queued typeahead (run start). */
 void lxp_console_reset(void);
 
-/* Snapshot the host allocator through lxp_os_ops.mem_stats.  On failure `out`
+/* Snapshot the host allocator through lxp_os_ops.services.mem_stats.  On failure `out`
  * is zeroed, so procfs/sysinfo never fall back to fabricated memory totals. */
 int lxp_mem_stats(struct lxp_mem_stats *out);
 

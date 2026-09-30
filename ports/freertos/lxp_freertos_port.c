@@ -1103,7 +1103,7 @@ static void freertos_cache_invalidate(const void *base, size_t len)
  * coordinator wakeup semaphore in thread context and enable Bus/UsageFault so a
  * program's fault is contained by our handlers instead of escalating to HardFault
  * (the MPU port's prvSetupMPU only turns on MEMFAULTENA). Invoked by the module's
- * lxp_run() via g_lxp_host_engine.prepare before the run loop. */
+ * lxp_run() via g_lxp_host_engine.core.prepare before the run loop. */
 static int freertos_prepare(void)
 {
 	if (PORT_CONFIG.abi_version != LXP_FREERTOS_PORT_CONFIG_ABI_VERSION ||
@@ -1189,41 +1189,51 @@ const lxp_cortex_m_port_common_t *const g_lxp_cortex_m_port_common = &PORT_CONFI
 const lxp_os_ops_t g_lxp_host_engine = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
-	.prepare = freertos_prepare,
-	.teardown = freertos_teardown,
-	.region = lxp_cortex_m_port_region,
-	.dyn_pool = lxp_cortex_m_port_dyn_pool,
-	.exec_capture = lxp_cortex_m_port_exec_capture,
-	.spawn_launch = freertos_spawn_launch,
-	.spawn_resume = freertos_spawn_resume,
-	.abort_slot = freertos_abort_slot,
-	.park_entry = freertos_park_entry,
-	.park_prepare = freertos_park_prepare,
-	.park_slot = freertos_park_slot,
-	.crit_enter = freertos_crit_enter,
-	.crit_exit = freertos_crit_exit,
-	.event_post = freertos_event_post,
-	.event_wait = freertos_event_wait,
-	/* OS-service ops (host adapter): the personality core reaches these through
-	 * lxp_time_us/ns, lxp_thread_list, lxp_cache_clean/invalidate. */
-	.time_us = lxp_cortex_m_port_time_us,
-	.time_ns = lxp_cortex_m_port_time_ns,
-	.thread_list = lxp_seam_thread_list,
-	.mem_stats = lxp_cortex_m_port_mem_stats,
-	.system_version = lxp_cortex_m_port_system_version,
-	.publish_executable = lxp_cortex_m_port_publish_executable,
-	.cpu_memory_contract = &PORT_CONFIG.common.cpu_memory_contract,
-	.validate_memory_contract = lxp_cortex_m_port_validate_memory_contract,
-	.guest_stack_usage = freertos_guest_stack_usage,
-	.cache_clean = freertos_cache_clean,
-	.cache_invalidate = freertos_cache_invalidate,
-	.coord_map =
-		freertos_coord_map, /* coherent coordinator view of the serviced slot's pools */
-	.rootfs_window = freertos_rootfs_window,
+	.core =
+		{
+			.prepare = freertos_prepare,
+			.teardown = freertos_teardown,
+			.crit_enter = freertos_crit_enter,
+			.crit_exit = freertos_crit_exit,
+			.event_post = freertos_event_post,
+			.event_wait = freertos_event_wait,
+		},
+	.task =
+		{
+			.spawn_launch = freertos_spawn_launch,
+			.spawn_resume = freertos_spawn_resume,
+			.abort_slot = freertos_abort_slot,
+			.park_entry = freertos_park_entry,
+			.park_prepare = freertos_park_prepare,
+			.park_slot = freertos_park_slot,
+			.guest_stack_usage = freertos_guest_stack_usage,
+		},
+	.memory =
+		{
+			.region = lxp_cortex_m_port_region,
+			.dyn_pool = lxp_cortex_m_port_dyn_pool,
+			.exec_capture = lxp_cortex_m_port_exec_capture,
 #if LXP_ENABLE_NETFS_EXEC
-	.exec_stage = lxp_cortex_m_port_exec_stage,
+			.exec_stage = lxp_cortex_m_port_exec_stage,
 #endif
-	.random_fill = freertos_random_fill,
+			.publish_executable = lxp_cortex_m_port_publish_executable,
+			/* A coherent coordinator view of the serviced slot's pools. */
+			.coord_map = freertos_coord_map,
+			.rootfs_window = freertos_rootfs_window,
+			.cache_clean = freertos_cache_clean,
+			.cache_invalidate = freertos_cache_invalidate,
+			.cpu_memory_contract = &PORT_CONFIG.common.cpu_memory_contract,
+			.validate_memory_contract = lxp_cortex_m_port_validate_memory_contract,
+		},
+	.services =
+		{
+			.time_us = lxp_cortex_m_port_time_us,
+			.time_ns = lxp_cortex_m_port_time_ns,
+			.thread_list = lxp_seam_thread_list,
+			.mem_stats = lxp_cortex_m_port_mem_stats,
+			.system_version = lxp_cortex_m_port_system_version,
+			.random_fill = freertos_random_fill,
+		},
 };
 
 /* The rootfs.cpio is XIP'd from the memory-mapped QUADSPI NOR at 0x90000000.  The coordinator —
@@ -1290,5 +1300,5 @@ static void freertos_rootfs_window(const void *base, size_t len)
 }
 
 /* The public lxp_run() now lives in the module (src/lxp_run.c): it publishes the
- * net/display ops and brackets the run loop with g_lxp_host_engine.prepare() /
+ * net/display ops and brackets the run loop with g_lxp_host_engine.core.prepare() /
  * .teardown(). This port supplies only the engine vtable (g_lxp_host_engine). */
