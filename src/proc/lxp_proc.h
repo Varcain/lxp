@@ -385,6 +385,9 @@ static inline uintptr_t lxp_sig_restorer_get(const lxp_proc_t *proc)
 lxp_ofd_t *lxp_fd_description(lxp_proc_t *proc, int fd);
 uint8_t lxp_fd_kind(const lxp_proc_t *proc, int fd);
 int lxp_fd_backing(const lxp_proc_t *proc, int fd);
+/* The process layer returns 0 or a negated errno: -EINVAL for bad arguments, -ENOMEM when
+ * an object pool is exhausted, -EAGAIN when a shared object's reference count is full. */
+
 /** Take references for a descriptor table being copied, or fail without changes. */
 int lxp_fd_fork_inherit(lxp_proc_t *child);
 /** Acquire fork/clone resource ownership for an otherwise unowned child. */
@@ -476,8 +479,8 @@ long lxp_rootfs_resolve(const lxp_file_t *fs, int count, const char *abspath, co
  * Reserves @p brk_bytes from @p arena for the program break. The caller wires
  * @c write_fn / @c read_fn / @c io_ctx afterwards.
  *
- * @return LXP_OK; LXP_ERR_INVALID_PARAM on bad arguments;
- *         LXP_ERR_NO_MEMORY if the arena cannot satisfy @p brk_bytes.
+ * @return 0; -EINVAL on bad arguments; -ENOMEM when a process object or the
+ *         program break cannot be allocated.
  */
 int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes);
 

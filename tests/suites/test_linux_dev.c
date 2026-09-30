@@ -182,7 +182,7 @@ static const lxp_file_t g_fs[] = {
 static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 {
 	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), LXP_OK);
-	assert_int_equal(lxp_proc_init(p, arena, 4096), LXP_OK);
+	assert_int_equal(lxp_proc_init(p, arena, 4096), 0);
 	/* All-permitting access_ok range except NULL (region_lo = 1), matching the
 	 * syscall-suite harness; a NULL ioctl arg still fails lxp_guest_access_ok → -EFAULT. */
 	p->mm->region_lo = 1;

@@ -30,8 +30,7 @@ int reset_state(void **state)
 	memset(g_lxp_rt.slots, 0, sizeof(*g_lxp_rt.slots) * LXP_NSLOT);
 	memset(g_mock_arenas, 0, sizeof(g_mock_arenas));
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		assert_int_equal(lxp_proc_init(&g_lxp_rt.slots[s].proc, &g_mock_arenas[s], 0),
-				 LXP_OK);
+		assert_int_equal(lxp_proc_init(&g_lxp_rt.slots[s].proc, &g_mock_arenas[s], 0), 0);
 		g_lxp_rt.slots[s].proc.alive = 0;
 	}
 	lxp_primary_events_reset();
@@ -88,7 +87,7 @@ void prepare_mock_image_txn(struct image_txn *tx, int slot, int region)
 	lxp_region_ref_t region_ref = lxp_region_reserve(region, owner);
 	assert_int_equal(region_ref.index, region);
 	lxp_image_txn_init(tx, slot, region_ref, owner);
-	assert_int_equal(lxp_proc_init(&tx->proc, &g_mock_arenas[slot], 0), LXP_OK);
+	assert_int_equal(lxp_proc_init(&tx->proc, &g_mock_arenas[slot], 0), 0);
 	tx->proc.alive = 1;
 	tx->proc.mm->region = region_ref;
 	tx->prepared = 1;

@@ -75,7 +75,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	lxp_proc_t p;
 	if (lxp_arena_init(&arena, g_pool, sizeof(g_pool)) != LXP_OK)
 		return 0;
-	if (lxp_proc_init(&p, &arena, 4096) != LXP_OK)
+	if (lxp_proc_init(&p, &arena, 4096) != 0)
 		return 0;
 	/* guest region = g_guest exactly, so lxp_guest_access_ok bounds every deref to it, as on-target */
 	p.mm->region_lo = (uintptr_t)g_guest;

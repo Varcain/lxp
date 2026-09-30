@@ -40,7 +40,7 @@ int lxp_fork_txn_prepare(struct fork_txn *tx, int parent_slot, int child_slot,
 		rc = lxp_proc_init_thread_child(tx->child, tx->parent, clone_flags, child_pid);
 	else
 		rc = lxp_proc_init_process_child(tx->child, tx->parent, clone_flags, child_pid);
-	if (rc != LXP_OK)
+	if (rc != 0)
 		return -LXP_EAGAIN;
 	tx->child_constructed = 1;
 	if (lxp_lifecycle_failpoint_hit(LXP_FAIL_FORK_CHILD_PREPARED))

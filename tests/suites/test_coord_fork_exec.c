@@ -145,7 +145,7 @@ static void test_child_constructors_cover_clone_flag_matrix(void **state)
 		int rc = (flags & LXP_CLONE_THREAD)
 				 ? lxp_proc_init_thread_child(&child, parent, flags, child_pid)
 				 : lxp_proc_init_process_child(&child, parent, flags, child_pid);
-		assert_int_equal(rc, LXP_OK);
+		assert_int_equal(rc, 0);
 		assert_child_local_state(&child, child_pid);
 		assert_int_equal(child.mm == parent->mm, (flags & LXP_CLONE_VM) != 0);
 		assert_int_equal(child.files == parent->files, (flags & LXP_CLONE_FILES) != 0);
@@ -207,7 +207,7 @@ static void test_child_constructor_rolls_back_each_acquisition(void **state)
 		parent->member->refs = UINT16_MAX;                                       \
 		memset(&child, 0, sizeof(child));                                        \
 		assert_int_equal(lxp_proc_init_thread_child(&child, parent, flags, 200), \
-				 LXP_ERR_NO_MEMORY);                                     \
+				 -LXP_EAGAIN);                                           \
 		assert_failed_child_is_empty(&child);                                    \
 		parent->member->refs = saved;                                            \
 		assert_int_equal(parent->mm->refs, mm_refs);                             \
@@ -226,11 +226,11 @@ static void test_child_constructor_rolls_back_each_acquisition(void **state)
 
 	memset(&child, 0, sizeof(child));
 	assert_int_equal(lxp_proc_init_process_child(&child, parent, LXP_CLONE_SIGHAND, 201),
-			 LXP_ERR_INVALID_PARAM);
+			 -LXP_EINVAL);
 	assert_int_equal(lxp_proc_init_process_child(&child, parent, LXP_CLONE_THREAD, 201),
-			 LXP_ERR_INVALID_PARAM);
+			 -LXP_EINVAL);
 	assert_int_equal(lxp_proc_init_thread_child(&child, parent, LXP_CLONE_THREAD, 201),
-			 LXP_ERR_INVALID_PARAM);
+			 -LXP_EINVAL);
 }
 
 static void test_fork_build_abort_restores_world(void **state)
@@ -1218,9 +1218,9 @@ static void test_group_exit_releases_shared_address_space_last(void **state)
 
 	lxp_region_mm_put(thread);
 	assert_int_equal(lxp_region_get(leader->mm->region), LXP_OK);
-	assert_int_equal(lxp_proc_mm_fork(thread, leader, LXP_CLONE_VM), LXP_OK);
+	assert_int_equal(lxp_proc_mm_fork(thread, leader, LXP_CLONE_VM), 0);
 	lxp_proc_group_put(thread);
-	assert_int_equal(lxp_proc_group_fork(thread, leader, LXP_CLONE_THREAD, 11), LXP_OK);
+	assert_int_equal(lxp_proc_group_fork(thread, leader, LXP_CLONE_THREAD, 11), 0);
 	assert_ptr_equal(thread->mm, leader->mm);
 	assert_ptr_equal(thread->group, leader->group);
 	assert_int_equal(g_lxp_rt.regions[0].refs, 2);

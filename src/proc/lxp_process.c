@@ -212,17 +212,17 @@ void lxp_proc_resources_put(lxp_proc_t *proc)
 int lxp_fd_fork_inherit(lxp_proc_t *child)
 {
 	if (!child || !child->files)
-		return -1;
+		return -LXP_EINVAL;
 	lxp_files_t *source = child->files;
 	lxp_files_t *copy = files_new();
 	if (!copy)
-		return -1;
+		return -LXP_ENOMEM;
 	memcpy(copy->fd, source->fd, sizeof(copy->fd));
 	child->files = copy;
-	if (lxp_fd_table_retain(child) != 0) {
+	if (lxp_fd_table_retain(child) != 0) { /* a description's reference count is full */
 		memset(copy, 0, sizeof(*copy));
 		child->files = source;
-		return -1;
+		return -LXP_EAGAIN;
 	}
 	return 0;
 }
@@ -230,12 +230,13 @@ int lxp_fd_fork_inherit(lxp_proc_t *child)
 int lxp_proc_files_unshare(lxp_proc_t *proc)
 {
 	if (!proc || !proc->files)
-		return -1;
+		return -LXP_EINVAL;
 	if (proc->files->refs == 1)
 		return 0;
 	lxp_files_t *shared = proc->files;
-	if (lxp_fd_fork_inherit(proc) != 0)
-		return -1;
+	int rc = lxp_fd_fork_inherit(proc);
+	if (rc != 0)
+		return rc;
 	shared->refs--;
 	return 0;
 }
@@ -243,7 +244,8 @@ int lxp_proc_files_unshare(lxp_proc_t *proc)
 int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags)
 {
 	if (!child || !parent || !parent->files || !parent->fs_context || !parent->sighand)
-		return -1;
+		return -LXP_EINVAL;
+	int rc = -LXP_EAGAIN; /* a shared object's reference count is full */
 
 	child->files = NULL;
 	child->fs_context = NULL;
@@ -255,7 +257,8 @@ int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_
 		parent->files->refs++;
 	} else {
 		child->files = parent->files;
-		if (lxp_fd_fork_inherit(child) != 0) {
+		rc = lxp_fd_fork_inherit(child);
+		if (rc != 0) {
 			child->files = NULL;
 			goto fail;
 		}
@@ -268,8 +271,10 @@ int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_
 		child->fs_context->refs++;
 	} else {
 		child->fs_context = fs_context_new();
-		if (!child->fs_context)
+		if (!child->fs_context) {
+			rc = -LXP_ENOMEM;
 			goto fail;
+		}
 		memcpy(child->fs_context->cwd, parent->fs_context->cwd,
 		       sizeof(child->fs_context->cwd));
 		child->fs_context->umask = parent->fs_context->umask;
@@ -282,8 +287,10 @@ int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_
 		child->sighand->refs++;
 	} else {
 		child->sighand = sighand_new();
-		if (!child->sighand)
+		if (!child->sighand) {
+			rc = -LXP_ENOMEM;
 			goto fail;
+		}
 		memcpy(child->sighand->handler, parent->sighand->handler,
 		       sizeof(child->sighand->handler));
 		child->sighand->restorer = parent->sighand->restorer;
@@ -292,24 +299,24 @@ int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_
 
 fail:
 	lxp_proc_resources_put(child);
-	return -1;
+	return rc;
 }
 
 int lxp_proc_mm_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags)
 {
 	if (!child || !parent || !parent->mm)
-		return -1;
+		return -LXP_EINVAL;
 	child->mm = NULL;
 	if (clone_flags & LXP_CLONE_VM) {
 		if (parent->mm->refs == UINT16_MAX)
-			return -1;
+			return -LXP_EAGAIN;
 		child->mm = parent->mm;
 		child->mm->refs++;
 		return 0;
 	}
 	lxp_mm_t *copy = mm_new();
 	if (!copy)
-		return -1;
+		return -LXP_ENOMEM;
 	uint16_t refs = copy->refs;
 	*copy = *parent->mm;
 	copy->refs = refs;
@@ -330,18 +337,18 @@ int lxp_proc_group_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t cl
 			int child_pid)
 {
 	if (!child || !parent || !parent->group || child_pid <= 0)
-		return -1;
+		return -LXP_EINVAL;
 	child->group = NULL;
 	if (clone_flags & LXP_CLONE_THREAD) {
 		if (parent->group->refs == UINT16_MAX)
-			return -1;
+			return -LXP_EAGAIN;
 		child->group = parent->group;
 		child->group->refs++;
 		return 0;
 	}
 	lxp_thread_group_t *group = group_new();
 	if (!group)
-		return -1;
+		return -LXP_ENOMEM;
 	group->tgid = child_pid;
 	group->ppid = parent->group->tgid;
 	group->pgid = parent->group->pgid;
@@ -406,25 +413,26 @@ static int proc_init_child(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t
 {
 	if (!child || !parent || child == parent || child_pid <= 0 || !parent->mm ||
 	    !parent->files || !parent->fs_context || !parent->sighand || !parent->group)
-		return LXP_ERR_INVALID_PARAM;
+		return -LXP_EINVAL;
 	if ((clone_flags & LXP_CLONE_SIGHAND) && !(clone_flags & LXP_CLONE_VM))
-		return LXP_ERR_INVALID_PARAM;
+		return -LXP_EINVAL;
 	if (thread) {
 		if ((clone_flags & (LXP_CLONE_THREAD | LXP_CLONE_VM | LXP_CLONE_SIGHAND)) !=
 		    (LXP_CLONE_THREAD | LXP_CLONE_VM | LXP_CLONE_SIGHAND))
-			return LXP_ERR_INVALID_PARAM;
+			return -LXP_EINVAL;
 	} else if (clone_flags & LXP_CLONE_THREAD) {
-		return LXP_ERR_INVALID_PARAM;
+		return -LXP_EINVAL;
 	}
 
 	proc_child_copy_values(child, parent, child_pid);
-	if (lxp_proc_mm_fork(child, parent, clone_flags) != 0 ||
-	    lxp_proc_resources_fork(child, parent, clone_flags) != 0 ||
-	    lxp_proc_group_fork(child, parent, clone_flags, child_pid) != 0) {
+	int rc = lxp_proc_mm_fork(child, parent, clone_flags);
+	if (rc == 0)
+		rc = lxp_proc_resources_fork(child, parent, clone_flags);
+	if (rc == 0)
+		rc = lxp_proc_group_fork(child, parent, clone_flags, child_pid);
+	if (rc != 0)
 		lxp_proc_child_discard(child);
-		return LXP_ERR_NO_MEMORY;
-	}
-	return LXP_OK;
+	return rc;
 }
 
 int lxp_proc_init_process_child(lxp_proc_t *child, const lxp_proc_t *parent, uint32_t clone_flags,
@@ -442,7 +450,7 @@ int lxp_proc_init_thread_child(lxp_proc_t *child, const lxp_proc_t *parent, uint
 int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 {
 	if (!proc || !arena)
-		return LXP_ERR_INVALID_PARAM;
+		return -LXP_EINVAL;
 
 	memset(proc, 0, sizeof(*proc));
 	proc->mm = mm_new();
@@ -454,7 +462,7 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 		lxp_proc_resources_put(proc);
 		lxp_proc_mm_put(proc);
 		lxp_proc_group_put(proc);
-		return LXP_ERR_NO_MEMORY;
+		return -LXP_ENOMEM;
 	}
 	proc->mm->arena = arena;
 	proc->pid = 1; /* the initial task is tid/tgid 1 (ppid 0); fork assigns the rest */
@@ -470,7 +478,7 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 		lxp_proc_resources_put(proc);
 		lxp_proc_mm_put(proc);
 		lxp_proc_group_put(proc);
-		return LXP_ERR_NO_MEMORY;
+		return -LXP_ENOMEM;
 	}
 	if (brk_bytes) {
 		void *brk = lxp_arena_alloc(arena, brk_bytes);
@@ -478,13 +486,13 @@ int lxp_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_t brk_bytes)
 			lxp_proc_resources_put(proc);
 			lxp_proc_mm_put(proc);
 			lxp_proc_group_put(proc);
-			return LXP_ERR_NO_MEMORY;
+			return -LXP_ENOMEM;
 		}
 		proc->mm->brk_base = (uintptr_t)brk;
 		proc->mm->brk_cur = proc->mm->brk_base;
 		proc->mm->brk_max = proc->mm->brk_base + brk_bytes;
 	}
-	return LXP_OK;
+	return 0;
 }
 
 int lxp_proc_nice_get(const lxp_proc_t *proc)

@@ -34,7 +34,7 @@ static void pty_setup(void)
 	lxp_fd_runtime_reset();
 	lxp_pty_runtime_reset();
 	assert_int_equal(lxp_arena_init(&g_arena, g_pool, sizeof(g_pool)), LXP_OK);
-	assert_int_equal(lxp_proc_init(&g_proc, &g_arena, 4096), LXP_OK);
+	assert_int_equal(lxp_proc_init(&g_proc, &g_arena, 4096), 0);
 	g_proc.mm->region_lo = 1; /* all-permitting lxp_guest_access_ok except NULL */
 	g_proc.mm->region_hi = UINTPTR_MAX;
 	g_proc.mm->pool_lo = g_proc.mm->pool_hi = 0;

@@ -75,7 +75,7 @@ static void publish_net(const lxp_net_ops_t *net_ops)
 static void setup(lxp_proc_t *p, lxp_arena_t *arena)
 {
 	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), LXP_OK);
-	assert_int_equal(lxp_proc_init(p, arena, 4096), LXP_OK);
+	assert_int_equal(lxp_proc_init(p, arena, 4096), 0);
 	/* All-permitting access_ok range except NULL (region_lo = 1) — a NULL user
 	 * pointer still fails lxp_guest_access_ok → -EFAULT. Matches the dev/syscall harnesses. */
 	p->mm->region_lo = 1;

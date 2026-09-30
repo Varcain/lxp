@@ -38,7 +38,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	lxp_proc_t p;
 	if (lxp_arena_init(&arena, g_pool, sizeof(g_pool)) != LXP_OK)
 		return 0;
-	if (lxp_proc_init(&p, &arena, 4096) != LXP_OK)
+	if (lxp_proc_init(&p, &arena, 4096) != 0)
 		return 0;
 	p.mm->region_lo = 1;
 	p.mm->region_hi = UINTPTR_MAX;

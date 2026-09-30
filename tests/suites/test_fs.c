@@ -38,7 +38,7 @@ static uint8_t g_pool[8192] __attribute__((aligned(16)));
 static void setup_proc(lxp_proc_t *p, lxp_arena_t *arena)
 {
 	assert_int_equal(lxp_arena_init(arena, g_pool, sizeof(g_pool)), LXP_OK);
-	assert_int_equal(lxp_proc_init(p, arena, 4096), LXP_OK);
+	assert_int_equal(lxp_proc_init(p, arena, 4096), 0);
 	p->mm->region_lo = 1;
 	p->mm->region_hi = UINTPTR_MAX;
 	p->mm->pool_lo = p->mm->pool_hi = 0;

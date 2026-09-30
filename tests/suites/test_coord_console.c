@@ -246,7 +246,7 @@ static void test_console_icrnl_immediate_read(void **state)
 	lxp_proc_t p;
 	assert_int_equal(lxp_arena_init(&arena, g_mock_regions[0], sizeof(g_mock_regions[0])),
 			 LXP_OK);
-	assert_int_equal(lxp_proc_init(&p, &arena, 0), LXP_OK);
+	assert_int_equal(lxp_proc_init(&p, &arena, 0), 0);
 	p.mm->region_lo = 1;
 	p.mm->region_hi = UINTPTR_MAX;
 	p.read_fn = console_read_cr;

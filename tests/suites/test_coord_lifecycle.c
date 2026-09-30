@@ -805,7 +805,7 @@ static void test_reused_slot_ignores_late_completion_from_dead_generation(void *
 	assert_false(old->alive);
 	assert_int_equal(g_lxp_rt.regions[0].refs, 0);
 
-	assert_int_equal(lxp_proc_init(old, &g_mock_arenas[0], 0), LXP_OK);
+	assert_int_equal(lxp_proc_init(old, &g_mock_arenas[0], 0), 0);
 	make_valid_running_slot(0, 0);
 	lxp_slot_ref_t replacement = lxp_slot_ref_at(0);
 	assert_false(lxp_slot_ref_equal(stale_owner, replacement));
@@ -895,7 +895,7 @@ static int protocol_apply(struct protocol_model *model, enum protocol_command co
 	case PROTOCOL_REUSE_SLOT:
 		if (model->phase != PROTOCOL_DEAD)
 			return 0;
-		assert_int_equal(lxp_proc_init(proc, &g_mock_arenas[0], 0), LXP_OK);
+		assert_int_equal(lxp_proc_init(proc, &g_mock_arenas[0], 0), 0);
 		make_valid_running_slot(0, 0);
 		model->phase = PROTOCOL_REUSED;
 		break;
@@ -983,7 +983,7 @@ static void orphan_proc_init(lxp_proc_t *p, lxp_arena_t *arena)
 {
 	assert_int_equal(lxp_arena_init(arena, g_mock_regions[1], sizeof(g_mock_regions[1])),
 			 LXP_OK);
-	assert_int_equal(lxp_proc_init(p, arena, 0), LXP_OK);
+	assert_int_equal(lxp_proc_init(p, arena, 0), 0);
 	p->mm->region_lo = 1;
 	p->mm->region_hi = UINTPTR_MAX;
 }
