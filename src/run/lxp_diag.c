@@ -12,8 +12,7 @@
 
 #include <string.h>
 
-#include "lxp/lxp_diag.h"
-#include "lxp/lxp_stats.h"
+#include "lxp_stats.h"
 #include "lxp_internal.h"
 #include "lxp_provider.h"
 #include "lxp_run_internal.h"

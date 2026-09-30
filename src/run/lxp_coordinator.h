@@ -13,10 +13,10 @@
 
 #include "lxp_arena.h"
 #include "lxp/lxp_debug.h"
-#include "lxp/lxp_diag.h"
+#include "run/lxp_diag.h"
 #include "lxp_guest.h"
 #include "lxp_provider.h" /* g_lxp_os_ops: the engine every coordinator unit uses */
-#include "lxp/lxp_latency.h"
+#include "lxp_latency.h"
 #include "proc/lxp_proc.h"
 #include "lxp/lxp_seam.h"
 #include "run/lxp_runtime_store.h" /* LXP_SERVICE_CLASSES */

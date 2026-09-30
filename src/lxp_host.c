@@ -6,8 +6,8 @@
  */
 
 #include "lxp/lxp_host.h"
-#include "lxp/lxp_diag.h"
-#include "lxp/lxp_latency.h"
+#include "run/lxp_diag.h"
+#include "lxp_latency.h"
 #include "lxp/lxp_observe.h"
 
 #include <string.h>

@@ -22,12 +22,8 @@
 #include "lxp/lxp_config.h"
 #include "lxp/lxp_types.h"
 
-/* One bounded snapshot must hold every configured guest plus an explicit host
- * allowance. The extra pentry is reserved for a visible overflow marker. */
-#ifndef LXP_HOST_THREAD_ALLOWANCE
-#define LXP_HOST_THREAD_ALLOWANCE 16
-#endif
-#define LXP_MAX_KTHREAD (LXP_NSLOT + LXP_HOST_THREAD_ALLOWANCE)
+/* The snapshot holds LXP_MAX_KTHREAD threads (lxp_config.h); the extra pentry is
+ * reserved for a visible overflow marker. */
 #define LXP_MAX_PENT (LXP_MAX_KTHREAD + 1)
 #define LXP_KPID_BASE 1000 /* kernel pids start here; Linux pids are 1..~16 */
 

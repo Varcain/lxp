@@ -15,7 +15,7 @@
 #include "fs/lxp_stat.h"
 #include "fs/lxp_tmpfs.h"
 #include "lxp/lxp_config.h"
-#include "lxp/lxp_stats.h"
+#include "lxp_stats.h"
 #include "lxp_internal.h"
 #include "lxp_linux_uapi.h"
 #include "lxp_text.h"

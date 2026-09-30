@@ -25,13 +25,13 @@
 #include <string.h>
 
 #include "lxp_arena.h"
-#include "lxp/lxp_diag.h"
+#include "run/lxp_diag.h"
 #include "lxp_syscall.h"
 #include "lxp/lxp_types.h"
 #include "lxp/lxp_seam.h"
-#include "lxp/lxp_latency.h"
+#include "lxp_latency.h"
 #include "lxp/lxp_run.h"
-#include "lxp/lxp_stats.h"
+#include "lxp_stats.h"
 #if LXP_ENABLE_DEV
 #include "dev/lxp_dev.h" /* device-layer park/retry + autoreg + tick + kick */
 #include "lxp/lxp_display_ops.h"
@@ -58,7 +58,6 @@
 #include "run/lxp_coordinator.h"
 #include "run/lxp_image.h"
 #include "run/lxp_initial.h"
-#include "run/lxp_diag.h"
 #include "run/lxp_runtime_store.h"
 #include "run/lxp_validate.h"
 

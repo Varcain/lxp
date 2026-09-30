@@ -11,7 +11,7 @@
 #include <stdint.h>
 
 #include "lxp/lxp_debug.h"
-#include "lxp/lxp_latency.h"
+#include "lxp_latency.h"
 #include "lxp/lxp_run.h"
 #include "lxp_arena.h"
 #include "proc/lxp_proc.h"

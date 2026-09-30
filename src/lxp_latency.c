@@ -5,11 +5,11 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Bounded coordinator latency counters. See include/lxp/lxp_latency.h for what
+ * Bounded coordinator latency counters. See lxp_latency.h for what
  * is measured and why there is no threshold here.
  */
 
-#include "lxp/lxp_latency.h"
+#include "lxp_latency.h"
 
 #include "lxp/lxp_config.h"
 

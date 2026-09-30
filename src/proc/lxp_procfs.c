@@ -17,7 +17,7 @@
 #include "fs/lxp_vfs.h"
 #include "lxp/lxp_config.h"
 #include "proc/lxp_proc.h"
-#include "lxp/lxp_stats.h"
+#include "lxp_stats.h"
 #include "lxp_internal.h"
 #include "lxp_text.h"
 #if LXP_ENABLE_BLOCK

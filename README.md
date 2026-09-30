@@ -69,7 +69,7 @@ space:
   the work outside it, so a top-priority host task still wakes within ~14 µs of its deadline
   (~284 µs worst over seven runs). The cost lands on guests instead — the coordinator serves one
   event at a time, so a syscall published while a `fork` is in flight waits behind it. Build with
-  `LXP_ENABLE_LATENCY=1` to measure both; see `include/lxp/lxp_latency.h`.
+  `LXP_ENABLE_LATENCY=1` to measure both; hosts read them through `include/lxp/lxp_observe.h`.
 - **Entropy is a host trust boundary.** `getrandom`, `/dev/random`, `/dev/urandom`, and each
   process's `AT_RANDOM` stack-canary seed use the host's `random_fill` operation. The core has
   no time-seeded fallback: a port without a trustworthy provider returns an error and cannot
