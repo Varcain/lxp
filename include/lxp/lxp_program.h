@@ -64,6 +64,13 @@ typedef struct lxp_console {
 	void *ctx; /**< Opaque, passed to every callback above. */
 } lxp_console_t;
 
+/** The names a guest sees for the system it runs on. A NULL name selects LXP's default. */
+typedef struct lxp_identity {
+	const char *nodename;	/**< uname(2) nodename, up to 64 bytes; default "lxp". */
+	const char *fb_id;	/**< /dev/fb0 FSCREENINFO id, up to 15 bytes; default "lxpfb". */
+	const char *input_name; /**< /dev/input/event0 EVIOCGNAME; default "lxp-touch". */
+} lxp_identity_t;
+
 /** One node in the read-only in-memory rootfs (a flat path to bytes table). */
 typedef struct lxp_file {
 	const char *path;

@@ -117,6 +117,20 @@ int lxp_trap_active(void)
 	return __atomic_load_n(&g_lxp_trap_gate, __ATOMIC_ACQUIRE) != 0;
 }
 
+lxp_identity_t lxp_identity(void)
+{
+	lxp_identity_t id = {0};
+	if (g_lxp_rt.cfg)
+		id = g_lxp_rt.cfg->launch.identity;
+	if (!id.nodename)
+		id.nodename = LXP_DEFAULT_NODENAME;
+	if (!id.fb_id)
+		id.fb_id = LXP_DEFAULT_FB_ID;
+	if (!id.input_name)
+		id.input_name = LXP_DEFAULT_INPUT_NAME;
+	return id;
+}
+
 long lxp_rt_scope_read(char *buf, size_t cap)
 {
 	if (!buf || !g_lxp_rt.cfg || !g_lxp_rt.cfg->launch.rt_scope_read)

@@ -23,6 +23,7 @@
 #include "proc/lxp_proc.h"
 #include "lxp/lxp_types.h"
 #include "lxp_uapi.h"
+#include "lxp_internal.h"
 #include "lxp_provider.h"
 
 #include <string.h>
@@ -126,7 +127,9 @@ static void fill_vinfo(struct lxp_fb_var_screeninfo *v)
 static void fill_finfo(struct lxp_fb_fix_screeninfo *f)
 {
 	memset(f, 0, sizeof(*f));
-	memcpy(f->id, "ovefb", 5);
+	const char *id = lxp_identity().fb_id;
+	size_t len = strlen(id);
+	memcpy(f->id, id, len < sizeof(f->id) ? len : sizeof(f->id) - 1u); /* keeps a NUL */
 	f->smem_start = (uint32_t)(uintptr_t)g_lxp_display_ops->fb_get_buffer();
 	f->smem_len = g_fbinfo.smem_len;
 	f->type = LXP_FB_TYPE_PACKED_PIXELS;

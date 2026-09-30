@@ -106,6 +106,11 @@ static const char *mock_system_version(void)
 	return "TestRTOS 1.2.3 ove-abcdef0 lxp-1234567";
 }
 
+lxp_identity_t lxp_identity(void)
+{
+	return (lxp_identity_t){LXP_DEFAULT_NODENAME, LXP_DEFAULT_FB_ID, LXP_DEFAULT_INPUT_NAME};
+}
+
 long lxp_rt_scope_read(char *buf, size_t cap)
 {
 	(void)buf;

@@ -75,6 +75,12 @@ void lxp_get_resource_stats(struct lxp_resource_stats *out);
 /* Host-supplied utsname.version identity, or the honest module fallback "lxp". */
 const char *lxp_system_version(void);
 
+/* The active run's guest-visible names, each NULL one replaced by its default. */
+#define LXP_DEFAULT_NODENAME "lxp"
+#define LXP_DEFAULT_FB_ID "lxpfb"
+#define LXP_DEFAULT_INPUT_NAME "lxp-touch"
+lxp_identity_t lxp_identity(void);
+
 /* Format the active run's optional host real-time snapshot. */
 long lxp_rt_scope_read(char *buf, size_t cap);
 

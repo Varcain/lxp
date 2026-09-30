@@ -308,7 +308,7 @@ static void test_dev_input_eviocgname_size(void **state)
 	r = lxp_syscall(&p, LXP_NR_ioctl, fd, (long)EVIOCGNAME_CMD(64), (long)(uintptr_t)nm, 0, 0,
 			0);
 	assert_true(r > 0);
-	assert_string_equal(nm, "overtos-touch");
+	assert_string_equal(nm, "lxp-touch");
 
 	lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0);
 }

@@ -302,6 +302,27 @@ static void test_run_reports_why_launch_failed(void **state)
 	assert_int_equal(g_mock.teardown_calls, 2);
 }
 
+/* The guest-visible names come from the run's launch policy, each defaulting on its own. */
+static void test_launch_identity_defaults_each_name(void **state)
+{
+	(void)state;
+	g_lxp_rt.cfg = NULL;
+	lxp_identity_t id = lxp_identity();
+	assert_string_equal(id.nodename, "lxp");
+	assert_string_equal(id.fb_id, "lxpfb");
+	assert_string_equal(id.input_name, "lxp-touch");
+
+	const lxp_run_config_t cfg = {
+		.launch.identity = {.nodename = "board", .input_name = "panel"},
+	};
+	g_lxp_rt.cfg = &cfg;
+	id = lxp_identity();
+	assert_string_equal(id.nodename, "board");
+	assert_string_equal(id.fb_id, "lxpfb");
+	assert_string_equal(id.input_name, "panel");
+	g_lxp_rt.cfg = NULL;
+}
+
 static void test_initial_launch_resolves_scripts_and_symlinks(void **state)
 {
 	(void)state;
@@ -410,6 +431,7 @@ int test_coord_run_run(void)
 		cmocka_unit_test_setup(test_port_abi_and_required_ops_are_validated, reset_state),
 		cmocka_unit_test_setup(test_failed_prepare_is_rolled_back, reset_state),
 		cmocka_unit_test_setup(test_run_reports_why_launch_failed, reset_state),
+		cmocka_unit_test_setup(test_launch_identity_defaults_each_name, reset_state),
 		cmocka_unit_test_setup(test_initial_launch_resolves_scripts_and_symlinks,
 				       reset_state),
 		cmocka_unit_test_setup(test_rootfs_requires_one_explicit_trusted_window,

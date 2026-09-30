@@ -22,6 +22,7 @@
 #include "proc/lxp_proc.h"
 #include "dev/lxp_dev_input.h"
 #include "lxp_uapi.h"
+#include "lxp_internal.h"
 #include "lxp_provider.h"
 
 #include <string.h>
@@ -210,12 +211,12 @@ static long in_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p,
 			return lxp_copy_to_guest(p, (uintptr_t)arg, &info, sizeof(info));
 		}
 		if (nr == LXP_EVIOCGNAME_NR) {
-			static const char name[] = "overtos-touch";
+			const char *name = lxp_identity().input_name;
 			/* Honor the caller's buffer length (the kernel copies min(len, strlen+1));
-			 * copying the fixed 14 bytes into a smaller buffer corrupts adjacent memory. */
+			 * copying the whole name into a smaller buffer corrupts adjacent memory. */
 			size_t want = LXP_EVIOC_SIZE(cmd);
-			if (want > sizeof(name))
-				want = sizeof(name);
+			if (want > strlen(name) + 1u)
+				want = strlen(name) + 1u;
 			if (want == 0)
 				return 0;
 			return lxp_copy_to_guest(p, (uintptr_t)arg, name, want) == 0
@@ -253,8 +254,8 @@ static void testpad_tick(uint64_t now_us)
 #endif
 
 #if LXP_ENABLE_TOUCH
-/* Poll the FT5336 controller over i2c (~60 Hz) and report the primary touch. */
-static void ft5336_tick(uint64_t now_us)
+/* Poll the touch provider (~60 Hz) and report the primary touch. */
+static void touch_provider_tick(uint64_t now_us)
 {
 	if (now_us - g_touch_last_us < 16000u)
 		return;
@@ -288,12 +289,12 @@ void lxp_dev_autoreg_input(void)
 	};
 	if (lxp_dev_register(&dev) != 0)
 		return;
-	/* Prefer a real touch panel (FT5336) when present; the synthetic testpad is the
-	 * fallback for QEMU (no touch HW) or if the FT5336 does not probe. Registering
+	/* Prefer the touch provider when its panel is present; the synthetic testpad is the
+	 * fallback for QEMU (no touch HW) or a panel that does not probe. Registering
 	 * both would let two sources drive one /dev/input/event0 — garbage. */
 #if LXP_ENABLE_TOUCH
 	if (g_lxp_display_ops->touch_init() == 0) {
-		lxp_dev_tick_register(ft5336_tick); /* real HW touch panel */
+		lxp_dev_tick_register(touch_provider_tick);
 		g_touch_ready = 1;
 	}
 #endif

@@ -91,6 +91,7 @@ typedef struct lxp_launch_config {
 	/** Optional host real-time snapshot exposed verbatim as /proc/rt_scope. */
 	lxp_rt_scope_read_fn rt_scope_read;
 	void *rt_scope_ctx; /**< Opaque, passed to @p rt_scope_read. */
+	lxp_identity_t identity; /**< Host, framebuffer and input names the guest sees. */
 } lxp_launch_config_t;
 
 /** Host configuration for a personality run. Zero-initialize it (a designated initializer

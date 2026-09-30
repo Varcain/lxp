@@ -262,7 +262,8 @@ long lxp_sys_uname(lxp_proc_t *proc, const long a[6])
 {
 	/* struct utsname: 6 fixed 65-byte fields (sysname, nodename, release,
 	 * version, machine, domainname). The shell reads these at startup. */
-	const char *const f[6] = {"Linux",  "overtos", "6.1.0", lxp_system_version(),
+	const lxp_identity_t id = lxp_identity();
+	const char *const f[6] = {"Linux",  id.nodename, "6.1.0", lxp_system_version(),
 				  "armv7l", "(none)"};
 	char u[6 * 65];
 	memset(u, 0, sizeof(u));
