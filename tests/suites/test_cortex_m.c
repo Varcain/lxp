@@ -159,6 +159,38 @@ static void test_mpu_effective_mapping_rejects_higher_overlay(void **state)
 }
 
 /* The fault address comes from the register CFSR vouches for, MMFAR first. */
+static void test_mpu_snapshot_region_holds_what_was_programmed(void **state)
+{
+	(void)state;
+	const uint32_t base = 0xc0100000u;
+	const uint32_t pool = rasr(18u, 0u, 0x0bu, 3u, 1u);
+	struct lxp_cortex_m_mpu_snapshot snapshot = {
+		.ctrl = LXP_CORTEX_M_MPU_CTRL_ENABLE,
+		.count = 8u,
+	};
+	assert_int_equal(lxp_cortex_m_mpu_region_decode(base, pool, &snapshot.regions[2]), 0);
+	assert_true(lxp_cortex_m_mpu_snapshot_region_holds(&snapshot, 2u, base, pool, 1));
+
+	/* Other attributes, or another region number, are not what was programmed. */
+	assert_false(lxp_cortex_m_mpu_snapshot_region_holds(&snapshot, 2u, base,
+							    rasr(18u, 0u, 0x08u, 3u, 1u), 0));
+	assert_false(lxp_cortex_m_mpu_snapshot_region_holds(&snapshot, 3u, base, pool, 0));
+
+	/* A disabled descriptor requires the live region to be disabled. */
+	assert_true(lxp_cortex_m_mpu_snapshot_region_holds(&snapshot, 3u, 0u, 0u, 0));
+	assert_false(lxp_cortex_m_mpu_snapshot_region_holds(&snapshot, 2u, 0u, 0u, 0));
+
+	/* A higher-numbered overlay leaves region 2 in place but no longer effective. */
+	assert_int_equal(lxp_cortex_m_mpu_region_decode(base, rasr(18u, 0u, 0x08u, 3u, 1u),
+							&snapshot.regions[5]),
+			 0);
+	assert_true(lxp_cortex_m_mpu_snapshot_region_holds(&snapshot, 2u, base, pool, 0));
+	assert_false(lxp_cortex_m_mpu_snapshot_region_holds(&snapshot, 2u, base, pool, 1));
+
+	assert_false(lxp_cortex_m_mpu_snapshot_region_holds(&snapshot, 8u, 0u, 0u, 0));
+	assert_false(lxp_cortex_m_mpu_snapshot_region_holds(NULL, 2u, base, pool, 0));
+}
+
 static void test_scb_fault_address_follows_cfsr(void **state)
 {
 	(void)state;
@@ -210,6 +242,7 @@ int test_cortex_m_run(void)
 		cmocka_unit_test(test_mpu_effective_mapping_rejects_higher_overlay),
 		cmocka_unit_test(test_scb_fault_address_follows_cfsr),
 		cmocka_unit_test(test_mpu_rasr_encodes_what_decode_reads),
+		cmocka_unit_test(test_mpu_snapshot_region_holds_what_was_programmed),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

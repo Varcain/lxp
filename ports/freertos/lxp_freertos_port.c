@@ -812,29 +812,9 @@ static int freertos_validate_active_profile(int sidx)
 		return 0;
 	for (unsigned i = 0; i < portNUM_CONFIGURABLE_REGIONS; i++) {
 		unsigned region = portFIRST_CONFIGURABLE_REGION + i;
-		if (region >= snapshot.count)
-			return 0;
-		if (prepared->native_rasr[i] == 0u) {
-			if (snapshot.regions[region].enabled)
-				return 0;
-			continue;
-		}
-		struct lxp_cortex_m_mpu_region native;
-		if (lxp_cortex_m_mpu_region_decode(prepared->native_rbar[i],
-						   prepared->native_rasr[i], &native) != 0)
-			return 0;
-		const struct lxp_cortex_m_mpu_expectation expected = {
-			.base = native.base,
-			.size = native.size,
-			.subregion_disable = native.subregion_disable,
-			.texscb = native.texscb,
-			.access = native.access,
-			.execute_never = native.execute_never,
-		};
-		if (!lxp_cortex_m_mpu_region_matches_expectation(&snapshot.regions[region],
-								 &expected))
-			return 0;
-		if (!lxp_cortex_m_mpu_snapshot_effective_matches(&snapshot, &expected))
+		if (!lxp_cortex_m_mpu_snapshot_region_holds(&snapshot, region,
+							    prepared->native_rbar[i],
+							    prepared->native_rasr[i], 1))
 			return 0;
 	}
 	prepared->live_validated = 1u;

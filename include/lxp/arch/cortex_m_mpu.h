@@ -199,6 +199,32 @@ lxp_cortex_m_mpu_snapshot_effective_matches(const struct lxp_cortex_m_mpu_snapsh
 	return 0;
 }
 
+/* Require live region @p number to hold the descriptor a port programmed into it:
+ * disabled when @p rasr is 0, otherwise the region @p rbar / @p rasr encode. With
+ * @p effective it must also win over every other descriptor that overlaps it. */
+static inline int
+lxp_cortex_m_mpu_snapshot_region_holds(const struct lxp_cortex_m_mpu_snapshot *snapshot,
+				       unsigned number, uint32_t rbar, uint32_t rasr, int effective)
+{
+	if (!snapshot || number >= snapshot->count || number >= LXP_CORTEX_M_MPU_MAX_REGIONS)
+		return 0;
+	if (rasr == 0u)
+		return !snapshot->regions[number].enabled;
+	struct lxp_cortex_m_mpu_region native;
+	if (lxp_cortex_m_mpu_region_decode(rbar, rasr, &native) != 0)
+		return 0;
+	const struct lxp_cortex_m_mpu_expectation expected = {
+		.base = native.base,
+		.size = native.size,
+		.subregion_disable = native.subregion_disable,
+		.texscb = native.texscb,
+		.access = native.access,
+		.execute_never = native.execute_never,
+	};
+	return lxp_cortex_m_mpu_region_matches_expectation(&snapshot->regions[number], &expected) &&
+	       (!effective || lxp_cortex_m_mpu_snapshot_effective_matches(snapshot, &expected));
+}
+
 #if defined(__arm__) || defined(__thumb__)
 
 #define LXP_CORTEX_M_MPU_TYPE (*(volatile uint32_t *)0xe000ed90u)

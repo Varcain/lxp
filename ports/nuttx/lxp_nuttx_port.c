@@ -1048,35 +1048,13 @@ static int nuttx_profile_live_matches(const struct nuttx_prepared_profile *prepa
 	    !(snapshot.ctrl & LXP_CORTEX_M_MPU_CTRL_ENABLE))
 		return 0;
 
-	for (unsigned i = 0; i < LXP_NATIVE_POLICY_REGIONS; i++) {
-		if (region[i] >= snapshot.count)
+	/* Program, arena, and copied-text mappings (0, 1, 4) must also win over every
+	 * other descriptor, not merely exist at their expected region numbers. */
+	for (unsigned i = 0; i < LXP_NATIVE_POLICY_REGIONS; i++)
+		if (!lxp_cortex_m_mpu_snapshot_region_holds(&snapshot, region[i], prepared->rbar[i],
+							    prepared->rasr[i],
+							    i == 0u || i == 1u || i == 4u))
 			return 0;
-		if (prepared->rasr[i] == 0u) {
-			if (snapshot.regions[region[i]].enabled)
-				return 0;
-			continue;
-		}
-		struct lxp_cortex_m_mpu_region native;
-		if (lxp_cortex_m_mpu_region_decode(prepared->rbar[i], prepared->rasr[i], &native) !=
-		    0)
-			return 0;
-		const struct lxp_cortex_m_mpu_expectation expected = {
-			.base = native.base,
-			.size = native.size,
-			.subregion_disable = native.subregion_disable,
-			.texscb = native.texscb,
-			.access = native.access,
-			.execute_never = native.execute_never,
-		};
-		if (!lxp_cortex_m_mpu_region_matches_expectation(&snapshot.regions[region[i]],
-								 &expected))
-			return 0;
-		/* Program, arena, and copied-text mappings must also win over every other
-		 * descriptor, not merely exist at their expected region numbers. */
-		if ((i == 0u || i == 1u || i == 4u) &&
-		    !lxp_cortex_m_mpu_snapshot_effective_matches(&snapshot, &expected))
-			return 0;
-	}
 	return 1;
 }
 
