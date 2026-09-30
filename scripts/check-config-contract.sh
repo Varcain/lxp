@@ -49,6 +49,8 @@ expect_header_reject testpad-without-input \
 	-DLXP_ENABLE_DEV_INPUT_TESTPAD=1 -DLXP_ENABLE_DEV_INPUT=0
 expect_header_reject touch-without-input \
 	-DLXP_ENABLE_TOUCH=1 -DLXP_ENABLE_DEV_INPUT=0
+expect_header_reject latency-not-boolean \
+	-DLXP_ENABLE_LATENCY=2
 
 expect_cmake_reject netfs-without-net -DLXP_ENABLE_NETFS=ON
 expect_cmake_reject netfs-exec-without-netfs -DLXP_ENABLE_NETFS_EXEC=ON

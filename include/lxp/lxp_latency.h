@@ -31,9 +31,7 @@
 
 #include <stdint.h>
 
-#ifndef LXP_ENABLE_LATENCY
-#define LXP_ENABLE_LATENCY 0
-#endif
+#include "lxp/lxp_config.h"
 
 /*
  * The coordinator's event classes, in dispatch order.
