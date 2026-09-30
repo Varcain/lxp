@@ -20,7 +20,7 @@ void coordinator_exit_slot(int slot, int group, int status, uint8_t reason, uint
 	primary_slot_mark(slot);
 }
 
-struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
+struct lxp_exit_result lxp_handle_exit(int slot)
 {
 	struct lxp_exit_result result = {0};
 	lxp_proc_t *proc = lxp_slot_proc(slot);
@@ -30,7 +30,7 @@ struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
 
 	/* Host termination is the commit point. Keep every Linux reference intact
 	 * and retry the exit event if the RTOS did not stop the task. */
-	if (coordinator_abort_slot(eng, slot) != LXP_OK) {
+	if (coordinator_abort_slot(slot) != LXP_OK) {
 		primary_slot_mark(slot);
 		return result;
 	}
@@ -43,14 +43,14 @@ struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
 	lxp_slot_ref_t parent_ref = proc->vfork_parent;
 	int parent_slot = parent_ref.index;
 	lxp_proc_resources_put(proc);
-	if (eng->map_device)
-		(void)eng->map_device(slot, 0, 0, 0);
+	if (g_lxp_os_ops->map_device)
+		(void)g_lxp_os_ops->map_device(slot, 0, 0, 0);
 	g_lxp_sig_save[slot].depth = 0;
 
 	if (lxp_slot_ref_is_current(parent_ref) && proc->snapshot.index >= 0) {
 		/* A vfork child died before exec: undo its writes to the shared
 		 * address space before resuming the parent. */
-		if (vfork_restore(eng, lxp_slot_proc(parent_slot), proc->snapshot, exiting_ref,
+		if (vfork_restore(lxp_slot_proc(parent_slot), proc->snapshot, exiting_ref,
 				  lxp_slot_resume_view(parent_ref)->sp) != 0) {
 			vfork_contain_stale(exiting_ref, proc);
 			parent_slot = -1;
@@ -75,9 +75,9 @@ struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
 	}
 
 	if (parent_slot >= 0 && lxp_slot_ref_is_current(parent_ref))
-		(void)coordinator_complete_slot(eng, parent_ref, pid);
+		(void)coordinator_complete_slot(parent_ref, pid);
 	if (group_is_dead)
-		reap_to_parent(eng, ppid, tgid, status,
+		reap_to_parent(ppid, tgid, status,
 			       /*sigchld=*/!lxp_slot_ref_is_current(parent_ref));
 	lxp_proc_group_put(proc);
 	return result;

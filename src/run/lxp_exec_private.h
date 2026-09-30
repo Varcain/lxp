@@ -61,8 +61,7 @@ LXP_EXEC_TXN_LINKAGE void exec_txn_init(struct exec_txn *tx, int slot);
 LXP_EXEC_TXN_LINKAGE int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
 						 size_t image_size, int remote_exec);
 LXP_EXEC_TXN_LINKAGE int exec_txn_reserve(struct exec_txn *tx);
-LXP_EXEC_TXN_LINKAGE int exec_txn_commit(struct exec_txn *tx, const lxp_os_ops_t *eng);
-LXP_EXEC_TXN_LINKAGE void exec_txn_abort(struct exec_txn *tx, const lxp_os_ops_t *eng, long error,
-					 int reason);
+LXP_EXEC_TXN_LINKAGE int exec_txn_commit(struct exec_txn *tx);
+LXP_EXEC_TXN_LINKAGE void exec_txn_abort(struct exec_txn *tx, long error, int reason);
 
 #endif /* LXP_EXEC_PRIVATE_H */

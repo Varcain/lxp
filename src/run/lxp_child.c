@@ -47,8 +47,7 @@ static int child_wait_status(const struct lxp_child_event *event)
 						: lxp_encode_wstatus(event->value);
 }
 
-static void child_event_publish(const lxp_os_ops_t *eng, int ppid,
-				const struct lxp_child_event *event)
+static void child_event_publish(int ppid, const struct lxp_child_event *event)
 {
 	lxp_proc_t *parent = parent_task_for_child(ppid, event);
 	if (!parent)
@@ -62,8 +61,8 @@ static void child_event_publish(const lxp_os_ops_t *eng, int ppid,
 				child_wait_status(event);
 		int slot = slot_of(parent);
 		(void)lxp_wait_complete(parent, LXP_WAIT_CHILD);
-		coordinator_park_slot(eng, slot);
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), event->pid);
+		coordinator_park_slot(slot);
+		(void)coordinator_complete_slot(slot_ref_at(slot), event->pid);
 		return;
 	}
 
@@ -77,7 +76,7 @@ static void child_event_publish(const lxp_os_ops_t *eng, int ppid,
 		lxp_signal_latch(parent, LXP_SIGCHLD);
 }
 
-void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int status, int sigchld)
+void reap_to_parent(int ppid, int cpid, int status, int sigchld)
 {
 	const struct lxp_child_event event = {
 		.pid = cpid,
@@ -85,10 +84,10 @@ void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int status, int
 		.kind = LXP_CHILD_EXITED,
 		.notify = sigchld != 0,
 	};
-	child_event_publish(eng, ppid, &event);
+	child_event_publish(ppid, &event);
 }
 
-void notify_parent_stopped(const lxp_os_ops_t *eng, int ppid, int cpid, int stopsig)
+void notify_parent_stopped(int ppid, int cpid, int stopsig)
 {
 	const struct lxp_child_event event = {
 		.pid = cpid,
@@ -96,5 +95,5 @@ void notify_parent_stopped(const lxp_os_ops_t *eng, int ppid, int cpid, int stop
 		.kind = LXP_CHILD_STOPPED,
 		.notify = 1,
 	};
-	child_event_publish(eng, ppid, &event);
+	child_event_publish(ppid, &event);
 }

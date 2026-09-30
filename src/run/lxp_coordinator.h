@@ -15,6 +15,7 @@
 #include "lxp/lxp_debug.h"
 #include "lxp/lxp_diag.h"
 #include "lxp_guest.h"
+#include "lxp_provider.h" /* g_lxp_os_ops: the engine every coordinator unit uses */
 #include "lxp/lxp_latency.h"
 #include "proc/lxp_proc.h"
 #include "lxp/lxp_seam.h"
@@ -127,28 +128,24 @@ int primary_slot_pending(int slot);
 void primary_slot_clear(int slot);
 void lxp_primary_events_reset(void);
 int claim_slot_event(int slot);
-void lxp_event_post_slot(const lxp_os_ops_t *eng, int slot);
-struct lxp_claimed_event coordinator_claim_event(const lxp_os_ops_t *eng, unsigned *cursor);
+void lxp_event_post_slot(int slot);
+struct lxp_claimed_event coordinator_claim_event(unsigned *cursor);
 #if LXP_ENABLE_FS
 void lxp_fs_completion_ready(const void *context);
 int lxp_fs_completion_hint_take(void);
 #endif
 
-void *lxp_lifecycle_prepare_park(const lxp_os_ops_t *eng, int slot,
-				 const struct lxp_resume_ctx *ctx);
-int coordinator_abort_slot(const lxp_os_ops_t *eng, int slot);
-int coordinator_park_slot(const lxp_os_ops_t *eng, int slot);
-int coordinator_resume_slot(const lxp_os_ops_t *eng, int slot, int region,
-			    const struct lxp_resume_ctx *ctx, long r0);
-int coordinator_complete_slot(const lxp_os_ops_t *eng, lxp_slot_ref_t slot, long r0);
-int coordinator_launch_slot(const lxp_os_ops_t *eng, int slot, int region,
-			    const lxp_guest_launch_t *launch);
+void *lxp_lifecycle_prepare_park(int slot, const struct lxp_resume_ctx *ctx);
+int coordinator_abort_slot(int slot);
+int coordinator_park_slot(int slot);
+int coordinator_resume_slot(int slot, int region, const struct lxp_resume_ctx *ctx, long r0);
+int coordinator_complete_slot(lxp_slot_ref_t slot, long r0);
+int coordinator_launch_slot(int slot, int region, const lxp_guest_launch_t *launch);
 
 int coordinator_guest_view_begin(int slot, lxp_guest_view_t *view);
 void guest_view_failure(int slot, int rc);
-int coordinator_map_mm_range(const lxp_os_ops_t *eng, lxp_mm_t *mm, uintptr_t addr,
-			     size_t len, unsigned attrs);
-int coordinator_restore_mm_maps(const lxp_os_ops_t *eng, int slot, const lxp_mm_t *mm);
+int coordinator_map_mm_range(lxp_mm_t *mm, uintptr_t addr, size_t len, unsigned attrs);
+int coordinator_restore_mm_maps(int slot, const lxp_mm_t *mm);
 int device_map_index(const lxp_proc_t *proc, uintptr_t addr, size_t len);
 
 /* Raise @p sig on the console's foreground process group (src/run/lxp_console_input.c). */
@@ -156,16 +153,15 @@ void console_signal_fg(int sig);
 int pending_deliverable(const lxp_proc_t *proc);
 void flatten_vec(char *buf, const char **ptrs, const char *src_buf, const uint16_t *offsets,
 		 int count);
-void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, int sig,
-			   long ret);
-void notify_parent_stopped(const lxp_os_ops_t *eng, int ppid, int cpid, int stopsig);
+void deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret);
+void notify_parent_stopped(int ppid, int cpid, int stopsig);
 void notify_guest_exit(int slot, const lxp_proc_t *proc);
-void reap_to_parent(const lxp_os_ops_t *eng, int ppid, int cpid, int status, int sigchld);
+void reap_to_parent(int ppid, int cpid, int status, int sigchld);
 int fork_capacity_available(const lxp_proc_t *proc);
 int thread_group_live_count(const lxp_thread_group_t *group);
 void thread_group_request_exit(int source_slot, int status);
-int thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slot, int status);
-void execute_deferred(const lxp_os_ops_t *eng, int slot);
+int thread_group_stop_exec_peers(int source_slot, int status);
+void execute_deferred(int slot);
 
 int region_free(int region);
 lxp_region_ref_t region_reserve(int region, lxp_slot_ref_t owner);
@@ -174,9 +170,8 @@ int region_put(lxp_region_ref_t region);
 int lxp_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_owner);
 void proc_mm_put(lxp_proc_t *proc);
 int region_release_if_owned(lxp_region_ref_t region, lxp_slot_ref_t owner);
-lxp_region_ref_t vfork_snapshot(const lxp_os_ops_t *eng, lxp_proc_t *parent,
-				lxp_slot_ref_t child, uintptr_t parent_sp);
-int vfork_restore(const lxp_os_ops_t *eng, lxp_proc_t *parent, lxp_region_ref_t snapshot,
+lxp_region_ref_t vfork_snapshot(lxp_proc_t *parent, lxp_slot_ref_t child, uintptr_t parent_sp);
+int vfork_restore(lxp_proc_t *parent, lxp_region_ref_t snapshot,
 		  lxp_slot_ref_t child, uintptr_t parent_sp);
 void vfork_contain_stale(lxp_slot_ref_t child, lxp_proc_t *proc);
 void lxp_vfork_guard_reset(int slot);
@@ -199,17 +194,15 @@ lxp_region_ref_t region_ref_at(int region);
 /* Forget every lease and snapshot guard at teardown; no guest survives it. */
 void lxp_region_runtime_reset(void);
 
-void lxp_handle_fork(const lxp_os_ops_t *eng, int parent_slot, int *next_pid);
-void lxp_handle_exec(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg, int slot);
-struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot);
-struct lxp_primary_result lxp_handle_primary_event(const lxp_os_ops_t *eng,
-						   const lxp_run_config_t *cfg, int slot,
+void lxp_handle_fork(int parent_slot, int *next_pid);
+void lxp_handle_exec(const lxp_run_config_t *cfg, int slot);
+struct lxp_exit_result lxp_handle_exit(int slot);
+struct lxp_primary_result lxp_handle_primary_event(const lxp_run_config_t *cfg, int slot,
 						   int event, int *next_pid);
-struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng,
-					 const lxp_run_config_t *cfg, uint64_t now);
+struct lxp_blocked_scan lxp_scan_blocked(const lxp_run_config_t *cfg, uint64_t now);
 void lxp_blocked_fair_reset(void);
 #if LXP_ENABLE_NETFS
-void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
+void lxp_blocked_complete_netfs_retry(int slot, lxp_proc_t *proc,
 				      long rc, struct lxp_blocked_scan *scan);
 #endif
 

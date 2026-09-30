@@ -209,8 +209,7 @@ static int lxp_blocked_defer_stateful_signal(const lxp_proc_t *proc, int sig)
 	return handler != LXP_SIG_DFL && handler != LXP_SIG_IGN;
 }
 
-static int lxp_blocked_handle_stopped(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				      struct lxp_blocked_scan *scan)
+static int lxp_blocked_handle_stopped(int slot, lxp_proc_t *proc, struct lxp_blocked_scan *scan)
 {
 	if (!proc->stopped)
 		return 0;
@@ -247,12 +246,12 @@ static int lxp_blocked_handle_stopped(const lxp_os_ops_t *eng, int slot, lxp_pro
 				lxp_blocked_interrupt_wait(proc);
 				ret = -LXP_EINTR;
 			}
-			deliver_signal_parked(eng, slot, proc, LXP_SIGCONT, ret);
+			deliver_signal_parked(slot, proc, LXP_SIGCONT, ret);
 		} else if (ready) {
 			/* Continuation itself is unconditional. A blocked caught
 			 * SIGCONT remains pending for delivery after userspace
 			 * unmasks it, but cannot keep this task stopped. */
-			(void)coordinator_resume_slot(eng, slot, proc->mm->region.index,
+			(void)coordinator_resume_slot(slot, proc->mm->region.index,
 						      lxp_slot_resume_view(slot_ref_at(slot)),
 						      stop_r0);
 		}
@@ -267,8 +266,7 @@ static int lxp_blocked_handle_stopped(const lxp_os_ops_t *eng, int slot, lxp_pro
 	return 1;
 }
 
-static int lxp_blocked_handle_signal(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				     struct lxp_blocked_scan *scan)
+static int lxp_blocked_handle_signal(int slot, lxp_proc_t *proc, struct lxp_blocked_scan *scan)
 {
 	int sig = !slot_runnable_load(slot) ? pending_deliverable(proc) : 0;
 	if (sig && sig_stops_proc(proc, sig)) {
@@ -277,7 +275,7 @@ static int lxp_blocked_handle_signal(const lxp_os_ops_t *eng, int slot, lxp_proc
 		proc->stop_kind = LXP_STOP_PARKED;
 		proc->stop_sig = (uint8_t)sig;
 		proc->stop_r0 = 0;
-		notify_parent_stopped(eng, proc->group->ppid, proc->pid, sig);
+		notify_parent_stopped(proc->group->ppid, proc->pid, sig);
 		scan->progress = 1;
 		return 1;
 	}
@@ -287,14 +285,14 @@ static int lxp_blocked_handle_signal(const lxp_os_ops_t *eng, int slot, lxp_proc
 		proc->pending_sigs &= ~lxp_sig_bit(sig);
 		if (!sig_swallowed(proc, sig)) {
 			lxp_blocked_interrupt_wait(proc);
-			deliver_signal_parked(eng, slot, proc, sig, -LXP_EINTR);
+			deliver_signal_parked(slot, proc, sig, -LXP_EINTR);
 			scan->progress = 1;
 		}
 	}
 	return 0;
 }
 
-static void lxp_blocked_retry_timer(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
+static void lxp_blocked_retry_timer(int slot, lxp_proc_t *proc,
 				    uint64_t now, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_TIMER || slot_runnable_load(slot))
@@ -303,14 +301,14 @@ static void lxp_blocked_retry_timer(const lxp_os_ops_t *eng, int slot, lxp_proc_
 	uint64_t deadline = proc->wait.data.timer.deadline_us;
 	if (now >= deadline) {
 		(void)lxp_wait_timeout(proc, LXP_WAIT_TIMER);
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), 0);
+		(void)coordinator_complete_slot(slot_ref_at(slot), 0);
 		scan->progress = 1;
 	} else {
 		lxp_blocked_note_deadline(scan, deadline);
 	}
 }
 
-static void lxp_blocked_retry_futex(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
+static void lxp_blocked_retry_futex(int slot, lxp_proc_t *proc,
 				    uint64_t now, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_FUTEX || slot_runnable_load(slot))
@@ -319,19 +317,18 @@ static void lxp_blocked_retry_futex(const lxp_os_ops_t *eng, int slot, lxp_proc_
 	uint64_t deadline = proc->wait.data.futex.deadline_us;
 	if (proc->wait.data.futex.woken) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_FUTEX);
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), 0);
+		(void)coordinator_complete_slot(slot_ref_at(slot), 0);
 		scan->progress = 1;
 	} else if (deadline && now >= deadline) {
 		(void)lxp_wait_timeout(proc, LXP_WAIT_FUTEX);
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), -LXP_ETIMEDOUT);
+		(void)coordinator_complete_slot(slot_ref_at(slot), -LXP_ETIMEDOUT);
 		scan->progress = 1;
 	} else {
 		lxp_blocked_note_deadline(scan, deadline);
 	}
 }
 
-static void lxp_blocked_retry_pipe(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				   struct lxp_blocked_scan *scan)
+static void lxp_blocked_retry_pipe(int slot, lxp_proc_t *proc, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_PIPE || slot_runnable_load(slot))
 		return;
@@ -346,14 +343,13 @@ static void lxp_blocked_retry_pipe(const lxp_os_ops_t *eng, int slot, lxp_proc_t
 		proc->exit_signal = LXP_SIGPIPE;
 		primary_slot_mark(slot);
 	} else {
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+		(void)coordinator_complete_slot(slot_ref_at(slot), rc);
 	}
 	scan->progress = 1;
 }
 
 #if LXP_ENABLE_DEV
-static void lxp_blocked_retry_device(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				     struct lxp_blocked_scan *scan)
+static void lxp_blocked_retry_device(int slot, lxp_proc_t *proc, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_DEVICE || slot_runnable_load(slot))
 		return;
@@ -364,7 +360,7 @@ static void lxp_blocked_retry_device(const lxp_os_ops_t *eng, int slot, lxp_proc
 		int map = device_map_index(proc, buffer, length);
 		long rc = map;
 		if (map >= 0) {
-			int mapped = coordinator_map_mm_range(eng, proc->mm, buffer, length, attrs);
+			int mapped = coordinator_map_mm_range(proc->mm, buffer, length, attrs);
 			rc = mapped == 0 ? (long)buffer : mapped;
 		}
 		if (rc >= 0) {
@@ -375,22 +371,21 @@ static void lxp_blocked_retry_device(const lxp_os_ops_t *eng, int slot, lxp_proc
 				proc->mm->device_generation = 1u;
 		}
 		(void)lxp_wait_complete(proc, LXP_WAIT_DEVICE);
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+		(void)coordinator_complete_slot(slot_ref_at(slot), rc);
 		scan->progress = 1;
 		return;
 	}
 	long rc = lxp_dev_retry(proc);
 	if (rc != -LXP_EAGAIN) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_DEVICE);
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+		(void)coordinator_complete_slot(slot_ref_at(slot), rc);
 		scan->progress = 1;
 	}
 }
 #endif
 
 #if LXP_ENABLE_FS
-static void lxp_blocked_retry_hostfs(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				     struct lxp_blocked_scan *scan)
+static void lxp_blocked_retry_hostfs(int slot, lxp_proc_t *proc, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_HOSTFS || slot_runnable_load(slot))
 		return;
@@ -406,44 +401,42 @@ static void lxp_blocked_retry_hostfs(const lxp_os_ops_t *eng, int slot, lxp_proc
 	int sig = pending_deliverable(proc);
 	if (sig) {
 		proc->pending_sigs &= ~lxp_sig_bit(sig);
-		deliver_signal_parked(eng, slot, proc, sig, rc);
+		deliver_signal_parked(slot, proc, sig, rc);
 	} else {
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+		(void)coordinator_complete_slot(slot_ref_at(slot), rc);
 	}
 	scan->progress = 1;
 }
 #endif
 
 #if LXP_ENABLE_NET
-static void lxp_blocked_retry_socket(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				     struct lxp_blocked_scan *scan)
+static void lxp_blocked_retry_socket(int slot, lxp_proc_t *proc, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_SOCKET || slot_runnable_load(slot))
 		return;
 	long rc = lxp_sock_retry(proc);
 	if (rc != -LXP_EAGAIN) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_SOCKET);
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+		(void)coordinator_complete_slot(slot_ref_at(slot), rc);
 		scan->progress = 1;
 	}
 }
 #endif
 
-static void lxp_blocked_retry_poll(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				   struct lxp_blocked_scan *scan)
+static void lxp_blocked_retry_poll(int slot, lxp_proc_t *proc, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_POLL || slot_runnable_load(slot))
 		return;
 	long rc = lxp_poll_retry(proc);
 	if (rc != -LXP_EAGAIN) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_POLL);
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+		(void)coordinator_complete_slot(slot_ref_at(slot), rc);
 		scan->progress = 1;
 	}
 }
 
 #if LXP_ENABLE_NETFS
-void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, long rc,
+void lxp_blocked_complete_netfs_retry(int slot, lxp_proc_t *proc, long rc,
 				      struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind == LXP_WAIT_NETFS)
@@ -457,33 +450,31 @@ void lxp_blocked_complete_netfs_retry(const lxp_os_ops_t *eng, int slot, lxp_pro
 		 */
 		primary_slot_mark(slot);
 	} else {
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+		(void)coordinator_complete_slot(slot_ref_at(slot), rc);
 	}
 	scan->progress = 1;
 }
 
-static void lxp_blocked_retry_netfs(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				    struct lxp_blocked_scan *scan)
+static void lxp_blocked_retry_netfs(int slot, lxp_proc_t *proc, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_NETFS || slot_runnable_load(slot))
 		return;
 	long rc = lxp_netfs_retry(proc);
 	if (rc == -LXP_EAGAIN)
 		return;
-	lxp_blocked_complete_netfs_retry(eng, slot, proc, rc, scan);
+	lxp_blocked_complete_netfs_retry(slot, proc, rc, scan);
 }
 #endif
 
 #if LXP_ENABLE_PTY
-static void lxp_blocked_retry_pty(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				  struct lxp_blocked_scan *scan)
+static void lxp_blocked_retry_pty(int slot, lxp_proc_t *proc, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_PTY || slot_runnable_load(slot))
 		return;
 	long rc = lxp_pty_retry(proc);
 	if (rc != -LXP_EAGAIN) {
 		(void)lxp_wait_complete(proc, LXP_WAIT_PTY);
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+		(void)coordinator_complete_slot(slot_ref_at(slot), rc);
 		scan->progress = 1;
 	}
 }
@@ -491,8 +482,7 @@ static void lxp_blocked_retry_pty(const lxp_os_ops_t *eng, int slot, lxp_proc_t 
 
 /* Returns nonzero when ^Z kept this slot in its console wait and the caller
  * must skip the rest of this slot's retry policy. */
-static int lxp_blocked_retry_console(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc,
-				     struct lxp_blocked_scan *scan)
+static int lxp_blocked_retry_console(int slot, lxp_proc_t *proc, struct lxp_blocked_scan *scan)
 {
 	if (proc->wait.kind != LXP_WAIT_CONSOLE || slot_runnable_load(slot) ||
 	    !proc->console_poll || !lxp_console_input_ready(proc))
@@ -513,13 +503,12 @@ static int lxp_blocked_retry_console(const lxp_os_ops_t *eng, int slot, lxp_proc
 		rc = -LXP_EINTR;
 	}
 	(void)lxp_wait_complete(proc, LXP_WAIT_CONSOLE);
-	(void)coordinator_complete_slot(eng, slot_ref_at(slot), rc);
+	(void)coordinator_complete_slot(slot_ref_at(slot), rc);
 	scan->progress = 1;
 	return 0;
 }
 
-struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
-					 uint64_t now)
+struct lxp_blocked_scan lxp_scan_blocked(const lxp_run_config_t *cfg, uint64_t now)
 {
 	struct lxp_blocked_scan scan = {
 		.next_deadline_us = UINT64_MAX,
@@ -561,7 +550,7 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 			}
 			view_active = 1;
 		}
-		if (lxp_blocked_handle_stopped(eng, slot, proc, &scan)) {
+		if (lxp_blocked_handle_stopped(slot, proc, &scan)) {
 			if (view_active)
 				lxp_guest_view_end(&view);
 			continue;
@@ -578,7 +567,7 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 			}
 			lxp_blocked_note_deadline(&scan, proc->alarm_deadline_us);
 		}
-		if (lxp_blocked_handle_signal(eng, slot, proc, &scan)) {
+		if (lxp_blocked_handle_signal(slot, proc, &scan)) {
 			if (view_active)
 				lxp_guest_view_end(&view);
 			continue;
@@ -590,26 +579,26 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_os_ops_t *eng, const lxp_run_
 			lxp_blocked_note_deadline(&scan, proc->wait.data.futex.deadline_us);
 
 		if (!scan.progress && lxp_wait_service_class(proc->wait.kind) == selected) {
-			lxp_blocked_retry_timer(eng, slot, proc, now, &scan);
-			lxp_blocked_retry_futex(eng, slot, proc, now, &scan);
-			lxp_blocked_retry_pipe(eng, slot, proc, &scan);
+			lxp_blocked_retry_timer(slot, proc, now, &scan);
+			lxp_blocked_retry_futex(slot, proc, now, &scan);
+			lxp_blocked_retry_pipe(slot, proc, &scan);
 #if LXP_ENABLE_DEV
-			lxp_blocked_retry_device(eng, slot, proc, &scan);
+			lxp_blocked_retry_device(slot, proc, &scan);
 #endif
 #if LXP_ENABLE_NET
-			lxp_blocked_retry_socket(eng, slot, proc, &scan);
+			lxp_blocked_retry_socket(slot, proc, &scan);
 #endif
-			lxp_blocked_retry_poll(eng, slot, proc, &scan);
+			lxp_blocked_retry_poll(slot, proc, &scan);
 #if LXP_ENABLE_NETFS
-			lxp_blocked_retry_netfs(eng, slot, proc, &scan);
+			lxp_blocked_retry_netfs(slot, proc, &scan);
 #endif
 #if LXP_ENABLE_FS
-			lxp_blocked_retry_hostfs(eng, slot, proc, &scan);
+			lxp_blocked_retry_hostfs(slot, proc, &scan);
 #endif
 #if LXP_ENABLE_PTY
-			lxp_blocked_retry_pty(eng, slot, proc, &scan);
+			lxp_blocked_retry_pty(slot, proc, &scan);
 #endif
-			(void)lxp_blocked_retry_console(eng, slot, proc, &scan);
+			(void)lxp_blocked_retry_console(slot, proc, &scan);
 			if (scan.progress)
 				slot_cursor[selected] = (uint8_t)((slot + 1) % LXP_NSLOT);
 		}

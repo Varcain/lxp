@@ -86,11 +86,11 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	int slot = slot_of(proc);
 	capture_ctx(slot, f);
-	void *token = lxp_lifecycle_prepare_park(g_lxp_os_ops, slot, &g_lxp_rt.slots[slot].resume);
+	void *token = lxp_lifecycle_prepare_park(slot, &g_lxp_rt.slots[slot].resume);
 	f->r[0] = (uint32_t)(uintptr_t)token;
 	f->r[15] = (uint32_t)((uintptr_t)g_lxp_os_ops->park_entry & ~(uintptr_t)1u);
 	f->xpsr |= (1u << 24);
-	lxp_event_post_slot(g_lxp_os_ops, slot);
+	lxp_event_post_slot(slot);
 }
 
 /* Lowest-numbered pending signal for @p p that is not currently blocked (SIGKILL/SIGSTOP are

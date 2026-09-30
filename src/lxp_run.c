@@ -604,7 +604,7 @@ int lxp_slot_report_memory_fault(lxp_slot_ref_t ref, const lxp_guest_fault_t *fa
 	proc->exit_detail = fault->detail;
 	proc->exit_address = fault->address;
 	(void)lxp_intent_exit(proc, 0);
-	lxp_event_post_slot(g_lxp_os_ops, ref.index);
+	lxp_event_post_slot(ref.index);
 	return LXP_OK;
 }
 
@@ -631,22 +631,23 @@ int device_map_index(const lxp_proc_t *p, uintptr_t addr, size_t len)
  * live in each engine task. Rebuild one slot from its mm after fork, rollback,
  * task replacement, or resume. A clear request (size == 0) removes every
  * device entry owned by the slot. */
-int coordinator_restore_mm_maps(const lxp_os_ops_t *eng, int sidx, const lxp_mm_t *mm)
+int coordinator_restore_mm_maps(int sidx, const lxp_mm_t *mm)
 {
 	int has_maps = 0;
 	for (int i = 0; mm && i < 2; i++)
 		if (mm->dev_map_hi[i] > mm->dev_map_lo[i])
 			has_maps = 1;
-	if (!eng->map_device)
+	if (!g_lxp_os_ops->map_device)
 		return has_maps ? -LXP_ENODEV : 0;
-	if (eng->map_device(sidx, 0, 0, 0) != 0)
+	if (g_lxp_os_ops->map_device(sidx, 0, 0, 0) != 0)
 		return -LXP_ENOMEM;
 	for (int i = 0; mm && i < 2; i++) {
 		if (mm->dev_map_hi[i] <= mm->dev_map_lo[i])
 			continue;
-		if (eng->map_device(sidx, mm->dev_map_lo[i], mm->dev_map_hi[i] - mm->dev_map_lo[i],
-				    mm->dev_map_attrs[i]) != 0) {
-			(void)eng->map_device(sidx, 0, 0, 0);
+		if (g_lxp_os_ops->map_device(sidx, mm->dev_map_lo[i],
+					     mm->dev_map_hi[i] - mm->dev_map_lo[i],
+					     mm->dev_map_attrs[i]) != 0) {
+			(void)g_lxp_os_ops->map_device(sidx, 0, 0, 0);
 			return -LXP_ENOMEM;
 		}
 	}
@@ -658,18 +659,17 @@ int coordinator_restore_mm_maps(const lxp_os_ops_t *eng, int sidx, const lxp_mm_
  * all peers from the still-unmodified mm so a partial hardware update cannot
  * escape into userspace. */
 #if LXP_ENABLE_DEV
-int coordinator_map_mm_range(const lxp_os_ops_t *eng, lxp_mm_t *mm, uintptr_t addr, size_t len,
-			     unsigned attrs)
+int coordinator_map_mm_range(lxp_mm_t *mm, uintptr_t addr, size_t len, unsigned attrs)
 {
-	if (!eng->map_device)
+	if (!g_lxp_os_ops->map_device)
 		return -LXP_ENODEV;
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		if (!g_lxp_rt.slots[s].proc.alive || g_lxp_rt.slots[s].proc.mm != mm)
 			continue;
-		if (eng->map_device(s, addr, len, attrs) != 0) {
+		if (g_lxp_os_ops->map_device(s, addr, len, attrs) != 0) {
 			for (int r = 0; r < LXP_NSLOT; r++)
 				if (g_lxp_rt.slots[r].proc.alive && g_lxp_rt.slots[r].proc.mm == mm)
-					(void)coordinator_restore_mm_maps(eng, r, mm);
+					(void)coordinator_restore_mm_maps(r, mm);
 			return -LXP_ENOMEM;
 		}
 	}
@@ -739,7 +739,7 @@ void thread_group_request_exit(int source_slot, int status)
  * commit point, peer threads may no longer execute in the old shared address
  * space. Stop their host tasks immediately; their normal EV_EXIT teardown
  * releases per-task references on subsequent coordinator passes. */
-int thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slot, int failure_status)
+int thread_group_stop_exec_peers(int source_slot, int failure_status)
 {
 	lxp_thread_group_t *group = g_lxp_rt.slots[source_slot].proc.group;
 	int rc = LXP_OK;
@@ -747,7 +747,7 @@ int thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slot, int f
 		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
 		if (s == source_slot || !p->alive || p->group != group)
 			continue;
-		if (coordinator_abort_slot(eng, s) != LXP_OK)
+		if (coordinator_abort_slot(s) != LXP_OK)
 			rc = -LXP_EAGAIN;
 		coordinator_exit_slot(s, 0, failure_status & 0xff, LXP_EXIT_REASON_NORMAL, 0);
 	}
@@ -760,13 +760,13 @@ int thread_group_stop_exec_peers(const lxp_os_ops_t *eng, int source_slot, int f
  * handler; the handler's sa_restorer -> rt_sigreturn restores the saved frame and the syscall
  * returns -EINTR. SIG_IGN just resumes with `ret`; SIG_DFL terminates (the LXP_EV_EXIT pass
  * reaps it). */
-void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, int sig, long ret)
+void deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret)
 {
 	struct lxp_signal_delivery delivery;
 	enum lxp_signal_action action = lxp_signal_prepare(proc, sig, &delivery);
 	if (action == LXP_SIGNAL_IGNORE) {
 		(void)coordinator_complete_slot(
-			eng, slot_ref_at(slot),
+			slot_ref_at(slot),
 			ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
 		return;
 	}
@@ -777,8 +777,8 @@ void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, 
 		proc->stop_kind = LXP_STOP_PARKED;
 		proc->stop_sig = (uint8_t)sig;
 		proc->stop_r0 = 0;
-		(void)coordinator_complete_slot(eng, slot_ref_at(slot), ret);
-		notify_parent_stopped(eng, proc->group->ppid, proc->pid, sig);
+		(void)coordinator_complete_slot(slot_ref_at(slot), ret);
+		notify_parent_stopped(proc->group->ppid, proc->pid, sig);
 		return;
 	}
 	if (action == LXP_SIGNAL_TERMINATE) {
@@ -808,14 +808,14 @@ void deliver_signal_parked(const lxp_os_ops_t *eng, int slot, lxp_proc_t *proc, 
 		resume->r4_11[5] = delivery.got;      /* r9 = handler's GOT */
 	resume->lr = delivery.restorer | 1u;	      /* return -> sa_restorer entry -> sigreturn */
 	resume->pc = delivery.entry | 1u;	      /* enter the handler (Thumb) */
-	coordinator_resume_slot(eng, slot, proc->mm->region.index, resume, sig); /* r0 = signo */
+	coordinator_resume_slot(slot, proc->mm->region.index, resume, sig); /* r0 = signo */
 }
 
 /* Execute one READY mailbox in privileged task context. The lower-priority guest
  * is suspended before its host syscall runs; immediate completion resumes that
  * same task, while a blocking syscall leaves it parked for the established wait
  * event. Host RT tasks above the coordinator can preempt all work performed here. */
-void execute_deferred(const lxp_os_ops_t *eng, int slot)
+void execute_deferred(int slot)
 {
 	uint8_t expected = DEFER_READY;
 	if (!__atomic_compare_exchange_n(&g_lxp_rt.slots[slot].deferred.state, &expected,
@@ -829,7 +829,7 @@ void execute_deferred(const lxp_os_ops_t *eng, int slot)
 			(void)lxp_intent_complete(proc, LXP_INTENT_DEFERRED_SYSCALL);
 		return;
 	}
-	if (coordinator_park_slot(eng, slot) != LXP_OK) {
+	if (coordinator_park_slot(slot) != LXP_OK) {
 		deferred_state_store(slot, DEFER_IDLE);
 		return;
 	}
@@ -882,12 +882,12 @@ void execute_deferred(const lxp_os_ops_t *eng, int slot)
 
 	int psig = pending_take(proc);
 	if (psig) {
-		deliver_signal_parked(eng, slot, proc, psig, r);
+		deliver_signal_parked(slot, proc, psig, r);
 		lxp_guest_view_end(&view);
 		return;
 	}
 	lxp_guest_view_end(&view);
-	(void)coordinator_complete_slot(eng, slot_ref_at(slot), r);
+	(void)coordinator_complete_slot(slot_ref_at(slot), r);
 }
 
 /* A failed abort leaves the native task and its Linux resources intact by
@@ -895,11 +895,11 @@ void execute_deferred(const lxp_os_ops_t *eng, int slot)
  * qualified native owner is synchronously gone. There is no safe recovery
  * which returns to the host while a guest can still execute; a permanent port
  * failure deliberately remains here for the host watchdog to contain. */
-static void coordinator_quiesce_all(const lxp_os_ops_t *eng)
+static void coordinator_quiesce_all(void)
 {
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		while (coordinator_abort_slot(eng, s) != LXP_OK)
-			eng->event_wait(1u);
+		while (coordinator_abort_slot(s) != LXP_OK)
+			g_lxp_os_ops->event_wait(1u);
 	}
 }
 
@@ -923,9 +923,9 @@ static void coordinator_reset_pools(void)
 #endif
 }
 
-static void coordinator_teardown_all(const lxp_os_ops_t *eng)
+static void coordinator_teardown_all(void)
 {
-	coordinator_quiesce_all(eng);
+	coordinator_quiesce_all();
 	lxp_trap_publish(0);
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
@@ -936,8 +936,8 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 			lxp_netfs_cancel(p);
 #endif
 		lxp_proc_resources_put(p);
-		if (eng->map_device)
-			eng->map_device(s, 0, 0, 0);
+		if (g_lxp_os_ops->map_device)
+			g_lxp_os_ops->map_device(s, 0, 0, 0);
 		if (p->mm) {
 			p->mm->dev_map_lo[0] = p->mm->dev_map_hi[0] = 0;
 			p->mm->dev_map_lo[1] = p->mm->dev_map_hi[1] = 0;
@@ -1017,7 +1017,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	(void)region_reserve(0, slot_ref_at(0));
 	lxp_region_ref_t initial_region = region_ref_at(0);
 	lxp_slot_ref_t initial_owner = slot_ref_at(0);
-	if (lxp_image_launch(eng, cfg, 0, initial_region, initial_owner, initial.data, initial.size,
+	if (lxp_image_launch(cfg, 0, initial_region, initial_owner, initial.data, initial.size,
 			     1, 0, initial.argc, initial.argv, cfg->env, 0) != 0) {
 		goto launch_failed;
 	}
@@ -1063,7 +1063,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		/* Event classes: enum lxp_ev_class, generated with the latency stats array
 		 * and class names from LXP_LAT_CLASS_LIST in lxp_latency.h so they cannot
 		 * fall out of step. LXP_EV_NONE (0) means "nothing claimed". */
-		struct lxp_claimed_event claimed = coordinator_claim_event(eng, &event_cursor);
+		struct lxp_claimed_event claimed = coordinator_claim_event(&event_cursor);
 		int es = claimed.slot;
 		int et = claimed.type;
 		/* Lifecycle/control work remains strict. Ordinary guest publications are
@@ -1088,7 +1088,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			es = 0;
 
 		struct lxp_primary_result primary =
-			lxp_handle_primary_event(eng, cfg, es, et, &next_pid);
+			lxp_handle_primary_event(cfg, es, et, &next_pid);
 		if (primary.flow == LXP_PRIMARY_STOP) {
 			rc = primary.status;
 			break;
@@ -1105,7 +1105,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		/* No pending event: resume any sleeper whose deadline passed; assess liveness. */
 		uint64_t now = 0;
 		lxp_time_us(&now);
-		struct lxp_blocked_scan blocked = lxp_scan_blocked(eng, cfg, now);
+		struct lxp_blocked_scan blocked = lxp_scan_blocked(cfg, now);
 		if (!blocked.any_alive) {
 			rc = 0;
 			break;
@@ -1158,13 +1158,13 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		}
 		eng->event_wait(to);
 	}
-	coordinator_teardown_all(eng);
+	coordinator_teardown_all();
 	lxp_diag_refresh();
 	lxp_diag_checkpoint();
 	return rc;
 
 launch_failed:
-	coordinator_teardown_all(eng);
+	coordinator_teardown_all();
 	lxp_diag_refresh();
 	lxp_diag_checkpoint();
 	return LXP_RUN_ELAUNCH;
@@ -1306,9 +1306,9 @@ unsigned lxp_test_coordinator_wait_timeout(uint32_t wait_policy, int socket_read
 	return coordinator_wait_timeout(wait_policy, socket_ready_events, console_ready_events);
 }
 
-void lxp_test_coordinator_teardown_all(const lxp_os_ops_t *eng)
+void lxp_test_coordinator_teardown_all(void)
 {
-	coordinator_teardown_all(eng);
+	coordinator_teardown_all();
 }
 
 int lxp_test_futex_has_corunner(const lxp_proc_t *proc)

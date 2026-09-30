@@ -42,11 +42,11 @@ void lxp_primary_events_reset(void)
  * contained guest faults; normal syscall/signal parking reaches it through
  * park_frame(). Safe when the slot is stale: the coordinator simply clears a
  * hint that fails revalidation. */
-void lxp_event_post_slot(const lxp_os_ops_t *eng, int slot)
+void lxp_event_post_slot(int slot)
 {
 	primary_slot_mark(slot);
-	if (eng && eng->event_post)
-		eng->event_post();
+	if (g_lxp_os_ops && g_lxp_os_ops->event_post)
+		g_lxp_os_ops->event_post();
 }
 
 /* Inspect one slot's highest-priority event. The caller holds the engine
@@ -104,23 +104,23 @@ int claim_slot_event(int s)
 /* Claim at most one event. Cursor rotation is part of the API so fairness is
  * directly testable independently of the coordinator loop. Handler work stays
  * outside the bounded critical section. */
-struct lxp_claimed_event coordinator_claim_event(const lxp_os_ops_t *eng, unsigned *cursor)
+struct lxp_claimed_event coordinator_claim_event(unsigned *cursor)
 {
 	struct lxp_claimed_event claimed = {
 		.slot = -1,
 		.type = LXP_EV_NONE,
 	};
-	if (!eng || !cursor)
+	if (!g_lxp_os_ops || !cursor)
 		return claimed;
 
 	for (int i = 0; i < LXP_NSLOT; i++) {
 		int s = (int)((*cursor + (unsigned)i) % LXP_NSLOT);
 		if (!primary_slot_pending(s))
 			continue;
-		lxp_critical_token_t critical_token = eng->crit_enter();
+		lxp_critical_token_t critical_token = g_lxp_os_ops->crit_enter();
 		primary_slot_clear(s);
 		int type = claim_slot_event(s);
-		eng->crit_exit(critical_token);
+		g_lxp_os_ops->crit_exit(critical_token);
 		if (type == LXP_EV_NONE)
 			continue;
 		claimed.slot = s;

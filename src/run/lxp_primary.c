@@ -7,8 +7,7 @@
 
 #include "run/lxp_coordinator.h"
 
-struct lxp_primary_result lxp_handle_primary_event(const lxp_os_ops_t *eng,
-						   const lxp_run_config_t *cfg, int slot,
+struct lxp_primary_result lxp_handle_primary_event(const lxp_run_config_t *cfg, int slot,
 						   int event, int *next_pid)
 {
 	struct lxp_primary_result result = {
@@ -26,7 +25,7 @@ struct lxp_primary_result lxp_handle_primary_event(const lxp_os_ops_t *eng,
 		return result;
 
 	case LXP_EV_DEFER:
-		execute_deferred(eng, slot);
+		execute_deferred(slot);
 		return result;
 
 	case LXP_EV_STOP: {
@@ -35,21 +34,21 @@ struct lxp_primary_result lxp_handle_primary_event(const lxp_os_ops_t *eng,
 			result.flow = LXP_PRIMARY_SCAN_BLOCKED;
 			return result;
 		}
-		if (coordinator_park_slot(eng, slot) == LXP_OK)
-			notify_parent_stopped(eng, proc->group->ppid, proc->pid, proc->stop_sig);
+		if (coordinator_park_slot(slot) == LXP_OK)
+			notify_parent_stopped(proc->group->ppid, proc->pid, proc->stop_sig);
 		return result;
 	}
 
 	case LXP_EV_FORK:
-		lxp_handle_fork(eng, slot, next_pid);
+		lxp_handle_fork(slot, next_pid);
 		return result;
 
 	case LXP_EV_EXEC:
-		lxp_handle_exec(eng, cfg, slot);
+		lxp_handle_exec(cfg, slot);
 		return result;
 
 	case LXP_EV_EXIT: {
-		struct lxp_exit_result exited = lxp_handle_exit(eng, slot);
+		struct lxp_exit_result exited = lxp_handle_exit(slot);
 		if (exited.stop_coordinator) {
 			result.flow = LXP_PRIMARY_STOP;
 			result.status = exited.status;
@@ -71,7 +70,7 @@ struct lxp_primary_result lxp_handle_primary_event(const lxp_os_ops_t *eng,
 #endif
 	case LXP_EV_SIGSUSPEND:
 	case LXP_EV_CONSOLEWAIT:
-		(void)coordinator_park_slot(eng, slot);
+		(void)coordinator_park_slot(slot);
 		return result;
 
 	default:

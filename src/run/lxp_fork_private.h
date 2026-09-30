@@ -38,14 +38,12 @@ struct fork_txn {
 #define LXP_FORK_TXN_LINKAGE static
 #endif
 
-LXP_FORK_TXN_LINKAGE int fork_txn_prepare(struct fork_txn *tx, const lxp_os_ops_t *eng,
-					  int parent_slot, int child_slot, uint32_t clone_flags,
-					  int child_pid);
+LXP_FORK_TXN_LINKAGE int fork_txn_prepare(struct fork_txn *tx, int parent_slot, int child_slot,
+					  uint32_t clone_flags, int child_pid);
 LXP_FORK_TXN_LINKAGE int fork_txn_count_child(struct fork_txn *tx);
-LXP_FORK_TXN_LINKAGE int fork_txn_snapshot(struct fork_txn *tx, const lxp_os_ops_t *eng,
-					   uintptr_t parent_sp);
+LXP_FORK_TXN_LINKAGE int fork_txn_snapshot(struct fork_txn *tx, uintptr_t parent_sp);
 LXP_FORK_TXN_LINKAGE int fork_txn_publish(struct fork_txn *tx);
-LXP_FORK_TXN_LINKAGE void fork_txn_abort(struct fork_txn *tx, const lxp_os_ops_t *eng);
+LXP_FORK_TXN_LINKAGE void fork_txn_abort(struct fork_txn *tx);
 LXP_FORK_TXN_LINKAGE int fork_txn_commit(struct fork_txn *tx);
 
 #endif /* LXP_FORK_PRIVATE_H */
