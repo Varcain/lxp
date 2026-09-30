@@ -33,6 +33,7 @@
 
 #include "lxp/arch/cortex_m_cache.h"
 #include "lxp/arch/cortex_m_mpu.h"
+#include "lxp/arch/cortex_m_scb.h"
 #include "lxp/lxp_run.h"
 #include "lxp/lxp_rt_metrics.h"
 #include "lxp/lxp_seam.h"
@@ -493,18 +494,18 @@ uint32_t *LXP_FAULT_GPR_ONLY lxp_freertos_memfault_c(uint32_t exc_return, uint32
 	    (exc_return & (1u << 2))) {
 		volatile struct lnx_fault_diag *diag = &g_lxp_fault_diag[sidx];
 		diag->count++;
-		diag->cfsr = *(volatile uint32_t *)0xE000ED28u;
-		diag->hfsr = *(volatile uint32_t *)0xE000ED2Cu;
-		diag->mmfar = *(volatile uint32_t *)0xE000ED34u;
-		diag->bfar = *(volatile uint32_t *)0xE000ED38u;
+		diag->cfsr = LXP_CORTEX_M_SCB_CFSR;
+		diag->hfsr = LXP_CORTEX_M_SCB_HFSR;
+		diag->mmfar = LXP_CORTEX_M_SCB_MMFAR;
+		diag->bfar = LXP_CORTEX_M_SCB_BFAR;
 		diag->psp = psp;
 		diag->exc_return = exc_return;
 
 		lxp_guest_fault_t fault = {
 			.detail = diag->cfsr,
-			.address = (diag->cfsr & (1u << 7))    ? diag->mmfar
-				   : (diag->cfsr & (1u << 15)) ? diag->bfar
-							       : 0u,
+			.address = (diag->cfsr & LXP_CORTEX_M_SCB_CFSR_MMARVALID)   ? diag->mmfar
+				   : (diag->cfsr & LXP_CORTEX_M_SCB_CFSR_BFARVALID) ? diag->bfar
+										    : 0u,
 		};
 		(void)lxp_slot_report_memory_fault(task_slot_ref(sidx), &fault);
 
@@ -525,15 +526,14 @@ uint32_t *LXP_FAULT_GPR_ONLY lxp_freertos_memfault_c(uint32_t exc_return, uint32
 		frame[6] = ((uint32_t)&freertos_park_entry) & ~1u;
 		frame[7] = (1u << 24); /* xPSR.T (Thumb) */
 
-		*(volatile uint32_t *)0xE000ED28u = *(
-			volatile uint32_t *)0xE000ED28u; /* clear configurable status bits (W1C) */
+		lxp_cortex_m_fault_status_clear();
 		return (uint32_t *)frame;
 	}
 	/* Not a guest fault: host/privileged context, handler mode, or no active guest. Capture the
 	 * fault registers and the faulting PC (offset 6 of a Thread-mode PSP frame), then go fatal —
  * host_fatal reports and halts, and does not return. */
-	uint32_t cfsr = *(volatile uint32_t *)0xE000ED28u;
-	uint32_t hfsr = *(volatile uint32_t *)0xE000ED2Cu;
+	uint32_t cfsr = LXP_CORTEX_M_SCB_CFSR;
+	uint32_t hfsr = LXP_CORTEX_M_SCB_HFSR;
 	uint32_t pc = ((exc_return & (1u << 2)) && psp) ? ((volatile uint32_t *)psp)[6] : 0u;
 	freertos_host_fatal(cfsr, hfsr, pc);
 	for (;;) { /* belt-and-suspenders: the override must not return */
@@ -553,7 +553,7 @@ __attribute__((naked)) void MemManage_Handler(void)
 			 /* Cancel a pending lazy FP store before entering compiled code.  If
 			  * the guest PSP caused MLSPERR, any VFP use before this write would
 			  * immediately refault.  FPCCR.LSPACT is architecturally R/W. */
-			 "ldr  r3, =0xe000ef34        \n"
+			 "ldr  r3, =" LXP_CORTEX_M_STR(LXP_CORTEX_M_FPCCR_ADDR) "\n"
 			 "ldr  r0, [r3]               \n"
 			 "bic  r0, r0, #1             \n"
 			 "str  r0, [r3]               \n"
@@ -1009,7 +1009,7 @@ static void freertos_coord_map(int ridx)
 {
 	if (!PORT_CONFIG.coordinator_cacheable_map || ridx < 0 || ridx >= LXP_NREG)
 		return;
-	if ((*(volatile const uint32_t *)0xE000ED14u & (1u << 16)) == 0u)
+	if ((LXP_CORTEX_M_SCB_CCR & LXP_CORTEX_M_SCB_CCR_DC) == 0u)
 		return; /* D-cache off: coordinator and guest already agree through SDRAM */
 	if (ridx == g_coord_mapped_ridx)
 		return; /* already live; the TCB copy restores it across a preemption */
@@ -1051,15 +1051,16 @@ static void freertos_coord_map(int ridx)
 	}
 	vTaskAllocateMPURegions(NULL, regions);
 
-	volatile uint32_t *const mpu_rbar = (volatile uint32_t *)0xE000ED9Cu;
-	volatile uint32_t *const mpu_rasr = (volatile uint32_t *)0xE000EDA0u;
+	volatile uint32_t *const mpu_rbar = &LXP_CORTEX_M_MPU_RBAR;
+	volatile uint32_t *const mpu_rasr = &LXP_CORTEX_M_MPU_RASR;
 	*mpu_rbar = ((uint32_t)(uintptr_t)prog_regions[ridx]) | (1u << 4) |
 		    (portFIRST_CONFIGURABLE_REGION + 0u);
 	*mpu_rasr = prog_rasr;
 	*mpu_rbar = ((uint32_t)(uintptr_t)dyn_pools[ridx]) | (1u << 4) |
 		    (portFIRST_CONFIGURABLE_REGION + 1u);
 	*mpu_rasr = dyn_rasr;
-	__asm__ volatile("dsb 0xf\n\tisb 0xf" ::: "memory");
+	lxp_cortex_m_dsb();
+	lxp_cortex_m_isb();
 
 	g_coord_mapped_ridx = ridx;
 }
@@ -1300,8 +1301,8 @@ static int freertos_prepare(void)
 		g_slots[s].profile.valid = 0;
 		g_slots[s].sched_blocked = 0u;
 	}
-	/* SHCSR @ 0xE000ED24: BUSFAULTENA = bit 17, USGFAULTENA = bit 18. */
-	*(volatile uint32_t *)0xE000ED24u |= (1u << 17) | (1u << 18);
+	LXP_CORTEX_M_SCB_SHCSR |=
+		LXP_CORTEX_M_SCB_SHCSR_BUSFAULTENA | LXP_CORTEX_M_SCB_SHCSR_USGFAULTENA;
 	return LXP_OK;
 
 fail_sched_task:
@@ -1426,15 +1427,16 @@ static void freertos_rootfs_window(const void *base, size_t len)
 	 * avoids forcing a first context switch that trips the FreeRTOS stack-overflow guard. */
 	unsigned l2 =
 		31u - (unsigned)__builtin_clz((unsigned)len); /* log2(len); len is a power of 2 */
-	volatile uint32_t *const mpu_rbar = (volatile uint32_t *)0xE000ED9Cu;
-	volatile uint32_t *const mpu_rasr = (volatile uint32_t *)0xE000EDA0u;
+	volatile uint32_t *const mpu_rbar = &LXP_CORTEX_M_MPU_RBAR;
+	volatile uint32_t *const mpu_rasr = &LXP_CORTEX_M_MPU_RASR;
 	*mpu_rbar = (1u << 4) /* VALID */ | 0u /* region 0 */;
 	*mpu_rasr = 0u;
 	*mpu_rbar = (1u << 4) /* VALID */ | 1u /* region 1 */;
 	*mpu_rasr = 0u;
 	*mpu_rbar = (uint32_t)(uintptr_t)base | (1u << 4) /* VALID */ | rootfs_region;
 	*mpu_rasr = 1u /* ENABLE */ | ((l2 - 1u) << 1) /* SIZE field */ | par;
-	__asm__ volatile("dsb 0xf\n\tisb 0xf" ::: "memory");
+	lxp_cortex_m_dsb();
+	lxp_cortex_m_isb();
 }
 
 /* The public lxp_run() now lives in the module (src/lxp_run.c): it publishes the
