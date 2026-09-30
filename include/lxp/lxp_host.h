@@ -93,8 +93,8 @@ typedef struct lxp_host {
  * which is required by hosts that must first install a safe mapping for the
  * external memory holding the image (for example a memory-mapped flash window).
  *
- * @return @c LXP_OK, @c LXP_ERR_INVALID_PARAM for an invalid contract, or
- * @c LXP_ERR_INVAL for a malformed archive or insufficient table/name storage.
+ * @return @c LXP_OK, or @c LXP_ERR_INVALID_PARAM for an invalid contract, a malformed
+ * archive, or table/name storage too small for it.
  */
 int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config);
 

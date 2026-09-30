@@ -33,7 +33,8 @@
  * @brief lxp result / error codes.
  *
  * Zero (@c LXP_OK) on success, negative on error. These pinned values form the
- * provider ABI; host adapters must return or translate to these exact codes.
+ * provider ABI; host adapters must return or translate to these exact codes. A
+ * retired code's number is never reused: -7, -14 to -17 and -20 are retired.
  */
 typedef enum lxp_err {
 	LXP_OK = 0,
@@ -43,20 +44,14 @@ typedef enum lxp_err {
 	LXP_ERR_TIMEOUT = -4,
 	LXP_ERR_NOT_SUPPORTED = -5,
 	LXP_ERR_QUEUE_FULL = -6,
-	LXP_ERR_ML_FAILED = -7,
 	LXP_ERR_NET_REFUSED = -8,
 	LXP_ERR_NET_UNREACHABLE = -9,
 	LXP_ERR_NET_ADDR_IN_USE = -10,
 	LXP_ERR_NET_RESET = -11,
 	LXP_ERR_NET_DNS_FAIL = -12,
 	LXP_ERR_NET_CLOSED = -13,
-	LXP_ERR_BUS_NACK = -14,
-	LXP_ERR_BUS_BUSY = -15,
-	LXP_ERR_BUS_ERROR = -16,
-	LXP_ERR_QUEUE_EMPTY = -17,
 	LXP_ERR_WOULD_BLOCK = -18,
 	LXP_ERR_EOF = -19,
-	LXP_ERR_INVAL = -20,
 	LXP_ERR_NOT_FOUND = -21,
 	LXP_ERR_NET_ADDR_NOT_AVAILABLE = -22,
 	LXP_ERR_ALREADY_EXISTS = -23,

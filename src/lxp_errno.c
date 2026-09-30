@@ -20,12 +20,10 @@ long lxp_errno_from_err(int err)
 		return 0;
 	case LXP_ERR_WOULD_BLOCK:
 	case LXP_ERR_QUEUE_FULL:
-	case LXP_ERR_QUEUE_EMPTY:
 		return -LXP_EAGAIN;
 	case LXP_ERR_NOT_REGISTERED:
 		return -LXP_ENODEV;
 	case LXP_ERR_INVALID_PARAM:
-	case LXP_ERR_INVAL:
 		return -LXP_EINVAL;
 	case LXP_ERR_BUSY:
 		return -LXP_EBUSY;

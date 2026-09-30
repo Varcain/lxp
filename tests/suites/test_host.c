@@ -388,7 +388,7 @@ static void test_failed_reinit_clears_previous_host(void **state)
 
 	lxp_host_config_t bad = good;
 	bad.rootfs_image_size = 16u;
-	assert_int_equal(lxp_host_init_cpio(&host, &bad), LXP_ERR_INVAL);
+	assert_int_equal(lxp_host_init_cpio(&host, &bad), LXP_ERR_INVALID_PARAM);
 	assert_int_equal(host.initialized, 0);
 	assert_int_equal(lxp_host_run(&host, NULL, "/bin/init", 1, NULL), LXP_ERR_INVALID_PARAM);
 }

@@ -694,14 +694,14 @@ static int nuttx_random_fill(void *buf, size_t len)
 		}
 		if (got < 0 && errno == EINTR)
 			continue;
-		int rc = (got < 0 && errno == EAGAIN) ? LXP_ERR_WOULD_BLOCK : LXP_ERR_BUS_ERROR;
+		int rc = (got < 0 && errno == EAGAIN) ? LXP_ERR_WOULD_BLOCK : LXP_ERR_IO;
 		memset(buf, 0, len);
 		return rc;
 	}
 	if (done == len)
 		return LXP_OK;
 	memset(buf, 0, len);
-	return LXP_ERR_BUS_ERROR;
+	return LXP_ERR_IO;
 }
 
 /* Coordinator critical section: disable IRQs around the brief proc-table snapshot. */

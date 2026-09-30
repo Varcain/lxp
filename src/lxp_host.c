@@ -63,7 +63,7 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 				       config->rootfs_storage, config->rootfs_capacity,
 				       config->rootfs_name_storage, config->rootfs_name_capacity);
 	if (count <= 0)
-		return LXP_ERR_INVAL;
+		return LXP_ERR_INVALID_PARAM;
 
 	host->os_ops = config->os_ops;
 	host->net_ops = config->net_ops;

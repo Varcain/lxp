@@ -23,20 +23,14 @@ static const struct {
 	{LXP_ERR_TIMEOUT, -LXP_ETIMEDOUT},
 	{LXP_ERR_NOT_SUPPORTED, -LXP_EOPNOTSUPP},
 	{LXP_ERR_QUEUE_FULL, -LXP_EAGAIN},
-	{LXP_ERR_ML_FAILED, -LXP_EIO},
 	{LXP_ERR_NET_REFUSED, -LXP_ECONNREFUSED},
 	{LXP_ERR_NET_UNREACHABLE, -LXP_ENETUNREACH},
 	{LXP_ERR_NET_ADDR_IN_USE, -LXP_EADDRINUSE},
 	{LXP_ERR_NET_RESET, -LXP_ECONNRESET},
 	{LXP_ERR_NET_DNS_FAIL, -LXP_EIO},
 	{LXP_ERR_NET_CLOSED, -LXP_EPIPE},
-	{LXP_ERR_BUS_NACK, -LXP_EIO},
-	{LXP_ERR_BUS_BUSY, -LXP_EIO},
-	{LXP_ERR_BUS_ERROR, -LXP_EIO},
-	{LXP_ERR_QUEUE_EMPTY, -LXP_EAGAIN},
 	{LXP_ERR_WOULD_BLOCK, -LXP_EAGAIN},
 	{LXP_ERR_EOF, 0},
-	{LXP_ERR_INVAL, -LXP_EINVAL},
 	{LXP_ERR_NOT_FOUND, -LXP_ENOENT},
 	{LXP_ERR_NET_ADDR_NOT_AVAILABLE, -LXP_EADDRNOTAVAIL},
 	{LXP_ERR_ALREADY_EXISTS, -LXP_EEXIST},
@@ -53,18 +47,28 @@ static const struct {
 	{LXP_ERR_CROSS_DEVICE, -LXP_EXDEV},
 };
 
+/* Numbers of retired codes (lxp_types.h), which read as any unknown code does. */
+static const int g_retired[] = {-7, -14, -15, -16, -17, -20};
+
 /* The table above names every code once, and the translator agrees with it. */
 static void test_every_code_has_its_errno(void **state)
 {
 	(void)state;
 	const size_t n = sizeof(g_expected) / sizeof(g_expected[0]);
-	assert_int_equal(n, (size_t)(LXP_OK - LXP_ERR_CROSS_DEVICE + 1));
+	const size_t retired = sizeof(g_retired) / sizeof(g_retired[0]);
+	assert_int_equal(n + retired, (size_t)(LXP_OK - LXP_ERR_CROSS_DEVICE + 1));
+	for (size_t r = 0; r < retired; r++)
+		assert_int_equal(lxp_errno_from_err(g_retired[r]), -LXP_EIO);
 	for (int err = LXP_ERR_CROSS_DEVICE; err <= LXP_OK; err++) {
 		size_t i = 0;
 		while (i < n && g_expected[i].err != err)
 			i++;
-		assert_true(i < n); /* a code the table does not cover */
-		assert_int_equal(lxp_errno_from_err(err), g_expected[i].result);
+		size_t r = 0;
+		while (r < retired && g_retired[r] != err)
+			r++;
+		assert_true(i < n || r < retired); /* a code the table does not cover */
+		if (i < n)
+			assert_int_equal(lxp_errno_from_err(err), g_expected[i].result);
 	}
 	assert_int_equal(lxp_errno_from_err(-1000), -LXP_EIO);
 }
