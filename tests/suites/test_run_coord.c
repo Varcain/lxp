@@ -1404,6 +1404,32 @@ static void test_image_start_preserves_executable_extent_and_rolls_back_spawn_fa
 	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
 }
 
+/* A debugger finds each slot's program in g_lxp_dbg (lxp/lxp_debug.h): publishing an image
+ * records its name and bases, and the record clears when the slot's process goes away,
+ * whether its launch is aborted or it exits. */
+static void test_debug_record_follows_slot_program(void **state)
+{
+	(void)state;
+	struct image_txn tx;
+	prepare_mock_image_txn(&tx, 1, 1);
+	strcpy(tx.proc.comm, "dbgdemo");
+	tx.debug.text_base = 0x1000u;
+	tx.debug.entry = 0x1041u;
+	assert_int_equal(image_txn_publish(&tx, &g_mock_eng), LXP_OK);
+	assert_string_equal(g_lxp_dbg[1].comm, "dbgdemo");
+	assert_int_equal(g_lxp_dbg[1].text_base, 0x1000u);
+	assert_int_equal(g_lxp_dbg[1].entry, 0x1041u);
+	assert_int_equal(image_txn_abort(&tx, &g_mock_eng), LXP_OK);
+	assert_null(g_lxp_dbg[1].comm);
+
+	make_valid_running_slot(0, 0);
+	g_lxp_dbg[0].comm = g_lxp_rt.slots[0].proc.comm;
+	assert_int_equal(lxp_intent_exit(&g_lxp_rt.slots[0].proc, 0), LXP_OK);
+	primary_slot_clear(0);
+	(void)lxp_handle_exit(&g_mock_eng, 0);
+	assert_null(g_lxp_dbg[0].comm);
+}
+
 static void test_image_start_marks_xip_launch_with_empty_executable_extent(void **state)
 {
 	(void)state;
@@ -1966,7 +1992,7 @@ static void test_world_diagnostic_size_report_matches_compiled_objects(void **st
 	assert_int_equal(sizes.deferred_request, sizeof(struct deferred_req));
 	assert_int_equal(sizes.signal_save_stack, sizeof(struct sig_save_stack_s));
 	assert_int_equal(sizes.vfork_guard, sizeof(struct vfork_snapshot_guard));
-	assert_int_equal(sizes.debug_record, sizeof(struct lxp_dbg_s));
+	assert_int_equal(sizes.debug_record, sizeof(lxp_debug_image_t));
 	assert_int_equal(sizes.slot_table, sizeof(*g_lxp_rt.slots) * LXP_NSLOT);
 	assert_true(sizes.per_slot_core > sizes.proc);
 	assert_true(sizes.coordinator_static > sizes.slot_table);
@@ -4871,6 +4897,7 @@ int main(void)
 		cmocka_unit_test_setup(
 			test_image_start_preserves_executable_extent_and_rolls_back_spawn_failure,
 			reset_state),
+		cmocka_unit_test_setup(test_debug_record_follows_slot_program, reset_state),
 		cmocka_unit_test_setup(
 			test_image_start_marks_xip_launch_with_empty_executable_extent,
 			reset_state),

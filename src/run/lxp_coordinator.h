@@ -12,13 +12,13 @@
 #include <stdint.h>
 
 #include "lxp_arena.h"
+#include "lxp/lxp_debug.h"
 #include "lxp/lxp_diag.h"
 #include "lxp_guest.h"
 #include "lxp/lxp_latency.h"
 #include "proc/lxp_proc.h"
 #include "lxp/lxp_seam.h"
 
-struct lxp_dbg_s;
 
 enum deferred_state {
 	DEFER_IDLE,
@@ -107,7 +107,9 @@ void slot_runnable_store(int slot, int runnable);
 uint32_t slot_generation(int slot);
 lxp_slot_ref_t slot_ref_at(int slot);
 int lxp_slot_publish_image(int slot, lxp_proc_t *image, lxp_exec_capture_t *capture,
-			   const struct lxp_dbg_s *debug);
+			   const lxp_debug_image_t *debug);
+/* The slot's process has ended: clear its debugger record (lxp/lxp_debug.h). */
+void lxp_slot_debug_clear(int slot);
 void lxp_slot_signal_reset(int slot);
 void lxp_slot_signal_clone(int child_slot, int parent_slot);
 lxp_arena_t *lxp_region_arena(int region);

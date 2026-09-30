@@ -433,7 +433,7 @@ void lxp_diag_size_report(lxp_diag_size_report_t *out)
 	out->deferred_request = sizeof(struct deferred_req);
 	out->signal_save_stack = sizeof(struct sig_save_stack_s);
 	out->vfork_guard = sizeof(struct vfork_snapshot_guard);
-	out->debug_record = sizeof(struct lxp_dbg_s);
+	out->debug_record = sizeof(lxp_debug_image_t);
 	out->per_slot_core = sizeof(g_lxp_rt.slots[0]) + out->signal_save_stack + out->vfork_guard +
 			     out->debug_record;
 	out->per_region_core = out->arena + sizeof(g_lxp_rt.regions[0]);

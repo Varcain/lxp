@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 
+#include "lxp/lxp_debug.h"
 #include "lxp/lxp_latency.h"
 #include "lxp/lxp_run.h"
 #include "lxp_arena.h"
@@ -59,14 +60,6 @@ struct vfork_snapshot_guard {
 	lxp_region_ref_t snapshot;
 };
 
-struct lxp_dbg_s {
-	uintptr_t text_base;
-	uintptr_t data_base;
-	uintptr_t entry;
-	uintptr_t dynamic;
-	uintptr_t interp_base;
-};
-
 /* Per-slot primary-event hints, one bit per slot (src/run/lxp_guest_event.c). */
 #define LXP_EVENT_WORD_BITS 32u
 #define LXP_EVENT_WORDS ((LXP_NSLOT + LXP_EVENT_WORD_BITS - 1u) / LXP_EVENT_WORD_BITS)
@@ -100,7 +93,7 @@ struct lxp_exec_scratch {
  * exact (lxp_diag_sizes) and gives tests and debuggers one place to look. Three objects
  * stay separately named because something outside the coordinator finds them by name:
  * the trap gate (port SVC assembly), the signal-save stacks (the host's linker script)
- * and the debugger records (g_lxp_dbg). */
+ * and the debugger records (g_lxp_dbg, lxp/lxp_debug.h). */
 struct lxp_runtime {
 	const lxp_run_config_t *cfg; /* the running configuration; NULL between runs */
 	/* The rootfs cpio region [rootfs_lo, rootfs_hi). Dynamic FDPIC processes execute
@@ -128,7 +121,6 @@ struct lxp_runtime {
 };
 
 extern struct lxp_runtime g_lxp_rt;
-extern struct lxp_dbg_s g_lxp_dbg[LXP_NSLOT];
 extern uint32_t g_lxp_trap_gate;
 
 #endif /* LXP_RUNTIME_STORE_H */

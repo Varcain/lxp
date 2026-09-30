@@ -63,6 +63,7 @@ struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
 	notify_guest_exit(slot, proc);
 	proc_mm_put(proc);
 	proc->alive = 0;
+	lxp_slot_debug_clear(slot);
 	slot_runnable_store(slot, 0);
 	deferred_slot_reassign(slot);
 	int group_is_dead = thread_group_live_count(group) == 0;

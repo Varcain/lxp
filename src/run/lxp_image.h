@@ -15,7 +15,7 @@
 struct image_txn {
 	lxp_proc_t proc;
 	lxp_flat_t prog;
-	struct lxp_dbg_s debug;
+	lxp_debug_image_t debug;
 	lxp_slot_ref_t owner;
 	lxp_region_ref_t region;
 	lxp_guest_launch_t launch;

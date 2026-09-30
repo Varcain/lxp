@@ -287,16 +287,25 @@ void deferred_slot_reassign(int slot)
 		(void)__atomic_add_fetch(&g_lxp_rt.slots[slot].generation, 1u, __ATOMIC_ACQ_REL);
 }
 
-/* Per-slot FDPIC runtime load addresses, exported (non-static) for SOURCE-LEVEL GDB DEBUGGING of
- * the userspace program. An FDPIC exec is loaded at runtime addresses (the loadmap relocates each
- * segment independently), so the on-disk ELF's link addresses don't match memory. A GDB helper
- * reads this table and `add-symbol-file <elf> -o <text_base>`s the
- * program, then walks the exec's _DYNAMIC[DT_DEBUG] rendezvous (populated by ld.so once it has run)
- * to auto-load ld.so + every shared library at its own FDPIC bias. The slot
- * runtime's comm[] names the program; text_base/data_base are the
- * loadmap-relocated bases of its text/data segments. */
-/* The layout is private but linker-visible for source-level GDB helpers. */
-struct lxp_dbg_s g_lxp_dbg[LXP_NSLOT];
+/* The debugger interface (lxp/lxp_debug.h). */
+lxp_debug_image_t g_lxp_dbg[LXP_NSLOT];
+
+__attribute__((noinline)) void lxp_debug_state(int slot)
+{
+	__asm__ volatile("" : : "r"(slot) : "memory"); /* keep the call and the writes before it */
+}
+
+static void slot_debug_set(int slot, const lxp_debug_image_t *image)
+{
+	g_lxp_dbg[slot] = *image;
+	lxp_debug_state(slot);
+}
+
+void lxp_slot_debug_clear(int slot)
+{
+	const lxp_debug_image_t none = {0};
+	slot_debug_set(slot, &none);
+}
 
 void lxp_slot_signal_reset(int slot)
 {
@@ -309,7 +318,7 @@ void lxp_slot_signal_clone(int child_slot, int parent_slot)
 }
 
 int lxp_slot_publish_image(int slot, lxp_proc_t *image, lxp_exec_capture_t *capture,
-			   const struct lxp_dbg_s *debug)
+			   const lxp_debug_image_t *debug)
 {
 	if (slot < 0 || slot >= LXP_NSLOT || !image || !debug)
 		return -LXP_EINVAL;
@@ -326,7 +335,9 @@ int lxp_slot_publish_image(int slot, lxp_proc_t *image, lxp_exec_capture_t *capt
 	image->vfork_parent = lxp_slot_ref_none();
 	lxp_proc_bind_exec_capture(dest, capture);
 	lxp_slot_signal_reset(slot);
-	g_lxp_dbg[slot] = *debug;
+	lxp_debug_image_t record = *debug;
+	record.comm = dest->comm;
+	slot_debug_set(slot, &record);
 
 	/* A fresh image inherits no device capability from an older slot owner. */
 	dest->mm->dev_map_lo[0] = dest->mm->dev_map_hi[0] = 0;
@@ -451,6 +462,7 @@ void lxp_slot_proc_reset(int slot)
 	memset(&g_lxp_rt.slots[slot].proc, 0, sizeof(g_lxp_rt.slots[slot].proc));
 	g_lxp_rt.slots[slot].proc.snapshot = lxp_region_ref_none();
 	g_lxp_rt.slots[slot].proc.vfork_parent = lxp_slot_ref_none();
+	lxp_slot_debug_clear(slot);
 }
 
 int lxp_slot_ref_current(int slot, lxp_slot_ref_t *out)
@@ -942,6 +954,7 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 	/* Contain inconsistent ownership metadata as well as the ordinary
 	 * reference-balanced case above. No guest survives this boundary. */
 	coordinator_reset_pools();
+	memset(g_lxp_dbg, 0, sizeof(g_lxp_dbg));
 	lxp_diag_forget_natives();
 #if LXP_ENABLE_NETFS
 	lxp_netfs_shutdown();
