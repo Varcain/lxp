@@ -671,6 +671,7 @@ static uint32_t le32(const uint8_t *p)
 #define ELF_PT_LOAD 1u
 #define ELF_PT_DYNAMIC 2u
 #define ELF_PT_INTERP 3u
+#define ELF_INTERP_MAX 256u /* PT_INTERP path with its NUL, bounded like any guest path */
 #define ELF_PF_X 1u
 #define ELF_DT_NULL 0u
 #define ELF_DT_NEEDED 1u /* a shared-library dependency → the exec is dynamic, needs ld.so */
@@ -800,6 +801,8 @@ struct fdpic_layout {
 	uint32_t text_reserved; /* copied-text lower half of the region; 0 for in-place text */
 	uint32_t dyn_vaddr;	/* PT_DYNAMIC p_vaddr, or 0 */
 	uint32_t dyn_size;
+	uint32_t interp_off;	/* PT_INTERP path offset in the image */
+	uint32_t interp_size;	/* its size including the NUL; 0 without PT_INTERP */
 };
 
 static int fdpic_layout_parse(const void *image, size_t image_size, size_t region_size,
@@ -827,6 +830,7 @@ static int fdpic_layout_parse(const void *image, size_t image_size, size_t regio
 	uint32_t text_sz = 0, text_off = 0;
 	uint32_t rw_lo = UINT32_MAX, rw_hi = 0;
 	uint32_t dyn_vaddr = 0, dyn_sz = 0;
+	uint32_t interp_off = 0, interp_sz = 0;
 	int have_text = 0;
 	uint32_t nload = 0;
 	for (uint16_t i = 0; i < phnum; i++) {
@@ -835,6 +839,10 @@ static int fdpic_layout_parse(const void *image, size_t image_size, size_t regio
 		if (type == ELF_PT_DYNAMIC) {
 			dyn_vaddr = le32(ph + 8);
 			dyn_sz = le32(ph + 20);
+		}
+		if (type == ELF_PT_INTERP) {
+			interp_off = le32(ph + 4);
+			interp_sz = le32(ph + 16);
 		}
 		if (type != ELF_PT_LOAD)
 			continue;
@@ -861,6 +869,10 @@ static int fdpic_layout_parse(const void *image, size_t image_size, size_t regio
 		}
 	}
 	if (!have_text || nload == 0u)
+		return LXP_ERR_INVALID_PARAM;
+	if (interp_sz != 0u && (interp_sz > ELF_INTERP_MAX ||
+				(uint64_t)interp_off + interp_sz > image_size ||
+				img[interp_off + interp_sz - 1u] != '\0'))
 		return LXP_ERR_INVALID_PARAM;
 
 	uint32_t rw_span = rw_hi > rw_lo ? rw_hi - rw_lo : 0u;
@@ -915,6 +927,8 @@ static int fdpic_layout_parse(const void *image, size_t image_size, size_t regio
 	out->text_reserved = (uint32_t)text_a;
 	out->dyn_vaddr = dyn_vaddr;
 	out->dyn_size = dyn_sz;
+	out->interp_off = interp_off;
+	out->interp_size = interp_sz;
 	return LXP_OK;
 }
 
@@ -1161,6 +1175,7 @@ int lxp_loader_load_fdpic(lxp_flat_t *prog, const void *image, size_t image_size
 	prog->region_exec =
 		copy_text; /* the engine overlays the copied prefix RO+X for a RAM-text exec */
 	prog->is_dynamic = is_dynamic; /* exec with DT_NEEDED → caller loads + enters ld.so */
+	prog->interp = layout.interp_size ? (const char *)image + layout.interp_off : NULL;
 	prog->got = got_base;	       /* DT_PLTGOT base */
 	/* PT_DYNAMIC runtime addr — for an interpreter this is r9 at entry (uClibc-ng's FDPIC
 	 * dl_boot_ldso_dyn_pointer, which DL_BOOT_COMPUTE_DYN uses as the dynamic-table ptr). */

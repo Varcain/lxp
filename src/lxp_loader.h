@@ -155,6 +155,8 @@ typedef struct lxp_flat {
 	int phnum;	      /**< FDPIC: number of program headers (AT_PHNUM). */
 	int is_dynamic;	      /**< FDPIC: non-zero if the exec has DT_NEEDED (needs ld.so). The
 			      *   personality must then ALSO load the interpreter + enter it. */
+	const char *interp;   /**< FDPIC: the PT_INTERP path, NUL-terminated inside the image;
+			       *   NULL when the image names no interpreter. */
 	uintptr_t got;	      /**< FDPIC: the GOT base (DT_PLTGOT-relative); for the exec it is
 			      *   what ld.so installs as the program GOT. */
 	uintptr_t dynamic;    /**< FDPIC: runtime address of PT_DYNAMIC (_DYNAMIC). For the

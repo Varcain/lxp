@@ -13,6 +13,9 @@
 #include "run/lxp_coordinator.h"
 #include "run/lxp_image.h"
 
+/* The interpreter for a dynamic program whose image names none in PT_INTERP. */
+#define LXP_FALLBACK_INTERP "/lib/ld-uClibc.so.0"
+
 /*
  * An image is built off-slot. The transaction owns the region lease and every
  * freshly allocated process object until publish transfers them to the slot.
@@ -63,8 +66,9 @@ int lxp_image_txn_prepare(struct image_txn *tx, const uint8_t *data, size_t len,
 	if (dynamic) {
 		const uint8_t *ld_data = NULL;
 		size_t ld_len = 0;
-		if (lxp_rootfs_resolve(cfg->rootfs, cfg->rootfs_count, "/lib/ld-uClibc.so.0",
-				       &ld_data, &ld_len) != 0 ||
+		const char *interp = tx->prog.interp ? tx->prog.interp : LXP_FALLBACK_INTERP;
+		if (lxp_rootfs_resolve(cfg->rootfs, cfg->rootfs_count, interp, &ld_data,
+				       &ld_len) != 0 ||
 		    !ld_data)
 			return -LXP_ENOEXEC;
 		uintptr_t ld_base = (uintptr_t)region + ((tx->prog.region_used + 15u) & ~15u);

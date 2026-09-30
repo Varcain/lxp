@@ -80,7 +80,50 @@ static void test_fdpic_valid_loads(void **st)
 	(void)st;
 	uint8_t img[IMG_SZ];
 	size_t sz = build_fdpic(img);
-	assert_int_equal(load(img, sz), LXP_OK);
+	lxp_flat_t prog = {0};
+	assert_int_equal(lxp_loader_load_fdpic(&prog, img, sz, g_region, sizeof(g_region), 0, 0),
+			 LXP_OK);
+	assert_null(prog.interp); /* a static image names no interpreter */
+}
+
+/* The minimal image grown by a third program header, PT_INTERP, whose path of
+ * @p path_size bytes (NUL included) sits at offset 160; the data moves to 200. */
+#define INTERP_IMG_SZ 256u
+static const char k_interp[] = "/lib/ld-test.so.1";
+static size_t build_fdpic_interp(uint8_t *buf, uint32_t path_size)
+{
+	memset(buf, 0, INTERP_IMG_SZ);
+	build_fdpic(buf);
+	w16(buf + 44, 3);	 /* e_phnum */
+	w32(buf + 84 + 4, 200);	 /* data p_offset */
+	uint8_t *p2 = buf + 116; /* PT_INTERP */
+	w32(p2 + 0, 3);
+	w32(p2 + 4, 160);
+	w32(p2 + 16, path_size);
+	memcpy(buf + 160, k_interp, sizeof(k_interp));
+	return INTERP_IMG_SZ;
+}
+
+static void test_fdpic_reports_its_interpreter(void **st)
+{
+	(void)st;
+	uint8_t img[INTERP_IMG_SZ];
+	size_t sz = build_fdpic_interp(img, sizeof(k_interp));
+	lxp_flat_t prog = {0};
+	assert_int_equal(lxp_loader_load_fdpic(&prog, img, sz, g_region, sizeof(g_region), 0, 0),
+			 LXP_OK);
+	assert_ptr_equal(prog.interp, (const char *)img + 160);
+	assert_string_equal(prog.interp, k_interp);
+}
+
+static void test_fdpic_reject_bad_interpreter(void **st)
+{
+	(void)st;
+	uint8_t img[INTERP_IMG_SZ];
+	size_t sz = build_fdpic_interp(img, sizeof(k_interp) - 1u); /* no NUL */
+	assert_int_equal(load(img, sz), LXP_ERR_INVALID_PARAM);
+	sz = build_fdpic_interp(img, INTERP_IMG_SZ); /* runs past the image */
+	assert_int_equal(load(img, sz), LXP_ERR_INVALID_PARAM);
 }
 
 static void test_fdpic_preflight_is_non_mutating(void **st)
@@ -411,6 +454,8 @@ int test_loader_fdpic_run(void)
 		cmocka_unit_test(test_fdpic_reject_hard_float),
 		cmocka_unit_test(test_fdpic_soft_float_loads),
 		cmocka_unit_test(test_abi_incompatible_predicate),
+		cmocka_unit_test(test_fdpic_reports_its_interpreter),
+		cmocka_unit_test(test_fdpic_reject_bad_interpreter),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
