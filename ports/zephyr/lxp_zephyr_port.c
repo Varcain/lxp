@@ -40,6 +40,7 @@
 #include "lxp/lxp_seam.h"
 #include "lxp/ports/zephyr.h"
 
+#include "../common/lxp_cortex_m_context.h"
 #include "../common/lxp_cortex_m_port.h"
 
 #define PORT_CONFIG g_lxp_zephyr_port_config
@@ -340,25 +341,17 @@ lxp_zephyr_kernel_oops_c(const struct arch_esf *esf, _callee_saved_t *callee, ui
 				f.r[12] = esf->basic.ip;
 				uint32_t fp_bytes = 0;
 #if LXP_ENABLE_FPU_CONTEXT
-				/* Hard-float guest: capture its full VFP state. With CONFIG_FPU_SHARING +
-				 * lazy stacking, an extended exception frame (EXC_RETURN bit 4 == 0) carries
-				 * s0-s15 + FPSCR in esf->fpu; s16-s31 are live in the FPU. Mirror the FreeRTOS
-				 * seam: force the pending lazy store, then read the frame + high registers. */
+				/* Hard-float guest: with CONFIG_FPU_SHARING and lazy stacking,
+				 * an extended exception frame (EXC_RETURN bit 4 == 0) carries
+				 * s0-s15 and FPSCR in esf->fpu; s16-s31 are live in the FPU. */
 				static struct lxp_fp_context
 					fpctx; /* off the deep fault-path stack */
 				memset(&fpctx, 0, sizeof(fpctx));
 				f.fp = &fpctx;
 				if ((exc_return & (1u << 4)) == 0) {
-					__asm__ volatile("vpush {s0}\n vpop {s0}\n" ::: "memory");
-					for (int i = 0; i < 16; i++)
-						fpctx.s[i] = esf->fpu.s[i];
-					__asm__ volatile("vstmia %0, {s16-s31}"
-							 :
-							 : "r"(&fpctx.s[16])
-							 : "memory");
-					fpctx.fpscr = esf->fpu.fpscr;
-					fpctx.active = 1;
-					fp_bytes = 18u * sizeof(uint32_t);
+					lxp_cortex_m_fp_capture(&fpctx, esf->fpu.s,
+								&esf->fpu.fpscr);
+					fp_bytes = LXP_CORTEX_M_FP_FRAME_BYTES;
 				}
 #endif
 				/* callee->psp points at the HW-stacked frame (8 words, +18 for an extended
@@ -393,15 +386,8 @@ lxp_zephyr_kernel_oops_c(const struct arch_esf *esf, _callee_saved_t *callee, ui
 				callee->v7 = f.r[10];
 				callee->v8 = f.r[11];
 #if LXP_ENABLE_FPU_CONTEXT
-				if ((exc_return & (1u << 4)) == 0) {
-					for (int i = 0; i < 16; i++)
-						e->fpu.s[i] = fpctx.s[i];
-					e->fpu.fpscr = fpctx.fpscr;
-					__asm__ volatile("vldmia %0, {s16-s31}"
-							 :
-							 : "r"(&fpctx.s[16])
-							 : "memory");
-				}
+				if ((exc_return & (1u << 4)) == 0)
+					lxp_cortex_m_fp_writeback(&fpctx, e->fpu.s, &e->fpu.fpscr);
 #endif
 #if LXP_ENABLE_RT_METRICS
 				uint32_t svc_cycles = k_cycle_get_32() - svc_start_cycles;

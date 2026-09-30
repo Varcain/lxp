@@ -39,6 +39,7 @@
 #include "lxp/lxp_seam.h"
 #include "lxp/ports/freertos.h"
 
+#include "../common/lxp_cortex_m_context.h"
 #include "../common/lxp_cortex_m_port.h"
 
 #define TRAMP_STACK_WORDS 192u		  /* tramp prologue; the program uses its own stack */
@@ -308,21 +309,8 @@ int lxp_freertos_svc_c(struct lnx_capture *g)
 	f.fp = &g->fp;
 	memset(&g->fp, 0, sizeof(g->fp));
 	if ((g->exc_return & (1u << 4)) == 0) {
-		/* With lazy preservation enabled, the extended frame can be reserved but
-		 * its s0-s15 contents are not valid until the first handler-mode VFP
-		 * instruction. Preserve s0 on MSP while forcing that pending operation. */
-		__asm__ volatile("vpush {s0}\n"
-				 "vpop  {s0}\n"
-				 :
-				 :
-				 : "memory");
-		for (int i = 0; i < 16; i++)
-			g->fp.s[i] = g->hw[8 + i];
-		uint32_t *high = &g->fp.s[16];
-		__asm__ volatile("vstmia %0, {s16-s31}" : : "r"(high) : "memory");
-		g->fp.fpscr = g->hw[24];
-		g->fp.active = 1;
-		fp_frame_bytes = 18u * sizeof(uint32_t);
+		lxp_cortex_m_fp_capture(&g->fp, &g->hw[8], &g->hw[24]);
+		fp_frame_bytes = LXP_CORTEX_M_FP_FRAME_BYTES;
 	}
 #endif
 	f.r[0] = g->hw[0];
@@ -358,13 +346,8 @@ int lxp_freertos_svc_c(struct lnx_capture *g)
 	for (int i = 0; i < 8; i++)
 		g->r4_11[i] = f.r[4 + i];
 #if LXP_ENABLE_FPU_CONTEXT
-	if ((g->exc_return & (1u << 4)) == 0) {
-		for (int i = 0; i < 16; i++)
-			g->hw[8 + i] = g->fp.s[i];
-		g->hw[24] = g->fp.fpscr;
-		uint32_t *high = &g->fp.s[16];
-		__asm__ volatile("vldmia %0, {s16-s31}" : : "r"(high) : "memory");
-	}
+	if ((g->exc_return & (1u << 4)) == 0)
+		lxp_cortex_m_fp_writeback(&g->fp, &g->hw[8], &g->hw[24]);
 #endif
 #if LXP_ENABLE_RT_METRICS
 	if (PORT_CONFIG.svc_cycle_counter) {
