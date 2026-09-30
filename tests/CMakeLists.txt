@@ -29,7 +29,7 @@ set(LXP_TEST_MODULE_SRC ${LXP_NON_COORDINATOR_SOURCES})
 
 add_executable(lxp_test_stub
   ${LXP_TEST_MODULE_SRC}
-  "${LXP_ROOT}/ports/posix/lxp_port_posix.c"  # g_lxp_net_ops over BSD sockets + netif
+  "${LXP_POSIX_PORT_SOURCE}"  # g_lxp_net_ops over BSD sockets + netif
   "${LXP_ROOT}/src/lxp_signal.c"  # frame delivery, against test_signal.c's coordinator stubs
   "${CMAKE_CURRENT_SOURCE_DIR}/stub_lnx_run.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/stub_main.c"
@@ -121,7 +121,7 @@ add_test(NAME lxp_unit_host COMMAND lxp_host_test)
 add_executable(lxp_coord_test
   ${LXP_TEST_MODULE_SRC}
   ${LXP_COORDINATOR_SOURCES}
-  "${LXP_ROOT}/ports/posix/lxp_port_posix.c"
+  "${LXP_POSIX_PORT_SOURCE}"
   "${CMAKE_CURRENT_SOURCE_DIR}/coord_main.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/framework/lxp_coord_fixture.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/framework/lxp_mock_engine.c"

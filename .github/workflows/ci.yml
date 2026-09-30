@@ -32,10 +32,16 @@ jobs:
       - name: Configure (fetches cmocka)
         run: cmake -S . -B build -DLXP_BUILD_TESTS=ON
 
-      # Build every test binary (-Werror). Skips liblxp, whose 32-bit-target casts warn
-      # on a 64-bit host — the module is not meant to run natively there.
+      # Build every test binary (-Werror).
       - name: Build host tests (-Wall -Wextra -Werror)
         run: cmake --build build -j"$(nproc)" --target lxp_tests
+
+      # The standalone library with every gate on and the POSIX port, warnings as errors.
+      - name: Build the standalone library (-Wall -Wextra -Werror)
+        run: |
+          cmake -S . -B build-lib -DLXP_WERROR=ON -DLXP_PORT_POSIX=ON \
+            $(sed -n 's/^  "\([A-Z0-9_]*\)|.*/-DLXP_ENABLE_\1=ON/p' cmake/lxp_features.cmake)
+          cmake --build build-lib -j"$(nproc)"
 
       - name: Run host unit tests
         run: ctest --test-dir build -L lxp --output-on-failure

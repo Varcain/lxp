@@ -65,7 +65,7 @@ message(STATUS "lxp fuzz: engine=${LXP_FUZZ_ENGINE} compiler=${CMAKE_C_COMPILER_
 # ---- shared module objects (compiled once; PUBLIC flags flow to each harness) --
 add_library(lxp_fuzz_obj OBJECT
   ${FUZZ_MODULE_SRC}
-  "${LXP_ROOT}/ports/posix/lxp_port_posix.c"   # g_lxp_net_ops over BSD sockets
+  "${LXP_POSIX_PORT_SOURCE}"   # g_lxp_net_ops over BSD sockets
   "${LXP_ROOT}/tests/stub_lnx_run.c")          # clock + no-op cache/flush + mock display
 target_include_directories(lxp_fuzz_obj PUBLIC "${LXP_ROOT}/include" "${LXP_ROOT}/src")
 target_compile_definitions(lxp_fuzz_obj PUBLIC LXP_FUZZ=1)

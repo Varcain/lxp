@@ -144,12 +144,9 @@ set(LXP_ALL_SOURCES
 set_source_files_properties(${LXP_ALL_SOURCES} PROPERTIES
     INCLUDE_DIRECTORIES "${LXP_SOURCE_ROOT}/src")
 
-# The previous group names, kept for consumers until they move to the groups above.
-# Together they still name every non-optional unit exactly once.
-set(LXP_RUNTIME_SOURCES ${LXP_CORE_SOURCES})
-set(LXP_POST_COORDINATOR_SOURCES)
-set(LXP_UTILITY_SOURCES ${LXP_PORT_SUPPORT_SOURCES})
-set(LXP_BASE_SOURCES ${LXP_CORE_SOURCES} ${LXP_PORT_SUPPORT_SOURCES})
+# The bundled POSIX reference port: host sockets and time for standalone builds, tests and
+# fuzzers. It is a port, not a module unit, so it stays outside the inventory below.
+set(LXP_POSIX_PORT_SOURCE "${LXP_SOURCE_ROOT}/ports/posix/lxp_port_posix.c")
 
 # Fail closed when a translation unit is added without an ownership decision.
 # CONFIGURE_DEPENDS makes supported generators re-run this check after src/
