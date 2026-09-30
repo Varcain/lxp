@@ -203,6 +203,25 @@ static inline int lxp_memory_policy_address_space_matches_key(const lxp_memory_p
 	       policy->copied_text_executable == key->copied_text_executable;
 }
 
+/** 1 when two keys describe the same address-space view, whichever slot holds it. */
+static inline int lxp_memory_policy_key_same_view(const lxp_memory_policy_key_t *a,
+						  const lxp_memory_policy_key_t *b)
+{
+	return lxp_region_ref_equal(a->address_space, b->address_space) &&
+	       a->device_generation == b->device_generation &&
+	       a->exec_generation == b->exec_generation &&
+	       a->copied_text_base == b->copied_text_base &&
+	       a->copied_text_size == b->copied_text_size &&
+	       a->copied_text_executable == b->copied_text_executable;
+}
+
+/** 1 when two keys are the same view held by the same slot. */
+static inline int lxp_memory_policy_key_equal(const lxp_memory_policy_key_t *a,
+					      const lxp_memory_policy_key_t *b)
+{
+	return lxp_slot_ref_equal(a->slot, b->slot) && lxp_memory_policy_key_same_view(a, b);
+}
+
 /** Fault metadata published by an engine containment path. */
 typedef struct lxp_guest_fault {
 	uint32_t detail;

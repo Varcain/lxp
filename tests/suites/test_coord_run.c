@@ -134,6 +134,43 @@ static void test_memory_policy_validator_rejects_noncanonical_snapshots(void **s
 	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 }
 
+static void test_memory_policy_keys_compare_every_field(void **state)
+{
+	(void)state;
+	const lxp_memory_policy_key_t base = {
+		.slot = {.index = 1, .generation = 3u},
+		.address_space = {.index = 2, .generation = 5u},
+		.device_generation = 7u,
+		.exec_generation = 11u,
+		.copied_text_base = 0x20000000u,
+		.copied_text_size = LXP_PROG_REGION_SIZE / 2u,
+		.copied_text_executable = 1u,
+	};
+	lxp_memory_policy_key_t other = base;
+	assert_true(lxp_memory_policy_key_equal(&base, &other));
+	assert_true(lxp_memory_policy_key_same_view(&base, &other));
+
+	/* Another slot holding the same view: the same view, not the same key. */
+	other.slot.generation++;
+	assert_false(lxp_memory_policy_key_equal(&base, &other));
+	assert_true(lxp_memory_policy_key_same_view(&base, &other));
+
+	for (int field = 0; field < 7; field++) {
+		other = base;
+		switch (field) {
+		case 0: other.address_space.index++; break;
+		case 1: other.address_space.generation++; break;
+		case 2: other.device_generation++; break;
+		case 3: other.exec_generation++; break;
+		case 4: other.copied_text_base += 32u; break;
+		case 5: other.copied_text_size -= 32u; break;
+		default: other.copied_text_executable = 0u; break;
+		}
+		assert_false(lxp_memory_policy_key_same_view(&base, &other));
+		assert_false(lxp_memory_policy_key_equal(&base, &other));
+	}
+}
+
 static void test_system_version_routes_to_engine(void **state)
 {
 	(void)state;
@@ -421,6 +458,7 @@ int test_coord_run_run(void)
 				       reset_state),
 		cmocka_unit_test_setup(test_memory_policy_validator_rejects_noncanonical_snapshots,
 				       reset_state),
+		cmocka_unit_test_setup(test_memory_policy_keys_compare_every_field, reset_state),
 		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
 		cmocka_unit_test_setup(test_port_abi_and_required_ops_are_validated, reset_state),
 		cmocka_unit_test_setup(test_failed_prepare_is_rolled_back, reset_state),

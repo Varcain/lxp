@@ -1149,13 +1149,7 @@ static int nuttx_profile_is_current(int sidx)
 	const lxp_memory_policy_key_t *prepared = &g_slots[sidx].profile.key;
 	lxp_slot_ref_t slot = task_slot_ref(sidx);
 	return lxp_slot_ref_equal(prepared->slot, slot) &&
-	       lxp_slot_ref_equal(g_installed_policy.slot, slot) &&
-	       lxp_region_ref_equal(prepared->address_space, g_installed_policy.address_space) &&
-	       prepared->device_generation == g_installed_policy.device_generation &&
-	       prepared->exec_generation == g_installed_policy.exec_generation &&
-	       prepared->copied_text_base == g_installed_policy.copied_text_base &&
-	       prepared->copied_text_size == g_installed_policy.copied_text_size &&
-	       prepared->copied_text_executable == g_installed_policy.copied_text_executable;
+	       lxp_memory_policy_key_equal(prepared, &g_installed_policy);
 }
 
 /* Note-driver resume hook — fires on EVERY switch TO a task (sched_note_resume, in

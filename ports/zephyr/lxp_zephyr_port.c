@@ -681,13 +681,7 @@ static int zephyr_validate_active_profile(int sidx)
 
 	int ridx = key->address_space.index;
 	const struct zephyr_lxp_region *state = &g_regions[ridx];
-	if (!state->policy_valid ||
-	    !lxp_region_ref_equal(key->address_space, state->policy.address_space) ||
-	    key->device_generation != state->policy.device_generation ||
-	    key->exec_generation != state->policy.exec_generation ||
-	    key->copied_text_base != state->policy.copied_text_base ||
-	    key->copied_text_size != state->policy.copied_text_size ||
-	    key->copied_text_executable != state->policy.copied_text_executable)
+	if (!state->policy_valid || !lxp_memory_policy_key_same_view(key, &state->policy))
 		return 0;
 	uintptr_t expected_program_base = (uintptr_t)prog_regions[ridx];
 	size_t expected_program_size = LXP_PROG_REGION_SIZE;
