@@ -30,7 +30,6 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/lxp_sources.cmake")
 
 add_library(lxp STATIC ${LXP_ALL_SOURCES})
 target_include_directories(lxp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_include_directories(lxp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 # Value-based feature gates: the module tests `#if LXP_ENABLE_X`, so every gate gets an
 # explicit 0 or 1 (-DLXP_ENABLE_X=0 genuinely disables).

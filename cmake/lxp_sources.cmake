@@ -138,6 +138,12 @@ set(LXP_ALL_SOURCES
     ${LXP_OPTIONAL_SOURCES}
 )
 
+# Every unit includes its private headers relative to src/ ("fs/lxp_pipe.h"). Give
+# exactly these units that include root, in the directory that includes this file, so
+# a consumer never puts LXP's private headers on its own sources' include path.
+set_source_files_properties(${LXP_ALL_SOURCES} PROPERTIES
+    INCLUDE_DIRECTORIES "${LXP_SOURCE_ROOT}/src")
+
 # The previous group names, kept for consumers until they move to the groups above.
 # Together they still name every non-optional unit exactly once.
 set(LXP_RUNTIME_SOURCES ${LXP_CORE_SOURCES})
