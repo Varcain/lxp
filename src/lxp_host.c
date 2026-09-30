@@ -6,6 +6,8 @@
  */
 
 #include "lxp/lxp_host.h"
+#include "lxp/lxp_diag.h"
+#include "lxp/lxp_latency.h"
 #include "lxp/lxp_observe.h"
 
 #include <string.h>
@@ -167,8 +169,6 @@ int lxp_host_observe(const lxp_host_t *host, lxp_host_observation_t *out)
 	if (!state || state->initialized != LXP_HOST_INITIALIZED)
 		return LXP_ERR_INVALID_PARAM;
 
-	out->abi_version = LXP_HOST_OBSERVATION_ABI_VERSION;
-	out->struct_size = sizeof(*out);
 	lxp_run_health(&out->run_health);
 	if (out->run_health.active) {
 		memset(out, 0, sizeof(*out));
@@ -207,20 +207,4 @@ int lxp_host_observe(const lxp_host_t *host, lxp_host_observation_t *out)
 	}
 #endif
 	return LXP_OK;
-}
-
-const char *lxp_host_observation_service_name(const lxp_host_observation_t *observation,
-					      unsigned row)
-{
-#if LXP_ENABLE_LATENCY
-	if (!observation || observation->abi_version != LXP_HOST_OBSERVATION_ABI_VERSION ||
-	    observation->struct_size != sizeof(*observation) ||
-	    row >= observation->latency_service_count)
-		return "?";
-	return lxp_lat_class_name((int)observation->latency_services[row].id);
-#else
-	(void)observation;
-	(void)row;
-	return "?";
-#endif
 }

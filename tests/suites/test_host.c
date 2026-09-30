@@ -15,6 +15,8 @@
 #include <cmocka.h>
 
 #include "lxp/lxp_host.h"
+#include "lxp/lxp_diag.h"
+#include "lxp/lxp_latency.h"
 #include "lxp/lxp_observe.h"
 #include "proc/lxp_proc.h"
 
@@ -472,8 +474,6 @@ static void test_host_copies_one_coherent_observation(void **state)
 
 	assert_int_equal(lxp_host_init_cpio(&host, &config), LXP_OK);
 	assert_int_equal(lxp_host_observe(&host, &observation), LXP_OK);
-	assert_int_equal(observation.abi_version, LXP_HOST_OBSERVATION_ABI_VERSION);
-	assert_int_equal(observation.struct_size, sizeof(observation));
 	assert_int_equal(observation.run_health.coord_iters, 1234u);
 	assert_int_equal(observation.sizes.slots, LXP_NSLOT);
 	assert_int_equal(observation.diagnostics.checks, 91u);
@@ -485,9 +485,8 @@ static void test_host_copies_one_coherent_observation(void **state)
 	assert_int_equal(observation.latency_services[LXP_EV_FORK - 1].id, LXP_EV_FORK);
 	assert_int_equal(observation.latency_services[LXP_EV_FORK - 1].stat.count, 7u);
 	assert_int_equal(observation.latency_services[LXP_EV_FORK - 1].stat.max_ns, 8100u);
-	assert_string_equal(lxp_host_observation_service_name(
-				&observation, LXP_EV_FORK - 1),
-			    "FORK");
+	const lxp_latency_observation_t *fork_row = &observation.latency_services[LXP_EV_FORK - 1];
+	assert_string_equal(lxp_lat_class_name((int)fork_row->id), "FORK");
 	assert_int_equal(observation.latency_wakes[2].id, 2u);
 	assert_int_equal(observation.latency_wakes[2].stat.buckets[4], 3u);
 
@@ -503,11 +502,11 @@ static void test_host_observation_fails_closed(void **state)
 	lxp_host_observation_t observation;
 	memset(&observation, 0xa5, sizeof(observation));
 	assert_int_equal(lxp_host_observe(NULL, &observation), LXP_ERR_INVALID_PARAM);
-	assert_int_equal(observation.abi_version, 0u);
+	assert_int_equal(observation.latency_service_count, 0u);
+	memset(&observation, 0xa5, sizeof(observation));
 	assert_int_equal(lxp_host_observe(&host, &observation), LXP_ERR_INVALID_PARAM);
-	assert_int_equal(observation.struct_size, 0u);
+	assert_int_equal(observation.run_health.coord_iters, 0u);
 	assert_int_equal(lxp_host_observe(&host, NULL), LXP_ERR_INVALID_PARAM);
-	assert_string_equal(lxp_host_observation_service_name(&observation, 0u), "?");
 
 	/* An active coordinator would make the multi-registry copy inconsistent. */
 	uint8_t image[512] = {0};
@@ -525,7 +524,7 @@ static void test_host_observation_fails_closed(void **state)
 	assert_int_equal(lxp_host_init_cpio(&host, &config), LXP_OK);
 	g_mock_run_health.active = 1;
 	assert_int_equal(lxp_host_observe(&host, &observation), LXP_ERR_BUSY);
-	assert_int_equal(observation.abi_version, 0u);
+	assert_int_equal(observation.diagnostics.checks, 0u);
 	g_mock_run_health.active = 0;
 }
 

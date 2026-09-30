@@ -198,8 +198,6 @@ int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
 		return LXP_ERR_INVALID_PARAM;
 	const lxp_proc_t *p = &g_lxp_rt.slots[slot].proc;
 	memset(out, 0, sizeof(*out));
-	out->abi_version = LXP_DIAG_ABI_VERSION;
-	out->struct_size = sizeof(*out);
 	out->slot = slot;
 	out->generation = lxp_slot_generation(slot);
 	out->pid = p->pid;
@@ -240,8 +238,6 @@ int lxp_diag_region_snapshot(int region, lxp_diag_region_t *out)
 	if (!out || region < 0 || region >= LXP_NREG)
 		return LXP_ERR_INVALID_PARAM;
 	memset(out, 0, sizeof(*out));
-	out->abi_version = LXP_DIAG_ABI_VERSION;
-	out->struct_size = sizeof(*out);
 	out->region = region;
 	/* Kept as owner_slot in diagnostic ABI v1: it now reports only an
 	 * uncommitted transaction lease. -1 means the address space owns it. */
@@ -257,8 +253,6 @@ static int diag_error(lxp_diag_error_t *error, lxp_diag_issue_t issue, int slot,
 {
 	if (error) {
 		memset(error, 0, sizeof(*error));
-		error->abi_version = LXP_DIAG_ABI_VERSION;
-		error->struct_size = sizeof(*error);
 		error->issue = issue;
 		error->slot = slot;
 		error->region = region;
@@ -290,8 +284,6 @@ int lxp_validate_world(lxp_diag_error_t *error)
 {
 	if (error) {
 		memset(error, 0, sizeof(*error));
-		error->abi_version = LXP_DIAG_ABI_VERSION;
-		error->struct_size = sizeof(*error);
 		error->slot = -1;
 		error->region = -1;
 	}
@@ -418,8 +410,6 @@ void lxp_diag_size_report(lxp_diag_size_report_t *out)
 	if (!out)
 		return;
 	memset(out, 0, sizeof(*out));
-	out->abi_version = LXP_DIAG_ABI_VERSION;
-	out->struct_size = sizeof(*out);
 	out->slots = LXP_NSLOT;
 	out->regions = LXP_NREG;
 	out->proc = sizeof(lxp_proc_t);
@@ -505,8 +495,6 @@ const char *lxp_diag_issue_name(unsigned issue)
 void lxp_diag_reset_health(void)
 {
 	memset(&g_lxp_rt.diag.health, 0, sizeof(g_lxp_rt.diag.health));
-	g_lxp_rt.diag.health.abi_version = LXP_DIAG_ABI_VERSION;
-	g_lxp_rt.diag.health.struct_size = sizeof(g_lxp_rt.diag.health);
 	g_lxp_rt.diag.health.first_error.slot = -1;
 	g_lxp_rt.diag.health.first_error.region = -1;
 	g_lxp_rt.diag.health.last_error.slot = -1;

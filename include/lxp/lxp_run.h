@@ -9,7 +9,6 @@
 #ifndef LXP_RUN_H
 #define LXP_RUN_H
 
-#include "lxp/lxp_diag.h"
 #include "lxp/lxp_display_ops.h"
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_fs_ops.h"

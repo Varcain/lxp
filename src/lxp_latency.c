@@ -11,12 +11,7 @@
 
 #include "lxp/lxp_latency.h"
 
-#if LXP_ENABLE_LATENCY
-
 #include "lxp/lxp_config.h"
-
-static lxp_lat_stat_t g_service[LXP_LAT_CLASSES];
-static lxp_lat_stat_t g_wake[LXP_NSLOT];
 
 /* Same list as the enum, so index N is always the name of class N. */
 static const char *const g_class_name[LXP_LAT_CLASSES] = {
@@ -53,6 +48,16 @@ void lxp_lat_record(lxp_lat_stat_t *s, uint64_t ns)
 	s->buckets[bucket_of(ns)]++;
 }
 
+const char *lxp_lat_class_name(int cls)
+{
+	return (cls < 0 || cls >= LXP_LAT_CLASSES) ? "?" : g_class_name[cls];
+}
+
+#if LXP_ENABLE_LATENCY
+
+static lxp_lat_stat_t g_service[LXP_LAT_CLASSES];
+static lxp_lat_stat_t g_wake[LXP_NSLOT];
+
 void lxp_lat_reset(void)
 {
 	for (int i = 0; i < LXP_LAT_CLASSES; i++)
@@ -83,11 +88,6 @@ const lxp_lat_stat_t *lxp_lat_service_get(int cls)
 const lxp_lat_stat_t *lxp_lat_wake_get(int slot)
 {
 	return (slot < 0 || slot >= LXP_NSLOT) ? 0 : &g_wake[slot];
-}
-
-const char *lxp_lat_class_name(int cls)
-{
-	return (cls < 0 || cls >= LXP_LAT_CLASSES) ? "?" : g_class_name[cls];
 }
 
 #endif /* LXP_ENABLE_LATENCY */

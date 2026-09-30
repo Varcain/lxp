@@ -58,8 +58,6 @@ static void test_world_diagnostics_snapshot_current_states(void **state)
 
 	lxp_diag_slot_t slot;
 	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
-	assert_int_equal(slot.abi_version, LXP_DIAG_ABI_VERSION);
-	assert_int_equal(slot.struct_size, sizeof(slot));
 	assert_int_equal(slot.generation, g_lxp_rt.slots[0].generation);
 	assert_int_equal(slot.host_state, LXP_DIAG_HOST_RUNNING);
 	assert_int_equal(slot.task_status, LXP_DIAG_TASK_LIVE);
@@ -119,7 +117,6 @@ static void test_world_diagnostics_snapshot_current_states(void **state)
 
 	lxp_diag_region_t region;
 	assert_int_equal(lxp_diag_region_snapshot(0, &region), LXP_OK);
-	assert_int_equal(region.abi_version, LXP_DIAG_ABI_VERSION);
 	assert_int_equal(region.owner_slot, -1);
 	assert_int_equal(region.refs, 1);
 	assert_int_equal(region.live_users, 1);
@@ -218,7 +215,6 @@ static void test_world_validator_checkpoints_latch_first_failure(void **state)
 
 	lxp_diag_health_t health;
 	lxp_diag_health(&health);
-	assert_int_equal(health.abi_version, LXP_DIAG_ABI_VERSION);
 	assert_int_equal(health.checks, 3);
 	assert_int_equal(health.failures, 2);
 	assert_int_equal(health.first_error.issue, LXP_DIAG_REGION_OWNER_WITHOUT_REFS);
@@ -231,8 +227,6 @@ static void test_world_diagnostic_size_report_matches_compiled_objects(void **st
 	(void)state;
 	lxp_diag_size_report_t sizes;
 	lxp_diag_size_report(&sizes);
-	assert_int_equal(sizes.abi_version, LXP_DIAG_ABI_VERSION);
-	assert_int_equal(sizes.struct_size, sizeof(sizes));
 	assert_int_equal(sizes.slots, LXP_NSLOT);
 	assert_int_equal(sizes.regions, LXP_NREG);
 	assert_int_equal(sizes.proc, sizeof(lxp_proc_t));

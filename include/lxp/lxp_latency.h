@@ -32,6 +32,8 @@
 #include <stdint.h>
 
 #include "lxp/lxp_config.h"
+#include "lxp/lxp_observe.h"
+#include "lxp/lxp_types.h"
 
 /*
  * The coordinator's event classes, in dispatch order.
@@ -66,32 +68,13 @@ enum lxp_ev_class {
 #undef LXP_LAT_X
 	LXP_LAT_CLASSES /**< count, counting LXP_EV_NONE — the array bound */
 };
-/* Exponential buckets: [0]<1us, [1]<2us, [2]<4us ... [7]>=64us. The top bucket
- * is open-ended, so a max_ns far above 64us reads as an outlier rather than
- * being lost in it. */
-#define LXP_LAT_BUCKETS 8
-
-typedef struct lxp_lat_stat {
-	uint32_t count;			  /**< events recorded */
-	uint32_t max_ns;		  /**< worst observed, nanoseconds */
-	uint32_t buckets[LXP_LAT_BUCKETS]; /**< distribution, see LXP_LAT_BUCKETS */
-} lxp_lat_stat_t;
+LXP_STATIC_ASSERT(LXP_LAT_CLASSES - 1 == LXP_LAT_SERVICE_ROWS,
+		  "an observation holds one service row per event class");
 
 #if LXP_ENABLE_LATENCY
 
 /** Clear every counter. Called from lxp_run() start. */
 void lxp_lat_reset(void);
-
-/**
- * Record @p ns into a caller-owned @p s.
- *
- * The module's own counters are kept with this. It is public so a port can
- * measure a host-side quantity (e.g. how late a periodic task woke while the
- * coordinator held a critical section) into the same buckets — those numbers
- * are only meaningful against the coordinator's if both are binned identically,
- * and a second copy of the bucket rule is a second thing to drift.
- */
-void lxp_lat_record(lxp_lat_stat_t *s, uint64_t ns);
 
 /** Record one coordinator dispatch of class @p cls taking @p ns nanoseconds. */
 void lxp_lat_service(int cls, uint64_t ns);
@@ -105,18 +88,10 @@ const lxp_lat_stat_t *lxp_lat_service_get(int cls);
 /** Read a slot's wake stats, or NULL if @p slot is out of range. */
 const lxp_lat_stat_t *lxp_lat_wake_get(int slot);
 
-/** Name of event class @p cls ("EXIT", "DEFER", ...), or "?" if out of range. */
-const char *lxp_lat_class_name(int cls);
-
 #else /* compile to nothing */
 
 static inline void lxp_lat_reset(void)
 {
-}
-static inline void lxp_lat_record(lxp_lat_stat_t *s, uint64_t ns)
-{
-	(void)s;
-	(void)ns;
 }
 static inline void lxp_lat_service(int cls, uint64_t ns)
 {
@@ -137,11 +112,6 @@ static inline const lxp_lat_stat_t *lxp_lat_wake_get(int slot)
 {
 	(void)slot;
 	return 0;
-}
-static inline const char *lxp_lat_class_name(int cls)
-{
-	(void)cls;
-	return "?";
 }
 
 #endif /* LXP_ENABLE_LATENCY */
