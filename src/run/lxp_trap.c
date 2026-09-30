@@ -17,6 +17,7 @@
 #include "lxp_syscall.h"
 #include "run/lxp_coordinator.h"
 #include "run/lxp_runtime_store.h"
+#include "signal/lxp_signal_policy.h"
 
 /* Capture the post-svc context of frame f into slot s's resume ctx. */
 static void capture_ctx(int s, const struct lxp_frame *f)
@@ -91,29 +92,6 @@ void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 	f->r[15] = (uint32_t)((uintptr_t)g_lxp_os_ops->park_entry & ~(uintptr_t)1u);
 	f->xpsr |= (1u << 24);
 	lxp_event_post_slot(slot);
-}
-
-/* Lowest-numbered pending signal for @p p that is not currently blocked (SIGKILL/SIGSTOP are
- * never blocked), or 0 if none is deliverable. Does NOT clear it — the caller clears the bit
- * (pending_sigs &= ~lxp_sig_bit(sig)) once it commits to delivering. A blocked pending signal
- * is left set so it is delivered later, once the proc unblocks it. */
-int pending_deliverable(const lxp_proc_t *p)
-{
-	if (!p->pending_sigs)
-		return 0;
-	for (int sig = 1; sig < LXP_NSIG; sig++)
-		if ((p->pending_sigs & lxp_sig_bit(sig)) && !lxp_sig_blocked(p, sig))
-			return sig;
-	return 0;
-}
-
-/* Take the signal pending_deliverable() names: clear it and return it (0 if none). */
-int pending_take(lxp_proc_t *p)
-{
-	int sig = pending_deliverable(p);
-	if (sig)
-		p->pending_sigs &= ~lxp_sig_bit(sig);
-	return sig;
 }
 
 /* halt, poweroff and reboot ask init (pid 1) to shut down with SIGUSR1, SIGUSR2 and

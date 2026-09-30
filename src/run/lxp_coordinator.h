@@ -20,6 +20,7 @@
 #include "proc/lxp_proc.h"
 #include "lxp/lxp_seam.h"
 #include "run/lxp_runtime_store.h" /* LXP_SERVICE_CLASSES */
+#include "signal/lxp_signal_policy.h"
 
 
 enum deferred_state {
@@ -162,7 +163,6 @@ int device_map_index(const lxp_proc_t *proc, uintptr_t addr, size_t len);
 
 /* Raise @p sig on the console's foreground process group (src/run/lxp_console_input.c). */
 void console_signal_fg(int sig);
-int pending_deliverable(const lxp_proc_t *proc);
 void flatten_vec(char *buf, const char **ptrs, const char *src_buf, const uint16_t *offsets,
 		 int count);
 void deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret);
@@ -189,7 +189,6 @@ void vfork_contain_stale(lxp_slot_ref_t child, lxp_proc_t *proc);
 void lxp_vfork_guard_reset(int slot);
 /* The trap top half (src/run/lxp_trap.c). */
 void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc);
-int pending_take(lxp_proc_t *p);
 void deferred_state_store(int slot, uint8_t state);
 void coordinator_report_enosys(long nr, long result);
 /* End @p slot's process for a coordinator reason (not a signal): record the status,

@@ -13,6 +13,7 @@
  * and the final descriptor close releases it.
  */
 #include "fs/lxp_pipe.h"
+#include "signal/lxp_signal_policy.h"
 
 #include "fs/lxp_ring.h" /* shared two-memcpy byte-ring read/write */
 #include "fs/lxp_vfs.h"
@@ -162,12 +163,8 @@ static long fop_write_pipe(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t 
 		return lxp_wait_park(p, &wait); /* dispatch parks; coordinator completes via lxp_pipe_retry */
 	}
 	if (r == -LXP_EPIPE && /* no readers: SIGPIPE — default terminates the writer */
-	    lxp_sig_handler_get(p, LXP_SIGPIPE) != LXP_SIG_IGN) {
-		(void)lxp_intent_exit(p, 0);
-		p->exit_status = 128 + LXP_SIGPIPE;
-		p->exit_reason = LXP_EXIT_REASON_SIGNAL;
-		p->exit_signal = LXP_SIGPIPE;
-	}
+	    lxp_sig_handler_get(p, LXP_SIGPIPE) != LXP_SIG_IGN)
+		lxp_signal_terminate(p, LXP_SIGPIPE, LXP_EXIT_REASON_SIGNAL, 0, 0);
 	return r; /* bytes written, or -EPIPE (no readers; writer exits unless it ignores it) */
 }
 

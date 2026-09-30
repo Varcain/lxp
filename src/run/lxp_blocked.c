@@ -210,7 +210,7 @@ static int lxp_blocked_handle_stopped(int slot, lxp_proc_t *proc, struct lxp_blo
 	if (fatal) {
 		proc->pending_sigs &= ~lxp_sig_bit(fatal);
 		lxp_blocked_clear_stop(proc);
-		lxp_signal_terminate(proc, fatal, LXP_EXIT_REASON_SIGNAL, 0);
+		lxp_signal_terminate(proc, fatal, LXP_EXIT_REASON_SIGNAL, 0, 0);
 		primary_slot_mark(slot);
 		scan->progress = 1;
 		return 1;
@@ -326,10 +326,7 @@ static void lxp_blocked_retry_pipe(int slot, lxp_proc_t *proc, struct lxp_blocke
 		return;
 	(void)lxp_wait_complete(proc, LXP_WAIT_PIPE);
 	if (rc == -LXP_EPIPE && lxp_sig_handler_get(proc, LXP_SIGPIPE) != LXP_SIG_IGN) {
-		(void)lxp_intent_exit(proc, 0);
-		proc->exit_status = 128 + LXP_SIGPIPE;
-		proc->exit_reason = LXP_EXIT_REASON_SIGNAL;
-		proc->exit_signal = LXP_SIGPIPE;
+		lxp_signal_terminate(proc, LXP_SIGPIPE, LXP_EXIT_REASON_SIGNAL, 0, 0);
 		primary_slot_mark(slot);
 	} else {
 		(void)coordinator_complete_slot(slot_ref_at(slot), rc);

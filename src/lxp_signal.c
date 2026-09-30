@@ -8,9 +8,11 @@
  * push a handler frame (saving the interrupted context per slot), and restore it at
  * rt_sigreturn. Driven by the run loop's dispatch + event loop (lxp_run.c) via the
  * coordinator primitives in lxp_run_internal.h; deliver_signal_parked (the parked-proc
- * variant, which resumes via the engine) stays with the coordinator in lxp_run.c.
+ * variant, which resumes via the engine) stays with the coordinator. Which signal is
+ * delivered, and what its disposition means, is policy (signal/lxp_signal_policy.c).
  */
 #include "lxp_run_internal.h"
+#include "signal/lxp_signal_policy.h"
 
 #include "lxp_guest.h"
 #include "proc/lxp_proc.h"
@@ -43,67 +45,6 @@ int resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t 
 	return 0;
 }
 
-/* Signals whose POSIX default action never terminates the process: SIGCHLD (ignore),
- * SIGCONT (consumed by the coordinator for a stopped process; a no-op while running),
- * SIGURG + SIGWINCH (ignore). A SIG_DFL of one of these must be SWALLOWED, not turned
- * into a 128+signo termination — else a shell's `fg`, which sends kill(-pgid, SIGCONT)
- * to resume a job, kills the very job (and every proc in range). */
-int sig_default_ignore(int sig)
-{
-	return sig == LXP_SIGCHLD || sig == LXP_SIGCONT || sig == LXP_SIGURG || sig == LXP_SIGWINCH;
-}
-
-/* Is signal `sig` effectively ignored for `proc`? True for SIG_IGN, or SIG_DFL of a
- * signal whose default action is "ignore" (SIGCHLD/SIGCONT/SIGURG/SIGWINCH). Such a
- * signal is swallowed by the coordinator: it neither runs a handler nor terminates a
- * parked proc — a parent must not die because a child exited or a job was resumed. */
-int sig_swallowed(const lxp_proc_t *proc, int sig)
-{
-	uintptr_t h = lxp_sig_handler_get(proc, sig);
-	if (h == LXP_SIG_IGN)
-		return 1;
-	if (h == LXP_SIG_DFL && sig_default_ignore(sig))
-		return 1;
-	return 0;
-}
-
-/* The job-control stop signals: their default action suspends the process. */
-int sig_is_stop(int sig)
-{
-	return sig == LXP_SIGSTOP || sig == LXP_SIGTSTP || sig == LXP_SIGTTIN || sig == LXP_SIGTTOU;
-}
-
-/* Would delivering `sig` to `proc` actually STOP it (rather than run a handler or be
- * ignored)? SIGSTOP always stops (it can be neither caught nor ignored); SIGTSTP/TTIN/
- * TTOU stop only at their default disposition — a caught one runs the handler, an
- * ignored one is dropped. */
-int sig_stops_proc(const lxp_proc_t *proc, int sig)
-{
-	if (!sig_is_stop(sig))
-		return 0;
-	if (sig == LXP_SIGSTOP)
-		return 1;
-	return lxp_sig_handler_get(proc, sig) == LXP_SIG_DFL;
-}
-
-/* Publish one pending signal while preserving the ordering rule that a bitset
- * cannot represent by itself. Generating SIGCONT discards pending job-control
- * stops; generating a stop signal discards pending SIGCONT. All signal producers
- * use this owner so the last generated action wins. */
-void lxp_signal_latch(lxp_proc_t *proc, int sig)
-{
-	if (!proc || sig <= 0 || sig >= LXP_NSIG)
-		return;
-	uint64_t pending = proc->pending_sigs;
-	const uint64_t stop_mask = lxp_sig_bit(LXP_SIGSTOP) | lxp_sig_bit(LXP_SIGTSTP) |
-				   lxp_sig_bit(LXP_SIGTTIN) | lxp_sig_bit(LXP_SIGTTOU);
-	if (sig == LXP_SIGCONT)
-		pending &= ~stop_mask;
-	else if (sig_is_stop(sig))
-		pending &= ~lxp_sig_bit(LXP_SIGCONT);
-	proc->pending_sigs = pending | lxp_sig_bit(sig);
-}
-
 /* Reserve the next host-owned signal frame and install the handler mask. For a
  * signal that wakes rt_sigsuspend, the frame must restore the mask from before
  * the suspend, not the temporary wait mask. Consume that association here so a
@@ -130,16 +71,6 @@ struct sig_save_s *sig_save_push(lxp_proc_t *proc, int sig)
 	return sv;
 }
 
-void lxp_signal_terminate(lxp_proc_t *proc, int sig, uint8_t reason, uintptr_t address)
-{
-	(void)lxp_intent_exit(proc, 0);
-	proc->exit_status = 128 + sig;
-	proc->exit_reason = reason;
-	proc->exit_signal = (uint8_t)sig;
-	proc->exit_detail = 0;
-	proc->exit_address = address;
-}
-
 /* Resolve one disposition before choosing the live-frame or parked-frame
  * delivery mechanism. This is the sole owner of ignore/default/handler-fault
  * semantics; callers retain only their different host-context transitions. */
@@ -155,17 +86,17 @@ enum lxp_signal_action lxp_signal_prepare(lxp_proc_t *proc, int sig,
 
 	uintptr_t handler = lxp_sig_handler_get(proc, sig);
 	if (handler == LXP_SIG_DFL) {
-		lxp_signal_terminate(proc, sig, LXP_EXIT_REASON_SIGNAL, 0);
+		lxp_signal_terminate(proc, sig, LXP_EXIT_REASON_SIGNAL, 0, 0);
 		return LXP_SIGNAL_TERMINATE;
 	}
 	if (resolve_handler(proc, sig, &delivery->entry, &delivery->got, &delivery->restorer) !=
 	    0) {
-		lxp_signal_terminate(proc, LXP_SIGSEGV, LXP_EXIT_REASON_MEMORY_FAULT, handler);
+		lxp_signal_terminate(proc, LXP_SIGSEGV, LXP_EXIT_REASON_MEMORY_FAULT, 0, handler);
 		return LXP_SIGNAL_TERMINATE;
 	}
 	delivery->save = sig_save_push(proc, sig);
 	if (!delivery->save) {
-		lxp_signal_terminate(proc, LXP_SIGSEGV, LXP_EXIT_REASON_SIGNAL_DEPTH, 0);
+		lxp_signal_terminate(proc, LXP_SIGSEGV, LXP_EXIT_REASON_SIGNAL_DEPTH, 0, 0);
 		return LXP_SIGNAL_TERMINATE;
 	}
 	return LXP_SIGNAL_HANDLER;

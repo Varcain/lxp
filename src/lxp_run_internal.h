@@ -15,6 +15,7 @@
 
 #include "lxp/lxp_seam.h" /* struct lxp_frame, LXP_NSLOT */
 #include "proc/lxp_proc.h" /* lxp_proc_t, LXP_SIG_* */
+#include "signal/lxp_signal_policy.h"
 
 /* Context saved at signal delivery and restored at rt_sigreturn. */
 struct sig_save_s {
@@ -60,14 +61,7 @@ void park_frame(struct lxp_frame *f,
 /* ---- signal delivery (lxp_signal.c) ---------------------------------------- */
 int resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
 		    uintptr_t *restorer);
-int sig_swallowed(const lxp_proc_t *proc, int sig);
-int sig_default_ignore(
-	int sig); /* SIG_DFL of this signal never terminates (SIGCHLD/SIGCONT/SIGURG/SIGWINCH) */
-int sig_is_stop(int sig); /* a job-control stop signal (SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU) */
-int sig_stops_proc(const lxp_proc_t *proc, int sig); /* would delivering `sig` stop `proc`? */
-void lxp_signal_latch(lxp_proc_t *proc, int sig);
 struct sig_save_s *sig_save_push(lxp_proc_t *proc, int sig);
-void lxp_signal_terminate(lxp_proc_t *proc, int sig, uint8_t reason, uintptr_t address);
 enum lxp_signal_action lxp_signal_prepare(lxp_proc_t *proc, int sig,
 					  struct lxp_signal_delivery *delivery);
 void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret);

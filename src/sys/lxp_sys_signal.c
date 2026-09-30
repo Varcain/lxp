@@ -10,6 +10,7 @@
 #include "sys/lxp_sys.h"
 #include "lxp_guest.h"
 #include "lxp_linux_uapi.h"
+#include "signal/lxp_signal_policy.h"
 
 long lxp_sys_rt_sigaction(lxp_proc_t *proc, const long a[6])
 {
@@ -94,7 +95,7 @@ long lxp_sys_rt_sigsuspend(lxp_proc_t *proc, const long a[6])
 	 * INSTALL the mask arg (POSIX: atomically set the signal mask for the wait): the whole
 	 * point of the restart protocol is that the caller BLOCKS the restart signal normally and
 	 * sigsuspend UNBLOCKS it only while waiting. If we ignore the mask, the restart stays
-	 * blocked, the coordinator's pending_deliverable skips it, and the parked thread is never
+	 * blocked, pending_deliverable() skips it, and the parked thread is never
 	 * woken (deadlock — curl's LinuxThreads resolver: manager, main, and a sigwait thread all
 	 * stuck). The prior mask is restored when the delivered handler returns (sig_restore). */
 	uintptr_t uset = (uintptr_t)a[0];
@@ -111,16 +112,8 @@ long lxp_sys_rt_sigsuspend(lxp_proc_t *proc, const long a[6])
 	proc->sigsuspend_active = 1;
 	/* Park unless a signal that is deliverable UNDER THE NEW MASK is already pending — then
 	 * fall through so the dispatch delivers it now. A signal pending but blocked by the new
-	 * mask must NOT keep us running (it stays pending until the mask is restored). Mirrors
-	 * the run loop's pending_deliverable, which is static there. */
-	int deliverable = 0;
-	for (int sig = 1; sig < LXP_NSIG; sig++)
-		if ((proc->pending_sigs & lxp_sig_bit(sig)) &&
-		    !lxp_sig_blocked(proc, sig)) {
-			deliverable = 1;
-			break;
-		}
-	if (!deliverable) {
+	 * mask must NOT keep us running (it stays pending until the mask is restored). */
+	if (!pending_deliverable(proc)) {
 		lxp_wait_t wait = {.kind = LXP_WAIT_SIGSUSPEND};
 		if (lxp_wait_begin(proc, &wait) != 0)
 			return -LXP_EAGAIN;

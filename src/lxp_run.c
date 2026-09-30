@@ -594,13 +594,8 @@ int lxp_slot_report_memory_fault(lxp_slot_ref_t ref, const lxp_guest_fault_t *fa
 {
 	if (!fault || !lxp_slot_ref_is_current(ref))
 		return -LXP_ESRCH;
-	lxp_proc_t *proc = &g_lxp_rt.slots[ref.index].proc;
-	proc->exit_status = 139; /* 128 + SIGSEGV */
-	proc->exit_reason = LXP_EXIT_REASON_MEMORY_FAULT;
-	proc->exit_signal = LXP_SIGSEGV;
-	proc->exit_detail = fault->detail;
-	proc->exit_address = fault->address;
-	(void)lxp_intent_exit(proc, 0);
+	lxp_signal_terminate(&g_lxp_rt.slots[ref.index].proc, LXP_SIGSEGV,
+			     LXP_EXIT_REASON_MEMORY_FAULT, fault->detail, fault->address);
 	lxp_event_post_slot(ref.index);
 	return LXP_OK;
 }
