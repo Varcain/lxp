@@ -158,8 +158,8 @@ typedef struct lxp_memory_policy_key {
  * Validate the complete, versioned memory-policy representation before a
  * seam translates it into native MPU/domain state.
  *
- * Returns LXP_OK for the current canonical representation, -LXP_EINVAL for a
- * malformed, truncated, stale-version, or otherwise non-canonical policy.
+ * Returns LXP_OK for the current canonical representation, LXP_ERR_INVALID_PARAM for
+ * a malformed, truncated, stale-version, or otherwise non-canonical policy.
  */
 int lxp_memory_policy_validate(const lxp_memory_policy_t *policy);
 
@@ -208,6 +208,9 @@ typedef struct lxp_guest_fault {
 	uint32_t detail;
 	uintptr_t address;
 } lxp_guest_fault_t;
+
+/* The slot operations below return LXP_OK, LXP_ERR_NOT_FOUND when the slot or its
+ * reference is no longer current, or LXP_ERR_INVALID_PARAM for other malformed input. */
 
 /** Capture the current incarnation of @p slot. */
 int lxp_slot_ref_current(int slot, lxp_slot_ref_t *out);

@@ -163,7 +163,7 @@ static void test_slot_references_reject_recycled_incarnations_and_skip_zero(void
 	struct lxp_frame frame = {0};
 	frame.r[0] = 0xfeedbeefu;
 	frame.r[7] = LXP_NR_getpid;
-	assert_int_equal(lxp_dispatch_slot(stale, &frame), -LXP_ESRCH);
+	assert_int_equal(lxp_dispatch_slot(stale, &frame), LXP_ERR_NOT_FOUND);
 	assert_int_equal(frame.r[0], 0xfeedbeefu);
 	assert_int_equal(lxp_dispatch_slot(current, &frame), LXP_OK);
 	assert_int_equal(frame.r[0], g_lxp_rt.slots[0].proc.pid);
@@ -194,7 +194,7 @@ static void test_fault_publication_rejects_stale_slot_reference(void **state)
 		.address = 0x12345678u,
 	};
 
-	assert_int_equal(lxp_slot_report_memory_fault(stale, &fault), -LXP_ESRCH);
+	assert_int_equal(lxp_slot_report_memory_fault(stale, &fault), LXP_ERR_NOT_FOUND);
 	assert_int_equal(g_lxp_rt.slots[0].proc.intent.kind, LXP_INTENT_NONE);
 	assert_false(lxp_primary_slot_pending(0));
 	assert_int_equal(lxp_slot_report_memory_fault(current, &fault), LXP_OK);

@@ -256,13 +256,13 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 int lxp_dispatch_slot(lxp_slot_ref_t ref, struct lxp_frame *frame)
 {
 	if (!frame || !lxp_slot_ref_is_runnable(ref))
-		return -LXP_ESRCH;
+		return LXP_ERR_NOT_FOUND;
 	lxp_guest_view_t view;
 	int rc = lxp_guest_view_begin(&g_lxp_rt.slots[ref.index].proc, ref,
 				      &g_lxp_rt.slots[ref.index].generation, LXP_GUEST_READ_WRITE,
 				      &view);
-	if (rc != LXP_OK)
-		return rc;
+	if (rc != LXP_OK) /* the guest view speaks errno; the seam speaks lxp_err_t */
+		return rc == -LXP_ESRCH ? LXP_ERR_NOT_FOUND : LXP_ERR_INVALID_PARAM;
 	lxp_trap_dispatch(frame, &g_lxp_rt.slots[ref.index].proc);
 	lxp_guest_view_end(&view);
 	return LXP_OK;

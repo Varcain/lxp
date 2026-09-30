@@ -450,10 +450,10 @@ void lxp_slot_proc_reset(int slot)
 int lxp_slot_ref_current(int slot, lxp_slot_ref_t *out)
 {
 	if (!out || slot < 0 || slot >= LXP_NSLOT)
-		return -LXP_EINVAL;
+		return LXP_ERR_INVALID_PARAM;
 	uint32_t generation = lxp_slot_generation(slot);
 	if (generation == 0 || !g_lxp_rt.slots[slot].proc.alive)
-		return -LXP_ESRCH;
+		return LXP_ERR_NOT_FOUND;
 	*out = lxp_slot_ref_at(slot);
 	return LXP_OK;
 }
@@ -493,11 +493,11 @@ int lxp_slot_ref_is_runnable(lxp_slot_ref_t ref)
 int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out)
 {
 	if (!out || !lxp_slot_ref_is_current(ref) || !g_lxp_rt.slots[ref.index].proc.mm)
-		return -LXP_ESRCH;
+		return LXP_ERR_NOT_FOUND;
 	lxp_region_ref_t region = g_lxp_rt.slots[ref.index].proc.mm->region;
 	if (region.index < 0 || region.index >= LXP_NREG || region.generation == 0 ||
 	    g_lxp_rt.regions[region.index].generation != region.generation)
-		return -LXP_EINVAL;
+		return LXP_ERR_INVALID_PARAM;
 	*out = region;
 	return LXP_OK;
 }
@@ -511,15 +511,15 @@ int lxp_memory_policy_validate(const lxp_memory_policy_t *policy)
 	    policy->address_space.generation == 0 || policy->device_generation == 0 ||
 	    policy->exec_generation == 0 || policy->copied_text_executable > 1u ||
 	    policy->device_count > LXP_MEMORY_DEVICE_MAX || policy->_pad != 0)
-		return -LXP_EINVAL;
+		return LXP_ERR_INVALID_PARAM;
 	if (policy->copied_text_executable) {
 		if (policy->copied_text_base == 0 ||
 		    policy->copied_text_size != LXP_PROG_REGION_SIZE / 2u ||
 		    (policy->copied_text_base & (policy->copied_text_size - 1u)) != 0u ||
 		    policy->copied_text_size > UINTPTR_MAX - policy->copied_text_base)
-			return -LXP_EINVAL;
+			return LXP_ERR_INVALID_PARAM;
 	} else if (policy->copied_text_base != 0 || policy->copied_text_size != 0) {
-		return -LXP_EINVAL;
+		return LXP_ERR_INVALID_PARAM;
 	}
 
 	for (unsigned i = 0; i < LXP_MEMORY_DEVICE_MAX; i++) {
@@ -527,9 +527,9 @@ int lxp_memory_policy_validate(const lxp_memory_policy_t *policy)
 		if (i < policy->device_count) {
 			if (cap->size == 0 || cap->size > UINTPTR_MAX - cap->base ||
 			    cap->attrs > LXP_MAP_DEV)
-				return -LXP_EINVAL;
+				return LXP_ERR_INVALID_PARAM;
 		} else if (cap->base != 0 || cap->size != 0 || cap->attrs != 0) {
-			return -LXP_EINVAL;
+			return LXP_ERR_INVALID_PARAM;
 		}
 	}
 	return LXP_OK;
@@ -538,14 +538,14 @@ int lxp_memory_policy_validate(const lxp_memory_policy_t *policy)
 int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out)
 {
 	if (!out || !lxp_slot_ref_is_current(ref))
-		return -LXP_ESRCH;
+		return LXP_ERR_NOT_FOUND;
 	const lxp_mm_t *mm = g_lxp_rt.slots[ref.index].proc.mm;
 	if (!mm || mm->device_generation == 0 || mm->exec_generation == 0)
-		return -LXP_EINVAL;
+		return LXP_ERR_INVALID_PARAM;
 	lxp_region_ref_t region = mm->region;
 	if (region.index < 0 || region.index >= LXP_NREG || region.generation == 0 ||
 	    g_lxp_rt.regions[region.index].generation != region.generation)
-		return -LXP_EINVAL;
+		return LXP_ERR_INVALID_PARAM;
 
 	*out = (lxp_memory_policy_t){
 		.abi_version = LXP_MEMORY_POLICY_ABI_VERSION,
@@ -563,7 +563,7 @@ int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out)
 	      mm->copied_text_size > mm->region_hi - mm->copied_text_base)) ||
 	    (!mm->copied_text_executable &&
 	     (mm->copied_text_base != 0 || mm->copied_text_size != 0)))
-		return -LXP_EINVAL;
+		return LXP_ERR_INVALID_PARAM;
 	for (unsigned i = 0; i < LXP_MEMORY_DEVICE_MAX; i++) {
 		if (mm->dev_map_hi[i] <= mm->dev_map_lo[i])
 			continue;
@@ -578,7 +578,7 @@ int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out)
 int lxp_slot_report_memory_fault(lxp_slot_ref_t ref, const lxp_guest_fault_t *fault)
 {
 	if (!fault || !lxp_slot_ref_is_current(ref))
-		return -LXP_ESRCH;
+		return LXP_ERR_NOT_FOUND;
 	lxp_signal_terminate(&g_lxp_rt.slots[ref.index].proc, LXP_SIGSEGV,
 			     LXP_EXIT_REASON_MEMORY_FAULT, fault->detail, fault->address);
 	lxp_event_post_slot(ref.index);

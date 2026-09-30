@@ -62,7 +62,7 @@ static void test_memory_policy_snapshot_and_key_track_every_generation(void **st
 
 	lxp_slot_ref_t stale = slot;
 	lxp_deferred_slot_reassign(0);
-	assert_int_equal(lxp_slot_memory_policy(stale, &policy), -LXP_ESRCH);
+	assert_int_equal(lxp_slot_memory_policy(stale, &policy), LXP_ERR_NOT_FOUND);
 }
 
 static void test_memory_policy_validator_rejects_noncanonical_snapshots(void **state)
@@ -82,56 +82,56 @@ static void test_memory_policy_validator_rejects_noncanonical_snapshots(void **s
 
 	lxp_memory_policy_t invalid = canonical;
 	invalid.abi_version++;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	lxp_memory_policy_key_t invalid_key = lxp_memory_policy_make_key(&invalid);
 	lxp_memory_policy_key_t empty_key = {0};
 	assert_memory_equal(&invalid_key, &empty_key, sizeof(invalid_key));
 
 	invalid = canonical;
 	invalid.struct_size--;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.slot.generation = 0;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.address_space.index = LXP_NREG;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.device_generation = 0;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.copied_text_executable = 2u;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.copied_text_executable = 1u;
 	invalid.copied_text_base = 0x20000000u;
 	invalid.copied_text_size = LXP_PROG_REGION_SIZE / 4u;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.copied_text_size = 0x18000u;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.copied_text_base++;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.copied_text_base = 0x20000000u;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.device_count = LXP_MEMORY_DEVICE_MAX + 1u;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.devices[0].size = 0;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.devices[0].base = UINTPTR_MAX - 1u;
 	invalid.devices[0].size = 4u;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.devices[0].attrs = LXP_MAP_DEV + 1u;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.devices[1].size = 1u;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), -LXP_EINVAL);
+	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 }
 
 static void test_system_version_routes_to_engine(void **state)

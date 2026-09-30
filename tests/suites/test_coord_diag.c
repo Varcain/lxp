@@ -124,8 +124,8 @@ static void test_world_diagnostics_snapshot_current_states(void **state)
 	assert_int_equal(region.refs, 1);
 	assert_int_equal(region.live_users, 1);
 	assert_true(region.generation != 0);
-	assert_int_equal(lxp_diag_slot_snapshot(-1, &slot), -LXP_EINVAL);
-	assert_int_equal(lxp_diag_region_snapshot(LXP_NREG, &region), -LXP_EINVAL);
+	assert_int_equal(lxp_diag_slot_snapshot(-1, &slot), LXP_ERR_INVALID_PARAM);
+	assert_int_equal(lxp_diag_region_snapshot(LXP_NREG, &region), LXP_ERR_INVALID_PARAM);
 }
 
 static void test_world_validator_reports_conflicting_waits(void **state)

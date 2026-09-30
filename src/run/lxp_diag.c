@@ -195,7 +195,7 @@ static uint8_t diag_task_status(const lxp_proc_t *p)
 int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
 {
 	if (!out || slot < 0 || slot >= LXP_NSLOT)
-		return -LXP_EINVAL;
+		return LXP_ERR_INVALID_PARAM;
 	const lxp_proc_t *p = &g_lxp_rt.slots[slot].proc;
 	memset(out, 0, sizeof(*out));
 	out->abi_version = LXP_DIAG_ABI_VERSION;
@@ -238,7 +238,7 @@ int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
 int lxp_diag_region_snapshot(int region, lxp_diag_region_t *out)
 {
 	if (!out || region < 0 || region >= LXP_NREG)
-		return -LXP_EINVAL;
+		return LXP_ERR_INVALID_PARAM;
 	memset(out, 0, sizeof(*out));
 	out->abi_version = LXP_DIAG_ABI_VERSION;
 	out->struct_size = sizeof(*out);
