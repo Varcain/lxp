@@ -244,4 +244,11 @@
 #define LXP_FAR_BSS
 #endif
 
+/* The input section holding the signal-save stacks (g_lxp_sig_save), so a host linker
+ * script can place them by name, e.g. in tightly coupled memory. The .bss. prefix keeps
+ * them zero-filled NOLOAD storage wherever no script names the section. */
+#ifndef LXP_SIGNAL_STATE_SECTION
+#define LXP_SIGNAL_STATE_SECTION ".bss.lxp_signal_state"
+#endif
+
 #endif /* LXP_CONFIG_H */

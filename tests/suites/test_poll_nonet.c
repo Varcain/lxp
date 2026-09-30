@@ -30,7 +30,7 @@
 #define SC(...) lxp_syscall(__VA_ARGS__)
 
 /* lxp_signal.c's coordinator symbols (lxp_run.c is not linked; see test_signal.c). */
-struct sig_save_stack_s g_sig_save[LXP_NSLOT];
+struct sig_save_stack_s g_lxp_sig_save[LXP_NSLOT];
 int slot_of(const lxp_proc_t *p)
 {
 	(void)p;

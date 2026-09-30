@@ -35,7 +35,7 @@ struct sig_save_stack_s {
 	struct sig_save_s frame[LXP_SIGNAL_NEST_MAX];
 	uint8_t depth;
 };
-extern struct sig_save_stack_s g_sig_save[LXP_NSLOT];
+extern struct sig_save_stack_s g_lxp_sig_save[LXP_NSLOT];
 
 enum lxp_signal_action {
 	LXP_SIGNAL_INVALID,

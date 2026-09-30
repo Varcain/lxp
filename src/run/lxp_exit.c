@@ -45,7 +45,7 @@ struct lxp_exit_result lxp_handle_exit(const lxp_os_ops_t *eng, int slot)
 	lxp_proc_resources_put(proc);
 	if (eng->map_device)
 		(void)eng->map_device(slot, 0, 0, 0);
-	g_sig_save[slot].depth = 0;
+	g_lxp_sig_save[slot].depth = 0;
 
 	if (lxp_slot_ref_is_current(parent_ref) && proc->snapshot.index >= 0) {
 		/* A vfork child died before exec: undo its writes to the shared

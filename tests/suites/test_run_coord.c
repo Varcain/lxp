@@ -695,7 +695,7 @@ static int reset_state(void **state)
 	lxp_blocked_fair_reset();
 	memset(g_lxp_rt.regions, 0, sizeof(*g_lxp_rt.regions) * LXP_NREG);
 	memset(g_lxp_rt.vfork_guard, 0, sizeof(*g_lxp_rt.vfork_guard) * LXP_NSLOT);
-	memset(g_sig_save, 0, sizeof(g_sig_save));
+	memset(g_lxp_sig_save, 0, sizeof(g_lxp_sig_save));
 	memset(g_lxp_rt.diag.native_present, 0, LXP_NSLOT);
 	g_lxp_rt.diag.native_known = 0;
 	g_lxp_rt.diag.lifecycle_epoch = 0;
@@ -1561,7 +1561,7 @@ static void test_world_diagnostics_snapshot_current_states(void **state)
 	g_lxp_rt.slots[0].proc.intent.kind = LXP_INTENT_EXEC;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 	g_lxp_rt.slots[0].proc.intent.kind = LXP_INTENT_NONE;
-	g_sig_save[0].depth = 1;
+	g_lxp_sig_save[0].depth = 1;
 	assert_int_equal(lxp_validate_world(&error), LXP_OK);
 	assert_int_equal(lxp_diag_slot_snapshot(0, &slot), LXP_OK);
 	assert_int_equal(slot.signal_depth, 1);
@@ -3927,9 +3927,9 @@ static void test_caught_signal_waits_for_hostfs_completion(void **state)
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_r0, LXP_SIGALRM);
 	assert_int_equal(g_lxp_rt.slots[0].resume.pc, 0x1235u);
-	assert_int_equal(g_sig_save[0].depth, 1);
-	assert_int_equal((int32_t)g_sig_save[0].frame[0].r0, -LXP_ENOSYS);
-	assert_int_equal(g_sig_save[0].frame[0].pc, 0x2221u);
+	assert_int_equal(g_lxp_sig_save[0].depth, 1);
+	assert_int_equal((int32_t)g_lxp_sig_save[0].frame[0].r0, -LXP_ENOSYS);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, 0x2221u);
 	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
 }
 
@@ -4614,10 +4614,10 @@ static void test_caught_sigcont_runs_after_boundary_resume(void **state)
 	assert_int_equal(g_mock.resume_r0, LXP_SIGCONT);
 	assert_int_equal(g_lxp_rt.slots[0].resume.pc, 0x1235u);
 	assert_int_equal(g_lxp_rt.slots[0].resume.lr, 0x5679u);
-	assert_int_equal(g_sig_save[0].depth, 1);
-	assert_int_equal(g_sig_save[0].frame[0].r0, proc->pid);
-	assert_int_equal(g_sig_save[0].frame[0].pc, 0x1111u);
-	assert_int_equal(g_sig_save[0].frame[0].lr, 0xaaaau);
+	assert_int_equal(g_lxp_sig_save[0].depth, 1);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].r0, proc->pid);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, 0x1111u);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].lr, 0xaaaau);
 }
 
 static void test_caught_sigcont_interrupts_parked_wait(void **state)
@@ -4651,9 +4651,9 @@ static void test_caught_sigcont_interrupts_parked_wait(void **state)
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_r0, LXP_SIGCONT);
 	assert_int_equal(g_lxp_rt.slots[0].resume.pc, 0x1235u);
-	assert_int_equal(g_sig_save[0].depth, 1);
-	assert_int_equal((int32_t)g_sig_save[0].frame[0].r0, -LXP_EINTR);
-	assert_int_equal(g_sig_save[0].frame[0].pc, 0x2221u);
+	assert_int_equal(g_lxp_sig_save[0].depth, 1);
+	assert_int_equal((int32_t)g_lxp_sig_save[0].frame[0].r0, -LXP_EINTR);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, 0x2221u);
 }
 
 static void test_blocked_caught_sigcont_resumes_boundary_but_stays_pending(void **state)
@@ -4686,7 +4686,7 @@ static void test_blocked_caught_sigcont_resumes_boundary_but_stays_pending(void 
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_r0, proc->pid);
 	assert_int_equal(g_lxp_rt.slots[0].resume.pc, 0x1111u);
-	assert_int_equal(g_sig_save[0].depth, 0);
+	assert_int_equal(g_lxp_sig_save[0].depth, 0);
 }
 
 static void test_blocked_caught_sigcont_keeps_parked_wait(void **state)
@@ -4714,7 +4714,7 @@ static void test_blocked_caught_sigcont_keeps_parked_wait(void **state)
 	assert_true(proc->pending_sigs & lxp_sig_bit(LXP_SIGCONT));
 	assert_int_equal(proc->wait.kind, LXP_WAIT_TIMER);
 	assert_int_equal(g_mock.resume_calls, 0);
-	assert_int_equal(g_sig_save[0].depth, 0);
+	assert_int_equal(g_lxp_sig_save[0].depth, 0);
 }
 
 static void test_caught_sigcont_does_not_resume_vfork_owned_park(void **state)
@@ -4738,7 +4738,7 @@ static void test_caught_sigcont_does_not_resume_vfork_owned_park(void **state)
 	assert_int_equal(g_lxp_rt.slots[0].host_state, SLOT_PARKED);
 	assert_false(g_lxp_rt.slots[0].runnable);
 	assert_int_equal(g_mock.resume_calls, 0);
-	assert_int_equal(g_sig_save[0].depth, 0);
+	assert_int_equal(g_lxp_sig_save[0].depth, 0);
 }
 
 static void test_stopped_vfork_parent_release_waits_for_sigcont(void **state)

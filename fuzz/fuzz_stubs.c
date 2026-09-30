@@ -19,7 +19,7 @@
 
 #include <stdint.h>
 
-struct sig_save_stack_s g_sig_save[LXP_NSLOT];
+struct sig_save_stack_s g_lxp_sig_save[LXP_NSLOT];
 
 int slot_of(const lxp_proc_t *p)
 {

@@ -51,7 +51,7 @@
 
 #include "lxp_internal.h"
 #include "lxp_provider.h"
-#include "lxp_run_internal.h" /* g_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
+#include "lxp_run_internal.h" /* g_lxp_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
 #include "fs/lxp_eventfd.h"
 #include "fs/lxp_pipe.h"
 #include "proc/lxp_procfs.h"
@@ -309,12 +309,12 @@ void lxp_slot_debug_clear(int slot)
 
 void lxp_slot_signal_reset(int slot)
 {
-	memset(&g_sig_save[slot], 0, sizeof(g_sig_save[slot]));
+	memset(&g_lxp_sig_save[slot], 0, sizeof(g_lxp_sig_save[slot]));
 }
 
 void lxp_slot_signal_clone(int child_slot, int parent_slot)
 {
-	g_sig_save[child_slot] = g_sig_save[parent_slot];
+	g_lxp_sig_save[child_slot] = g_lxp_sig_save[parent_slot];
 }
 
 int lxp_slot_publish_image(int slot, lxp_proc_t *image, lxp_exec_capture_t *capture,
@@ -363,8 +363,10 @@ int slot_of(const lxp_proc_t *p)
  * deliver restart/timer signals to several slots concurrently, and a different
  * signal may interrupt an active handler within one slot. r4-r8/r10-r11 are not
  * stored because a C handler preserves them; r9 is explicit because FDPIC uses
- * it as the module GOT. Delivery/restore operations live in lxp_signal.c. */
-struct sig_save_stack_s g_sig_save[LXP_NSLOT];
+ * it as the module GOT. Delivery/restore operations live in lxp_signal.c. The stacks sit
+ * in their own section so a host linker script can place them (LXP_SIGNAL_STATE_SECTION). */
+struct sig_save_stack_s g_lxp_sig_save[LXP_NSLOT]
+	__attribute__((section(LXP_SIGNAL_STATE_SECTION)));
 
 int lxp_signal_process_group(int pgid, int sig)
 {
@@ -944,7 +946,7 @@ static void coordinator_teardown_all(const lxp_os_ops_t *eng)
 			(void)region_release_if_owned(p->snapshot, slot_ref_at(s));
 		proc_mm_put(p);
 		lxp_proc_group_put(p);
-		g_sig_save[s].depth = 0;
+		g_lxp_sig_save[s].depth = 0;
 		slot_runnable_store(s, 0);
 		memset(p, 0, sizeof(*p));
 		p->snapshot = lxp_region_ref_none();
@@ -987,7 +989,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	lxp_console_reset();
 	lxp_stats_reset();
 	for (int i = 0; i < LXP_NSLOT; i++)
-		g_sig_save[i].depth = 0;
+		g_lxp_sig_save[i].depth = 0;
 #if LXP_ENABLE_DEV
 	/* Register enabled /dev class drivers on the coordinator thread, where
 	 * bounded provider initialization is legal. */

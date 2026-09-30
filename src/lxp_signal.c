@@ -113,7 +113,7 @@ struct sig_save_s *sig_save_push(lxp_proc_t *proc, int sig)
 	int slot = slot_of(proc);
 	if (slot < 0 || slot >= LXP_NSLOT)
 		return NULL;
-	struct sig_save_stack_s *stack = &g_sig_save[slot];
+	struct sig_save_stack_s *stack = &g_lxp_sig_save[slot];
 	if (stack->depth >= LXP_SIGNAL_NEST_MAX)
 		return NULL;
 
@@ -245,7 +245,7 @@ void sig_restore(struct lxp_frame *f, lxp_proc_t *proc)
 	int slot = slot_of(proc);
 	if (slot < 0 || slot >= LXP_NSLOT)
 		return;
-	struct sig_save_stack_s *stack = &g_sig_save[slot];
+	struct sig_save_stack_s *stack = &g_lxp_sig_save[slot];
 	if (stack->depth == 0)
 		return;
 	struct sig_save_s *sv = &stack->frame[stack->depth - 1u];

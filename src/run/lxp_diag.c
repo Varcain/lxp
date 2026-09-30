@@ -212,7 +212,7 @@ int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
 	out->deferred_state = deferred_state_load(slot);
 	out->runnable = slot_runnable_load(slot);
 	out->primary_pending = primary_slot_pending(slot);
-	out->signal_depth = g_sig_save[slot].depth;
+	out->signal_depth = g_lxp_sig_save[slot].depth;
 	out->native_task_known = diag_native_census_current();
 	out->native_task_present = out->native_task_known ? g_lxp_rt.diag.native_present[slot] : 0;
 	out->intent_mask = diag_intent_mask(slot);
@@ -438,7 +438,7 @@ void lxp_diag_size_report(lxp_diag_size_report_t *out)
 			     out->debug_record;
 	out->per_region_core = out->arena + sizeof(g_lxp_rt.regions[0]);
 	out->slot_table = sizeof(g_lxp_rt.slots);
-	out->coordinator_static = sizeof(g_lxp_rt) + sizeof(g_lxp_dbg) + sizeof(g_sig_save) +
+	out->coordinator_static = sizeof(g_lxp_rt) + sizeof(g_lxp_dbg) + sizeof(g_lxp_sig_save) +
 				  sizeof(g_lxp_trap_gate);
 }
 

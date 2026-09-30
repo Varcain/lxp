@@ -6,7 +6,7 @@
  *
  * Signal-delivery tests: drive src/lxp_signal.c (resolve_handler / sig_swallowed /
  * deliver_signal / sig_restore) directly over a synthetic svc frame. lxp_signal.c is
- * coupled to the coordinator only through three symbols (g_sig_save / slot_of /
+ * coupled to the coordinator only through three symbols (g_lxp_sig_save / slot_of /
  * park_frame, normally in the excluded lxp_run.c); this suite provides host stubs for
  * them, giving the signal TU its first unit coverage (before this it was reachable only
  * indirectly through QEMU).
@@ -19,7 +19,7 @@
 #include <string.h>
 
 /* ---- coordinator stubs (would be lxp_run.c) -------------------------------- */
-struct sig_save_stack_s g_sig_save[LXP_NSLOT];
+struct sig_save_stack_s g_lxp_sig_save[LXP_NSLOT];
 static int g_park_calls;
 int slot_of(const lxp_proc_t *p)
 {
@@ -125,11 +125,11 @@ static void test_deliver_ignored(void **st)
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[15] = 0x1000;
-	g_sig_save[0].depth = 0;
+	g_lxp_sig_save[0].depth = 0;
 	deliver_signal(&f, &p, SIG_CUSTOM, 42);
 	assert_int_equal((int32_t)f.r[0], 42);	  /* r0 = the interrupted result, no redirect */
 	assert_int_equal(f.r[15], 0x1000);	  /* pc unchanged */
-	assert_int_equal(g_sig_save[0].depth, 0); /* nothing saved */
+	assert_int_equal(g_lxp_sig_save[0].depth, 0); /* nothing saved */
 }
 
 static void test_deliver_default_terminates(void **st)
@@ -205,21 +205,21 @@ static void test_deliver_and_restore(void **st)
 	f.r[14] = 0x2000; /* interrupted lr */
 	f.r[15] = 0x1000; /* interrupted pc */
 	f.xpsr = 0;
-	g_sig_save[0].depth = 0;
+	g_lxp_sig_save[0].depth = 0;
 
 	deliver_signal(&f, &p, SIG_CUSTOM, 0);
 	assert_int_equal(f.r[0], SIG_CUSTOM);	      /* r0 = signo */
 	assert_int_equal(f.r[15], 0xdead0000u & ~1u); /* pc -> handler */
 	assert_int_equal(f.r[14], 0xbeef0000u | 1u);  /* lr -> restorer (Thumb) */
 	assert_true((f.xpsr & (1u << 24)) != 0);      /* xPSR.T set */
-	assert_int_equal(g_sig_save[0].depth, 1);
-	assert_int_equal(g_sig_save[0].frame[0].pc, 0x1000); /* interrupted context saved */
-	assert_int_equal(g_sig_save[0].frame[0].lr, 0x2000);
+	assert_int_equal(g_lxp_sig_save[0].depth, 1);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, 0x1000); /* interrupted context saved */
+	assert_int_equal(g_lxp_sig_save[0].frame[0].lr, 0x2000);
 	/* the full r1-r3 caller-arg triple is saved (the class of the M2 wait4 resume bug). */
-	assert_int_equal(g_sig_save[0].frame[0].r1, 0x11);
-	assert_int_equal(g_sig_save[0].frame[0].r2, 0x22);
-	assert_int_equal(g_sig_save[0].frame[0].r3, 0x33);
-	assert_memory_equal(&g_sig_save[0].frame[0].fp, &interrupted_fp, sizeof(interrupted_fp));
+	assert_int_equal(g_lxp_sig_save[0].frame[0].r1, 0x11);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].r2, 0x22);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].r3, 0x33);
+	assert_memory_equal(&g_lxp_sig_save[0].frame[0].fp, &interrupted_fp, sizeof(interrupted_fp));
 	/* Model arbitrary floating-point work by the handler. */
 	memset(&fp, 0xa5, sizeof(fp));
 
@@ -231,7 +231,7 @@ static void test_deliver_and_restore(void **st)
 	assert_int_equal(f.r[3], 0x33);
 	assert_int_equal(f.r[12], 0xcc);
 	assert_memory_equal(&fp, &interrupted_fp, sizeof(interrupted_fp));
-	assert_int_equal(g_sig_save[0].depth, 0);
+	assert_int_equal(g_lxp_sig_save[0].depth, 0);
 }
 
 /* A spurious rt_sigreturn (no signal frame in flight) is a safe no-op — it must not corrupt
@@ -245,7 +245,7 @@ static void test_sig_restore_noop(void **st)
 	memset(&f, 0, sizeof(f));
 	f.r[0] = 0x1234;
 	f.r[15] = 0x5678;
-	g_sig_save[0].depth = 0;
+	g_lxp_sig_save[0].depth = 0;
 	sig_restore(&f, &p);
 	assert_int_equal(f.r[0], 0x1234); /* untouched */
 	assert_int_equal(f.r[15], 0x5678);
@@ -280,10 +280,10 @@ static void test_nested_delivery_restores_lifo(void **st)
 	f.r[14] = 0x2000;
 	f.r[15] = 0x1000;
 	f.xpsr = 0x21000000u;
-	g_sig_save[0].depth = 0;
+	g_lxp_sig_save[0].depth = 0;
 
 	deliver_signal(&f, &p, SIG_CUSTOM, 77);
-	assert_int_equal(g_sig_save[0].depth, 1);
+	assert_int_equal(g_lxp_sig_save[0].depth, 1);
 	assert_true(lxp_sig_blocked(&p, SIG_CUSTOM));
 
 	/* State at a syscall boundary inside the outer handler. */
@@ -299,15 +299,15 @@ static void test_nested_delivery_restores_lifo(void **st)
 	struct lxp_fp_context outer_handler_fp = fp;
 
 	deliver_signal(&f, &p, SIG_NESTED, -LXP_EINTR);
-	assert_int_equal(g_sig_save[0].depth, 2);
-	assert_int_equal(g_sig_save[0].frame[0].pc, 0x1000);
-	assert_int_equal(g_sig_save[0].frame[1].pc, 0xdead0100);
+	assert_int_equal(g_lxp_sig_save[0].depth, 2);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, 0x1000);
+	assert_int_equal(g_lxp_sig_save[0].frame[1].pc, 0xdead0100);
 	assert_true(lxp_sig_blocked(&p, SIG_CUSTOM));
 	assert_true(lxp_sig_blocked(&p, SIG_NESTED));
 	memset(&fp, 0xa5, sizeof(fp)); /* arbitrary VFP work in the inner handler */
 
 	sig_restore(&f, &p);
-	assert_int_equal(g_sig_save[0].depth, 1);
+	assert_int_equal(g_lxp_sig_save[0].depth, 1);
 	assert_int_equal((int32_t)f.r[0], -LXP_EINTR);
 	assert_int_equal(f.r[1], 0x1111);
 	assert_int_equal(f.r[9], 0x9999);
@@ -317,7 +317,7 @@ static void test_nested_delivery_restores_lifo(void **st)
 	assert_false(lxp_sig_blocked(&p, SIG_NESTED));
 
 	sig_restore(&f, &p);
-	assert_int_equal(g_sig_save[0].depth, 0);
+	assert_int_equal(g_lxp_sig_save[0].depth, 0);
 	assert_int_equal(f.r[0], 77);
 	assert_int_equal(f.r[1], 0x11);
 	assert_int_equal(f.r[9], 0x99);
@@ -347,14 +347,14 @@ static void test_nested_sigsuspend_mask_restore(void **st)
 
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
-	g_sig_save[0].depth = 0;
+	g_lxp_sig_save[0].depth = 0;
 	deliver_signal(&f, &p, SIG_CUSTOM, -LXP_EINTR);
 	assert_int_equal(p.sigsuspend_active, 0);
-	assert_int_equal(g_sig_save[0].frame[0].saved_mask, before_suspend);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].saved_mask, before_suspend);
 	assert_int_equal(p.sig_blocked, wait_mask | lxp_sig_bit(SIG_CUSTOM));
 
 	deliver_signal(&f, &p, SIG_NESTED, 0);
-	assert_int_equal(g_sig_save[0].frame[1].saved_mask, wait_mask | lxp_sig_bit(SIG_CUSTOM));
+	assert_int_equal(g_lxp_sig_save[0].frame[1].saved_mask, wait_mask | lxp_sig_bit(SIG_CUSTOM));
 	sig_restore(&f, &p);
 	assert_int_equal(p.sig_blocked, wait_mask | lxp_sig_bit(SIG_CUSTOM));
 	sig_restore(&f, &p);
@@ -371,7 +371,7 @@ static void test_signal_depth_overflow_is_contained(void **st)
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[15] = 0x12340000;
-	g_sig_save[0].depth = 0;
+	g_lxp_sig_save[0].depth = 0;
 	g_park_calls = 0;
 
 	p.sighand->handler[SIG_CUSTOM] = 0x80000000u;
@@ -382,12 +382,12 @@ static void test_signal_depth_overflow_is_contained(void **st)
 		p.sig_blocked &= ~lxp_sig_bit(SIG_CUSTOM);
 		deliver_signal(&f, &p, SIG_CUSTOM, 0);
 	}
-	uint32_t oldest_pc = g_sig_save[0].frame[0].pc;
+	uint32_t oldest_pc = g_lxp_sig_save[0].frame[0].pc;
 	p.sig_blocked &= ~lxp_sig_bit(SIG_CUSTOM);
 	deliver_signal(&f, &p, SIG_CUSTOM, 0);
 
-	assert_int_equal(g_sig_save[0].depth, LXP_SIGNAL_NEST_MAX);
-	assert_int_equal(g_sig_save[0].frame[0].pc, oldest_pc);
+	assert_int_equal(g_lxp_sig_save[0].depth, LXP_SIGNAL_NEST_MAX);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, oldest_pc);
 	assert_int_equal(p.intent.kind, LXP_INTENT_EXIT);
 	assert_int_equal(p.exit_status, 128 + LXP_SIGSEGV);
 	assert_int_equal(g_park_calls, 1);
@@ -407,7 +407,7 @@ static void test_deliver_masks_signal(void **st)
 	p.sig_blocked = lxp_sig_bit(LXP_SIGALRM); /* a pre-existing block to preserve */
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
-	g_sig_save[0].depth = 0;
+	g_lxp_sig_save[0].depth = 0;
 
 	deliver_signal(&f, &p, SIG_CUSTOM, 0);
 	assert_true(lxp_sig_blocked(&p, SIG_CUSTOM));  /* self-blocked for the handler */
@@ -415,7 +415,7 @@ static void test_deliver_masks_signal(void **st)
 	/* A self-signal while its handler is active is deferred, not recursively
 	 * delivered into a second frame. */
 	deliver_signal(&f, &p, SIG_CUSTOM, 0);
-	assert_int_equal(g_sig_save[0].depth, 1);
+	assert_int_equal(g_lxp_sig_save[0].depth, 1);
 	assert_true((p.pending_sigs & lxp_sig_bit(SIG_CUSTOM)) != 0);
 
 	sig_restore(&f, &p);

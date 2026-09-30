@@ -67,7 +67,7 @@ add_library(lxp_fuzz_obj OBJECT
   ${FUZZ_MODULE_SRC}
   "${LXP_ROOT}/ports/posix/lxp_port_posix.c"   # g_lxp_net_ops over BSD sockets
   "${LXP_ROOT}/tests/stub_lnx_run.c"           # clock + no-op cache/flush + mock display
-  "${CMAKE_CURRENT_SOURCE_DIR}/fuzz_stubs.c")  # g_sig_save / slot_of / park_frame
+  "${CMAKE_CURRENT_SOURCE_DIR}/fuzz_stubs.c")  # g_lxp_sig_save / slot_of / park_frame
 target_include_directories(lxp_fuzz_obj PUBLIC "${LXP_ROOT}/include" "${LXP_ROOT}/src")
 target_compile_definitions(lxp_fuzz_obj PUBLIC
   LXP_ENABLE_DEV=1 LXP_ENABLE_PTY=1 LXP_ENABLE_NET=1 LXP_ENABLE_NETFS=1

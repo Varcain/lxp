@@ -92,8 +92,9 @@ struct lxp_exec_scratch {
  * context pointer, and there is one coordinator. Keeping it in one record makes its size
  * exact (lxp_diag_sizes) and gives tests and debuggers one place to look. Three objects
  * stay separately named because something outside the coordinator finds them by name:
- * the trap gate (port SVC assembly), the signal-save stacks (the host's linker script)
- * and the debugger records (g_lxp_dbg, lxp/lxp_debug.h). */
+ * the trap gate (port SVC assembly), the signal-save stacks (placed by the host's linker
+ * script through LXP_SIGNAL_STATE_SECTION) and the debugger records (g_lxp_dbg,
+ * lxp/lxp_debug.h). */
 struct lxp_runtime {
 	const lxp_run_config_t *cfg; /* the running configuration; NULL between runs */
 	/* The rootfs cpio region [rootfs_lo, rootfs_hi). Dynamic FDPIC processes execute
