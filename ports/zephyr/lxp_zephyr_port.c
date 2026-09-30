@@ -40,9 +40,11 @@
 #include "lxp/lxp_seam.h"
 #include "lxp/ports/zephyr.h"
 
+#include "../common/lxp_cortex_m_port.h"
+
 #define PORT_CONFIG g_lxp_zephyr_port_config
-#define prog_regions ((uint8_t (*)[LXP_PROG_REGION_SIZE])(void *)PORT_CONFIG.program_regions)
-#define dyn_pools ((uint8_t (*)[LXP_DYN_POOL_SIZE])(void *)PORT_CONFIG.dynamic_pools)
+#define prog_regions ((uint8_t (*)[LXP_PROG_REGION_SIZE])(void *)PORT_CONFIG.common.program_regions)
+#define dyn_pools ((uint8_t (*)[LXP_DYN_POOL_SIZE])(void *)PORT_CONFIG.common.dynamic_pools)
 
 BUILD_ASSERT(IS_ENABLED(CONFIG_USERSPACE),
 	     "the Zephyr Linux personality requires unprivileged user threads");
@@ -713,14 +715,14 @@ static int zephyr_validate_active_profile(int sidx)
 	const struct lxp_cortex_m_mpu_expectation program = {
 		.base = state->program.start,
 		.size = state->program.size,
-		.texscb = PORT_CONFIG.guest_memory_texscb,
+		.texscb = PORT_CONFIG.common.guest_memory_texscb,
 		.access = 3u,
 		.execute_never = 1u,
 	};
 	const struct lxp_cortex_m_mpu_expectation dynamic = {
 		.base = state->dynamic.start,
 		.size = state->dynamic.size,
-		.texscb = PORT_CONFIG.guest_memory_texscb,
+		.texscb = PORT_CONFIG.common.guest_memory_texscb,
 		.access = 3u,
 		.execute_never = 1u,
 	};
@@ -731,7 +733,7 @@ static int zephyr_validate_active_profile(int sidx)
 		const struct lxp_cortex_m_mpu_expectation executable = {
 			.base = state->executable.start,
 			.size = state->executable.size,
-			.texscb = PORT_CONFIG.guest_memory_texscb,
+			.texscb = PORT_CONFIG.common.guest_memory_texscb,
 			.access = 6u,
 			.execute_never = 0u,
 		};
@@ -744,50 +746,11 @@ static int zephyr_validate_active_profile(int sidx)
 }
 
 /* ---- the vtable: Zephyr task spawn ----------------------------------------- */
-static uint8_t *zephyr_region(int ridx)
-{
-	return prog_regions[ridx];
-}
-
-static uint8_t *zephyr_dyn_pool(int ridx, size_t *size)
-{
-	if (size)
-		*size = LXP_DYN_POOL_SIZE;
-	return dyn_pools[ridx];
-}
-
-static lxp_exec_capture_t *zephyr_exec_capture(int sidx)
-{
-	return (sidx >= 0 && sidx < LXP_NSLOT) ? &PORT_CONFIG.exec_captures[sidx] : NULL;
-}
-
-static int zephyr_publish_executable(lxp_region_ref_t address_space, uintptr_t base, size_t len)
-{
-	int ridx = address_space.index;
-	if (ridx < 0 || ridx >= LXP_NREG || address_space.generation == 0 || len == 0)
-		return LXP_ERR_INVALID_PARAM;
-	uintptr_t region_lo = (uintptr_t)prog_regions[ridx];
-	if (base != region_lo || len != LXP_PROG_REGION_SIZE / 2u)
-		return LXP_ERR_INVALID_PARAM;
-	if (PORT_CONFIG.cache_geometry &&
-	    lxp_cortex_m_publish_executable(PORT_CONFIG.cache_geometry, base, len) != 0)
-		return LXP_ERR_INVALID_PARAM;
-	return LXP_OK;
-}
-
 static int zephyr_random_fill(void *buf, size_t len)
 {
 	return PORT_CONFIG.random_fill ? PORT_CONFIG.random_fill(buf, len) : LXP_ERR_NOT_SUPPORTED;
 }
 
-#if LXP_ENABLE_NETFS_EXEC
-static uint8_t *zephyr_exec_stage(size_t *cap)
-{
-	if (cap)
-		*cap = PORT_CONFIG.exec_stage_size;
-	return PORT_CONFIG.exec_stage;
-}
-#endif
 
 static int zephyr_spawn_launch(int sidx, uint32_t generation, int ridx,
 			       const lxp_guest_launch_t *launch)
@@ -1038,70 +1001,40 @@ static int32_t slot_for_thread(uintptr_t identity)
 
 static int lxp_seam_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actual_count)
 {
-	return PORT_CONFIG.thread_list
-		       ? PORT_CONFIG.thread_list(out, max_count, actual_count, slot_for_thread)
+	return PORT_CONFIG.common.thread_list
+		       ? PORT_CONFIG.common.thread_list(out, max_count, actual_count,
+							slot_for_thread)
 		       : LXP_ERR_NOT_SUPPORTED;
-}
-
-static int lxp_seam_mem_stats(struct lxp_mem_stats *out)
-{
-	return PORT_CONFIG.mem_stats ? PORT_CONFIG.mem_stats(out) : LXP_ERR_NOT_SUPPORTED;
-}
-
-static const char *lxp_seam_system_version(void)
-{
-	return PORT_CONFIG.system_version ? PORT_CONFIG.system_version : "Zephyr";
-}
-
-static int lxp_seam_time_us(uint64_t *out)
-{
-	return PORT_CONFIG.time_us ? PORT_CONFIG.time_us(out) : LXP_ERR_NOT_SUPPORTED;
-}
-
-static int lxp_seam_time_ns(uint64_t *out)
-{
-	return PORT_CONFIG.time_ns ? PORT_CONFIG.time_ns(out) : LXP_ERR_NOT_SUPPORTED;
 }
 
 static int zephyr_port_config_valid(void)
 {
+	const uintptr_t programs = (uintptr_t)PORT_CONFIG.common.program_regions;
+	const uintptr_t pools = (uintptr_t)PORT_CONFIG.common.dynamic_pools;
 	const size_t program_bytes = (size_t)LXP_NREG * LXP_PROG_REGION_SIZE;
 	const size_t dynamic_bytes = (size_t)LXP_NREG * LXP_DYN_POOL_SIZE;
 	if (PORT_CONFIG.abi_version != LXP_ZEPHYR_PORT_CONFIG_ABI_VERSION ||
-	    PORT_CONFIG.struct_size != sizeof(PORT_CONFIG) || !PORT_CONFIG.program_regions ||
-	    PORT_CONFIG.program_region_stride != LXP_PROG_REGION_SIZE ||
-	    PORT_CONFIG.program_region_count < LXP_NREG || !PORT_CONFIG.dynamic_pools ||
-	    PORT_CONFIG.dynamic_pool_stride != LXP_DYN_POOL_SIZE ||
-	    PORT_CONFIG.dynamic_pool_count < LXP_NREG || !PORT_CONFIG.exec_captures ||
-	    PORT_CONFIG.exec_capture_count < LXP_NSLOT || PORT_CONFIG.guest_quantum_ms == 0u ||
+	    PORT_CONFIG.struct_size != sizeof(PORT_CONFIG) || !lxp_cortex_m_port_config_valid() ||
+	    PORT_CONFIG.guest_quantum_ms == 0u ||
 	    PORT_CONFIG.quantum_priority >= PORT_CONFIG.guest_priority ||
 	    PORT_CONFIG.guest_priority >= CONFIG_NUM_PREEMPT_PRIORITIES ||
-	    PORT_CONFIG.quantum_priority >= CONFIG_NUM_PREEMPT_PRIORITIES || !PORT_CONFIG.time_us ||
-	    !PORT_CONFIG.time_ns || !PORT_CONFIG.thread_list || !PORT_CONFIG.mem_stats ||
-	    !PORT_CONFIG.system_version || !PORT_CONFIG.random_fill ||
-	    !PORT_CONFIG.validate_memory_contract ||
-	    lxp_range_overlaps((uintptr_t)PORT_CONFIG.program_regions, program_bytes,
-				  (uintptr_t)PORT_CONFIG.dynamic_pools, dynamic_bytes) ||
+	    PORT_CONFIG.quantum_priority >= CONFIG_NUM_PREEMPT_PRIORITIES ||
+	    !PORT_CONFIG.common.thread_list || !PORT_CONFIG.random_fill ||
 	    (PORT_CONFIG.rootfs_partition_enabled &&
-	     (lxp_range_overlaps(PORT_CONFIG.rootfs_base, PORT_CONFIG.rootfs_size,
-				    (uintptr_t)PORT_CONFIG.program_regions, program_bytes) ||
-	      lxp_range_overlaps(PORT_CONFIG.rootfs_base, PORT_CONFIG.rootfs_size,
-				    (uintptr_t)PORT_CONFIG.dynamic_pools, dynamic_bytes))))
+	     (lxp_range_overlaps(PORT_CONFIG.rootfs_base, PORT_CONFIG.rootfs_size, programs,
+				 program_bytes) ||
+	      lxp_range_overlaps(PORT_CONFIG.rootfs_base, PORT_CONFIG.rootfs_size, pools,
+				 dynamic_bytes))))
 		return 0;
-#if LXP_ENABLE_NETFS_EXEC
-	if (!PORT_CONFIG.exec_stage || PORT_CONFIG.exec_stage_size == 0u)
-		return 0;
-#endif
 #if defined(CONFIG_MPU_REQUIRES_POWER_OF_TWO_ALIGNMENT)
-	if (((uintptr_t)PORT_CONFIG.program_regions & (LXP_PROG_REGION_SIZE - 1u)) != 0u ||
-	    ((uintptr_t)PORT_CONFIG.dynamic_pools & (LXP_DYN_POOL_SIZE - 1u)) != 0u ||
+	if ((programs & (LXP_PROG_REGION_SIZE - 1u)) != 0u ||
+	    (pools & (LXP_DYN_POOL_SIZE - 1u)) != 0u ||
 	    (PORT_CONFIG.rootfs_partition_enabled &&
 	     ((PORT_CONFIG.rootfs_size & (PORT_CONFIG.rootfs_size - 1u)) != 0u ||
 	      (PORT_CONFIG.rootfs_base & (PORT_CONFIG.rootfs_size - 1u)) != 0u)))
 		return 0;
 #else
-	if (((uintptr_t)PORT_CONFIG.program_regions & 31u) != 0u ||
-	    ((uintptr_t)PORT_CONFIG.dynamic_pools & 31u) != 0u)
+	if ((programs & 31u) != 0u || (pools & 31u) != 0u)
 		return 0;
 #endif
 	return !PORT_CONFIG.rootfs_partition_enabled ||
@@ -1113,10 +1046,10 @@ static int zephyr_prepare(void)
 {
 	if (!zephyr_port_config_valid())
 		return LXP_ERR_INVALID_PARAM;
-	if (PORT_CONFIG.cache_geometry &&
-	    lxp_cortex_m_cache_geometry_read(PORT_CONFIG.cache_geometry) != 0)
-		return LXP_ERR_NOT_SUPPORTED; /* a cache hierarchy the port cannot maintain */
-	int rc = PORT_CONFIG.host_prepare ? PORT_CONFIG.host_prepare() : LXP_OK;
+	int rc = lxp_cortex_m_port_cache_prepare();
+	if (rc != LXP_OK)
+		return rc;
+	rc = lxp_cortex_m_port_host_prepare();
 	if (rc != LXP_OK)
 		return rc;
 	if (PORT_CONFIG.rootfs_partition_enabled) {
@@ -1162,21 +1095,17 @@ static void zephyr_teardown(void)
 	g_guest_quantum_target = -1;
 }
 
-static int zephyr_validate_memory_contract(const lxp_cpu_memory_contract_t *declared)
-{
-	if (declared != &PORT_CONFIG.cpu_memory_contract)
-		return LXP_ERR_INVALID_PARAM;
-	return PORT_CONFIG.validate_memory_contract(declared, PORT_CONFIG.cache_geometry);
-}
+
+const lxp_cortex_m_port_common_t *const g_lxp_cortex_m_port_common = &PORT_CONFIG.common;
 
 const lxp_os_ops_t g_lxp_host_engine = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
 	.prepare = zephyr_prepare,
 	.teardown = zephyr_teardown,
-	.region = zephyr_region,
-	.dyn_pool = zephyr_dyn_pool,
-	.exec_capture = zephyr_exec_capture,
+	.region = lxp_cortex_m_port_region,
+	.dyn_pool = lxp_cortex_m_port_dyn_pool,
+	.exec_capture = lxp_cortex_m_port_exec_capture,
 	.random_fill = zephyr_random_fill,
 	.spawn_launch = zephyr_spawn_launch,
 	.spawn_resume = zephyr_spawn_resume,
@@ -1189,16 +1118,16 @@ const lxp_os_ops_t g_lxp_host_engine = {
 	.event_post = zephyr_event_post,
 	.event_wait = zephyr_event_wait,
 	/* OS-service ops (host adapter). */
-	.time_us = lxp_seam_time_us,
-	.time_ns = lxp_seam_time_ns,
+	.time_us = lxp_cortex_m_port_time_us,
+	.time_ns = lxp_cortex_m_port_time_ns,
 	.thread_list = lxp_seam_thread_list,
-	.mem_stats = lxp_seam_mem_stats,
-	.system_version = lxp_seam_system_version,
-	.publish_executable = zephyr_publish_executable,
-	.cpu_memory_contract = &PORT_CONFIG.cpu_memory_contract,
-	.validate_memory_contract = zephyr_validate_memory_contract,
+	.mem_stats = lxp_cortex_m_port_mem_stats,
+	.system_version = lxp_cortex_m_port_system_version,
+	.publish_executable = lxp_cortex_m_port_publish_executable,
+	.cpu_memory_contract = &PORT_CONFIG.common.cpu_memory_contract,
+	.validate_memory_contract = lxp_cortex_m_port_validate_memory_contract,
 #if LXP_ENABLE_NETFS_EXEC
-	.exec_stage = zephyr_exec_stage,
+	.exec_stage = lxp_cortex_m_port_exec_stage,
 #endif
 };
 

@@ -16,7 +16,10 @@ The embedding system supplies one immutable `g_lxp_zephyr_port_config`
 declared by `include/lxp/ports/zephyr.h`. It provides external-memory placement,
 an optional non-static rootfs window, native priorities, the CPU-memory
 contract, and host callbacks for time, entropy, process attribution, memory
-statistics and validation. The port has no oveRTOS board or application
+statistics and validation. The part every Cortex-M port shares is its `.common`
+member (`lxp_cortex_m_port_common_t`, `include/lxp/ports/cortex_m.h`), served by
+`ports/common/lxp_cortex_m_port.c`, which a build selecting this port compiles
+beside `lxp_zephyr_port.c`. The port has no oveRTOS board or application
 dependency.
 
 Zephyr does not expose a dedicated application-SVC registration point. The

@@ -19,53 +19,28 @@
 #include "lxp/lxp_config.h"
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_port.h"
+#include "lxp/ports/cortex_m.h"
 
-#define LXP_ZEPHYR_PORT_CONFIG_ABI_VERSION 3u
-
-typedef int32_t (*lxp_zephyr_slot_lookup_t)(uintptr_t identity);
+#define LXP_ZEPHYR_PORT_CONFIG_ABI_VERSION 4u
 
 typedef struct lxp_zephyr_port_config {
 	uint32_t abi_version;
 	uint32_t struct_size;
 
-	/* Board/linker-owned external storage. Strides and counts are checked
-	 * before the first guest is made runnable. */
-	uint8_t *program_regions;
-	size_t program_region_stride;
-	size_t program_region_count;
-	uint8_t *dynamic_pools;
-	size_t dynamic_pool_stride;
-	size_t dynamic_pool_count;
-	lxp_exec_capture_t *exec_captures;
-	size_t exec_capture_count;
-	uint8_t *exec_stage;
-	size_t exec_stage_size;
+	/* Storage, memory attributes and host services every Cortex-M port shares.
+	 * This port also requires common.thread_list and random_fill below. */
+	lxp_cortex_m_port_common_t common;
 
 	/* Optional non-static rootfs partition. Static XIP mappings do not need a
 	 * domain partition and leave this disabled. */
 	uintptr_t rootfs_base;
 	size_t rootfs_size;
 	uint8_t rootfs_partition_enabled;
-	uint8_t guest_memory_texscb;
 	uint8_t guest_priority;
 	uint8_t quantum_priority;
 	uint32_t guest_quantum_ms;
 
-	lxp_cpu_memory_contract_t cpu_memory_contract;
-	struct lxp_cortex_m_cache_geometry *cache_geometry;
-
-	/* Board/HAL and product-policy providers. */
-	/* Returns LXP_OK, or an lxp_err_t that the port's prepare() reports. */
-	int (*host_prepare)(void);
-	int (*time_us)(uint64_t *out);
-	int (*time_ns)(uint64_t *out);
-	int (*thread_list)(struct lxp_thread_info *out, size_t max_count, size_t *actual_count,
-			   lxp_zephyr_slot_lookup_t slot_lookup);
-	int (*mem_stats)(struct lxp_mem_stats *out);
-	const char *system_version;
 	int (*random_fill)(void *buf, size_t len);
-	int (*validate_memory_contract)(const lxp_cpu_memory_contract_t *declared,
-					const struct lxp_cortex_m_cache_geometry *geometry);
 } lxp_zephyr_port_config_t;
 
 typedef struct lxp_zephyr_fault_diag {
