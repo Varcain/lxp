@@ -61,6 +61,7 @@
 
 #include "lxp/arch/cortex_m_cache.h"
 #include "lxp/arch/cortex_m_mpu.h"
+#include "lxp/arch/cortex_m_scb.h"
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_run.h"
 #include "lxp/lxp_rt_metrics.h"
@@ -88,13 +89,6 @@ extern dq_queue_t g_stoppedtasks;
 #define LXP_IRQ_MEMFAULT 4 /* == NuttX's internal NVIC_IRQ_MEMFAULT (MemManage) */
 #define LXP_IRQ_BUSFAULT 5 /* == NuttX's NVIC_IRQ_BUSFAULT */
 #define LXP_IRQ_USGFAULT 6 /* == NuttX's NVIC_IRQ_USAGEFAULT (undefined instr, bad control flow) */
-
-/* ARMv7-M System Control Space (restated — the NuttX arch headers are off the app include path). */
-#define LXP_SCS_SHCSR (*(volatile uint32_t *)0xE000ED24u) /* system handler ctrl/state */
-#define LXP_SCS_CFSR (*(volatile uint32_t *)0xE000ED28u)  /* configurable fault status */
-#define LXP_SHCSR_MEMFAULTENA (1u << 16) /* route MPU faults to MemManage (not HardFault) */
-#define LXP_SHCSR_BUSFAULTENA (1u << 17) /* route bus faults to BusFault (not HardFault) */
-#define LXP_SHCSR_USGFAULTENA (1u << 18) /* route usage faults to UsageFault (not HardFault) */
 
 /* ARMv7-M MPU RASR SIZE for a power-of-2 region size. The region spans
  * 2^(FIELD+1) bytes, so FIELD = log2(size) - 1; RASR carries it at bits [5:1].
@@ -906,10 +900,10 @@ const lxp_os_ops_t g_lxp_host_engine = {
  * not compiled). */
 static void lxp_mpu_init(void)
 {
-	volatile uint32_t *const mpu_ctrl = (uint32_t *)0xE000ED94u;
-	volatile uint32_t *const mpu_rnr = (uint32_t *)0xE000ED98u;
-	volatile uint32_t *const mpu_rbar = (uint32_t *)0xE000ED9Cu;
-	volatile uint32_t *const mpu_rasr = (uint32_t *)0xE000EDA0u;
+	volatile uint32_t *const mpu_ctrl = &LXP_CORTEX_M_MPU_CTRL;
+	volatile uint32_t *const mpu_rnr = &LXP_CORTEX_M_MPU_RNR;
+	volatile uint32_t *const mpu_rbar = &LXP_CORTEX_M_MPU_RBAR;
+	volatile uint32_t *const mpu_rasr = &LXP_CORTEX_M_MPU_RASR;
 	const lxp_nuttx_mpu_region_t *code = &PORT_CONFIG.code_region;
 	const lxp_nuttx_mpu_region_t *pool = &PORT_CONFIG.pool_region;
 	const lxp_nuttx_mpu_region_t *rootfs = &PORT_CONFIG.rootfs_region;
@@ -917,7 +911,8 @@ static void lxp_mpu_init(void)
 	 * personality-owned MPU state from a disabled, empty baseline so a
 	 * sequential run cannot inherit dynamic regions from its predecessor. */
 	*mpu_ctrl = 0u;
-	__asm__ volatile("dsb 0xf\nisb 0xf" ::: "memory");
+	lxp_cortex_m_dsb();
+	lxp_cortex_m_isb();
 	for (unsigned i = 0; i < 8u; i++) {
 		*mpu_rnr = i;
 		*mpu_rasr = 0u;
@@ -956,12 +951,13 @@ static void lxp_mpu_init(void)
 		*mpu_rnr = LXP_DEVICE_MPU_FIRST + i;
 		*mpu_rasr = 0;
 	}
-	LXP_SCS_SHCSR |=
-		LXP_SHCSR_MEMFAULTENA | LXP_SHCSR_BUSFAULTENA |
-		LXP_SHCSR_USGFAULTENA;	   /* MPU faults → MemManage (contained), not HardFault */
-	*mpu_ctrl = (1u << 0) | (1u << 2); /* ENABLE | PRIVDEFENA */
-	__asm__ volatile("dsb 0xf" ::: "memory");
-	__asm__ volatile("isb 0xf" ::: "memory");
+	/* Route MPU, bus and usage faults to their own handlers (contained), not HardFault. */
+	LXP_CORTEX_M_SCB_SHCSR |= LXP_CORTEX_M_SCB_SHCSR_MEMFAULTENA |
+				  LXP_CORTEX_M_SCB_SHCSR_BUSFAULTENA |
+				  LXP_CORTEX_M_SCB_SHCSR_USGFAULTENA;
+	*mpu_ctrl = LXP_CORTEX_M_MPU_CTRL_ENABLE | LXP_CORTEX_M_MPU_CTRL_PRIVDEFENA;
+	lxp_cortex_m_dsb();
+	lxp_cortex_m_isb();
 }
 
 /* MemManage fault containment. The unprivileged program's stray/hostile access to an ungranted
@@ -976,11 +972,11 @@ static int lxp_memfault_handler(int irq, void *context, void *arg)
 	int sidx = (lxp_trap_active() && regs) ? current_slot() : -1;
 	if (sidx < 0)
 		return arm_hardfault(irq, context, arg); /* privileged kernel fault → NuttX panic */
-	uint32_t cfsr = LXP_SCS_CFSR & 0x03ffffffu;
-	uintptr_t fault_address = (cfsr & (1u << 7))	? *(volatile uint32_t *)0xE000ED34u
-				  : (cfsr & (1u << 15)) ? *(volatile uint32_t *)0xE000ED38u
-							: 0u;
-	LXP_SCS_CFSR = cfsr; /* write-1-clear the set fault status (MM/Bus/Usage) */
+	uint32_t cfsr = LXP_CORTEX_M_SCB_CFSR & 0x03ffffffu;
+	uintptr_t fault_address = (cfsr & LXP_CORTEX_M_SCB_CFSR_MMARVALID) ? LXP_CORTEX_M_SCB_MMFAR
+				  : (cfsr & LXP_CORTEX_M_SCB_CFSR_BFARVALID) ? LXP_CORTEX_M_SCB_BFAR
+									     : 0u;
+	LXP_CORTEX_M_SCB_CFSR = cfsr; /* write-1-clear the set fault status (MM/Bus/Usage) */
 	lxp_guest_fault_t fault = {
 		.detail = cfsr,
 		.address = fault_address,
@@ -1155,9 +1151,9 @@ static int nuttx_profile_live_matches(const struct nuttx_prepared_profile *prepa
 
 static int nuttx_install_profile(const struct nuttx_prepared_profile *prepared)
 {
-	volatile uint32_t *const mpu_rnr = (uint32_t *)0xE000ED98u;
-	volatile uint32_t *const mpu_rbar = (uint32_t *)0xE000ED9Cu;
-	volatile uint32_t *const mpu_rasr = (uint32_t *)0xE000EDA0u;
+	volatile uint32_t *const mpu_rnr = &LXP_CORTEX_M_MPU_RNR;
+	volatile uint32_t *const mpu_rbar = &LXP_CORTEX_M_MPU_RBAR;
+	volatile uint32_t *const mpu_rasr = &LXP_CORTEX_M_MPU_RASR;
 	static const uint8_t region[LXP_NATIVE_POLICY_REGIONS] = {2u, 3u, 5u, 6u, 7u};
 
 	if (!prepared || !prepared->valid)
@@ -1171,8 +1167,8 @@ static int nuttx_install_profile(const struct nuttx_prepared_profile *prepared)
 			*mpu_rasr = 0;
 		}
 	}
-	__asm__ volatile("dsb 0xf" ::: "memory");
-	__asm__ volatile("isb 0xf" ::: "memory");
+	lxp_cortex_m_dsb();
+	lxp_cortex_m_isb();
 	if (!nuttx_profile_live_matches(prepared))
 		return -1;
 	g_installed_policy = prepared->key;
@@ -1186,16 +1182,16 @@ static int nuttx_install_profile(const struct nuttx_prepared_profile *prepared)
  * program or device access. */
 static void nuttx_disable_dynamic_regions(void)
 {
-	volatile uint32_t *const mpu_rnr = (uint32_t *)0xE000ED98u;
-	volatile uint32_t *const mpu_rasr = (uint32_t *)0xE000EDA0u;
+	volatile uint32_t *const mpu_rnr = &LXP_CORTEX_M_MPU_RNR;
+	volatile uint32_t *const mpu_rasr = &LXP_CORTEX_M_MPU_RASR;
 	static const uint8_t region[LXP_NATIVE_POLICY_REGIONS] = {2u, 3u, 5u, 6u, 7u};
 
 	for (unsigned i = 0; i < LXP_NATIVE_POLICY_REGIONS; i++) {
 		*mpu_rnr = region[i];
 		*mpu_rasr = 0;
 	}
-	__asm__ volatile("dsb 0xf" ::: "memory");
-	__asm__ volatile("isb 0xf" ::: "memory");
+	lxp_cortex_m_dsb();
+	lxp_cortex_m_isb();
 	g_installed_policy_valid = 0u;
 }
 
