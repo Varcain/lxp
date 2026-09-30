@@ -112,17 +112,8 @@ int lxp_host_run(const lxp_host_t *host, const lxp_launch_config_t *launch_confi
 		.netif = host->netif,
 		.netfs_config = host->netfs_configured ? &netfs_config : NULL,
 	};
-	if (launch_config) {
-		config.console = launch_config->console;
-		config.on_enosys = launch_config->on_enosys;
-		config.env = launch_config->env;
-		config.on_guest_exit = launch_config->on_guest_exit;
-		config.guest_exit_ctx = launch_config->guest_exit_ctx;
-		config.display_width = launch_config->display_width;
-		config.display_height = launch_config->display_height;
-		config.rt_scope_read = launch_config->rt_scope_read;
-		config.rt_scope_ctx = launch_config->rt_scope_ctx;
-	}
+	if (launch_config)
+		config.launch = *launch_config;
 
 	return lxp_run(&host->providers, &config, path, argc, argv);
 }

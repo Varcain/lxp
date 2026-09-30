@@ -169,8 +169,9 @@ int lxp_run_config_valid(const lxp_run_config_t *cfg)
 		if (start < lo || end < start || end > hi)
 			return 0;
 	}
-	if (!!cfg->console.subscribe != !!cfg->console.unsubscribe ||
-	    (cfg->console.subscribe && (!cfg->console.read || !cfg->console.poll)))
+	const lxp_console_t *console = &cfg->launch.console;
+	if (!!console->subscribe != !!console->unsubscribe ||
+	    (console->subscribe && (!console->read || !console->poll)))
 		return 0;
 #if !LXP_ENABLE_NET
 	if (cfg->netif)

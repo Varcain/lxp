@@ -41,20 +41,6 @@ typedef struct lxp_host_config {
 	const lxp_netfs_config_t *netfs_config;
 } lxp_host_config_t;
 
-/** Per-launch policy layered over an initialized host's immutable rootfs and
- * provider composition. Zero initialization selects every optional default. */
-typedef struct lxp_launch_config {
-	lxp_console_t console;
-	void (*on_enosys)(long nr);
-	const char *const *env;
-	lxp_guest_exit_fn on_guest_exit;
-	uint16_t display_width;
-	uint16_t display_height;
-	lxp_rt_scope_read_fn rt_scope_read;
-	void *rt_scope_ctx;
-	void *guest_exit_ctx;
-} lxp_launch_config_t;
-
 /** Immutable, zero-heap host instance. Treat fields as read-only after a
  * successful @ref lxp_host_init_cpio call. Sequential launches may reuse one
  * instance; concurrent @ref lxp_host_run calls are not supported. */

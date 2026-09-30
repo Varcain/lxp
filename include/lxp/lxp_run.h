@@ -23,7 +23,7 @@
 extern "C" {
 #endif
 
-/** Immutable termination record passed to @c lxp_run_config.on_guest_exit in
+/** Immutable termination record passed to @c lxp_launch_config.on_guest_exit in
  * coordinator task context. @c comm points into the process slot and is valid
  * only for the duration of the callback. */
 typedef struct lxp_guest_exit_info {
@@ -67,18 +67,10 @@ typedef long (*lxp_rt_scope_read_fn)(void *ctx, char *buf, size_t cap);
  * @{
  */
 
-/** Host configuration for a personality run. Zero-initialize it (a designated initializer
- * such as @c {.rootfs=..., .console.write=...} or @c memset) so every optional field reads NULL/0:
- * the runner dereferences pointer fields like @c env, so an uninitialized one faults at
- * launch. New optional fields are always added at the end and default to "unset" when zero. */
-typedef struct lxp_run_config {
-	const lxp_file_t *rootfs; /**< Parsed (read-only) rootfs table. */
-	int rootfs_count;	      /**< Entry count in @p rootfs. */
-	/** Trusted contiguous image that owns every @p rootfs data extent. Required.
-	 * Dynamic FDPIC text executes in place from this window, so the core validates
-	 * every table entry before publishing the window to an MPU seam. */
-	const void *rootfs_image;
-	size_t rootfs_image_size;
+/** Per-launch policy: the console, environment and diagnostics of one run. lxp_host_run()
+ * layers it over a host's immutable rootfs and providers. Zero initialization selects
+ * every optional default. */
+typedef struct lxp_launch_config {
 	lxp_console_t console;	    /**< The terminal behind fds 0-2 and /dev/console. */
 	void (*on_enosys)(long nr); /**< Optional: notified of an unimplemented syscall. */
 	/** Optional NULL-terminated initial environment for pid 1 (e.g. @c PATH, @c HOME,
@@ -90,6 +82,7 @@ typedef struct lxp_run_config {
 	 * privileged coordinator task, after all fault/exit metadata is stable and
 	 * before the slot is reused. It must return within a host-defined finite bound. */
 	lxp_guest_exit_fn on_guest_exit;
+	void *guest_exit_ctx; /**< Opaque, passed to @p on_guest_exit. */
 	/** Touch/input coordinate extent for this run. Zero selects the module default
 	 * (480x272) independently for each dimension. These fields configure no static
 	 * storage; process counts and pool sizes remain compile-time properties. */
@@ -98,13 +91,27 @@ typedef struct lxp_run_config {
 	/** Optional host real-time snapshot exposed verbatim as /proc/rt_scope. */
 	lxp_rt_scope_read_fn rt_scope_read;
 	void *rt_scope_ctx; /**< Opaque, passed to @p rt_scope_read. */
+} lxp_launch_config_t;
+
+/** Host configuration for a personality run. Zero-initialize it (a designated initializer
+ * such as @c {.rootfs=..., .launch.env=...} or @c memset) so every optional field reads NULL/0:
+ * the runner dereferences pointer fields like @c env, so an uninitialized one faults at
+ * launch. New optional fields are always added at the end and default to "unset" when zero. */
+typedef struct lxp_run_config {
+	const lxp_file_t *rootfs; /**< Parsed (read-only) rootfs table. */
+	int rootfs_count;	      /**< Entry count in @p rootfs. */
+	/** Trusted contiguous image that owns every @p rootfs data extent. Required.
+	 * Dynamic FDPIC text executes in place from this window, so the core validates
+	 * every table entry before publishing the window to an MPU seam. */
+	const void *rootfs_image;
+	size_t rootfs_image_size;
 	/** Run-scoped interface used by eth0 ioctls and /proc/net. NULL leaves
 	 * interface reporting unavailable without changing socket availability. */
 	lxp_netif_t netif;
 	/** Optional run-scoped 9P mount. LXP copies it before initiating the
 	 * connection; NULL disables netfs for this run. */
 	const lxp_netfs_config_t *netfs_config;
-	void *guest_exit_ctx; /**< Opaque, passed to @p on_guest_exit. */
+	lxp_launch_config_t launch; /**< The console and policy of this launch. */
 } lxp_run_config_t;
 
 /** The host services one run uses. The caller keeps every table alive until

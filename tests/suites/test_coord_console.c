@@ -44,7 +44,7 @@ static void test_console_interrupt_poll_keeps_typeahead(void **state)
 	uint8_t *buf;
 	lxp_proc_t *p = make_console_reader(2, &buf);
 	const lxp_run_config_t cfg = {
-		.console = {.read = script_console_read, .poll = script_console_poll},
+		.launch.console = {.read = script_console_read, .poll = script_console_poll},
 	};
 	g_lxp_rt.cfg = &cfg;
 	console_script("ro\003t\r", 5);
@@ -72,7 +72,7 @@ static void test_console_interrupt_poll_backpressure(void **state)
 	uint8_t *buf;
 	(void)make_console_reader(2, &buf);
 	const lxp_run_config_t cfg = {
-		.console = {.read = script_console_read, .poll = script_console_poll},
+		.launch.console = {.read = script_console_read, .poll = script_console_poll},
 	};
 	g_lxp_rt.cfg = &cfg;
 	static char input[LXP_CONSOLE_TYPEAHEAD + 8];
@@ -92,7 +92,7 @@ static void test_console_poll_reports_queued_typeahead(void **state)
 	uint8_t *buf;
 	lxp_proc_t *p = make_console_reader(2, &buf);
 	const lxp_run_config_t cfg = {
-		.console = {.read = script_console_read, .poll = script_console_poll},
+		.launch.console = {.read = script_console_read, .poll = script_console_poll},
 	};
 	g_lxp_rt.cfg = &cfg;
 	console_script("k", 1);
@@ -119,7 +119,7 @@ static void test_console_readiness_lifecycle_is_run_scoped(void **state)
 		.rootfs_count = 1,
 		.rootfs_image = image,
 		.rootfs_image_size = sizeof(image),
-		.console =
+		.launch.console =
 			{
 				.read = mock_console_read,
 				.poll = mock_console_poll,
@@ -136,12 +136,12 @@ static void test_console_readiness_lifecycle_is_run_scoped(void **state)
 
 	/* A one-sided lifecycle or an event source without poll/read semantics is
 	 * rejected before any provider or OS state is acquired. */
-	cfg.console.unsubscribe = NULL;
+	cfg.launch.console.unsubscribe = NULL;
 	assert_false(lxp_run_config_valid(&cfg));
-	cfg.console.unsubscribe = mock_console_unsubscribe;
-	cfg.console.poll = NULL;
+	cfg.launch.console.unsubscribe = mock_console_unsubscribe;
+	cfg.launch.console.poll = NULL;
 	assert_false(lxp_run_config_valid(&cfg));
-	cfg.console.poll = mock_console_poll;
+	cfg.launch.console.poll = mock_console_poll;
 	assert_true(lxp_run_config_valid(&cfg));
 
 	/* Subscription happens only after host preparation. Failure tears the host
@@ -231,7 +231,7 @@ static void test_async_console_signal_is_scan_progress(void **state)
 	proc->group->pgid = 2;
 	lxp_console_tty()->fg_pgrp = 2;
 	const lxp_run_config_t cfg = {
-		.console = {.read = console_read_sigint, .poll = console_ready},
+		.launch.console = {.read = console_read_sigint, .poll = console_ready},
 	};
 	g_lxp_rt.cfg = &cfg;
 
@@ -314,7 +314,7 @@ static void test_console_signal_chars_follow_termios(void **state)
 	lxp_tty_t *tty = lxp_console_tty();
 	tty->fg_pgrp = 2;
 	const lxp_run_config_t cfg = {
-		.console = {.read = console_read_byte, .poll = console_ready},
+		.launch.console = {.read = console_read_byte, .poll = console_ready},
 	};
 	g_lxp_rt.cfg = &cfg;
 	const uint64_t tstp = lxp_sig_bit(LXP_SIGTSTP);

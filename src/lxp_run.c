@@ -119,9 +119,9 @@ int lxp_trap_active(void)
 
 long lxp_rt_scope_read(char *buf, size_t cap)
 {
-	if (!buf || !g_lxp_rt.cfg || !g_lxp_rt.cfg->rt_scope_read)
+	if (!buf || !g_lxp_rt.cfg || !g_lxp_rt.cfg->launch.rt_scope_read)
 		return -1;
-	return g_lxp_rt.cfg->rt_scope_read(g_lxp_rt.cfg->rt_scope_ctx, buf, cap);
+	return g_lxp_rt.cfg->launch.rt_scope_read(g_lxp_rt.cfg->launch.rt_scope_ctx, buf, cap);
 }
 
 int lxp_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_owner);
@@ -397,9 +397,9 @@ void lxp_flatten_vec(char *buf, const char **ptrs, const char *src_buf, const ui
  * falls back from (LXP_SYS_QUIET_ENOSYS: socket() without networking). */
 void lxp_coordinator_report_enosys(long nr, long result)
 {
-	if (result == -LXP_ENOSYS && g_lxp_rt.cfg && g_lxp_rt.cfg->on_enosys &&
+	if (result == -LXP_ENOSYS && g_lxp_rt.cfg && g_lxp_rt.cfg->launch.on_enosys &&
 	    !(lxp_syscall_flags(nr) & LXP_SYS_QUIET_ENOSYS))
-		g_lxp_rt.cfg->on_enosys(nr);
+		g_lxp_rt.cfg->launch.on_enosys(nr);
 }
 
 uint32_t lxp_guest_sched_weight(int slot)
@@ -660,7 +660,7 @@ int lxp_coordinator_map_mm_range(lxp_mm_t *mm, uintptr_t addr, size_t len, unsig
  * it, increment retained counters, or leave it unset for zero runtime cost. */
 void lxp_notify_guest_exit(int slot, const lxp_proc_t *proc)
 {
-	if (!g_lxp_rt.cfg || !g_lxp_rt.cfg->on_guest_exit)
+	if (!g_lxp_rt.cfg || !g_lxp_rt.cfg->launch.on_guest_exit)
 		return;
 	const lxp_guest_exit_info_t info = {
 		.slot = slot,
@@ -673,7 +673,7 @@ void lxp_notify_guest_exit(int slot, const lxp_proc_t *proc)
 		.detail = proc->exit_detail,
 		.address = proc->exit_address,
 	};
-	g_lxp_rt.cfg->on_guest_exit(g_lxp_rt.cfg->guest_exit_ctx, &info);
+	g_lxp_rt.cfg->launch.on_guest_exit(g_lxp_rt.cfg->launch.guest_exit_ctx, &info);
 }
 
 /* A parent's live children and queued zombies share one bounded accounting
@@ -943,7 +943,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	lxp_slot_ref_t initial_owner = lxp_slot_ref_at(0);
 	err = lxp_err_from_errno(lxp_image_launch(0, initial_region, initial_owner, initial.data,
 						  initial.size, 1, 0, initial.argc, initial.argv,
-						  cfg->env, 0));
+						  cfg->launch.env, 0));
 	if (err != LXP_OK)
 		goto launch_failed;
 	/* Interpreter scripts name the interpreter's final non-symlink image here,
@@ -1142,7 +1142,8 @@ int lxp_run(const lxp_providers_t *providers, const lxp_run_config_t *run_config
 #if LXP_ENABLE_DEV_INPUT
 	/* Publish this run's geometry including explicit zero-to-default semantics,
 	 * so sequential runs cannot inherit a predecessor's panel dimensions. */
-	lxp_display_set_geometry(run_config->display_width, run_config->display_height);
+	lxp_display_set_geometry(run_config->launch.display_width,
+				 run_config->launch.display_height);
 #endif
 
 	if (os_ops->rootfs_window)
@@ -1157,8 +1158,8 @@ int lxp_run(const lxp_providers_t *providers, const lxp_run_config_t *run_config
 	rc = os_ops->validate_memory_contract(os_ops->cpu_memory_contract);
 	if (rc != LXP_OK)
 		goto out;
-	if (run_config->console.subscribe) {
-		const lxp_console_t *console = &run_config->console;
+	if (run_config->launch.console.subscribe) {
+		const lxp_console_t *console = &run_config->launch.console;
 		if (console->subscribe(console->ctx, lxp_console_ready, os_ops)) {
 			rc = LXP_ERR_NOT_SUPPORTED;
 			goto out;
@@ -1169,7 +1170,7 @@ int lxp_run(const lxp_providers_t *providers, const lxp_run_config_t *run_config
 
 out:
 	if (console_entered)
-		run_config->console.unsubscribe(run_config->console.ctx);
+		run_config->launch.console.unsubscribe(run_config->launch.console.ctx);
 #if LXP_ENABLE_DEV
 	if (dev_entered)
 		lxp_dev_run_end();

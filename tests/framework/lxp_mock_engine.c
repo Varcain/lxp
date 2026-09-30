@@ -547,6 +547,6 @@ static void mock_on_guest_exit(void *ctx, const lxp_guest_exit_info_t *info)
 }
 
 const lxp_run_config_t g_mock_cfg = {
-	.on_guest_exit = mock_on_guest_exit,
-	.guest_exit_ctx = &g_mock,
+	.launch.on_guest_exit = mock_on_guest_exit,
+	.launch.guest_exit_ctx = &g_mock,
 };
