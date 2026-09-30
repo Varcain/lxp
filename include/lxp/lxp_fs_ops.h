@@ -22,7 +22,6 @@
 extern "C" {
 #endif
 
-#define LXP_FS_OPS_ABI_VERSION 8u
 #define LXP_FS_NAME_MAX 256u
 
 /* Provider open flags. Access mode is explicit instead of encoded in low bits
@@ -146,9 +145,6 @@ typedef struct lxp_fs_metrics {
  * privileged worker and guest share one write-back cache, that would discard
  * the worker's dirty CPU writes rather than publish them. */
 typedef struct lxp_fs_ops {
-	uint32_t abi_version; /**< Must be LXP_FS_OPS_ABI_VERSION. */
-	uint32_t struct_size; /**< Must be sizeof(lxp_fs_ops_t). */
-
 	/** Acquire and release run-scoped storage. A missing medium is not a
 	 * provider-lifecycle failure: run_begin should succeed and let individual
 	 * operations return LXP_ERR_NOT_REGISTERED until media is available.

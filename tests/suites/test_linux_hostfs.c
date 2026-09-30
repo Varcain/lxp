@@ -71,8 +71,6 @@ static int fake_block_read(uint64_t offset, void *buf, size_t count, size_t *don
 }
 
 static const lxp_block_ops_t g_fake_block_ops = {
-	.abi_version = LXP_BLOCK_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_block_ops_t),
 	.get_info = fake_block_info,
 	.read = fake_block_read,
 };
@@ -384,8 +382,6 @@ static int fake_metrics(lxp_fs_metrics_t *out)
 }
 
 static const lxp_fs_ops_t g_fake_ops = {
-	.abi_version = LXP_FS_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_fs_ops_t),
 	.run_begin = fake_run_begin,
 	.run_end = fake_run_end,
 	.request_owner = fake_request_owner,

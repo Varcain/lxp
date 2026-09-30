@@ -65,8 +65,6 @@ typedef struct {
  */
 #define LXP_NET_CAP_SOCKET_READY_EVENT 0x01u
 
-#define LXP_NET_OPS_ABI_VERSION 4u
-
 /* Max concurrent socket opens the personality pools (listener + clients). Shared
  * so the host adapter can size its storage pool to match. */
 #ifndef LXP_NSOCK
@@ -79,9 +77,6 @@ typedef void (*lxp_net_ready_fn)(const void *context);
  * coordinator thread, so a provider does not need internal locking. A
  * readiness callback may run in the provider's native network context. */
 typedef struct lxp_net_ops {
-	uint32_t abi_version; /**< Must be LXP_NET_OPS_ABI_VERSION. */
-	uint32_t struct_size; /**< Must be sizeof(lxp_net_ops_t). */
-
 	/** Acquire/release the provider's run-scoped socket storage. A provider
 	 * advertising LXP_NET_CAP_SOCKET_READY_EVENT retains ready/context only
 	 * between a successful run_begin() and the matching run_end(), and stops

@@ -18,8 +18,6 @@
 extern "C" {
 #endif
 
-#define LXP_BLOCK_OPS_ABI_VERSION 3u
-
 #define LXP_BLOCK_F_REMOVABLE 0x01u
 #define LXP_BLOCK_F_READ_ONLY 0x02u
 #define LXP_BLOCK_F_MEDIA_PRESENT 0x04u
@@ -43,9 +41,6 @@ typedef void (*lxp_block_ready_fn)(const void *context);
  * return the saved completion when the same generation-qualified owner retries.
  */
 typedef struct lxp_block_ops {
-	uint32_t abi_version;
-	uint32_t struct_size;
-
 	/** An asynchronous provider retains @p ready and @p context only between a
 	 * successful run_begin() and matching run_end(), and stops all callbacks
 	 * before run_end() returns. A synchronous provider may ignore them.

@@ -471,8 +471,6 @@ static int mock_fs_volume_stat(lxp_fs_volume_stat_t *out)
 }
 
 const lxp_fs_ops_t g_mock_fs_ops = {
-	.abi_version = LXP_FS_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_fs_ops_t),
 	.run_begin = mock_fs_begin,
 	.run_end = mock_fs_end,
 	.request_owner = mock_fs_owner,

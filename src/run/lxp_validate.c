@@ -70,8 +70,7 @@ int lxp_os_ops_valid(const lxp_os_ops_t *ops)
 int lxp_net_ops_valid(const lxp_net_ops_t *ops)
 {
 #if LXP_ENABLE_NET
-	if (!ops || ops->abi_version != LXP_NET_OPS_ABI_VERSION ||
-	    ops->struct_size != sizeof(*ops) || !ops->run_begin || !ops->run_end ||
+	if (!ops || !ops->run_begin || !ops->run_end ||
 	    !ops->sock_open || !ops->sock_accept || !ops->sock_close || !ops->sock_connect ||
 	    !ops->sock_bind || !ops->sock_listen || !ops->sock_send || !ops->sock_recv ||
 	    !ops->sock_sendto || !ops->sock_recvfrom || !ops->sock_set_nonblock ||
@@ -111,8 +110,7 @@ int lxp_display_ops_valid(const lxp_display_ops_t *ops)
 int lxp_fs_ops_valid(const lxp_fs_ops_t *ops)
 {
 #if LXP_ENABLE_FS
-	if (!ops || ops->abi_version != LXP_FS_OPS_ABI_VERSION ||
-	    ops->struct_size != sizeof(*ops) || !ops->run_begin || !ops->run_end ||
+	if (!ops || !ops->run_begin || !ops->run_end ||
 	    !ops->request_owner || !ops->request_cancel || !ops->mount || !ops->unmount ||
 	    !ops->is_mounted || !ops->volume_stat || !ops->file_open || !ops->object_open ||
 	    !ops->file_close || !ops->file_read || !ops->file_write || !ops->file_seek ||
@@ -137,8 +135,7 @@ int lxp_providers_valid(const lxp_providers_t *providers)
 int lxp_block_ops_valid(const lxp_block_ops_t *ops)
 {
 #if LXP_ENABLE_BLOCK
-	if (!ops || ops->abi_version != LXP_BLOCK_OPS_ABI_VERSION ||
-	    ops->struct_size != sizeof(*ops) || !ops->run_begin || !ops->run_end ||
+	if (!ops || !ops->run_begin || !ops->run_end ||
 	    !ops->request_owner || !ops->request_cancel || !ops->get_info || !ops->open ||
 	    !ops->close || !ops->read || !ops->write || !ops->sync)
 		return 0;

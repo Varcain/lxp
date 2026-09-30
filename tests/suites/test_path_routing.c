@@ -168,8 +168,6 @@ static int host_rename(const char *old_path, const char *new_path)
 }
 
 static const lxp_fs_ops_t g_host_ops = {
-	.abi_version = LXP_FS_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_fs_ops_t),
 	.request_owner = host_request_owner,
 	.is_mounted = host_is_mounted,
 	.volume_stat = host_volume_stat,

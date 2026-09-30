@@ -149,12 +149,6 @@ static void test_port_abi_and_required_ops_are_validated(void **state)
 	assert_true(lxp_net_ops_valid(g_test_net_ops));
 
 	lxp_net_ops_t net_ops = *g_test_net_ops;
-	net_ops.abi_version++;
-	assert_false(lxp_net_ops_valid(&net_ops));
-	net_ops = *g_test_net_ops;
-	net_ops.struct_size--;
-	assert_false(lxp_net_ops_valid(&net_ops));
-	net_ops = *g_test_net_ops;
 	net_ops.run_begin = NULL;
 	assert_false(lxp_net_ops_valid(&net_ops));
 	net_ops = *g_test_net_ops;

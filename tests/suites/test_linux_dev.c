@@ -990,8 +990,6 @@ static int fake_block_sync(void)
 }
 
 static const lxp_block_ops_t g_fake_block_ops = {
-	.abi_version = LXP_BLOCK_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_block_ops_t),
 	.get_info = fake_block_info,
 	.open = fake_block_open,
 	.close = fake_block_close,
