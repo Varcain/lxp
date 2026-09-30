@@ -28,3 +28,5 @@ for f in $(find "$ROOT/src" -name '*.c' | sort); do
 	n=$((n + 1))
 done
 echo "OK: $n TU(s) compiled clean [gates: ${*:-defaults (all off)}]"
+# Whatever the gates select, every symbol the objects export is namespaced.
+NM="${NM:-${CC%gcc}nm}" sh "$ROOT/scripts/check-symbols.sh" "$OBJ"/*.o

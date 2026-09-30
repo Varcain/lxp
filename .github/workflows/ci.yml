@@ -23,6 +23,9 @@ jobs:
       - name: Syscall coverage guard (LXP_NR_* vs ARM EABI reference)
         run: sh scripts/syscalls/check-syscalls.sh
 
+      - name: Exported-symbol namespace guard (self-test; the gate legs check the objects)
+        run: sh scripts/check-symbols.sh --self-test
+
       - name: Configure (fetches cmocka)
         run: cmake -S . -B build -DLXP_BUILD_TESTS=ON
 
