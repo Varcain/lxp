@@ -365,23 +365,6 @@ int slot_of(const lxp_proc_t *p)
 struct sig_save_stack_s g_lxp_sig_save[LXP_NSLOT]
 	__attribute__((section(LXP_SIGNAL_STATE_SECTION)));
 
-int lxp_signal_process_group(int pgid, int sig)
-{
-	if (pgid <= 0 || sig <= 0 || sig >= LXP_NSIG)
-		return 0;
-	int recipients = 0;
-	for (int s = 0; s < LXP_NSLOT; s++) {
-		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
-		if (p->alive && p->pid > 1 && p->group && p->group->pgid == pgid) {
-			lxp_signal_latch(p, sig);
-			recipients++;
-		}
-	}
-	if (recipients && g_lxp_os_ops && g_lxp_os_ops->event_post)
-		g_lxp_os_ops->event_post();
-	return recipients;
-}
-
 void lxp_run_health(lxp_run_health_t *out)
 {
 	if (!out)
@@ -744,63 +727,6 @@ int thread_group_stop_exec_peers(int source_slot, int failure_status)
 		coordinator_exit_slot(s, 0, failure_status & 0xff, LXP_EXIT_REASON_NORMAL, 0);
 	}
 	return rc;
-}
-
-/* Deliver `sig` to a proc PARKED in rt_sigsuspend (the LinuxThreads restart). There is no live
- * frame — the interrupted context is the slot's captured resume context. Save that as the
- * slot's sigreturn frame (to resume with `ret` = -EINTR), then resume the proc INTO its
- * handler; the handler's sa_restorer -> rt_sigreturn restores the saved frame and the syscall
- * returns -EINTR. SIG_IGN just resumes with `ret`; SIG_DFL terminates (the LXP_EV_EXIT pass
- * reaps it). */
-void deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret)
-{
-	struct lxp_signal_delivery delivery;
-	enum lxp_signal_action action = lxp_signal_prepare(proc, sig, &delivery);
-	if (action == LXP_SIGNAL_IGNORE) {
-		(void)coordinator_complete_slot(
-			slot_ref_at(slot),
-			ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
-		return;
-	}
-	/* A deferred completion is itself a signal-delivery boundary and the native
-	 * task is already parked. Retain its result and let SIGCONT resume it. */
-	if (action == LXP_SIGNAL_STOP) {
-		proc->stopped = 1;
-		proc->stop_kind = LXP_STOP_PARKED;
-		proc->stop_sig = (uint8_t)sig;
-		proc->stop_r0 = 0;
-		(void)coordinator_complete_slot(slot_ref_at(slot), ret);
-		notify_parent_stopped(proc->group->ppid, proc->pid, sig);
-		return;
-	}
-	if (action == LXP_SIGNAL_TERMINATE) {
-		primary_slot_mark(slot);
-		return;
-	}
-	if (action != LXP_SIGNAL_HANDLER)
-		return;
-	struct lxp_resume_ctx *resume = &g_lxp_rt.slots[slot].resume;
-	struct sig_save_s *sv = delivery.save;
-	sv->r0 = (uint32_t)ret;
-	sv->r1 = resume->r1;
-	sv->r2 = resume->r2;
-	sv->r3 = resume->r3;
-	sv->r9 = resume->r4_11[5]; /* FDPIC GOT of the parked code — clobbered below (r4_11[5]=r9) */
-	sv->r12 = resume->r12;
-	sv->lr = resume->lr;
-	sv->pc = resume->pc;		      /* the rt_sigsuspend resume point */
-	sv->xpsr = resume->xpsr | (1u << 24); /* preserve APSR flags + Thumb */
-#if LXP_ENABLE_FPU_CONTEXT
-	sv->fp = resume->fp;
-#endif
-	/* Reuse the slot ctx as the handler-entry frame; sp + r4-r11 stay = the thread's, except r9
-	 * (the handler's own GOT for FDPIC — resolve_handler derefs the {entry,GOT} funcdescs; the
-	 * restart handler lives in libpthread, a different module than the interrupted libc). */
-	if (proc->is_fdpic)
-		resume->r4_11[5] = delivery.got;      /* r9 = handler's GOT */
-	resume->lr = delivery.restorer | 1u;	      /* return -> sa_restorer entry -> sigreturn */
-	resume->pc = delivery.entry | 1u;	      /* enter the handler (Thumb) */
-	coordinator_resume_slot(slot, proc->mm->region.index, resume, sig); /* r0 = signo */
 }
 
 /* Execute one READY mailbox in privileged task context. The lower-priority guest

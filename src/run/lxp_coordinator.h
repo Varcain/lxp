@@ -165,6 +165,11 @@ int device_map_index(const lxp_proc_t *proc, uintptr_t addr, size_t len);
 void console_signal_fg(int sig);
 void flatten_vec(char *buf, const char **ptrs, const char *src_buf, const uint16_t *offsets,
 		 int count);
+/* Where a signal goes (src/run/lxp_signal_route.c). lxp_signal_send latches @p sig on every
+ * live process except init and @p skip that matches: the one with @p pid when it is
+ * positive, else the members of process group @p pgid when it is positive, else every
+ * process. It wakes the coordinator and returns how many were signalled. */
+int lxp_signal_send(const lxp_proc_t *skip, int pid, int pgid, int sig);
 void deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret);
 void notify_parent_stopped(int ppid, int cpid, int stopsig);
 void notify_guest_exit(int slot, const lxp_proc_t *proc);

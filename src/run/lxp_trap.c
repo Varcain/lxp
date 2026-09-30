@@ -179,26 +179,8 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		 * the caller's process group; pid<-1 = process group |pid|; pid==-1 = broadcast to
 		 * all (but init). Skips the sender + init; an explicit self-signal took the inline
 		 * path above. */
-		f->r[0] = -LXP_ESRCH;
-		for (int t = 0; t < LXP_NSLOT; t++) {
-			lxp_proc_t *tp = &g_lxp_rt.slots[t].proc;
-			if (!tp->alive || tp == proc || tp->pid <= 1)
-				continue;
-			if (target > 0) {
-				if (tp->pid != target)
-					continue; /* a specific pid */
-			} else if (target != -1) {
-				if (tp->group->pgid != want_pgid)
-					continue; /* a process group (the caller's, or |pid|) */
-			} /* target == -1: broadcast to every live proc */
-			lxp_signal_latch(tp, sig);
-			f->r[0] = 0;
-		}
-		/* Wake the coordinator NOW so it delivers the signal at once (the LinuxThreads
-		 * restart) instead of at its next ~poll-interval tick — otherwise every thread
-		 * wakeup costs up to one event_wait timeout. */
-		if (f->r[0] == 0 && g_lxp_os_ops && g_lxp_os_ops->event_post)
-			g_lxp_os_ops->event_post();
+		int recipients = lxp_signal_send(proc, target > 0 ? target : 0, want_pgid, sig);
+		f->r[0] = recipients ? 0 : -LXP_ESRCH;
 		return;
 	}
 	if (nr == LXP_NR_rt_sigreturn || nr == LXP_NR_sigreturn) {

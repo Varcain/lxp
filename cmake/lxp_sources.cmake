@@ -66,6 +66,7 @@ set(LXP_COORDINATOR_SOURCES
     "${LXP_SOURCE_ROOT}/src/run/lxp_lifecycle.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_primary.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_region.c"
+    "${LXP_SOURCE_ROOT}/src/run/lxp_signal_route.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_trap.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_validate.c"
 )
