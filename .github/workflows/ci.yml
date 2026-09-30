@@ -17,8 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Decoupling guard (src/ + include/ must stay oveRTOS-free)
-        run: sh scripts/check-decoupled.sh
+      - name: Decoupling guard (no consumer anywhere; native RTOS only in ports/)
+        run: sh scripts/check-decoupled.sh && sh scripts/check-decoupled.sh --self-test
 
       - name: Syscall coverage guard (LXP_NR_* vs ARM EABI reference)
         run: sh scripts/syscalls/check-syscalls.sh
