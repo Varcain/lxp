@@ -61,22 +61,8 @@ static inline int lxp_test_proc_init(lxp_proc_t *proc, lxp_arena_t *arena, size_
 	return LXP_OK;
 }
 
-/* Suite entry points — one per tests/suites/test_<name>.c. */
-int test_arena_run(void);
-int test_cortex_m_run(void);
-int test_loader_run(void);
-int test_loader_fdpic_run(void);
-int test_rt_metrics_run(void);
-int test_fs_run(void);
-int test_overflow_run(void);
-int test_signal_run(void);
-int test_linux_syscall_run(void);
-int test_syscall_conformance_run(void);
-int test_linux_dev_run(void);
-int test_linux_net_run(void);
-int test_linux_netfs_run(void);
-int test_linux_hostfs_run(void);
-int test_linux_pty_run(void);
-int test_path_routing_run(void);
+/* Suite entry points: test_<name>_run() for every suite in the registry. */
+#define LXP_SUITE(name, label) int test_##name##_run(void);
+#include "suites.inc"
 
 #endif /* LXP_TEST_H */
