@@ -59,21 +59,9 @@ target_include_directories(lxp_test_stub PRIVATE
 )
 
 # Feature gates for the TUs under test (value-based, matching the module's #if LXP_ENABLE_X).
-target_compile_definitions(lxp_test_stub PRIVATE
-  LXP_RESOURCE_POOL_COUNT=64
-  LXP_ENABLE_DEV=1
-  LXP_ENABLE_BLOCK=1
-  LXP_ENABLE_PTY=1
-  LXP_ENABLE_NET=1
-  LXP_ENABLE_NETFS=1
-  LXP_ENABLE_NETFS_EXEC=1
-  LXP_ENABLE_FS=1
-  LXP_ENABLE_DEV_FB=1
-  LXP_ENABLE_DEV_DMA2D=1
-  LXP_ENABLE_DEV_INPUT=1
-  LXP_ENABLE_FPU_CONTEXT=1
-  LXP_ENABLE_RT_METRICS=1
-)
+target_compile_definitions(lxp_test_stub PRIVATE LXP_RESOURCE_POOL_COUNT=64)
+lxp_feature_definitions(lxp_test_stub PRIVATE
+  DEV BLOCK PTY NET NETFS NETFS_EXEC FS DEV_FB DEV_DMA2D DEV_INPUT FPU_CONTEXT RT_METRICS)
 
 target_link_libraries(lxp_test_stub PRIVATE cmocka-static pthread rt m)
 
@@ -120,10 +108,7 @@ target_include_directories(lxp_host_test PRIVATE
   "${cmocka_SOURCE_DIR}/include"
 )
 target_compile_options(lxp_host_test PRIVATE -Wall -Wextra -Werror)
-target_compile_definitions(lxp_host_test PRIVATE
-  LXP_ENABLE_NET=1
-  LXP_ENABLE_NETFS=1
-  LXP_ENABLE_LATENCY=1)
+lxp_feature_definitions(lxp_host_test PRIVATE NET NETFS LATENCY)
 target_link_libraries(lxp_host_test PRIVATE cmocka-static)
 add_test(NAME lxp_unit_host COMMAND lxp_host_test)
 
@@ -159,15 +144,9 @@ target_include_directories(lxp_coord_test PRIVATE
 target_compile_options(lxp_coord_test PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(lxp_coord_test PRIVATE
   LXP_RESOURCE_POOL_COUNT=64
-  LXP_ENABLE_DEV=1
-  LXP_ENABLE_NET=1
-  LXP_ENABLE_NETFS=1
-  LXP_ENABLE_NETFS_EXEC=1
-  LXP_ENABLE_FS=1
-  LXP_ENABLE_PTY=1
-  LXP_ENABLE_FPU_CONTEXT=1
   LXP_TEST_FAILPOINTS=1
 )
+lxp_feature_definitions(lxp_coord_test PRIVATE DEV NET NETFS NETFS_EXEC FS PTY FPU_CONTEXT)
 target_link_libraries(lxp_coord_test PRIVATE cmocka-static pthread rt m)
 add_test(NAME lxp_unit_coord COMMAND lxp_coord_test)
 
@@ -185,10 +164,8 @@ target_include_directories(lxp_nonet_test PRIVATE
   "${LXP_ROOT}/src"
   "${cmocka_SOURCE_DIR}/include"
 )
-target_compile_definitions(lxp_nonet_test PRIVATE
-  LXP_RESOURCE_POOL_COUNT=64
-  LXP_ENABLE_PTY=1
-)
+target_compile_definitions(lxp_nonet_test PRIVATE LXP_RESOURCE_POOL_COUNT=64)
+lxp_feature_definitions(lxp_nonet_test PRIVATE PTY)
 target_compile_options(lxp_nonet_test PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(lxp_nonet_test PRIVATE cmocka-static pthread rt m)
 add_test(NAME lxp_unit_nonet COMMAND lxp_nonet_test)

@@ -68,10 +68,9 @@ add_library(lxp_fuzz_obj OBJECT
   "${LXP_ROOT}/ports/posix/lxp_port_posix.c"   # g_lxp_net_ops over BSD sockets
   "${LXP_ROOT}/tests/stub_lnx_run.c")          # clock + no-op cache/flush + mock display
 target_include_directories(lxp_fuzz_obj PUBLIC "${LXP_ROOT}/include" "${LXP_ROOT}/src")
-target_compile_definitions(lxp_fuzz_obj PUBLIC
-  LXP_ENABLE_DEV=1 LXP_ENABLE_PTY=1 LXP_ENABLE_NET=1 LXP_ENABLE_NETFS=1
-  LXP_ENABLE_NETFS_EXEC=1 LXP_ENABLE_DEV_FB=1 LXP_ENABLE_DEV_INPUT=1
-  LXP_FUZZ=1)
+target_compile_definitions(lxp_fuzz_obj PUBLIC LXP_FUZZ=1)
+lxp_feature_definitions(lxp_fuzz_obj PUBLIC
+  DEV PTY NET NETFS NETFS_EXEC DEV_FB DEV_INPUT)
 target_compile_options(lxp_fuzz_obj PUBLIC ${FUZZ_COMPILE_FLAGS})
 target_compile_options(lxp_fuzz_obj PRIVATE -Wall -Wextra) # module is warning-clean; harnesses are not held to -Werror
 

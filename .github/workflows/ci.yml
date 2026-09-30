@@ -26,6 +26,9 @@ jobs:
       - name: Exported-symbol namespace guard (self-test; the gate legs check the objects)
         run: sh scripts/check-symbols.sh --self-test
 
+      - name: Feature-gate list guard (table vs lxp_config.h vs CI legs)
+        run: sh scripts/check-features.sh
+
       - name: Configure (fetches cmocka)
         run: cmake -S . -B build -DLXP_BUILD_TESTS=ON
 
