@@ -10,13 +10,13 @@
  * Under the ASan/UBSan build a missing bound reads/writes OOB while parsing the
  * hostile image, so a regression aborts here rather than silently mis-loading.
  */
-#define _GNU_SOURCE /* MAP_32BIT (low-4GiB region) via fuzz_common.h */
+#define _GNU_SOURCE /* MAP_32BIT (low-4GiB region) for lxp_lowbuf.h */
 
 #include "../framework/lxp_test.h"
 #include "lxp_loader.h"
 #include "lxp/lxp_types.h"
 
-#include "fuzz_common.h" /* fuzz_lowbuf_map: a low-4GiB region so loadmap u32 addrs deref */
+#include "../framework/lxp_lowbuf.h" /* a low-4GiB region so loadmap u32 addrs deref */
 
 #include <stdint.h>
 #include <string.h>
@@ -191,7 +191,7 @@ static void test_fdpic_reject_dynamic_outside_rw(void **st)
 	w32(p2 + 4, 180);
 	w32(p2 + 16, 8);
 	w32(p2 + 20, 8);
-	fuzz_lowbuf_t reg = fuzz_lowbuf_map(512);
+	lxp_lowbuf_t reg = lxp_lowbuf_map(512);
 	assert_non_null(reg.base);
 	lxp_flat_t prog;
 	memset(&prog, 0, sizeof(prog));
@@ -266,7 +266,7 @@ static void test_fdpic_copytext_pool_bounds_region(void **st)
 	(void)st;
 	uint8_t img[POOL_IMG_SZ];
 	size_t sz = build_fdpic_pool(img);
-	fuzz_lowbuf_t reg = fuzz_lowbuf_map(1024);
+	lxp_lowbuf_t reg = lxp_lowbuf_map(1024);
 	assert_non_null(reg.base);
 	lxp_flat_t prog;
 	memset(&prog, 0, sizeof(prog));
@@ -338,7 +338,7 @@ static void test_fdpic_reject_relent_zero(void **st)
 	(void)st;
 	uint8_t img[RELENT_IMG_SZ];
 	size_t sz = build_fdpic_relent(img, 0);
-	fuzz_lowbuf_t reg = fuzz_lowbuf_map(1024);
+	lxp_lowbuf_t reg = lxp_lowbuf_map(1024);
 	assert_non_null(reg.base);
 	lxp_flat_t prog;
 	memset(&prog, 0, sizeof(prog));

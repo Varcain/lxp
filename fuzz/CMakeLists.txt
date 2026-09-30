@@ -82,7 +82,8 @@ function(lxp_add_fuzz_harness name src)
   if(FUZZ_NEEDS_MAIN)
     target_sources(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/replay_main.c")
   endif()
-  target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+                             "${LXP_ROOT}/tests/framework") # lxp_lowbuf.h
   target_compile_options(${name} PRIVATE -Wall -Wextra)
   target_link_libraries(${name} PRIVATE lxp_fuzz_obj pthread rt m)
   target_link_options(${name} PRIVATE ${FUZZ_LINK_FLAGS})

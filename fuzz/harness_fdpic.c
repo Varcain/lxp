@@ -13,14 +13,16 @@
  *
  * The loader models 32-bit-target memory (its FDPIC loadmap stores segment runtime
  * addresses as uint32), so image + region are backed by low-4-GiB guarded buffers
- * (fuzz_lowbuf): the uint32 truncations round-trip as on the Cortex-M target, while
+ * (lxp_lowbuf): the uint32 truncations round-trip as on the Cortex-M target, while
  * a guard page one byte past image_size/region_size still faults a genuine OOB.
  */
 #include "fuzz_common.h"
+#include "lxp_lowbuf.h"
 #include "lxp_loader.h"
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Region generous enough to lay out a well-formed mutated image's segments (past the
@@ -30,15 +32,15 @@
 #define FDPIC_REGION_SZ (256u * 1024u)
 #define FDPIC_IMAGE_CAP (1024u * 1024u)
 
-static fuzz_lowbuf_t g_region;
-static fuzz_lowbuf_t g_image;
+static lxp_lowbuf_t g_region;
+static lxp_lowbuf_t g_image;
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
 	(void)argc;
 	(void)argv;
-	g_region = fuzz_lowbuf_map(FDPIC_REGION_SZ);
-	g_image = fuzz_lowbuf_map(FDPIC_IMAGE_CAP);
+	g_region = lxp_lowbuf_map(FDPIC_REGION_SZ);
+	g_image = lxp_lowbuf_map(FDPIC_IMAGE_CAP);
 	if (!g_region.base || !g_image.base)
 		abort();
 	return 0;
@@ -50,7 +52,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		LLVMFuzzerInitialize(NULL, NULL);
 
 	size_t n = size;
-	const uint8_t *img = fuzz_lowbuf_place(g_image, data, &n);
+	const uint8_t *img = lxp_lowbuf_place(g_image, data, &n);
 	lxp_flat_t prog;
 
 	memset(&prog, 0, sizeof(prog));

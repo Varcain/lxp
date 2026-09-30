@@ -54,7 +54,6 @@ add_executable(lxp_test_stub
 target_include_directories(lxp_test_stub PRIVATE
   "${LXP_ROOT}/include"
   "${LXP_ROOT}/src"
-  "${LXP_ROOT}/fuzz"  # the syscall-conformance suite reuses fuzz_common.h's low-4GiB helper
   "${cmocka_SOURCE_DIR}/include"
 )
 
@@ -151,7 +150,6 @@ add_executable(lxp_coord_test
 target_include_directories(lxp_coord_test PRIVATE
   "${LXP_ROOT}/include"
   "${LXP_ROOT}/src"
-  "${LXP_ROOT}/fuzz"
   "${cmocka_SOURCE_DIR}/include"
 )
 # Full coordinator-facing feature set: the protocol suite crosses deferred
@@ -184,7 +182,6 @@ target_include_directories(lxp_nonet_test PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${LXP_ROOT}/include"
   "${LXP_ROOT}/src"
-  "${LXP_ROOT}/fuzz"
   "${cmocka_SOURCE_DIR}/include"
 )
 target_compile_definitions(lxp_nonet_test PRIVATE

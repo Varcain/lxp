@@ -72,7 +72,7 @@ lxp targets 32-bit ARMv7-M; fuzzing it as 64-bit host code needs a few adjustmen
 real target bugs, not host artifacts:
 
 - **`fuzz_fdpic`** backs the image+region with **low-4-GiB (`MAP_32BIT`) guarded buffers**
-  (`fuzz_lowbuf`): the FDPIC loadmap stores segment runtime addresses as `uint32`, so a truncated
+  (`lxp_lowbuf`, shared with the host tests from `tests/framework/lxp_lowbuf.h`): the FDPIC loadmap stores segment runtime addresses as `uint32`, so a truncated
   64-bit host pointer would be a spurious wild deref. A guard page one byte past
   `image_size`/`region_size` still faults a genuine OOB.
 - **`fuzz_9p`** drives `handle_reply` through the `#ifdef LXP_FUZZ` shim in `src/netfs/lxp_netfs.c`

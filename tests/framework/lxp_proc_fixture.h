@@ -11,8 +11,8 @@
  *     on any lxp_guest_access_ok bypass.
  *   - brk / mmap addresses come from an arena inside the low region, so they fit a 32-bit
  *     r0 exactly and round-trip as they do on the Cortex-M target.
- * Reuses fuzz_lowbuf (MAP_32BIT + PROT_NONE guard page) from fuzz/fuzz_common.h, so the
- * low-region logic has a single source of truth (build adds -I fuzz).
+ * Maps it with lxp_lowbuf (MAP_32BIT + PROT_NONE guard page, lxp_lowbuf.h), which the fuzz
+ * harnesses share, so the low-region logic has a single source of truth.
  *
  * MAP_32BIT is best-effort: if the low 4 GiB is exhausted (or unavailable) the mapping
  * falls back above 4 GiB. Value/errno/struct assertions are address-width-independent and
@@ -31,7 +31,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "fuzz_common.h" /* fuzz_lowbuf_map / fuzz_lowbuf_t — via -I fuzz */
+#include "lxp_lowbuf.h"
 
 #include "lxp_arena.h"
 #include "lxp_syscall.h"
@@ -41,7 +41,7 @@
 #define LXP_CONF_BRK (64u * 1024u)	/* initial brk reservation */
 
 typedef struct lxp_conf {
-	fuzz_lowbuf_t low; /* the whole low-region mapping: [scratch | arena] */
+	lxp_lowbuf_t low; /* the whole low-region mapping: [scratch | arena] */
 	lxp_arena_t arena;
 	uint8_t *scratch;     /* bump cursor within the scratch sub-region */
 	uint8_t *scratch_end;
@@ -90,7 +90,7 @@ static inline int lxp_conf_is_32bit(const lxp_conf_t *fx)
 static inline lxp_conf_t *lxp_conf_begin(lxp_proc_t *p, const lxp_file_t *rootfs, int rootfs_n)
 {
 	lxp_conf_release(&g_conf);
-	g_conf.low = fuzz_lowbuf_map(LXP_CONF_SCRATCH + LXP_CONF_ARENA);
+	g_conf.low = lxp_lowbuf_map(LXP_CONF_SCRATCH + LXP_CONF_ARENA);
 	if (!g_conf.low.base)
 		return NULL;
 	g_conf.scratch = g_conf.low.base;
