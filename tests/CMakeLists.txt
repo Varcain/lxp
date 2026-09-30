@@ -137,6 +137,7 @@ add_executable(lxp_coord_test
   ${LXP_TEST_MODULE_SRC}
   ${LXP_COORDINATOR_SOURCES}
   "${LXP_ROOT}/ports/posix/lxp_port_posix.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/framework/lxp_mock_engine.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_run_coord.c"
 )
 target_include_directories(lxp_coord_test PRIVATE
