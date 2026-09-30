@@ -44,19 +44,14 @@ typedef struct lxp_host_config {
 /** Per-launch policy layered over an initialized host's immutable rootfs and
  * provider composition. Zero initialization selects every optional default. */
 typedef struct lxp_launch_config {
-	lxp_write_fn write_fn;
-	lxp_read_fn read_fn;
-	void *io_ctx;
+	lxp_console_t console;
 	void (*on_enosys)(long nr);
-	int (*console_poll)(void *ctx);
 	const char *const *env;
 	lxp_guest_exit_fn on_guest_exit;
 	uint16_t display_width;
 	uint16_t display_height;
 	lxp_rt_scope_read_fn rt_scope_read;
 	void *rt_scope_ctx;
-	lxp_console_subscribe_fn console_subscribe;
-	lxp_console_unsubscribe_fn console_unsubscribe;
 	void *guest_exit_ctx;
 } lxp_launch_config_t;
 

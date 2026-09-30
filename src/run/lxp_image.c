@@ -105,10 +105,10 @@ int lxp_image_txn_prepare(struct image_txn *tx, const uint8_t *data, size_t len,
 	if (!arena || lxp_arena_init(arena, arena_mem, arena_size) != LXP_OK ||
 	    lxp_proc_init(&tx->proc, arena, 0x8000) != 0)
 		return -LXP_ENOMEM;
-	tx->proc.write_fn = cfg->write_fn;
-	tx->proc.read_fn = cfg->read_fn;
-	tx->proc.console_poll = cfg->console_poll;
-	tx->proc.io_ctx = cfg->io_ctx;
+	tx->proc.write_fn = cfg->console.write;
+	tx->proc.read_fn = cfg->console.read;
+	tx->proc.console_poll = cfg->console.poll;
+	tx->proc.io_ctx = cfg->console.ctx;
 	tx->proc.pid = pid;
 	tx->proc.group->tgid = pid;
 	tx->proc.group->ppid = ppid;

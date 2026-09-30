@@ -1157,8 +1157,9 @@ int lxp_run(const lxp_providers_t *providers, const lxp_run_config_t *run_config
 	rc = os_ops->validate_memory_contract(os_ops->cpu_memory_contract);
 	if (rc != LXP_OK)
 		goto out;
-	if (run_config->console_subscribe) {
-		if (run_config->console_subscribe(run_config->io_ctx, lxp_console_ready, os_ops)) {
+	if (run_config->console.subscribe) {
+		const lxp_console_t *console = &run_config->console;
+		if (console->subscribe(console->ctx, lxp_console_ready, os_ops)) {
 			rc = LXP_ERR_NOT_SUPPORTED;
 			goto out;
 		}
@@ -1168,7 +1169,7 @@ int lxp_run(const lxp_providers_t *providers, const lxp_run_config_t *run_config
 
 out:
 	if (console_entered)
-		run_config->console_unsubscribe(run_config->io_ctx);
+		run_config->console.unsubscribe(run_config->console.ctx);
 #if LXP_ENABLE_DEV
 	if (dev_entered)
 		lxp_dev_run_end();

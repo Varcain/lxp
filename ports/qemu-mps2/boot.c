@@ -196,9 +196,7 @@ static void coordinator_task(void *arg)
 		.rootfs_count = n,
 		.rootfs_image = cpio,
 		.rootfs_image_size = cpio_len,
-		.write_fn = con_write,
-		.read_fn = con_read,
-		.io_ctx = NULL,
+		.console = {.write = con_write, .read = con_read},
 		.env = g_env,
 	};
 	/* The initial program + argv, selected at build time per milestone:

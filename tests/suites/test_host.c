@@ -290,11 +290,16 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	const char *const env[] = {"PATH=/bin", NULL};
 	const char *const argv[] = {"init", NULL};
 	const lxp_launch_config_t launch = {
-		.write_fn = mock_write,
-		.read_fn = mock_read,
-		.io_ctx = &io_cookie,
+		.console =
+			{
+				.write = mock_write,
+				.read = mock_read,
+				.poll = mock_poll,
+				.subscribe = mock_console_subscribe,
+				.unsubscribe = mock_console_unsubscribe,
+				.ctx = &io_cookie,
+			},
 		.on_enosys = mock_enosys,
-		.console_poll = mock_poll,
 		.env = env,
 		.on_guest_exit = mock_exit,
 		.guest_exit_ctx = &io_cookie,
@@ -302,8 +307,6 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 		.display_height = 480,
 		.rt_scope_read = mock_rt_scope,
 		.rt_scope_ctx = &host,
-		.console_subscribe = mock_console_subscribe,
-		.console_unsubscribe = mock_console_unsubscribe,
 	};
 	assert_int_equal(lxp_host_run(&host, &launch, "/bin/init", 1, argv), 37);
 	assert_int_equal(g_capture.run_calls, 1);
@@ -316,11 +319,11 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	assert_int_equal(g_capture.run_config.rootfs_count, 2);
 	assert_ptr_equal(g_capture.run_config.rootfs_image, image);
 	assert_int_equal(g_capture.run_config.rootfs_image_size, image_size);
-	assert_ptr_equal(g_capture.run_config.write_fn, mock_write);
-	assert_ptr_equal(g_capture.run_config.read_fn, mock_read);
-	assert_ptr_equal(g_capture.run_config.io_ctx, &io_cookie);
+	assert_ptr_equal(g_capture.run_config.console.write, mock_write);
+	assert_ptr_equal(g_capture.run_config.console.read, mock_read);
+	assert_ptr_equal(g_capture.run_config.console.ctx, &io_cookie);
 	assert_ptr_equal(g_capture.run_config.on_enosys, mock_enosys);
-	assert_ptr_equal(g_capture.run_config.console_poll, mock_poll);
+	assert_ptr_equal(g_capture.run_config.console.poll, mock_poll);
 	assert_ptr_equal(g_capture.run_config.env, env);
 	assert_ptr_equal(g_capture.run_config.on_guest_exit, mock_exit);
 	assert_ptr_equal(g_capture.run_config.guest_exit_ctx, &io_cookie);
@@ -328,8 +331,8 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	assert_int_equal(g_capture.run_config.display_height, 480);
 	assert_ptr_equal(g_capture.run_config.rt_scope_read, mock_rt_scope);
 	assert_ptr_equal(g_capture.run_config.rt_scope_ctx, &host);
-	assert_ptr_equal(g_capture.run_config.console_subscribe, mock_console_subscribe);
-	assert_ptr_equal(g_capture.run_config.console_unsubscribe, mock_console_unsubscribe);
+	assert_ptr_equal(g_capture.run_config.console.subscribe, mock_console_subscribe);
+	assert_ptr_equal(g_capture.run_config.console.unsubscribe, mock_console_unsubscribe);
 	assert_ptr_equal(g_capture.run_config.netif, &netif_cookie);
 	assert_non_null(g_capture.run_config.netfs_config);
 	assert_string_equal(g_capture.run_config.netfs_config->mountpoint, "/mnt/pi");
@@ -351,9 +354,9 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	assert_ptr_equal(g_capture.providers.display, &g_display_ops);
 	assert_ptr_equal(g_capture.providers.fs, &g_fs_ops);
 	assert_ptr_equal(g_capture.providers.block, &g_block_ops);
-	assert_null(g_capture.run_config.write_fn);
-	assert_null(g_capture.run_config.read_fn);
-	assert_null(g_capture.run_config.io_ctx);
+	assert_null(g_capture.run_config.console.write);
+	assert_null(g_capture.run_config.console.read);
+	assert_null(g_capture.run_config.console.ctx);
 	assert_null(g_capture.run_config.on_guest_exit);
 	assert_null(g_capture.run_config.rt_scope_read);
 	assert_ptr_equal(g_capture.run_config.netif, &netif_cookie);

@@ -68,7 +68,7 @@ typedef long (*lxp_rt_scope_read_fn)(void *ctx, char *buf, size_t cap);
  */
 
 /** Host configuration for a personality run. Zero-initialize it (a designated initializer
- * such as @c {.rootfs=..., .write_fn=...} or @c memset) so every optional field reads NULL/0:
+ * such as @c {.rootfs=..., .console.write=...} or @c memset) so every optional field reads NULL/0:
  * the runner dereferences pointer fields like @c env, so an uninitialized one faults at
  * launch. New optional fields are always added at the end and default to "unset" when zero. */
 typedef struct lxp_run_config {
@@ -79,21 +79,8 @@ typedef struct lxp_run_config {
 	 * every table entry before publishing the window to an MPU seam. */
 	const void *rootfs_image;
 	size_t rootfs_image_size;
-	/** Console sink (fd 1/2), called from the privileged coordinator task. It must
-	 * return within a host-defined finite interval; byte count is bounded by
-	 * LXP_SYSCALL_QUANTUM_BYTES but the module cannot bound an external callback. */
-	lxp_write_fn write_fn;
-	/** Console source (fd 0), called from the privileged coordinator task; see the
-	 * tty helpers. Pair a potentially blocking source with console_poll so the
-	 * coordinator can park the guest instead of entering read_fn before data exists. */
-	lxp_read_fn read_fn;
-	void *io_ctx;		      /**< Opaque, passed to @p write_fn / @p read_fn. */
-	void (*on_enosys)(long nr);   /**< Optional: notified of an unimplemented syscall. */
-	/** Optional: strictly non-blocking "is a console keystroke available right now?" (1/0).
-	 * Enables a true poll(2) on the console fd (e.g. interactive `top`'s 'q' quit):
-	 * without it the console transport is blocking-only and poll falls back to a
-	 * heuristic. Backed by a UART RX-ready check when the host uses a UART console. */
-	int (*console_poll)(void *ctx);
+	lxp_console_t console;	    /**< The terminal behind fds 0-2 and /dev/console. */
+	void (*on_enosys)(long nr); /**< Optional: notified of an unimplemented syscall. */
 	/** Optional NULL-terminated initial environment for pid 1 (e.g. @c PATH, @c HOME,
 	 * @c TERM). NULL → an empty environment. The strings are copied onto the guest's
 	 * startup stack; a guest's @c execve(2) replaces the environment for the new image,
@@ -111,14 +98,6 @@ typedef struct lxp_run_config {
 	/** Optional host real-time snapshot exposed verbatim as /proc/rt_scope. */
 	lxp_rt_scope_read_fn rt_scope_read;
 	void *rt_scope_ctx; /**< Opaque, passed to @p rt_scope_read. */
-	/** Optional paired run-scoped readiness subscription. A successful
-	 * subscription lets the coordinator wait for an event instead of polling a
-	 * parked console every 5 ms. The provider must stop callbacks before
-	 * console_unsubscribe returns. Both callbacks must be set or both NULL.
-	 * console_subscribe returns 0 once subscribed; any other result makes
-	 * lxp_run() fail with LXP_ERR_NOT_SUPPORTED. */
-	lxp_console_subscribe_fn console_subscribe;
-	lxp_console_unsubscribe_fn console_unsubscribe;
 	/** Run-scoped interface used by eth0 ioctls and /proc/net. NULL leaves
 	 * interface reporting unavailable without changing socket availability. */
 	lxp_netif_t netif;
