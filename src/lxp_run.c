@@ -1145,7 +1145,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 
 	if (os_ops->prepare) {
 		prepare_entered = 1;
-		if (os_ops->prepare() < 0)
+		if (os_ops->prepare() != LXP_OK)
 			goto out;
 	}
 	if (os_ops->validate_memory_contract(os_ops->cpu_memory_contract) != LXP_OK)

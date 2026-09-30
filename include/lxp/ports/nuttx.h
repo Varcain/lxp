@@ -70,6 +70,7 @@ typedef struct lxp_nuttx_port_config {
 	/* Board/HAL and product-policy providers. Runtime callbacks are driven by
 	 * the port's scheduler-note hook and may be omitted when attribution is not
 	 * required. */
+	/* Returns LXP_OK, or an lxp_err_t that the port's prepare() reports. */
 	int (*host_prepare)(void);
 	int (*time_us)(uint64_t *out);
 	int (*time_ns)(uint64_t *out);

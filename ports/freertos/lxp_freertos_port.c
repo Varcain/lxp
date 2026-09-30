@@ -1251,32 +1251,36 @@ static int freertos_prepare(void)
 	    !PORT_CONFIG.random_fill || !PORT_CONFIG.validate_memory_contract ||
 	    PORT_CONFIG.rootfs_region_count > LXP_FREERTOS_ROOTFS_REGION_MAX ||
 	    2u + PORT_CONFIG.rootfs_region_count >= portNUM_CONFIGURABLE_REGIONS)
-		return -1;
+		return LXP_ERR_INVALID_PARAM;
 	if (PORT_CONFIG.coordinator_cacheable_map &&
 	    PORT_CONFIG.coordinator_rootfs_region != UINT8_MAX &&
 	    (PORT_CONFIG.coordinator_rootfs_region < 2u ||
 	     PORT_CONFIG.coordinator_rootfs_region >= portNUM_CONFIGURABLE_REGIONS))
-		return -1;
+		return LXP_ERR_INVALID_PARAM;
 #if LXP_ENABLE_NETFS_EXEC
 	if (!PORT_CONFIG.exec_stage || PORT_CONFIG.exec_stage_size == 0u)
-		return -1;
+		return LXP_ERR_INVALID_PARAM;
 #endif
 	for (unsigned i = 0; i < PORT_CONFIG.rootfs_region_count; i++) {
 		const lxp_freertos_rootfs_region_t *region = &PORT_CONFIG.rootfs_regions[i];
 		if (region->size < 32u || (region->size & (region->size - 1u)) != 0u ||
 		    (region->base & (region->size - 1u)) != 0u)
-			return -1;
+			return LXP_ERR_INVALID_PARAM;
 	}
 	if (PORT_CONFIG.cache_geometry &&
 	    lxp_cortex_m_cache_geometry_read(PORT_CONFIG.cache_geometry) != 0)
-		return -1;
+		return LXP_ERR_NOT_SUPPORTED; /* a cache hierarchy the port cannot maintain */
 	if (!g_ev)
 		g_ev = xSemaphoreCreateBinaryStatic(&g_ev_buf);
 	if (!g_sched_ev)
 		g_sched_ev = xSemaphoreCreateBinaryStatic(&g_sched_ev_buf);
-	if (!g_ev || !g_sched_ev || uxTaskPriorityGet(NULL) < GUEST_SCHED_PRIO ||
-	    (PORT_CONFIG.host_prepare && PORT_CONFIG.host_prepare() != 0))
-		return -1;
+	if (!g_ev || !g_sched_ev)
+		return LXP_ERR_NO_MEMORY;
+	if (uxTaskPriorityGet(NULL) < GUEST_SCHED_PRIO)
+		return LXP_ERR_INVALID_PARAM; /* the coordinator may not run below the scheduler */
+	int rc = PORT_CONFIG.host_prepare ? PORT_CONFIG.host_prepare() : LXP_OK;
+	if (rc != LXP_OK)
+		return rc;
 	(void)xSemaphoreTake(g_sched_ev, 0);
 	g_selected_slot = -1;
 	freertos_sched_cancel_rotation_locked();
@@ -1286,9 +1290,11 @@ static int freertos_prepare(void)
 					 GUEST_SCHED_PRIO | portPRIVILEGE_BIT, g_sched_stack,
 					 &g_sched_tcb);
 	if (!g_sched_task)
-		return -1;
-	if (PORT_CONFIG.tick_subscribe(lxp_freertos_tick) != LXP_OK)
+		return LXP_ERR_NO_MEMORY;
+	if (PORT_CONFIG.tick_subscribe(lxp_freertos_tick) != 0) {
+		rc = LXP_ERR_BUSY; /* the tick hook serves another subscriber */
 		goto fail_sched_task;
+	}
 	g_tick_subscribed = 1u;
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		g_slots[s].profile.valid = 0;
@@ -1296,12 +1302,12 @@ static int freertos_prepare(void)
 	}
 	/* SHCSR @ 0xE000ED24: BUSFAULTENA = bit 17, USGFAULTENA = bit 18. */
 	*(volatile uint32_t *)0xE000ED24u |= (1u << 17) | (1u << 18);
-	return 0;
+	return LXP_OK;
 
 fail_sched_task:
 	vTaskDelete(g_sched_task);
 	g_sched_task = NULL;
-	return -1;
+	return rc;
 }
 
 static void freertos_teardown(void)

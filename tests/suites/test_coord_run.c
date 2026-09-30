@@ -241,7 +241,7 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	assert_int_equal(g_mock.net_begin_calls, 0);
 	assert_int_equal(g_mock.prepare_calls, 0);
 
-	g_mock.prepare_result = -LXP_EIO;
+	g_mock.prepare_result = LXP_ERR_IO;
 	g_mock.net_ready_fire_in_prepare = 1;
 	g_mock.fs_ready_fire_in_prepare = 1;
 	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",

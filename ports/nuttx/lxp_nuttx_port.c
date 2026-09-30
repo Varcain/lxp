@@ -1355,12 +1355,13 @@ static int nuttx_port_config_valid(void)
 static int nuttx_prepare(void)
 {
 	if (!nuttx_port_config_valid())
-		return -1;
+		return LXP_ERR_INVALID_PARAM;
 	if (PORT_CONFIG.cache_geometry &&
 	    lxp_cortex_m_cache_geometry_read(PORT_CONFIG.cache_geometry) != 0)
-		return -1;
-	if (PORT_CONFIG.host_prepare && PORT_CONFIG.host_prepare() != 0)
-		return -1;
+		return LXP_ERR_NOT_SUPPORTED; /* a cache hierarchy the port cannot maintain */
+	int rc = PORT_CONFIG.host_prepare ? PORT_CONFIG.host_prepare() : LXP_OK;
+	if (rc != LXP_OK)
+		return rc;
 	g_irq_install_mask = 0;
 	g_guest_budget_pid = -1;
 	memset(g_slots, 0, sizeof(g_slots));
@@ -1369,7 +1370,7 @@ static int nuttx_prepare(void)
 	for (int i = 0; i < LXP_NSLOT; i++)
 		g_slots[i].pid = -1;
 	if (nxsem_init(&g_ev, 0, 0) < 0)
-		return -1;
+		return LXP_ERR_IO;
 	g_ev_initialized = true;
 	if (nuttx_attach_lxp_irq(LXP_IRQ_SVCALL, lxp_svc_handler, LXP_IRQ_INSTALLED_SVC) < 0 ||
 	    nuttx_attach_lxp_irq(LXP_IRQ_MEMFAULT, lxp_memfault_handler, LXP_IRQ_INSTALLED_MEM) <
@@ -1388,11 +1389,11 @@ static int nuttx_prepare(void)
 	}
 	if (PORT_CONFIG.runtime_reset)
 		PORT_CONFIG.runtime_reset(getpid());
-	return 0;
+	return LXP_OK;
 
-fail:
+fail: /* NuttX refused a vector or the scheduler-note driver */
 	nuttx_teardown();
-	return -1;
+	return LXP_ERR_IO;
 }
 
 static int nuttx_validate_static_mpu(void)

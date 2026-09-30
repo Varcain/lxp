@@ -55,6 +55,7 @@ typedef struct lxp_zephyr_port_config {
 	struct lxp_cortex_m_cache_geometry *cache_geometry;
 
 	/* Board/HAL and product-policy providers. */
+	/* Returns LXP_OK, or an lxp_err_t that the port's prepare() reports. */
 	int (*host_prepare)(void);
 	int (*time_us)(uint64_t *out);
 	int (*time_ns)(uint64_t *out);

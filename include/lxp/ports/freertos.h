@@ -62,13 +62,15 @@ typedef struct lxp_freertos_port_config {
 
 	/* Board/HAL and host-policy providers. Callbacks execute in the context
 	 * documented by lxp_os_ops_t unless noted otherwise. */
+	/* Returns LXP_OK, or an lxp_err_t that the port's prepare() reports. */
 	int (*host_prepare)(void);
 	/* Publish exactly one callback into the embedding system's FreeRTOS tick
 	 * hook for this run, then withdraw that same callback during teardown.
 	 * subscribe/unsubscribe execute in coordinator task context and must
 	 * synchronize against SysTick before returning. The subscribed callback
 	 * executes in SysTick ISR context and must not be called after unsubscribe
-	 * returns. Both operations are required. */
+	 * returns. Both operations are required. subscribe returns 0, or nonzero when
+	 * the hook already serves another callback (prepare() then fails LXP_ERR_BUSY). */
 	int (*tick_subscribe)(lxp_freertos_tick_fn callback);
 	void (*tick_unsubscribe)(lxp_freertos_tick_fn callback);
 	int (*time_us)(uint64_t *out);

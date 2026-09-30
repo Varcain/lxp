@@ -1120,9 +1120,10 @@ static int zephyr_prepare(void)
 		return LXP_ERR_INVALID_PARAM;
 	if (PORT_CONFIG.cache_geometry &&
 	    lxp_cortex_m_cache_geometry_read(PORT_CONFIG.cache_geometry) != 0)
-		return LXP_ERR_INVALID_PARAM;
-	if (PORT_CONFIG.host_prepare && PORT_CONFIG.host_prepare() != 0)
-		return LXP_ERR_INVALID_PARAM;
+		return LXP_ERR_NOT_SUPPORTED; /* a cache hierarchy the port cannot maintain */
+	int rc = PORT_CONFIG.host_prepare ? PORT_CONFIG.host_prepare() : LXP_OK;
+	if (rc != LXP_OK)
+		return rc;
 	if (PORT_CONFIG.rootfs_partition_enabled) {
 		g_rootfs_partition.start = PORT_CONFIG.rootfs_base;
 		g_rootfs_partition.size = PORT_CONFIG.rootfs_size;
