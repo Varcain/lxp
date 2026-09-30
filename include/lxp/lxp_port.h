@@ -148,19 +148,17 @@ typedef struct lxp_os_ops {
 	/* The engine owns prog_regions[]; return region `ridx`'s base. */
 	uint8_t *(*region)(int ridx);
 	/* Host task transitions are generation checked and synchronous. The engine
-	 * records `generation` when it creates a task and rejects park/resume/abort
-	 * requests for another slot incarnation. Return LXP_OK only after the host
-	 * transition has committed; a negative result leaves the prior host state
-	 * intact (or, for a failed create, leaves no task). The core publishes the
-	 * generation-qualified runnable capability before either spawn callback;
-	 * a port must likewise publish its native generation before an API which
-	 * can schedule the new task. */
-	int (*spawn_launch)(int sidx, uint32_t generation, int ridx,
-			    const lxp_guest_launch_t *launch);
-	int (*spawn_resume)(int sidx, uint32_t generation, int ridx,
-			    lxp_spawn_resume_mode_t mode, const struct lxp_resume_ctx *c,
-			    long r0val);
-	int (*abort_slot)(int sidx, uint32_t generation);
+	 * records the slot reference's generation when it creates a task and rejects
+	 * park/resume/abort requests for another slot incarnation. Return LXP_OK
+	 * only after the host transition has committed; a negative result leaves the
+	 * prior host state intact (or, for a failed create, leaves no task). The
+	 * core publishes the generation-qualified runnable capability before either
+	 * spawn callback; a port must likewise publish its native generation before
+	 * an API which can schedule the new task. */
+	int (*spawn_launch)(lxp_slot_ref_t slot, int ridx, const lxp_guest_launch_t *launch);
+	int (*spawn_resume)(lxp_slot_ref_t slot, int ridx, lxp_spawn_resume_mode_t mode,
+			    const struct lxp_resume_ctx *c, long r0val);
+	int (*abort_slot)(lxp_slot_ref_t slot);
 	/* Coordinator critical section: mask the program svc exception. The token
 	 * belongs to this enter/exit pair and must not be retained by the core. */
 	lxp_critical_token_t (*crit_enter)(void);
@@ -252,9 +250,8 @@ typedef struct lxp_os_ops {
 	 * LXP_SPAWN_RESUME_START. Both callbacks are required: deleting and
 	 * recreating a task on every blocking syscall is not a supported lifecycle. */
 	void (*park_entry)(void *token);
-	void *(*park_prepare)(int sidx, uint32_t generation,
-			      const struct lxp_resume_ctx *c);
-	int (*park_slot)(int sidx, uint32_t generation);
+	void *(*park_prepare)(lxp_slot_ref_t slot, const struct lxp_resume_ctx *c);
+	int (*park_slot)(lxp_slot_ref_t slot);
 
 	/* Immutable, separately versioned CPU-memory declaration plus its
 	 * live-hardware validator. lxp_run() first checks the portable contract,

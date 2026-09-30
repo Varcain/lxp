@@ -66,9 +66,10 @@ static void mock_coord_map(int region)
 	g_mock.coord_map_calls++;
 	g_mock.coord_map_region = region;
 }
-static int mock_spawn_launch(int sidx, uint32_t generation, int ridx,
-			     const lxp_guest_launch_t *launch)
+static int mock_spawn_launch(lxp_slot_ref_t slot, int ridx, const lxp_guest_launch_t *launch)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	(void)ridx;
 	g_mock.launch_calls++;
 	g_mock.launch_sidx = sidx;
@@ -85,9 +86,11 @@ static int mock_spawn_launch(int sidx, uint32_t generation, int ridx,
 	}
 	return LXP_OK;
 }
-static int mock_spawn_resume(int sidx, uint32_t generation, int ridx, lxp_spawn_resume_mode_t mode,
+static int mock_spawn_resume(lxp_slot_ref_t slot, int ridx, lxp_spawn_resume_mode_t mode,
 			     const struct lxp_resume_ctx *c, long r0)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	(void)ridx;
 	g_mock.resume_calls++;
 	g_mock.resume_sidx = sidx;
@@ -111,8 +114,10 @@ static int mock_spawn_resume(int sidx, uint32_t generation, int ridx, lxp_spawn_
 	}
 	return LXP_OK;
 }
-static int mock_abort_slot(int sidx, uint32_t generation)
+static int mock_abort_slot(lxp_slot_ref_t slot)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	(void)generation;
 	g_mock.abort_calls++;
 	g_mock.abort_sidx = sidx;
@@ -124,15 +129,19 @@ static int mock_abort_slot(int sidx, uint32_t generation)
 	}
 	return LXP_OK;
 }
-static void *mock_park_prepare(int sidx, uint32_t generation, const struct lxp_resume_ctx *c)
+static void *mock_park_prepare(lxp_slot_ref_t slot, const struct lxp_resume_ctx *c)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	(void)sidx;
 	(void)generation;
 	g_mock.park_prepare_calls++;
 	return (void *)c;
 }
-static int mock_park_slot(int sidx, uint32_t generation)
+static int mock_park_slot(lxp_slot_ref_t slot)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	(void)generation;
 	g_mock.park_calls++;
 	g_mock.park_sidx = sidx;

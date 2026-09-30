@@ -64,7 +64,7 @@ static int lxp_lifecycle_apply(const struct lxp_lifecycle_request *request)
 		if (!g_lxp_os_ops->abort_slot)
 			return -LXP_EINVAL;
 		lxp_slot_set_host_state(sidx, SLOT_EXITING);
-		rc = lxp_errno_from_err(g_lxp_os_ops->abort_slot(sidx, lxp_slot_generation(sidx)));
+		rc = lxp_errno_from_err(g_lxp_os_ops->abort_slot(lxp_slot_ref_at(sidx)));
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_DEAD);
 			lxp_slot_runnable_store(sidx, 0);
@@ -88,7 +88,7 @@ static int lxp_lifecycle_apply(const struct lxp_lifecycle_request *request)
 			return -LXP_EINVAL;
 		}
 		lxp_slot_set_host_state(sidx, SLOT_PARKING);
-		rc = lxp_errno_from_err(g_lxp_os_ops->park_slot(sidx, lxp_slot_generation(sidx)));
+		rc = lxp_errno_from_err(g_lxp_os_ops->park_slot(lxp_slot_ref_at(sidx)));
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_PARKED);
 			lxp_slot_runnable_store(sidx, 0);
@@ -121,8 +121,8 @@ static int lxp_lifecycle_apply(const struct lxp_lifecycle_request *request)
 		 * before spawn_resume() returns to the coordinator. */
 		lxp_slot_runnable_store(sidx, 1);
 		rc = lxp_errno_from_err(g_lxp_os_ops->spawn_resume(
-			sidx, lxp_slot_generation(sidx), request->region, mode,
-			request->data.resume.ctx, request->data.resume.r0));
+			lxp_slot_ref_at(sidx), request->region, mode, request->data.resume.ctx,
+			request->data.resume.r0));
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_RUNNING);
 			return LXP_OK;
@@ -147,9 +147,8 @@ static int lxp_lifecycle_apply(const struct lxp_lifecycle_request *request)
 		/* As with resume, publish before spawn_launch can start a task which
 		 * immediately traps back into the personality. */
 		lxp_slot_runnable_store(sidx, 1);
-		rc = lxp_errno_from_err(g_lxp_os_ops->spawn_launch(sidx, lxp_slot_generation(sidx),
-								   request->region,
-								   request->data.launch.launch));
+		rc = lxp_errno_from_err(g_lxp_os_ops->spawn_launch(
+			lxp_slot_ref_at(sidx), request->region, request->data.launch.launch));
 		if (rc == LXP_OK) {
 			lxp_slot_set_host_state(sidx, SLOT_RUNNING);
 			return LXP_OK;
@@ -167,7 +166,7 @@ void *lxp_lifecycle_prepare_park(int sidx, const struct lxp_resume_ctx *ctx)
 	if (!g_lxp_os_ops || !g_lxp_os_ops->park_prepare || !g_lxp_os_ops->park_slot || sidx < 0 ||
 	    sidx >= LXP_NSLOT)
 		return NULL;
-	return g_lxp_os_ops->park_prepare(sidx, lxp_slot_generation(sidx), ctx);
+	return g_lxp_os_ops->park_prepare(lxp_slot_ref_at(sidx), ctx);
 }
 
 int lxp_coordinator_abort_slot(int sidx)

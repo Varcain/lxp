@@ -399,8 +399,10 @@ static int slot_noentry(int argc, char *argv[])
 	return 0;
 }
 
-static void *nuttx_park_prepare(int sidx, uint32_t generation, const struct lxp_resume_ctx *ctx)
+static void *nuttx_park_prepare(lxp_slot_ref_t slot, const struct lxp_resume_ctx *ctx)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	(void)ctx;
 	if (sidx < 0 || sidx >= LXP_NSLOT || g_slots[sidx].pid < 0 ||
 	    g_slots[sidx].generation != generation)
@@ -452,14 +454,14 @@ static int spawn_task(int sidx, uintptr_t guest_sp)
  * without an RTOS range API that may escalate to a whole-cache operation.
  */
 
-static int nuttx_spawn_launch(int sidx, uint32_t generation, int ridx,
-			      const lxp_guest_launch_t *launch)
+static int nuttx_spawn_launch(lxp_slot_ref_t slot, int ridx, const lxp_guest_launch_t *launch)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0 || ridx < 0 || ridx >= LXP_NREG ||
 	    !launch || g_slots[sidx].pid >= 0)
 		return -1;
 	lxp_memory_policy_t policy;
-	lxp_slot_ref_t slot = lxp_slot_ref(sidx, generation);
 	if (lxp_slot_memory_policy(slot, &policy) != LXP_OK ||
 	    lxp_memory_policy_validate(&policy) != LXP_OK || policy.address_space.index != ridx ||
 	    policy.copied_text_base != launch->copied_text_base ||
@@ -493,9 +495,11 @@ static int nuttx_spawn_launch(int sidx, uint32_t generation, int ridx,
 	return 0;
 }
 
-static int nuttx_spawn_resume(int sidx, uint32_t generation, int ridx, lxp_spawn_resume_mode_t mode,
+static int nuttx_spawn_resume(lxp_slot_ref_t slot, int ridx, lxp_spawn_resume_mode_t mode,
 			      const struct lxp_resume_ctx *ctx, long r0val)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	(void)ridx;
 	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0)
 		return -1;
@@ -587,8 +591,10 @@ static int nuttx_spawn_resume(int sidx, uint32_t generation, int ridx, lxp_spawn
 	return 0;
 }
 
-static int nuttx_abort_slot(int sidx, uint32_t generation)
+static int nuttx_abort_slot(lxp_slot_ref_t slot)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT)
 		return -1;
 	if (g_slots[sidx].pid >= 0 && g_slots[sidx].generation != generation)
@@ -610,8 +616,10 @@ static int nuttx_abort_slot(int sidx, uint32_t generation)
 	return 0;
 }
 
-static int nuttx_park_slot(int sidx, uint32_t generation)
+static int nuttx_park_slot(lxp_slot_ref_t slot)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT || !lxp_slot_ref_is_runnable(task_slot_ref(sidx)) ||
 	    g_slots[sidx].pid < 0 || g_slots[sidx].generation != generation)
 		return -1;

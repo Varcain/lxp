@@ -489,8 +489,10 @@ static void zephyr_guest_patch_initial_frame(struct k_thread *thread)
 	esf->basic.r15 = (uintptr_t)zephyr_guest_initial_enter & ~1u;
 }
 
-static void *zephyr_park_prepare(int sidx, uint32_t generation, const struct lxp_resume_ctx *ctx)
+static void *zephyr_park_prepare(lxp_slot_ref_t slot, const struct lxp_resume_ctx *ctx)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	ARG_UNUSED(ctx);
 	if (sidx < 0 || sidx >= LXP_NSLOT || !g_slots[sidx].tid ||
 	    g_slots[sidx].generation != generation)
@@ -698,9 +700,10 @@ static int zephyr_random_fill(void *buf, size_t len)
 }
 
 
-static int zephyr_spawn_launch(int sidx, uint32_t generation, int ridx,
-			       const lxp_guest_launch_t *launch)
+static int zephyr_spawn_launch(lxp_slot_ref_t slot, int ridx, const lxp_guest_launch_t *launch)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0 || !launch || g_slots[sidx].tid)
 		return -1;
 	if (setup_domain(sidx, generation, ridx) != 0) {
@@ -710,11 +713,11 @@ static int zephyr_spawn_launch(int sidx, uint32_t generation, int ridx,
 	/* Reuse the complete-context trampoline for every image. The core owns
 	 * FDPIC register semantics; this seam only translates the launch record
 	 * into Zephyr's native task entry. */
-	struct lxp_resume_ctx *slot = zephyr_guest_resume_slot(launch->r[13]);
-	lxp_resume_ctx_from_launch(slot, launch);
+	struct lxp_resume_ctx *resume = zephyr_guest_resume_slot(launch->r[13]);
+	lxp_resume_ctx_from_launch(resume, launch);
 	g_slots[sidx].tid = k_thread_create(&g_thread_storage[sidx], g_tramp_stacks[sidx],
 					    K_THREAD_STACK_SIZEOF(g_tramp_stacks[sidx]),
-					    resume_tramp, (void *)(uintptr_t)launch->r[0], slot,
+					    resume_tramp, (void *)(uintptr_t)launch->r[0], resume,
 					    NULL, PORT_CONFIG.guest_priority, K_USER, K_FOREVER);
 	zephyr_guest_patch_initial_frame(g_slots[sidx].tid);
 	{ /* Diagnostic task name; CPU attribution uses the native thread identity. */
@@ -733,10 +736,11 @@ static int zephyr_spawn_launch(int sidx, uint32_t generation, int ridx,
 	return 0;
 }
 
-static int zephyr_spawn_resume(int sidx, uint32_t generation, int ridx,
-			       lxp_spawn_resume_mode_t mode, const struct lxp_resume_ctx *ctx,
-			       long r0val)
+static int zephyr_spawn_resume(lxp_slot_ref_t slot, int ridx, lxp_spawn_resume_mode_t mode,
+			       const struct lxp_resume_ctx *ctx, long r0val)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0)
 		return -1;
 	if (mode == LXP_SPAWN_RESUME_PARKED) {
@@ -793,11 +797,11 @@ static int zephyr_spawn_resume(int sidx, uint32_t generation, int ridx,
 	 * partitions; STM32F746 uses stack plus three. A separate shared partition
 	 * would exceed the AN521 dynamic-region budget and drop executable kernel
 	 * text. */
-	struct lxp_resume_ctx *slot = zephyr_guest_resume_slot(ctx->sp);
-	*slot = *ctx;
+	struct lxp_resume_ctx *resume = zephyr_guest_resume_slot(ctx->sp);
+	*resume = *ctx;
 	g_slots[sidx].tid = k_thread_create(&g_thread_storage[sidx], g_tramp_stacks[sidx],
 					    K_THREAD_STACK_SIZEOF(g_tramp_stacks[sidx]),
-					    resume_tramp, (void *)r0val, slot, NULL,
+					    resume_tramp, (void *)r0val, resume, NULL,
 					    PORT_CONFIG.guest_priority, K_USER, K_FOREVER);
 	zephyr_guest_patch_initial_frame(g_slots[sidx].tid);
 	{ /* Diagnostic task name; CPU attribution uses the native thread identity. */
@@ -913,8 +917,10 @@ void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
 	k_fatal_halt(reason);
 }
 
-static int zephyr_abort_slot(int sidx, uint32_t generation)
+static int zephyr_abort_slot(lxp_slot_ref_t slot)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT)
 		return -1;
 	if (g_slots[sidx].tid && g_slots[sidx].generation != generation)
@@ -928,8 +934,10 @@ static int zephyr_abort_slot(int sidx, uint32_t generation)
 	return 0;
 }
 
-static int zephyr_park_slot(int sidx, uint32_t generation)
+static int zephyr_park_slot(lxp_slot_ref_t slot)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT || !lxp_slot_ref_is_runnable(task_slot_ref(sidx)) ||
 	    !g_slots[sidx].tid || g_slots[sidx].generation != generation)
 		return -1;

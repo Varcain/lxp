@@ -609,8 +609,10 @@ static struct resume_desc *stash_desc(int sidx, const struct lxp_resume_ctx *ctx
 
 /* Exception-side half of the persistent handoff. The descriptor remains in the
  * task's user-readable bootstrap-stack MPU region while it is suspended. */
-static void *freertos_park_prepare(int sidx, uint32_t generation, const struct lxp_resume_ctx *ctx)
+static void *freertos_park_prepare(lxp_slot_ref_t slot, const struct lxp_resume_ctx *ctx)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT || !g_slots[sidx].tid ||
 	    g_slots[sidx].generation != generation)
 		return NULL;
@@ -804,9 +806,10 @@ static int freertos_spawn_common(int sidx, uint32_t generation, int ridx, struct
 
 /* ---- the vtable: FreeRTOS task spawn --------------------------------------- */
 
-static int freertos_spawn_launch(int sidx, uint32_t generation, int ridx,
-				 const lxp_guest_launch_t *launch)
+static int freertos_spawn_launch(lxp_slot_ref_t slot, int ridx, const lxp_guest_launch_t *launch)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0 || !launch || g_slots[sidx].tid)
 		return -1;
 	g_slots[sidx].park_desc = NULL;
@@ -822,10 +825,11 @@ static int freertos_spawn_launch(int sidx, uint32_t generation, int ridx,
 	return freertos_spawn_common(sidx, generation, ridx, d);
 }
 
-static int freertos_spawn_resume(int sidx, uint32_t generation, int ridx,
-				 lxp_spawn_resume_mode_t mode, const struct lxp_resume_ctx *ctx,
-				 long r0val)
+static int freertos_spawn_resume(lxp_slot_ref_t slot, int ridx, lxp_spawn_resume_mode_t mode,
+				 const struct lxp_resume_ctx *ctx, long r0val)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT || generation == 0)
 		return -1;
 	struct resume_desc *d = g_slots[sidx].park_desc;
@@ -973,8 +977,10 @@ static int freertos_guest_stack_usage(size_t *used, size_t *size)
 	return LXP_OK;
 }
 
-static int freertos_abort_slot(int sidx, uint32_t generation)
+static int freertos_abort_slot(lxp_slot_ref_t slot)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT)
 		return -1;
 	if (g_slots[sidx].tid && g_slots[sidx].generation != generation)
@@ -1001,8 +1007,10 @@ static int freertos_abort_slot(int sidx, uint32_t generation)
 	return 0;
 }
 
-static int freertos_park_slot(int sidx, uint32_t generation)
+static int freertos_park_slot(lxp_slot_ref_t slot)
 {
+	int sidx = slot.index;
+	uint32_t generation = slot.generation;
 	if (sidx < 0 || sidx >= LXP_NSLOT || !lxp_slot_ref_is_runnable(task_slot_ref(sidx)) ||
 	    !g_slots[sidx].tid || g_slots[sidx].generation != generation)
 		return -1;
