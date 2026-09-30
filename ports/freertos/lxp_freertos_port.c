@@ -980,14 +980,10 @@ static void freertos_coord_map(int ridx)
 	const uint32_t attr = portMPU_REGION_READ_WRITE | portMPU_REGION_EXECUTE_NEVER |
 			      ((uint32_t)PORT_CONFIG.common.guest_memory_texscb
 			       << portMPU_RASR_TEX_S_C_B_LOCATION);
-	/* PMSAv7 RASR: ENABLE=bit0, SIZE field=log2(bytes)-1 in bits[5:1]. The pool arrays
-	 * are size-aligned (see prog_regions/dyn_pools), so each base is region-aligned. */
-	const uint32_t prog_rasr =
-		1u | (((uint32_t)(31 - __builtin_clz((unsigned)LXP_PROG_REGION_SIZE)) - 1u) << 1) |
-		attr;
-	const uint32_t dyn_rasr =
-		1u | (((uint32_t)(31 - __builtin_clz((unsigned)LXP_DYN_POOL_SIZE)) - 1u) << 1) |
-		attr;
+	/* The pool arrays are size-aligned (see prog_regions/dyn_pools), so each base is
+	 * region-aligned. */
+	const uint32_t prog_rasr = lxp_cortex_m_mpu_rasr_size(LXP_PROG_REGION_SIZE) | attr;
+	const uint32_t dyn_rasr = lxp_cortex_m_mpu_rasr_size(LXP_DYN_POOL_SIZE) | attr;
 
 	/* Record in the TCB FIRST so a preemption mid-service restores this same mapping
 	 * (the port reprograms configurable regions from the TCB on switch-in); then write
@@ -1354,8 +1350,6 @@ static void freertos_rootfs_window(const void *base, size_t len)
 	 * next context switch. Clear stale coordinator pool overlays from regions 0/1, then install
 	 * the bounded NC QSPI view before the very next cpio read. Doing it directly
 	 * avoids forcing a first context switch that trips the FreeRTOS stack-overflow guard. */
-	unsigned l2 =
-		31u - (unsigned)__builtin_clz((unsigned)len); /* log2(len); len is a power of 2 */
 	volatile uint32_t *const mpu_rbar = &LXP_CORTEX_M_MPU_RBAR;
 	volatile uint32_t *const mpu_rasr = &LXP_CORTEX_M_MPU_RASR;
 	*mpu_rbar = (1u << 4) /* VALID */ | 0u /* region 0 */;
@@ -1363,7 +1357,7 @@ static void freertos_rootfs_window(const void *base, size_t len)
 	*mpu_rbar = (1u << 4) /* VALID */ | 1u /* region 1 */;
 	*mpu_rasr = 0u;
 	*mpu_rbar = (uint32_t)(uintptr_t)base | (1u << 4) /* VALID */ | rootfs_region;
-	*mpu_rasr = 1u /* ENABLE */ | ((l2 - 1u) << 1) /* SIZE field */ | par;
+	*mpu_rasr = lxp_cortex_m_mpu_rasr_size(len) | par;
 	lxp_cortex_m_dsb();
 	lxp_cortex_m_isb();
 }

@@ -177,6 +177,7 @@ static void test_mpu_rasr_encodes_what_decode_reads(void **state)
 	for (unsigned log2 = 5u; log2 <= 32u; log2++) {
 		uint64_t size = UINT64_C(1) << log2;
 		struct lxp_cortex_m_mpu_region r;
+		assert_int_equal(lxp_cortex_m_mpu_rasr_size(size), 1u | ((log2 - 1u) << 1));
 		uint32_t rasr = lxp_cortex_m_mpu_rasr(size, 3u, 0x0bu, 1, 0x81u);
 		assert_int_equal(lxp_cortex_m_mpu_region_decode(0u, rasr, &r), 0);
 		assert_true(r.enabled);
@@ -189,7 +190,10 @@ static void test_mpu_rasr_encodes_what_decode_reads(void **state)
 	assert_int_equal(lxp_cortex_m_mpu_rasr(16u, 3u, 0u, 0, 0u), 0u);
 	assert_int_equal(lxp_cortex_m_mpu_rasr(48u, 3u, 0u, 0, 0u), 0u);
 	assert_int_equal(lxp_cortex_m_mpu_rasr(UINT64_C(1) << 33, 3u, 0u, 0, 0u), 0u);
-	/* A 256 KiB read/write normal-memory region, as the ports encode it by hand. */
+	assert_int_equal(lxp_cortex_m_mpu_rasr_size(16u), 0u);
+	assert_int_equal(lxp_cortex_m_mpu_rasr_size(48u), 0u);
+	assert_int_equal(lxp_cortex_m_mpu_rasr_size(UINT64_C(1) << 33), 0u);
+	/* A 256 KiB read/write normal-memory region, bit by bit. */
 	assert_int_equal(lxp_cortex_m_mpu_rasr(0x40000u, 3u, 0x06u, 0, 0u),
 			 1u | (17u << 1) | (0x06u << 16) | (3u << 24));
 }

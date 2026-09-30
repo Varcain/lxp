@@ -91,13 +91,6 @@ extern dq_queue_t g_stoppedtasks;
 #define LXP_IRQ_BUSFAULT 5 /* == NuttX's NVIC_IRQ_BUSFAULT */
 #define LXP_IRQ_USGFAULT 6 /* == NuttX's NVIC_IRQ_USAGEFAULT (undefined instr, bad control flow) */
 
-/* ARMv7-M MPU RASR SIZE for a power-of-2 region size. The region spans
- * 2^(FIELD+1) bytes, so FIELD = log2(size) - 1; RASR carries it at bits [5:1].
- * _FIELD gives the raw value (for code that shifts it itself), the other the
- * already-positioned one. */
-#define LXP_MPU_RASR_SIZE_FIELD(sz) (30u - (unsigned)__builtin_clz((unsigned)(sz)))
-#define LXP_MPU_RASR_SIZE(sz) (LXP_MPU_RASR_SIZE_FIELD(sz) << 1)
-
 /* CONTROL.nPRIV — the unprivileged-thread-mode bit we OR into a program task's saved CONTROL so it
  * runs UNPRIVILEGED (restricted to the MPU regions). arch/arm/include/armv7-m/irq.h defines this and
  * REG_CONTROL (reached via <nuttx/irq.h>); restated as a fallback since it is otherwise off the app
@@ -383,8 +376,7 @@ static int nuttx_map_device(int sidx, uintptr_t addr, size_t size, unsigned attr
 		.addr = addr,
 		.size = size,
 		.rbar = (uint32_t)(addr & ~(uintptr_t)(rsz - 1u)),
-		.rasr = (1u << 0) | LXP_MPU_RASR_SIZE(rsz) | (texscb << 16) | (0x3u << 24) |
-			(1u << 28),
+		.rasr = lxp_cortex_m_mpu_rasr(rsz, 3u, (uint8_t)texscb, 1, 0u),
 		.attrs = (uint8_t)attrs,
 		.used = 1,
 	};
@@ -869,9 +861,7 @@ static void lxp_mpu_init(void)
 	 * the slot's prepared policy, so a running program sees only its own region. */
 	*mpu_rnr = 0;
 	*mpu_rbar = (uint32_t)code->base;
-	*mpu_rasr = (1u << 0) | LXP_MPU_RASR_SIZE(code->size) |
-		    ((uint32_t)code->subregion_disable << 8) | ((uint32_t)code->texscb << 16) |
-		    (0x2u << 24);
+	*mpu_rasr = lxp_cortex_m_mpu_rasr(code->size, 2u, code->texscb, 0, code->subregion_disable);
 	/* Region 1: the WHOLE program pool, with the same Normal-memory attributes
 	 * as the per-guest overlays, but PRIVILEGED-ONLY (AP=0b001). This base lets
 	 * the privileged coordinator touch ANY program's pool region; the
@@ -879,16 +869,13 @@ static void lxp_mpu_init(void)
 	 * A host may disable subregions which belong to another native subsystem. */
 	*mpu_rnr = 1;
 	*mpu_rbar = (uint32_t)pool->base;
-	*mpu_rasr = (1u << 0) | LXP_MPU_RASR_SIZE(pool->size) |
-		    ((uint32_t)pool->subregion_disable << 8) | ((uint32_t)pool->texscb << 16) |
-		    (0x1u << 24) | (1u << 28);
+	*mpu_rasr = lxp_cortex_m_mpu_rasr(pool->size, 1u, pool->texscb, 1, pool->subregion_disable);
 	/* Region 4: optional shared rootfs/XIP window, unprivileged RO+X. */
 	if (rootfs->enabled) {
 		*mpu_rnr = 4;
 		*mpu_rbar = (uint32_t)rootfs->base;
-		*mpu_rasr = (1u << 0) | LXP_MPU_RASR_SIZE(rootfs->size) |
-			    ((uint32_t)rootfs->subregion_disable << 8) |
-			    ((uint32_t)rootfs->texscb << 16) | (0x2u << 24);
+		*mpu_rasr = lxp_cortex_m_mpu_rasr(rootfs->size, 2u, rootfs->texscb, 0,
+						  rootfs->subregion_disable);
 	}
 	/* Device regions are per-slot and installed by lxp_note_resume(). Disable
 	 * both before the first guest so a repeated run cannot inherit the previous
@@ -969,13 +956,11 @@ static int nuttx_prepare_profile(int sidx, const lxp_memory_policy_t *policy)
 		writable_size -= policy->copied_text_size;
 	}
 	prepared->rbar[0] = (uint32_t)program_base;
-	prepared->rasr[0] = (1u << 0) | LXP_MPU_RASR_SIZE(writable_size) |
-			    ((uint32_t)PORT_CONFIG.common.guest_memory_texscb << 16) |
-			    (0x3u << 24) | (1u << 28);
+	prepared->rasr[0] = lxp_cortex_m_mpu_rasr(writable_size, 3u,
+						  PORT_CONFIG.common.guest_memory_texscb, 1, 0u);
 	prepared->rbar[1] = (uint32_t)(uintptr_t)dyn_pools[ridx];
-	prepared->rasr[1] = (1u << 0) | LXP_MPU_RASR_SIZE(LXP_DYN_POOL_SIZE) |
-			    ((uint32_t)PORT_CONFIG.common.guest_memory_texscb << 16) |
-			    (0x3u << 24) | (1u << 28);
+	prepared->rasr[1] = lxp_cortex_m_mpu_rasr(LXP_DYN_POOL_SIZE, 3u,
+						  PORT_CONFIG.common.guest_memory_texscb, 1, 0u);
 
 	unsigned caps = 0;
 	for (unsigned i = 0; i < LXP_DEVICE_MPU_COUNT; i++) {
@@ -997,9 +982,9 @@ static int nuttx_prepare_profile(int sidx, const lxp_memory_policy_t *policy)
 		/* The global profile remains installed while privileged coordinator
 		 * code runs. AP=2 therefore keeps privileged write access for a later
 		 * reload while granting the guest read-only execution. */
-		prepared->rasr[4] = (1u << 0) | LXP_MPU_RASR_SIZE(policy->copied_text_size) |
-				    ((uint32_t)PORT_CONFIG.common.guest_memory_texscb << 16) |
-				    (0x2u << 24);
+		prepared->rasr[4] =
+			lxp_cortex_m_mpu_rasr(policy->copied_text_size, 2u,
+					      PORT_CONFIG.common.guest_memory_texscb, 0, 0u);
 	}
 
 	const struct lxp_cortex_m_mpu_expectation program = {
