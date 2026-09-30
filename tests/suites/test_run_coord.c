@@ -1225,6 +1225,7 @@ static void test_exec_rejects_unloadable_image_without_free_region(void **state)
 	static const uint8_t passwd[] = "root:x:0:0:root:/root:/bin/sh\n";
 	const lxp_file_t rootfs[] = {{"/etc/passwd", passwd, sizeof(passwd) - 1, 0100644}};
 	lxp_run_config_t cfg = {.rootfs = rootfs, .rootfs_count = 1};
+	g_lxp_rt.cfg = &cfg;
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	memset(&g_mock_exec_captures[0], 0, sizeof(g_mock_exec_captures[0]));
 	lxp_proc_bind_exec_capture(proc, &g_mock_exec_captures[0]);
@@ -1232,7 +1233,7 @@ static void test_exec_rejects_unloadable_image_without_free_region(void **state)
 	assert_int_equal(lxp_intent_begin(proc, &(lxp_intent_t){.kind = LXP_INTENT_EXEC}), 0);
 	lxp_mm_t *mm = proc->mm;
 
-	lxp_handle_exec(&cfg, 0);
+	lxp_handle_exec(0);
 
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_sidx, 0);
@@ -2266,10 +2267,11 @@ static void test_console_interrupt_poll_keeps_typeahead(void **state)
 	lxp_proc_t *p = make_console_reader(2, &buf);
 	const lxp_run_config_t cfg = {.read_fn = script_console_read,
 				      .console_poll = script_console_poll};
+	g_lxp_rt.cfg = &cfg;
 	console_script("ro\003t\r", 5);
 
 	for (int i = 0; i < 5; i++)
-		(void)lxp_scan_blocked(&cfg, 1);
+		(void)lxp_scan_blocked(1);
 	assert_int_equal(g_console_script.pos, 5);
 	assert_true(p->pending_sigs & lxp_sig_bit(LXP_SIGINT));
 
@@ -2291,12 +2293,13 @@ static void test_console_interrupt_poll_backpressure(void **state)
 	(void)make_console_reader(2, &buf);
 	const lxp_run_config_t cfg = {.read_fn = script_console_read,
 				      .console_poll = script_console_poll};
+	g_lxp_rt.cfg = &cfg;
 	static char input[LXP_CONSOLE_TYPEAHEAD + 8];
 	memset(input, 'x', sizeof(input));
 	console_script(input, sizeof(input));
 
 	for (size_t i = 0; i < sizeof(input); i++)
-		(void)lxp_scan_blocked(&cfg, 1);
+		(void)lxp_scan_blocked(1);
 	assert_int_equal(g_console_script.pos, LXP_CONSOLE_TYPEAHEAD);
 }
 
@@ -2309,8 +2312,9 @@ static void test_console_poll_reports_queued_typeahead(void **state)
 	lxp_proc_t *p = make_console_reader(2, &buf);
 	const lxp_run_config_t cfg = {.read_fn = script_console_read,
 				      .console_poll = script_console_poll};
+	g_lxp_rt.cfg = &cfg;
 	console_script("k", 1);
-	(void)lxp_scan_blocked(&cfg, 1);
+	(void)lxp_scan_blocked(1);
 	assert_false(script_console_poll(NULL));
 
 	lxp_pollfd *pfd = (lxp_pollfd *)(void *)(buf + 64);
@@ -2601,13 +2605,14 @@ static void test_coordinator_claim_rotates_fairly_and_discards_stale_hints(void 
 static void test_primary_wait_handler_applies_park_outcome(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	const int slot = 2;
 	make_valid_running_slot(slot, 2);
 	g_lxp_rt.slots[slot].proc.wait.kind = LXP_WAIT_TIMER;
 	int next_pid = 10;
 
 	struct lxp_primary_result result =
-		lxp_handle_primary_event(&g_mock_cfg, slot, LXP_EV_SLEEP, &next_pid);
+		lxp_handle_primary_event(slot, LXP_EV_SLEEP, &next_pid);
 	assert_int_equal(result.flow, LXP_PRIMARY_HANDLED);
 	assert_int_equal(g_mock.park_calls, 1);
 	assert_int_equal(g_mock.park_sidx, slot);
@@ -2619,10 +2624,11 @@ static void test_primary_wait_handler_applies_park_outcome(void **state)
 static void test_primary_handler_rejects_out_of_range_slot(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	int next_pid = 10;
 
 	struct lxp_primary_result result = lxp_handle_primary_event(
-		&g_mock_cfg, LXP_NSLOT, LXP_EV_EXIT, &next_pid);
+		LXP_NSLOT, LXP_EV_EXIT, &next_pid);
 	assert_int_equal(result.flow, LXP_PRIMARY_SCAN_BLOCKED);
 	assert_int_equal(g_mock.abort_calls, 0);
 	assert_int_equal(next_pid, 10);
@@ -2631,6 +2637,7 @@ static void test_primary_handler_rejects_out_of_range_slot(void **state)
 static void test_blocked_timer_handler_resumes_expired_wait(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	const int slot = 3;
 	make_valid_running_slot(slot, 3);
 	assert_int_equal(coordinator_park_slot(slot), LXP_OK);
@@ -2641,7 +2648,7 @@ static void test_blocked_timer_handler_resumes_expired_wait(void **state)
 					}),
 			 LXP_OK);
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 50);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(50);
 	assert_true(scan.any_alive);
 	assert_true(scan.any_busy);
 	assert_true(scan.progress);
@@ -2710,6 +2717,7 @@ static void test_reap_wakes_blocking_parent(void **state)
 static void test_stopped_wait_completion_is_retained_until_sigcont(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	int status = -1;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *parent = &g_lxp_rt.slots[0].proc;
@@ -2735,7 +2743,7 @@ static void test_stopped_wait_completion_is_retained_until_sigcont(void **state)
 	assert_int_equal(g_mock.resume_calls, 0);
 
 	lxp_signal_latch(parent, LXP_SIGCONT);
-	assert_true(lxp_scan_blocked(&g_mock_cfg, 1).progress);
+	assert_true(lxp_scan_blocked(1).progress);
 	assert_false(parent->stopped);
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_r0, 7);
@@ -3816,6 +3824,7 @@ static void test_deferred_same_slot_rejects_overwrite(void **state)
 static void test_deferred_completion_takes_pending_stop_without_resume(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	proc->pid = 7;
@@ -3838,7 +3847,7 @@ static void test_deferred_completion_takes_pending_stop_without_resume(void **st
 	assert_int_equal(g_mock.resume_calls, 0);
 
 	lxp_signal_latch(proc, LXP_SIGCONT);
-	assert_true(lxp_scan_blocked(&g_mock_cfg, 1).progress);
+	assert_true(lxp_scan_blocked(1).progress);
 	assert_false(proc->stopped);
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_r0, -LXP_ENOSYS);
@@ -3873,6 +3882,7 @@ static void test_deferred_signal_cancels_before_execute(void **state)
 static void test_signal_interrupts_blocked_netfs_before_retry(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *p = &g_lxp_rt.slots[0].proc;
 	assert_int_equal(lxp_wait_begin(p,
@@ -3884,7 +3894,7 @@ static void test_signal_interrupts_blocked_netfs_before_retry(void **state)
 	assert_int_equal(coordinator_park_slot(0), LXP_OK);
 	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 
 	assert_true(scan.progress);
 	assert_int_equal(p->wait.kind, LXP_WAIT_NONE);
@@ -3903,6 +3913,7 @@ static void test_signal_interrupts_blocked_netfs_before_retry(void **state)
 static void test_caught_signal_waits_for_hostfs_completion(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	proc->sighand->handler[LXP_SIGALRM] = 0x1234u;
@@ -3917,7 +3928,7 @@ static void test_caught_signal_waits_for_hostfs_completion(void **state)
 	assert_int_equal(coordinator_park_slot(0), LXP_OK);
 	lxp_signal_latch(proc, LXP_SIGALRM);
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 
 	assert_true(scan.progress);
 	assert_int_equal(proc->wait.kind, LXP_WAIT_NONE);
@@ -4056,6 +4067,7 @@ struct protocol_model {
 
 static int protocol_apply(struct protocol_model *model, enum protocol_command command)
 {
+	g_lxp_rt.cfg = &g_mock_cfg;
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 
 	switch (command) {
@@ -4084,7 +4096,7 @@ static int protocol_apply(struct protocol_model *model, enum protocol_command co
 		if (model->phase != PROTOCOL_PARKED)
 			return 0;
 		proc->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
-		assert_true(lxp_scan_blocked(&g_mock_cfg, 1).progress);
+		assert_true(lxp_scan_blocked(1).progress);
 		assert_int_equal(proc->wait.kind, LXP_WAIT_NONE);
 		assert_int_equal(proc->intent.kind, LXP_INTENT_EXIT);
 		model->phase = PROTOCOL_EXIT_PENDING;
@@ -4198,6 +4210,7 @@ static long console_read_sigint(void *ctx, int fd, void *buf, size_t len)
 static void test_blocked_scan_reports_wait_policy(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	proc->console_poll = console_not_ready;
@@ -4210,7 +4223,7 @@ static void test_blocked_scan_reports_wait_policy(void **state)
 			 LXP_OK);
 	assert_int_equal(coordinator_park_slot(0), LXP_OK);
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 	/* The coordinator decides whether this class needs polling from the
 	 * run-scoped subscription; the scan reports the class without conflating it
 	 * with generic poll-only waits. */
@@ -4230,8 +4243,9 @@ static void test_async_console_signal_is_scan_progress(void **state)
 		.read_fn = console_read_sigint,
 		.console_poll = console_ready,
 	};
+	g_lxp_rt.cfg = &cfg;
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 	assert_true(scan.progress);
 	assert_true(proc->pending_sigs & lxp_sig_bit(LXP_SIGINT));
 }
@@ -4468,16 +4482,17 @@ static void test_console_signal_chars_follow_termios(void **state)
 		.read_fn = console_read_byte,
 		.console_poll = console_ready,
 	};
+	g_lxp_rt.cfg = &cfg;
 	const uint64_t tstp = lxp_sig_bit(LXP_SIGTSTP);
 	g_console_byte = 26; /* ^Z */
 
-	assert_int_equal(lxp_console_poll_interrupts(&cfg), 1);
+	assert_int_equal(lxp_console_poll_interrupts(), 1);
 	assert_true(proc->pending_sigs & tstp);
 	assert_false(lxp_console_input_ready(NULL)); /* the signal byte is consumed */
 
 	proc->pending_sigs = 0;
 	tty->termios.c_cc[LXP_VSUSP] = 0; /* _POSIX_VDISABLE */
-	assert_int_equal(lxp_console_poll_interrupts(&cfg), 0);
+	assert_int_equal(lxp_console_poll_interrupts(), 0);
 	assert_false(proc->pending_sigs & tstp);
 	assert_true(lxp_console_input_ready(NULL)); /* kept as typeahead */
 	uint8_t ch = 0;
@@ -4487,7 +4502,7 @@ static void test_console_signal_chars_follow_termios(void **state)
 
 	tty->termios.c_cc[LXP_VSUSP] = 26;
 	tty->termios.c_lflag &= ~LXP_ISIG;
-	assert_int_equal(lxp_console_poll_interrupts(&cfg), 0);
+	assert_int_equal(lxp_console_poll_interrupts(), 0);
 	assert_false(lxp_console_input_ready(NULL)); /* nothing read on the reader's behalf */
 	assert_false(proc->pending_sigs & tstp);
 }
@@ -4515,6 +4530,7 @@ static void test_console_sigtstp_targets_fg_group(void **state)
 static void test_running_stop_parks_at_boundary_and_continues(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	proc->pid = 7;
@@ -4536,7 +4552,7 @@ static void test_running_stop_parks_at_boundary_and_continues(void **state)
 	assert_int_equal(claimed.type, LXP_EV_STOP);
 	int next_pid = 8;
 	struct lxp_primary_result primary = lxp_handle_primary_event(
-		&g_mock_cfg, claimed.slot, claimed.type, &next_pid);
+		claimed.slot, claimed.type, &next_pid);
 	assert_int_equal(primary.flow, LXP_PRIMARY_HANDLED);
 	assert_int_equal(g_mock.park_calls, 1);
 	assert_int_equal(g_lxp_rt.slots[0].host_state, SLOT_PARKED);
@@ -4545,7 +4561,7 @@ static void test_running_stop_parks_at_boundary_and_continues(void **state)
 	lxp_signal_latch(proc, LXP_SIGSTOP);
 	lxp_signal_latch(proc, LXP_SIGTSTP);
 	lxp_signal_latch(proc, LXP_SIGCONT);
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 	assert_true(scan.progress);
 	assert_false(proc->stopped);
 	assert_int_equal(proc->stop_kind, LXP_STOP_NONE);
@@ -4583,6 +4599,7 @@ static void test_stop_continue_publication_preserves_generation_order(void **sta
 static void test_caught_sigcont_runs_after_boundary_resume(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	proc->pid = 7;
@@ -4599,11 +4616,11 @@ static void test_caught_sigcont_runs_after_boundary_resume(void **state)
 	unsigned cursor = 0;
 	struct lxp_claimed_event claimed = coordinator_claim_event(&cursor);
 	int next_pid = 8;
-	(void)lxp_handle_primary_event(&g_mock_cfg, claimed.slot, claimed.type, &next_pid);
+	(void)lxp_handle_primary_event(claimed.slot, claimed.type, &next_pid);
 	assert_int_equal(g_lxp_rt.slots[0].host_state, SLOT_PARKED);
 
 	lxp_signal_latch(proc, LXP_SIGCONT);
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 	assert_true(scan.progress);
 	assert_false(proc->stopped);
 	assert_int_equal(proc->wait.kind, LXP_WAIT_NONE);
@@ -4620,6 +4637,7 @@ static void test_caught_sigcont_runs_after_boundary_resume(void **state)
 static void test_caught_sigcont_interrupts_parked_wait(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	proc->sighand->handler[LXP_SIGCONT] = 0x1234u;
@@ -4634,14 +4652,14 @@ static void test_caught_sigcont_interrupts_parked_wait(void **state)
 	assert_int_equal(coordinator_park_slot(0), LXP_OK);
 	lxp_signal_latch(proc, LXP_SIGSTOP);
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 	assert_true(scan.progress);
 	assert_true(proc->stopped);
 	assert_int_equal(proc->stop_kind, LXP_STOP_PARKED);
 	assert_int_equal(g_mock.resume_calls, 0);
 
 	lxp_signal_latch(proc, LXP_SIGCONT);
-	scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	scan = lxp_scan_blocked(1);
 	assert_true(scan.progress);
 	assert_false(proc->stopped);
 	assert_int_equal(proc->wait.kind, LXP_WAIT_NONE);
@@ -4656,6 +4674,7 @@ static void test_caught_sigcont_interrupts_parked_wait(void **state)
 static void test_blocked_caught_sigcont_resumes_boundary_but_stays_pending(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	proc->pid = 7;
@@ -4672,10 +4691,10 @@ static void test_blocked_caught_sigcont_resumes_boundary_but_stays_pending(void 
 	unsigned cursor = 0;
 	struct lxp_claimed_event claimed = coordinator_claim_event(&cursor);
 	int next_pid = 8;
-	(void)lxp_handle_primary_event(&g_mock_cfg, claimed.slot, claimed.type, &next_pid);
+	(void)lxp_handle_primary_event(claimed.slot, claimed.type, &next_pid);
 	lxp_signal_latch(proc, LXP_SIGCONT);
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 	assert_true(scan.progress);
 	assert_false(proc->stopped);
 	assert_true(proc->pending_sigs & lxp_sig_bit(LXP_SIGCONT));
@@ -4688,6 +4707,7 @@ static void test_blocked_caught_sigcont_resumes_boundary_but_stays_pending(void 
 static void test_blocked_caught_sigcont_keeps_parked_wait(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	proc->sighand->handler[LXP_SIGCONT] = 0x1234u;
@@ -4700,11 +4720,11 @@ static void test_blocked_caught_sigcont_keeps_parked_wait(void **state)
 			 LXP_OK);
 	assert_int_equal(coordinator_park_slot(0), LXP_OK);
 	lxp_signal_latch(proc, LXP_SIGSTOP);
-	assert_true(lxp_scan_blocked(&g_mock_cfg, 1).progress);
+	assert_true(lxp_scan_blocked(1).progress);
 	assert_true(proc->stopped);
 
 	lxp_signal_latch(proc, LXP_SIGCONT);
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 	assert_true(scan.progress);
 	assert_false(proc->stopped);
 	assert_true(proc->pending_sigs & lxp_sig_bit(LXP_SIGCONT));
@@ -4716,6 +4736,7 @@ static void test_blocked_caught_sigcont_keeps_parked_wait(void **state)
 static void test_caught_sigcont_does_not_resume_vfork_owned_park(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	proc->sighand->handler[LXP_SIGCONT] = 0x1234u;
@@ -4726,7 +4747,7 @@ static void test_caught_sigcont_does_not_resume_vfork_owned_park(void **state)
 	proc->stop_sig = LXP_SIGSTOP;
 	lxp_signal_latch(proc, LXP_SIGCONT);
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 	assert_true(scan.progress);
 	assert_false(proc->stopped);
 	assert_true(proc->pending_sigs & lxp_sig_bit(LXP_SIGCONT));
@@ -4740,6 +4761,7 @@ static void test_caught_sigcont_does_not_resume_vfork_owned_park(void **state)
 static void test_stopped_vfork_parent_release_waits_for_sigcont(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	make_valid_running_slot(1, 1);
 	lxp_proc_t *parent = &g_lxp_rt.slots[0].proc;
@@ -4774,7 +4796,7 @@ static void test_stopped_vfork_parent_release_waits_for_sigcont(void **state)
 	assert_int_equal(g_mock.resume_calls, 0);
 
 	lxp_signal_latch(parent, LXP_SIGCONT);
-	assert_true(lxp_scan_blocked(&g_mock_cfg, 1).progress);
+	assert_true(lxp_scan_blocked(1).progress);
 	assert_false(parent->stopped);
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_r0, 7);
@@ -4783,6 +4805,7 @@ static void test_stopped_vfork_parent_release_waits_for_sigcont(void **state)
 static void test_sigkill_wins_over_sigcont_for_stopped_task(void **state)
 {
 	(void)state;
+	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	assert_int_equal(coordinator_park_slot(0), LXP_OK);
@@ -4793,7 +4816,7 @@ static void test_sigkill_wins_over_sigcont_for_stopped_task(void **state)
 	lxp_signal_latch(proc, LXP_SIGCONT);
 	lxp_signal_latch(proc, LXP_SIGKILL);
 
-	struct lxp_blocked_scan scan = lxp_scan_blocked(&g_mock_cfg, 1);
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
 	assert_true(scan.progress);
 	assert_false(proc->stopped);
 	assert_int_equal(proc->intent.kind, LXP_INTENT_EXIT);

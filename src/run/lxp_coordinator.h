@@ -195,11 +195,10 @@ lxp_region_ref_t region_ref_at(int region);
 void lxp_region_runtime_reset(void);
 
 void lxp_handle_fork(int parent_slot, int *next_pid);
-void lxp_handle_exec(const lxp_run_config_t *cfg, int slot);
+void lxp_handle_exec(int slot);
 struct lxp_exit_result lxp_handle_exit(int slot);
-struct lxp_primary_result lxp_handle_primary_event(const lxp_run_config_t *cfg, int slot,
-						   int event, int *next_pid);
-struct lxp_blocked_scan lxp_scan_blocked(const lxp_run_config_t *cfg, uint64_t now);
+struct lxp_primary_result lxp_handle_primary_event(int slot, int event, int *next_pid);
+struct lxp_blocked_scan lxp_scan_blocked(uint64_t now);
 void lxp_blocked_fair_reset(void);
 #if LXP_ENABLE_NETFS
 void lxp_blocked_complete_netfs_retry(int slot, lxp_proc_t *proc,

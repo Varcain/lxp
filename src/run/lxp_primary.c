@@ -7,8 +7,7 @@
 
 #include "run/lxp_coordinator.h"
 
-struct lxp_primary_result lxp_handle_primary_event(const lxp_run_config_t *cfg, int slot,
-						   int event, int *next_pid)
+struct lxp_primary_result lxp_handle_primary_event(int slot, int event, int *next_pid)
 {
 	struct lxp_primary_result result = {
 		.flow = LXP_PRIMARY_HANDLED,
@@ -44,7 +43,7 @@ struct lxp_primary_result lxp_handle_primary_event(const lxp_run_config_t *cfg, 
 		return result;
 
 	case LXP_EV_EXEC:
-		lxp_handle_exec(cfg, slot);
+		lxp_handle_exec(slot);
 		return result;
 
 	case LXP_EV_EXIT: {

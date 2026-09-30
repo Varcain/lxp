@@ -508,7 +508,7 @@ static int lxp_blocked_retry_console(int slot, lxp_proc_t *proc, struct lxp_bloc
 	return 0;
 }
 
-struct lxp_blocked_scan lxp_scan_blocked(const lxp_run_config_t *cfg, uint64_t now)
+struct lxp_blocked_scan lxp_scan_blocked(uint64_t now)
 {
 	struct lxp_blocked_scan scan = {
 		.next_deadline_us = UINT64_MAX,
@@ -610,7 +610,7 @@ struct lxp_blocked_scan lxp_scan_blocked(const lxp_run_config_t *cfg, uint64_t n
 
 	/* Async ^C/^Z for a foreground program that is not reading stdin; other
 	 * input read by the check is kept as typeahead for the next console read. */
-	if (!(scan.wait_policy & LXP_BLOCKED_WAIT_CONSOLE) && lxp_console_poll_interrupts(cfg))
+	if (!(scan.wait_policy & LXP_BLOCKED_WAIT_CONSOLE) && lxp_console_poll_interrupts())
 		scan.progress = 1;
 	return scan;
 }

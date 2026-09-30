@@ -272,8 +272,9 @@ LXP_EXEC_TXN_LINKAGE void exec_txn_abort(struct exec_txn *tx, long error, int re
 	tx->phase = EXEC_TXN_ABORTED;
 }
 
-void lxp_handle_exec(const lxp_run_config_t *cfg, int slot)
+void lxp_handle_exec(int slot)
 {
+	const lxp_run_config_t *cfg = g_lxp_rt.cfg;
 	lxp_proc_t *proc = lxp_slot_proc(slot);
 
 	/* Freeze the old image before copying its trusted capture. */
@@ -323,7 +324,7 @@ void lxp_handle_exec(const lxp_run_config_t *cfg, int slot)
 
 	image_txn_init(&tx.image, slot, tx.region, tx.new_ref);
 	tx.image_initialized = 1;
-	rc = image_txn_prepare(&tx.image, cfg, image, image_size, tx.pid, tx.ppid, argc,
+	rc = image_txn_prepare(&tx.image, image, image_size, tx.pid, tx.ppid, argc,
 			       scratch->argv, scratch->envp, remote_exec);
 	if (rc == LXP_OK && lifecycle_failpoint(LXP_FAIL_EXEC_IMAGE_PREPARED))
 		rc = -LXP_EIO;

@@ -31,10 +31,10 @@ void image_txn_init(struct image_txn *tx, int slot, lxp_region_ref_t region, lxp
 /* Load an FDPIC ELF and construct its process objects without publishing the
  * slot or starting a native task. @p remote_exec means executable text is
  * copied from a RAM staging buffer into the region. */
-int image_txn_prepare(struct image_txn *tx, const lxp_run_config_t *cfg,
-		      const uint8_t *data, size_t len, int pid, int ppid, int argc,
-		      const char *const argv[], const char *const envp[], int remote_exec)
+int image_txn_prepare(struct image_txn *tx, const uint8_t *data, size_t len, int pid, int ppid,
+		      int argc, const char *const argv[], const char *const envp[], int remote_exec)
 {
+	const lxp_run_config_t *cfg = g_lxp_rt.cfg;
 	int slot = tx->slot;
 	int region_index = tx->region.index;
 	if (!cfg || slot < 0 || slot >= LXP_NSLOT || region_index < 0 || region_index >= LXP_NREG ||
@@ -252,14 +252,14 @@ int image_txn_abort(struct image_txn *tx)
 	return LXP_OK;
 }
 
-int lxp_image_launch(const lxp_run_config_t *cfg, int slot,
+int lxp_image_launch(int slot,
 		     lxp_region_ref_t region, lxp_slot_ref_t owner, const uint8_t *data, size_t len,
 		     int pid, int ppid, int argc, const char *const argv[],
 		     const char *const envp[], int remote_exec)
 {
 	struct image_txn tx;
 	image_txn_init(&tx, slot, region, owner);
-	int rc = image_txn_prepare(&tx, cfg, data, len, pid, ppid, argc, argv, envp, remote_exec);
+	int rc = image_txn_prepare(&tx, data, len, pid, ppid, argc, argv, envp, remote_exec);
 	if (rc == LXP_OK)
 		rc = image_txn_publish(&tx);
 	if (rc == LXP_OK)

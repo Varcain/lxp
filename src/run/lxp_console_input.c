@@ -54,8 +54,9 @@ long lxp_console_read(lxp_proc_t *proc, int fd, void *buf, size_t len)
 	return rc;
 }
 
-int lxp_console_poll_interrupts(const lxp_run_config_t *cfg)
+int lxp_console_poll_interrupts(void)
 {
+	const lxp_run_config_t *cfg = g_lxp_rt.cfg;
 	const lxp_tty_t *tty = lxp_console_tty();
 	struct lxp_console_typeahead *ta = &g_lxp_rt.typeahead;
 	if (!(tty->termios.c_lflag & LXP_ISIG) || !cfg || !cfg->read_fn || !cfg->console_poll ||

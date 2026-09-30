@@ -47,7 +47,7 @@ long lxp_console_read(lxp_proc_t *proc, int fd, void *buf, size_t len);
 /* With ISIG on, read one pending byte: a signal character (VINTR, VSUSP) signals the
  * foreground group, anything else is queued as typeahead. Does not read while the
  * queue is full. Returns nonzero when a signal was raised. */
-int lxp_console_poll_interrupts(const struct lxp_run_config *cfg);
+int lxp_console_poll_interrupts(void);
 /* Restore the console tty's defaults and discard queued typeahead (run start). */
 void lxp_console_reset(void);
 

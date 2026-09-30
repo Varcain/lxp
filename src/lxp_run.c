@@ -1017,7 +1017,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	(void)region_reserve(0, slot_ref_at(0));
 	lxp_region_ref_t initial_region = region_ref_at(0);
 	lxp_slot_ref_t initial_owner = slot_ref_at(0);
-	if (lxp_image_launch(cfg, 0, initial_region, initial_owner, initial.data, initial.size,
+	if (lxp_image_launch(0, initial_region, initial_owner, initial.data, initial.size,
 			     1, 0, initial.argc, initial.argv, cfg->env, 0) != 0) {
 		goto launch_failed;
 	}
@@ -1088,7 +1088,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			es = 0;
 
 		struct lxp_primary_result primary =
-			lxp_handle_primary_event(cfg, es, et, &next_pid);
+			lxp_handle_primary_event(es, et, &next_pid);
 		if (primary.flow == LXP_PRIMARY_STOP) {
 			rc = primary.status;
 			break;
@@ -1105,7 +1105,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		/* No pending event: resume any sleeper whose deadline passed; assess liveness. */
 		uint64_t now = 0;
 		lxp_time_us(&now);
-		struct lxp_blocked_scan blocked = lxp_scan_blocked(cfg, now);
+		struct lxp_blocked_scan blocked = lxp_scan_blocked(now);
 		if (!blocked.any_alive) {
 			rc = 0;
 			break;
