@@ -1,0 +1,30 @@
+# Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# API reference for the public headers: `doxygen` from the repository root writes HTML to
+# build/doxygen/html. Only include/ and the docs are inputs; src/ is private.
+
+PROJECT_NAME           = lxp
+PROJECT_NUMBER         = 0.1.0
+PROJECT_BRIEF          = "A Linux personality for MMU-less microcontrollers"
+OUTPUT_DIRECTORY       = build/doxygen
+
+INPUT                  = README.md docs include
+RECURSIVE              = YES
+FILE_PATTERNS          = *.h *.md
+USE_MDFILE_AS_MAINPAGE = README.md
+STRIP_FROM_PATH        = include
+
+OPTIMIZE_OUTPUT_FOR_C  = YES
+JAVADOC_AUTOBRIEF      = YES
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = NO
+TYPEDEF_HIDES_STRUCT   = YES
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = NO
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_NO_PARAMDOC       = NO
