@@ -33,27 +33,22 @@
 #include "run/lxp_image.h"
 #include "run/lxp_initial.h"
 #include "run/lxp_coordinator.h"
-#include "run/lxp_runtime_test.h"
-
-#define TEST_RUNTIME (lxp_runtime_test_fixture())
-#define g_eng (*TEST_RUNTIME->engine)
-#define g_lifecycle_failpoint (*TEST_RUNTIME->lifecycle_failpoint)
-#define region_ref_at lxp_test_region_ref_at
-#define region_commit_address_space lxp_test_region_commit_address_space
-#define coordinator_wait_timeout lxp_test_coordinator_wait_timeout
-#define coordinator_teardown_all lxp_test_coordinator_teardown_all
-#define futex_has_corunner lxp_test_futex_has_corunner
-#define lxp_diag_reset_health lxp_test_diag_reset_health
-#define lxp_diag_checkpoint lxp_test_diag_checkpoint
-#define lxp_trap_publish lxp_test_trap_publish
-#define deferred_state_store lxp_test_deferred_state_store
-#define os_ops_valid lxp_test_os_ops_valid
-#define net_ops_valid lxp_test_net_ops_valid
-#define run_config_valid lxp_test_run_config_valid
-#define lxp_futex lxp_test_futex
-#define lxp_dispatch lxp_test_dispatch
+#include "lxp_run_internal.h"
+#include "run/lxp_diag.h"
+#include "run/lxp_runtime_store.h"
+#include "run/lxp_validate.h"
 
 static const lxp_net_ops_t *g_test_net_ops;
+
+/* The blocked-slot service selector, with the pending classes as a bit mask. */
+static int service_select(uint8_t pending_mask, const uint64_t oldest[LXP_SERVICE_CLASSES],
+			  uint64_t now)
+{
+	uint8_t pending[LXP_SERVICE_CLASSES];
+	for (int cls = 0; cls < LXP_SERVICE_CLASSES; cls++)
+		pending[cls] = (uint8_t)((pending_mask >> cls) & 1u);
+	return lxp_blocked_service_select(pending, oldest, now);
+}
 
 /* ---- mock engine ------------------------------------------------------------ */
 static struct {
@@ -711,9 +706,9 @@ static int reset_state(void **state)
 		g_lxp_rt.regions[r].lease_owner = lxp_slot_ref_none();
 	for (int s = 0; s < LXP_NSLOT; s++)
 		lxp_vfork_guard_reset(s);
-	g_eng = &g_mock_eng;
+	lxp_os_publish(&g_mock_eng);
 	g_lxp_rt.cfg = NULL;
-	g_lifecycle_failpoint = LXP_FAIL_NONE;
+	g_lxp_lifecycle_failpoint = LXP_FAIL_NONE;
 	lxp_trap_publish(0);
 	lxp_console_reset();
 	lxp_providers_publish(g_test_net_ops, NULL, NULL, NULL);
@@ -726,7 +721,7 @@ static void make_valid_running_slot(int slot, int region)
 	lxp_slot_ref_t owner = slot_ref_at(slot);
 	lxp_region_ref_t region_ref = region_reserve(region, owner);
 	assert_int_equal(region_ref.index, region);
-	assert_int_equal(region_commit_address_space(region_ref, owner), LXP_OK);
+	assert_int_equal(lxp_region_commit_address_space(region_ref, owner), LXP_OK);
 	g_lxp_rt.slots[slot].proc.alive = 1;
 	g_lxp_rt.slots[slot].proc.pid = slot + 1;
 	g_lxp_rt.slots[slot].proc.group->tgid = slot + 1;
@@ -742,7 +737,7 @@ static lxp_region_ref_t make_address_space_region(int region, int slot)
 	lxp_slot_ref_t owner = slot_ref_at(slot);
 	lxp_region_ref_t ref = region_reserve(region, owner);
 	assert_int_equal(ref.index, region);
-	assert_int_equal(region_commit_address_space(ref, owner), LXP_OK);
+	assert_int_equal(lxp_region_commit_address_space(ref, owner), LXP_OK);
 	return ref;
 }
 
@@ -1086,7 +1081,7 @@ static void test_fork_transaction_failpoints_restore_world(void **state)
 	};
 	for (size_t i = 0; i < sizeof(prepare_points) / sizeof(prepare_points[0]); i++) {
 		struct fork_txn tx;
-		g_lifecycle_failpoint = prepare_points[i];
+		g_lxp_lifecycle_failpoint = prepare_points[i];
 		assert_true(fork_txn_prepare(&tx, 0, 1, 0, 2) < 0);
 		fork_txn_abort(&tx);
 		fork_txn_abort(&tx); /* idempotent */
@@ -1102,7 +1097,7 @@ static void test_fork_transaction_failpoints_restore_world(void **state)
 	     point <= LXP_FAIL_FORK_PUBLISHED; point++) {
 		struct fork_txn tx;
 		assert_int_equal(fork_txn_prepare(&tx, 0, 1, 0, 2), LXP_OK);
-		g_lifecycle_failpoint = point;
+		g_lxp_lifecycle_failpoint = point;
 		int rc = fork_txn_count_child(&tx);
 		if (point >= LXP_FAIL_FORK_SNAPSHOT_ACQUIRED && rc == LXP_OK) {
 			tx.child->vfork_parent = tx.parent_ref;
@@ -1182,7 +1177,7 @@ static void test_exec_precommit_failpoints_preserve_old_image(void **state)
 	struct exec_txn tx;
 	exec_txn_init(&tx, 0);
 	assert_int_equal(exec_txn_validate_image(&tx, image, image_size, 0), LXP_OK);
-	g_lifecycle_failpoint = LXP_FAIL_EXEC_REGION_ACQUIRED;
+	g_lxp_lifecycle_failpoint = LXP_FAIL_EXEC_REGION_ACQUIRED;
 	assert_true(exec_txn_reserve(&tx) < 0);
 	exec_txn_abort(&tx, -LXP_ENOMEM, LXP_EXIT_REASON_EXEC_RESOURCE);
 	exec_txn_abort(&tx, -LXP_ENOMEM, LXP_EXIT_REASON_EXEC_RESOURCE);
@@ -1198,7 +1193,7 @@ static void test_exec_precommit_failpoints_preserve_old_image(void **state)
 
 	assert_int_equal(coordinator_park_slot(0), LXP_OK);
 	exec_txn_init(&tx, 0);
-	g_lifecycle_failpoint = LXP_FAIL_EXEC_IMAGE_VALIDATED;
+	g_lxp_lifecycle_failpoint = LXP_FAIL_EXEC_IMAGE_VALIDATED;
 	assert_true(exec_txn_validate_image(&tx, image, image_size, 0) < 0);
 	exec_txn_abort(&tx, -LXP_ENOEXEC, LXP_EXIT_REASON_EXEC_LOAD);
 	assert_int_equal(g_lxp_rt.slots[0].host_state, SLOT_RUNNING);
@@ -1260,7 +1255,7 @@ static void test_exec_stale_snapshot_contains_vfork_pair(void **state)
 	assert_int_equal(fork_txn_prepare(&fork, 0, 1, 0, 2), LXP_OK);
 	assert_int_equal(fork_txn_count_child(&fork), LXP_OK);
 	fork.child->vfork_parent = fork.parent_ref;
-	assert_int_equal(g_lifecycle_failpoint, LXP_FAIL_NONE);
+	assert_int_equal(g_lxp_lifecycle_failpoint, LXP_FAIL_NONE);
 	assert_true(lxp_slot_ref_is_current(fork.parent_ref));
 	assert_true(region_free(1));
 	assert_int_equal(fork_txn_snapshot(&fork, parent_sp), LXP_OK);
@@ -1308,7 +1303,7 @@ static void test_exec_commit_failure_contains_only_transitioning_guest(void **st
 	exec_txn_init(&tx, 0);
 	assert_int_equal(exec_txn_validate_image(&tx, image, image_size, 0), LXP_OK);
 	assert_int_equal(exec_txn_reserve(&tx), LXP_OK);
-	g_lifecycle_failpoint = LXP_FAIL_EXEC_COMMITTED;
+	g_lxp_lifecycle_failpoint = LXP_FAIL_EXEC_COMMITTED;
 	assert_true(exec_txn_commit(&tx) < 0);
 	exec_txn_abort(&tx, -LXP_EIO, LXP_EXIT_REASON_EXEC_RESOURCE);
 	exec_txn_abort(&tx, -LXP_EIO, LXP_EXIT_REASON_EXEC_RESOURCE);
@@ -1349,7 +1344,7 @@ static void test_image_publish_failpoints_release_every_owner(void **state)
 	for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); i++) {
 		struct image_txn tx;
 		prepare_mock_image_txn(&tx, 1, 1);
-		g_lifecycle_failpoint = points[i];
+		g_lxp_lifecycle_failpoint = points[i];
 		int rc;
 		if (points[i] == LXP_FAIL_EXEC_IMAGE_PREPARED)
 			rc = lifecycle_failpoint(points[i]) ? -LXP_EIO : LXP_OK;
@@ -2047,82 +2042,82 @@ static void test_system_version_routes_to_engine(void **state)
 {
 	(void)state;
 	assert_string_equal(lxp_system_version(), "MockRTOS 9.8.7 ove-fedcba9 lxp-7654321");
-	g_eng = NULL;
+	lxp_os_publish(NULL);
 	assert_string_equal(lxp_system_version(), "lxp");
 }
 
 static void test_port_abi_and_required_ops_are_validated(void **state)
 {
 	(void)state;
-	assert_true(os_ops_valid(&g_mock_eng));
-	assert_true(net_ops_valid(g_test_net_ops));
+	assert_true(lxp_os_ops_valid(&g_mock_eng));
+	assert_true(lxp_net_ops_valid(g_test_net_ops));
 
 	lxp_net_ops_t net_ops = *g_test_net_ops;
 	net_ops.abi_version++;
-	assert_false(net_ops_valid(&net_ops));
+	assert_false(lxp_net_ops_valid(&net_ops));
 	net_ops = *g_test_net_ops;
 	net_ops.struct_size--;
-	assert_false(net_ops_valid(&net_ops));
+	assert_false(lxp_net_ops_valid(&net_ops));
 	net_ops = *g_test_net_ops;
 	net_ops.run_begin = NULL;
-	assert_false(net_ops_valid(&net_ops));
+	assert_false(lxp_net_ops_valid(&net_ops));
 	net_ops = *g_test_net_ops;
 	net_ops.capabilities = LXP_NET_CAP_SOCKET_READY_EVENT << 1;
-	assert_false(net_ops_valid(&net_ops));
+	assert_false(lxp_net_ops_valid(&net_ops));
 
 	lxp_os_ops_t ops = g_mock_eng;
 	ops.abi_version++;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.struct_size--;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.random_fill = NULL;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.park_entry = NULL;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.publish_executable = NULL;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.cpu_memory_contract = NULL;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	lxp_cpu_memory_contract_t invalid_contract = g_mock_memory_contract;
 	invalid_contract.abi_version++;
 	ops.cpu_memory_contract = &invalid_contract;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	invalid_contract = g_mock_memory_contract;
 	invalid_contract.struct_size--;
 	ops.cpu_memory_contract = &invalid_contract;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	invalid_contract = g_mock_memory_contract;
 	invalid_contract.model = (lxp_cpu_memory_model_t)99;
 	ops.cpu_memory_contract = &invalid_contract;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	invalid_contract = g_mock_memory_contract;
 	invalid_contract.normal_attrs = LXP_CPU_MEM_ATTR_NORMAL_WBWA_NSH;
 	ops.cpu_memory_contract = &invalid_contract;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	invalid_contract = g_mock_memory_contract;
 	invalid_contract.flags = 1u << 31;
 	ops.cpu_memory_contract = &invalid_contract;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	invalid_contract = g_mock_memory_contract;
 	invalid_contract.flags = LXP_CPU_MEMORY_ICACHE_ENABLED;
 	invalid_contract.icache_line_size = 24u;
 	invalid_contract.icache_size = 16u * 1024u;
 	ops.cpu_memory_contract = &invalid_contract;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	ops.validate_memory_contract = NULL;
-	assert_false(os_ops_valid(&ops));
+	assert_false(lxp_os_ops_valid(&ops));
 }
 
 static void test_failed_prepare_is_rolled_back(void **state)
@@ -2167,7 +2162,7 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	assert_null(g_mock.net_ready_context);
 	assert_null(g_mock.fs_ready);
 	assert_null(g_mock.fs_ready_context);
-	assert_null(g_eng);
+	assert_null(g_lxp_os_ops);
 	assert_null(g_lxp_rt.cfg);
 	assert_null(g_lxp_rt.rootfs_lo);
 	assert_null(g_lxp_rt.rootfs_hi);
@@ -2350,12 +2345,12 @@ static void test_console_readiness_lifecycle_is_run_scoped(void **state)
 	/* A one-sided lifecycle or an event source without poll/read semantics is
 	 * rejected before any provider or OS state is acquired. */
 	cfg.console_unsubscribe = NULL;
-	assert_false(run_config_valid(&cfg));
+	assert_false(lxp_run_config_valid(&cfg));
 	cfg.console_unsubscribe = mock_console_unsubscribe;
 	cfg.console_poll = NULL;
-	assert_false(run_config_valid(&cfg));
+	assert_false(lxp_run_config_valid(&cfg));
 	cfg.console_poll = mock_console_poll;
-	assert_true(run_config_valid(&cfg));
+	assert_true(lxp_run_config_valid(&cfg));
 
 	/* Subscription happens only after host preparation. Failure tears the host
 	 * and earlier providers down, but does not unsubscribe an unacquired source. */
@@ -2398,13 +2393,13 @@ static void test_rootfs_requires_one_explicit_trusted_window(void **state)
 		.rootfs_image = image,
 		.rootfs_image_size = sizeof(image),
 	};
-	assert_true(run_config_valid(&cfg));
+	assert_true(lxp_run_config_valid(&cfg));
 
 	cfg.rootfs_image = image + 8;
 	cfg.rootfs_image_size = 8;
-	assert_false(run_config_valid(&cfg));
+	assert_false(lxp_run_config_valid(&cfg));
 	cfg.rootfs_image = NULL;
-	assert_false(run_config_valid(&cfg));
+	assert_false(lxp_run_config_valid(&cfg));
 }
 
 static void test_resource_stats_track_slots_and_reserved_regions(void **state)
@@ -2474,12 +2469,12 @@ static void test_coordinator_service_classes_are_weighted_and_aged(void **state)
 	const int expected[] = {0, 0, 0, 0, 1, 1, 1, 2, 2, 3};
 	lxp_blocked_fair_reset();
 	for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
-		assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), expected[i]);
+		assert_int_equal(service_select(0x0fu, fresh, 100), expected[i]);
 
 	/* A low-weight class bypasses the schedule after the bounded age. */
 	const uint64_t aged[4] = {20001, 20001, 1, 20001};
 	lxp_blocked_fair_reset();
-	assert_int_equal(lxp_test_service_select(0x0fu, aged, 20001), 2);
+	assert_int_equal(service_select(0x0fu, aged, 20001), 2);
 
 	/* Several old-but-not-ready classes must not let the single oldest class
 	 * monopolize every retry. A parked socket is older than the console here;
@@ -2488,7 +2483,7 @@ static void test_coordinator_service_classes_are_weighted_and_aged(void **state)
 	const int aged_expected[] = {1, 1, 1, 2, 2};
 	lxp_blocked_fair_reset();
 	for (size_t i = 0; i < sizeof(aged_expected) / sizeof(aged_expected[0]); i++)
-		assert_int_equal(lxp_test_service_select(0x06u, multiple_aged, 20002),
+		assert_int_equal(service_select(0x06u, multiple_aged, 20002),
 				 aged_expected[i]);
 
 #if LXP_ENABLE_FS
@@ -2496,13 +2491,13 @@ static void test_coordinator_service_classes_are_weighted_and_aged(void **state)
 	 * It gets the next opportunity without changing the weighted sequence
 	 * used when requests are still in flight. */
 	lxp_blocked_fair_reset();
-	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
-	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
-	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
-	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
-	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 1);
+	assert_int_equal(service_select(0x0fu, fresh, 100), 0);
+	assert_int_equal(service_select(0x0fu, fresh, 100), 0);
+	assert_int_equal(service_select(0x0fu, fresh, 100), 0);
+	assert_int_equal(service_select(0x0fu, fresh, 100), 0);
+	assert_int_equal(service_select(0x0fu, fresh, 100), 1);
 	lxp_fs_completion_ready(&g_mock_eng);
-	assert_int_equal(lxp_test_service_select(0x0fu, fresh, 100), 0);
+	assert_int_equal(service_select(0x0fu, fresh, 100), 0);
 #endif
 }
 
@@ -3140,7 +3135,7 @@ static void test_shared_region_lives_until_last_task_reference(void **state)
 	deferred_slot_reassign(1);
 	lxp_region_ref_t region = region_reserve(2, slot_ref_at(0));
 	assert_int_equal(region.index, 2);
-	assert_int_equal(region_commit_address_space(region, slot_ref_at(0)), LXP_OK);
+	assert_int_equal(lxp_region_commit_address_space(region, slot_ref_at(0)), LXP_OK);
 	leader->alive = 1;
 	leader->mm->region = region;
 	assert_int_equal(region_get(region), 0);
@@ -3543,29 +3538,30 @@ static void test_abort_failure_retains_slot_until_retry(void **state)
 }
 
 /* ---- futex: co-runner gate + FUTEX_WAKE bookkeeping ------------------------- */
-/* futex_has_corunner: a FUTEX_WAIT only parks when another live thread shares the region
+/* lxp_futex_has_corunner: a FUTEX_WAIT only parks when another live thread shares the region
  * (else nobody could ever wake it). */
 static void test_futex_has_corunner(void **state)
 {
 	(void)state;
 	g_lxp_rt.slots[0].proc.alive = 1;
 	g_lxp_rt.slots[0].proc.mm->region.index = 2;
-	assert_false(futex_has_corunner(&g_lxp_rt.slots[0].proc)); /* alone in region 2 */
+	assert_false(lxp_futex_has_corunner(&g_lxp_rt.slots[0].proc)); /* alone in region 2 */
 
 	g_lxp_rt.slots[1].proc.alive = 1;
 	g_lxp_rt.slots[1].proc.mm->region.index = 3;
 	/* a live proc, but a different region */
-	assert_false(futex_has_corunner(&g_lxp_rt.slots[0].proc));
+	assert_false(lxp_futex_has_corunner(&g_lxp_rt.slots[0].proc));
 
 	lxp_proc_mm_put(&g_lxp_rt.slots[2].proc);
 	assert_int_equal(
 		lxp_proc_mm_fork(&g_lxp_rt.slots[2].proc, &g_lxp_rt.slots[0].proc, LXP_CLONE_VM), 0);
 	g_lxp_rt.slots[2].proc.alive = 1;
-	assert_true(futex_has_corunner(&g_lxp_rt.slots[0].proc)); /* a co-runner shares the mm */
+	/* a co-runner shares the mm */
+	assert_true(lxp_futex_has_corunner(&g_lxp_rt.slots[0].proc));
 
 	g_lxp_rt.slots[2].proc.alive = 0;
 	/* it exited -> no longer a co-runner */
-	assert_false(futex_has_corunner(&g_lxp_rt.slots[0].proc));
+	assert_false(lxp_futex_has_corunner(&g_lxp_rt.slots[0].proc));
 }
 
 /* FUTEX_WAKE marks up to `val` waiters queued on the same uaddr (and no others). The
@@ -3635,10 +3631,10 @@ static void test_pending_deliverable(void **state)
 	assert_int_equal(pending_deliverable(p), 0); /* empty set */
 }
 
-/* lxp_dispatch used to read TCSETS' arg before lxp_syscall reached the console handler. Because
- * dispatch runs privileged, a guest could point it at host memory or MMIO and fault the RTOS even
- * if the handler itself performed access_ok. Keep this at the trap-dispatch level, not merely in
- * the direct-syscall conformance suite. */
+/* lxp_trap_dispatch used to read TCSETS' arg before lxp_syscall reached the console handler.
+ * Because dispatch runs privileged, a guest could point it at host memory or MMIO and fault the
+ * RTOS even if the handler itself performed access_ok. Keep this at the trap-dispatch level, not
+ * merely in the direct-syscall conformance suite. */
 static void test_dispatch_rejects_bad_tcsets_pointer(void **state)
 {
 	(void)state;
@@ -3785,7 +3781,7 @@ static void test_deferred_generation_rejects_stale_work(void **state)
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[7] = 999;
-	lxp_dispatch(&f, p);
+	lxp_trap_dispatch(&f, p);
 	lxp_slot_ref_t old_owner = g_lxp_rt.slots[0].deferred.owner;
 	deferred_slot_reassign(0);
 	g_lxp_rt.slots[0].deferred.owner = old_owner;
@@ -3814,8 +3810,8 @@ static void test_deferred_same_slot_rejects_overwrite(void **state)
 	memset(&second, 0, sizeof(second));
 	first.r[7] = 998;
 	second.r[7] = 999;
-	lxp_dispatch(&first, p);
-	lxp_dispatch(&second, p);
+	lxp_trap_dispatch(&first, p);
+	lxp_trap_dispatch(&second, p);
 	assert_int_equal((int32_t)second.r[0], -LXP_EAGAIN);
 	assert_int_equal(g_mock.event_posts, 1);
 	assert_int_equal((int32_t)g_lxp_rt.slots[0].resume.r4_11[3], 998);
@@ -4374,7 +4370,7 @@ static void test_kill_targets_process_group(void **state)
 	f.r[7] = LXP_NR_kill;
 	f.r[0] = (uint32_t)(-3); /* target = -pgid */
 	f.r[1] = LXP_SIGTERM;
-	lxp_dispatch(&f, shell);
+	lxp_trap_dispatch(&f, shell);
 	assert_int_equal((int32_t)f.r[0], 0);		      /* a target was found */
 	assert_true(g_lxp_rt.slots[2].proc.pending_sigs & bit);  /* cmd1 (pgid 3) */
 	assert_true(g_lxp_rt.slots[3].proc.pending_sigs & bit);  /* cmd2 (pgid 3) */
@@ -4391,7 +4387,7 @@ static void test_kill_targets_process_group(void **state)
 	f.r[7] = LXP_NR_kill;
 	f.r[0] = 0; /* caller's process group */
 	f.r[1] = LXP_SIGTERM;
-	lxp_dispatch(&f, shell);
+	lxp_trap_dispatch(&f, shell);
 	assert_true(g_lxp_rt.slots[4].proc.pending_sigs & bit);  /* the group peer */
 	assert_false(g_lxp_rt.slots[2].proc.pending_sigs & bit); /* pgid 3, not in group 2 */
 }
@@ -4408,25 +4404,25 @@ static void test_setpgid_getpgrp_track_group(void **state)
 
 	memset(&f, 0, sizeof(f));
 	f.r[7] = LXP_NR_getpgrp;
-	lxp_dispatch(&f, p);
+	lxp_trap_dispatch(&f, p);
 	assert_int_equal((int32_t)f.r[0], 7); /* getpgrp -> current group */
 
 	memset(&f, 0, sizeof(f));
 	f.r[7] = LXP_NR_setpgid;
 	f.r[0] = 0;  /* self */
 	f.r[1] = 42; /* pgid */
-	lxp_dispatch(&f, p);
+	lxp_trap_dispatch(&f, p);
 	assert_int_equal((int32_t)f.r[0], 0);
 	assert_int_equal(p->group->pgid, 42); /* setpgid(0,42) joined group 42 */
 
 	memset(&f, 0, sizeof(f));
 	f.r[7] = LXP_NR_getpgrp;
-	lxp_dispatch(&f, p);
+	lxp_trap_dispatch(&f, p);
 	assert_int_equal((int32_t)f.r[0], 42); /* getpgrp reflects it */
 
 	memset(&f, 0, sizeof(f));
 	f.r[7] = LXP_NR_setsid;
-	lxp_dispatch(&f, p);
+	lxp_trap_dispatch(&f, p);
 	assert_int_equal((int32_t)f.r[0], 7); /* setsid -> new session, pgid = pid */
 	assert_int_equal(p->group->pgid, 7);
 }

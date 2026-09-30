@@ -16,7 +16,7 @@
  * acquisition escapes until fork_txn_commit(); abort is deliberately
  * idempotent so every failed phase converges on the same cleanup.
  */
-LXP_FORK_TXN_LINKAGE int fork_txn_prepare(struct fork_txn *tx, int parent_slot, int child_slot,
+int fork_txn_prepare(struct fork_txn *tx, int parent_slot, int child_slot,
 					  uint32_t clone_flags, int child_pid)
 {
 	memset(tx, 0, sizeof(*tx));
@@ -62,7 +62,7 @@ LXP_FORK_TXN_LINKAGE int fork_txn_prepare(struct fork_txn *tx, int parent_slot, 
 	return LXP_OK;
 }
 
-LXP_FORK_TXN_LINKAGE int fork_txn_count_child(struct fork_txn *tx)
+int fork_txn_count_child(struct fork_txn *tx)
 {
 	if (tx->phase != FORK_TXN_PREPARED || tx->child_counted)
 		return -LXP_EINVAL;
@@ -71,7 +71,7 @@ LXP_FORK_TXN_LINKAGE int fork_txn_count_child(struct fork_txn *tx)
 	return lifecycle_failpoint(LXP_FAIL_FORK_CHILD_COUNTED) ? -LXP_ENOMEM : LXP_OK;
 }
 
-LXP_FORK_TXN_LINKAGE int fork_txn_snapshot(struct fork_txn *tx, uintptr_t parent_sp)
+int fork_txn_snapshot(struct fork_txn *tx, uintptr_t parent_sp)
 {
 	if (tx->phase != FORK_TXN_PREPARED || !tx->child_constructed)
 		return -LXP_EINVAL;
@@ -92,7 +92,7 @@ static int fork_txn_validate(const struct fork_txn *tx)
 	return LXP_OK;
 }
 
-LXP_FORK_TXN_LINKAGE int fork_txn_publish(struct fork_txn *tx)
+int fork_txn_publish(struct fork_txn *tx)
 {
 	if (fork_txn_validate(tx) != LXP_OK)
 		return -LXP_EINVAL;
@@ -101,7 +101,7 @@ LXP_FORK_TXN_LINKAGE int fork_txn_publish(struct fork_txn *tx)
 	return lifecycle_failpoint(LXP_FAIL_FORK_PUBLISHED) ? -LXP_ENOMEM : LXP_OK;
 }
 
-LXP_FORK_TXN_LINKAGE void fork_txn_abort(struct fork_txn *tx)
+void fork_txn_abort(struct fork_txn *tx)
 {
 	if (!tx || tx->phase == FORK_TXN_ABORTED || tx->phase == FORK_TXN_COMMITTED ||
 	    tx->phase == FORK_TXN_EMPTY)
@@ -127,7 +127,7 @@ LXP_FORK_TXN_LINKAGE void fork_txn_abort(struct fork_txn *tx)
 	tx->phase = FORK_TXN_ABORTED;
 }
 
-LXP_FORK_TXN_LINKAGE int fork_txn_commit(struct fork_txn *tx)
+int fork_txn_commit(struct fork_txn *tx)
 {
 	if (!tx || tx->phase != FORK_TXN_PUBLISHED)
 		return -LXP_EINVAL;

@@ -80,8 +80,8 @@ static int lxp_wait_service_class(lxp_wait_kind_t kind)
 	}
 }
 
-static int lxp_service_select(const uint8_t pending[LXP_SERVICE_COUNT],
-			      const uint64_t oldest[LXP_SERVICE_COUNT], uint64_t now)
+int lxp_blocked_service_select(const uint8_t pending[LXP_SERVICE_CLASSES],
+			       const uint64_t oldest[LXP_SERVICE_CLASSES], uint64_t now)
 {
 #if LXP_ENABLE_FS
 	/* A filesystem kick means the serialized native request has completed,
@@ -110,17 +110,6 @@ static int lxp_service_select(const uint8_t pending[LXP_SERVICE_COUNT],
 	}
 	return -1;
 }
-
-#if defined(LXP_TEST_INTERNALS)
-int lxp_test_service_select(uint8_t pending_mask, const uint64_t oldest[LXP_SERVICE_COUNT],
-			    uint64_t now)
-{
-	uint8_t pending[LXP_SERVICE_COUNT];
-	for (int cls = 0; cls < LXP_SERVICE_COUNT; cls++)
-		pending[cls] = (uint8_t)((pending_mask >> cls) & 1u);
-	return lxp_service_select(pending, oldest, now);
-}
-#endif
 
 static uint32_t lxp_blocked_wait_policy(lxp_wait_kind_t kind)
 {
@@ -529,7 +518,7 @@ struct lxp_blocked_scan lxp_scan_blocked(uint64_t now)
 		if (since < oldest[cls])
 			oldest[cls] = since;
 	}
-	int selected = lxp_service_select(pending, oldest, now);
+	int selected = lxp_blocked_service_select(pending, oldest, now);
 	uint8_t *slot_cursor = g_lxp_rt.service.slot_cursor;
 	int start_slot = selected >= 0 ? slot_cursor[selected] : 0;
 

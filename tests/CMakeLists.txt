@@ -159,7 +159,6 @@ target_compile_definitions(lxp_coord_test PRIVATE
   LXP_ENABLE_PTY=1
   LXP_ENABLE_FPU_CONTEXT=1
   LXP_TEST_FAILPOINTS=1
-  LXP_TEST_INTERNALS=1
 )
 target_link_libraries(lxp_coord_test PRIVATE cmocka-static pthread rt m)
 add_test(NAME lxp_unit_coord COMMAND lxp_coord_test)

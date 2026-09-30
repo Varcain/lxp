@@ -12,7 +12,7 @@
 #include "run/lxp_exec_private.h"
 #include "run/lxp_runtime_store.h"
 
-LXP_EXEC_TXN_LINKAGE void exec_txn_init(struct exec_txn *tx, int slot)
+void exec_txn_init(struct exec_txn *tx, int slot)
 {
 	memset(tx, 0, sizeof(*tx));
 	tx->phase = EXEC_TXN_EMPTY;
@@ -30,7 +30,7 @@ LXP_EXEC_TXN_LINKAGE void exec_txn_init(struct exec_txn *tx, int slot)
 
 /* Validate the image before reserving anything, so an image that can never load
  * fails with ENOEXEC regardless of region pressure. */
-LXP_EXEC_TXN_LINKAGE int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
+int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
 						 size_t image_size, int remote_exec)
 {
 	if (tx->phase != EXEC_TXN_EMPTY || !image)
@@ -42,7 +42,7 @@ LXP_EXEC_TXN_LINKAGE int exec_txn_validate_image(struct exec_txn *tx, const uint
 	return lifecycle_failpoint(LXP_FAIL_EXEC_IMAGE_VALIDATED) ? -LXP_ENOEXEC : LXP_OK;
 }
 
-LXP_EXEC_TXN_LINKAGE int exec_txn_reserve(struct exec_txn *tx)
+int exec_txn_reserve(struct exec_txn *tx)
 {
 	if (tx->phase != EXEC_TXN_VALIDATED || !lxp_slot_ref_is_current(tx->old_ref))
 		return -LXP_EINVAL;
@@ -103,7 +103,7 @@ static void exec_txn_detach_old(struct exec_txn *tx)
 	tx->old_detached = 1;
 }
 
-LXP_EXEC_TXN_LINKAGE int exec_txn_commit(struct exec_txn *tx)
+int exec_txn_commit(struct exec_txn *tx)
 {
 	if (tx->phase != EXEC_TXN_RESERVED)
 		return -LXP_EINVAL;
@@ -222,7 +222,7 @@ static void exec_txn_report_failure(struct exec_txn *tx, int reason)
  * proves the native task stopped, then releases whichever side still owns the
  * staged image and process resources.
  */
-LXP_EXEC_TXN_LINKAGE void exec_txn_abort(struct exec_txn *tx, long error, int reason)
+void exec_txn_abort(struct exec_txn *tx, long error, int reason)
 {
 	if (!tx || tx->phase == EXEC_TXN_ABORTED || tx->phase == EXEC_TXN_FINISHED ||
 	    tx->terminal)

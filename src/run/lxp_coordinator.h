@@ -19,6 +19,7 @@
 #include "lxp/lxp_latency.h"
 #include "proc/lxp_proc.h"
 #include "lxp/lxp_seam.h"
+#include "run/lxp_runtime_store.h" /* LXP_SERVICE_CLASSES */
 
 
 enum deferred_state {
@@ -119,6 +120,17 @@ void deferred_slot_reassign(int slot);
 void lxp_slot_proc_reset(int slot);
 
 int lifecycle_failpoint(enum lxp_lifecycle_failpoint point);
+#if defined(LXP_TEST_FAILPOINTS)
+/* The failpoint the next matching transaction observes (single-shot). */
+extern enum lxp_lifecycle_failpoint g_lxp_lifecycle_failpoint;
+#endif
+/* Open or close the trap gate (run start and teardown). */
+void lxp_trap_publish(int active);
+/* How long the coordinator may sleep with the given blocked-wait classes pending, in ms. */
+unsigned coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events,
+				  int console_ready_events);
+/* End the run: quiesce every slot, release its resources and reset every pool. */
+void coordinator_teardown_all(void);
 int lxp_region_lease_matches(lxp_region_ref_t region, lxp_slot_ref_t owner, unsigned refs);
 int lxp_region_lease_reassign(lxp_region_ref_t region, lxp_slot_ref_t old_owner,
 			      lxp_slot_ref_t new_owner);
@@ -199,6 +211,10 @@ void lxp_handle_exec(int slot);
 struct lxp_exit_result lxp_handle_exit(int slot);
 struct lxp_primary_result lxp_handle_primary_event(int slot, int event, int *next_pid);
 struct lxp_blocked_scan lxp_scan_blocked(uint64_t now);
+/* The service class the next blocked-slot scan serves, given which classes have work and
+ * how long each has waited; -1 when none has. */
+int lxp_blocked_service_select(const uint8_t pending[LXP_SERVICE_CLASSES],
+			       const uint64_t oldest[LXP_SERVICE_CLASSES], uint64_t now);
 void lxp_blocked_fair_reset(void);
 #if LXP_ENABLE_NETFS
 void lxp_blocked_complete_netfs_retry(int slot, lxp_proc_t *proc,

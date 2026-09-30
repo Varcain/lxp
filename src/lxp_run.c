@@ -61,9 +61,6 @@
 #include "run/lxp_diag.h"
 #include "run/lxp_runtime_store.h"
 #include "run/lxp_validate.h"
-#if defined(LXP_TEST_INTERNALS)
-#include "run/lxp_runtime_test.h"
-#endif
 
 struct lxp_runtime g_lxp_rt;
 
@@ -84,13 +81,13 @@ void slot_runnable_store(int slot, int runnable)
  * roll back to the old image or contain the already-committed guest.
  */
 #if defined(LXP_TEST_FAILPOINTS)
-static enum lxp_lifecycle_failpoint g_lifecycle_failpoint;
+enum lxp_lifecycle_failpoint g_lxp_lifecycle_failpoint;
 
 int lifecycle_failpoint(enum lxp_lifecycle_failpoint point)
 {
-	if (g_lifecycle_failpoint != point)
+	if (g_lxp_lifecycle_failpoint != point)
 		return 0;
-	g_lifecycle_failpoint = LXP_FAIL_NONE;
+	g_lxp_lifecycle_failpoint = LXP_FAIL_NONE;
 	return 1;
 }
 #else
@@ -109,7 +106,7 @@ int lifecycle_failpoint(enum lxp_lifecycle_failpoint point)
  */
 uint32_t g_lxp_trap_gate;
 
-static void lxp_trap_publish(int active)
+void lxp_trap_publish(int active)
 {
 	__atomic_store_n(&g_lxp_trap_gate, active != 0, __ATOMIC_RELEASE);
 }
@@ -253,8 +250,8 @@ static void lxp_block_ready(const void *context)
  * providers cannot publish readiness changes. Other wait classes retain their
  * polling fallback.
  */
-static unsigned coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events,
-					 int console_ready_events)
+unsigned coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events,
+				  int console_ready_events)
 {
 	int socket_poll = (wait_policy & LXP_BLOCKED_WAIT_SOCKET) && !socket_ready_events;
 	int console_poll = (wait_policy & LXP_BLOCKED_WAIT_CONSOLE) && !console_ready_events;
@@ -923,7 +920,7 @@ static void coordinator_reset_pools(void)
 #endif
 }
 
-static void coordinator_teardown_all(void)
+void coordinator_teardown_all(void)
 {
 	coordinator_quiesce_all();
 	lxp_trap_publish(0);
@@ -1276,88 +1273,3 @@ out:
 	lxp_providers_clear();
 	return rc;
 }
-
-#if defined(LXP_TEST_INTERNALS)
-struct lxp_runtime_test_fixture *lxp_runtime_test_fixture(void)
-{
-	static struct lxp_runtime_test_fixture fixture = {
-		.engine = &g_lxp_os_ops,
-#if defined(LXP_TEST_FAILPOINTS)
-		.lifecycle_failpoint = &g_lifecycle_failpoint,
-#endif
-	};
-
-	return &fixture;
-}
-
-lxp_region_ref_t lxp_test_region_ref_at(int region)
-{
-	return region_ref_at(region);
-}
-
-int lxp_test_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t owner)
-{
-	return lxp_region_commit_address_space(ref, owner);
-}
-
-unsigned lxp_test_coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events,
-					   int console_ready_events)
-{
-	return coordinator_wait_timeout(wait_policy, socket_ready_events, console_ready_events);
-}
-
-void lxp_test_coordinator_teardown_all(void)
-{
-	coordinator_teardown_all();
-}
-
-int lxp_test_futex_has_corunner(const lxp_proc_t *proc)
-{
-	return lxp_futex_has_corunner(proc);
-}
-
-void lxp_test_diag_reset_health(void)
-{
-	lxp_diag_reset_health();
-}
-
-void lxp_test_diag_checkpoint(void)
-{
-	lxp_diag_checkpoint();
-}
-
-void lxp_test_trap_publish(int active)
-{
-	lxp_trap_publish(active);
-}
-
-void lxp_test_deferred_state_store(int slot, uint8_t state)
-{
-	deferred_state_store(slot, state);
-}
-
-int lxp_test_os_ops_valid(const lxp_os_ops_t *ops)
-{
-	return lxp_os_ops_valid(ops);
-}
-
-int lxp_test_net_ops_valid(const lxp_net_ops_t *ops)
-{
-	return lxp_net_ops_valid(ops);
-}
-
-int lxp_test_run_config_valid(const lxp_run_config_t *cfg)
-{
-	return lxp_run_config_valid(cfg);
-}
-
-void lxp_test_futex(struct lxp_frame *frame, lxp_proc_t *proc, int is_time64)
-{
-	lxp_futex(frame, proc, is_time64);
-}
-
-void lxp_test_dispatch(struct lxp_frame *frame, lxp_proc_t *proc)
-{
-	lxp_trap_dispatch(frame, proc);
-}
-#endif
