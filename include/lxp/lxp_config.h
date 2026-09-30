@@ -249,6 +249,73 @@
 #error "LXP_CONSOLE_TYPEAHEAD must be in [1, 4096]"
 #endif
 
+/* ---- per-process and interface bounds ------------------------------------------ */
+/* Open file descriptors per process. A fork-per-connection server (httpd) holds the
+ * std streams, the listener and the accepted client in each process. */
+#ifndef LXP_MAX_FDS
+#define LXP_MAX_FDS 32
+#endif
+#if LXP_MAX_FDS < 3 || LXP_MAX_FDS > 1024
+#error "LXP_MAX_FDS must be in [3, 1024]"
+#endif
+/* Longest absolute, normalized path the personality resolves, NUL included. */
+#ifndef LXP_PATH_MAX
+#define LXP_PATH_MAX 256
+#endif
+#if LXP_PATH_MAX < 64 || LXP_PATH_MAX > 4096
+#error "LXP_PATH_MAX must be in [64, 4096]"
+#endif
+/* Exited children a process can hold for wait4() (a pipeline forks several). */
+#ifndef LXP_MAX_CHILD
+#define LXP_MAX_CHILD 8
+#endif
+#if LXP_MAX_CHILD < 1 || LXP_MAX_CHILD > 255
+#error "LXP_MAX_CHILD must be in [1, 255]"
+#endif
+/* Shared process objects (mm, fd tables, signal handlers, thread groups) per kind. A
+ * thread shares its creator's, so every live task needs at most one of each. */
+#ifndef LXP_RESOURCE_POOL_COUNT
+#define LXP_RESOURCE_POOL_COUNT LXP_NSLOT
+#endif
+#if LXP_RESOURCE_POOL_COUNT < LXP_NSLOT
+#error "LXP_RESOURCE_POOL_COUNT must cover every live task (at least LXP_NSLOT)"
+#endif
+/* An execve() capture per slot: argv/envp entries cost two bytes each, the string
+ * buffers their full width. */
+#ifndef LXP_EXEC_MAXARGS
+#define LXP_EXEC_MAXARGS 32
+#endif
+#ifndef LXP_EXEC_ARGBUF
+#define LXP_EXEC_ARGBUF 768
+#endif
+#ifndef LXP_EXEC_MAXENVS
+#define LXP_EXEC_MAXENVS 24
+#endif
+#ifndef LXP_EXEC_ENVBUF
+#define LXP_EXEC_ENVBUF 512
+#endif
+/* Sockets open at once across all processes (listeners and clients). A network
+ * provider sizes its handle pool to match. */
+#ifndef LXP_NSOCK
+#define LXP_NSOCK 24
+#endif
+#if LXP_NSOCK < 1 || LXP_NSOCK > 1024
+#error "LXP_NSOCK must be in [1, 1024]"
+#endif
+/* Room for the 9P mount's strings, NUL included; the host copies them into these. */
+#ifndef LXP_NETFS_MOUNTPOINT_CAP
+#define LXP_NETFS_MOUNTPOINT_CAP 64u
+#endif
+#ifndef LXP_NETFS_ANAME_CAP
+#define LXP_NETFS_ANAME_CAP 96u
+#endif
+#ifndef LXP_NETFS_UNAME_CAP
+#define LXP_NETFS_UNAME_CAP 32u
+#endif
+#if LXP_NETFS_MOUNTPOINT_CAP < 2u || LXP_NETFS_ANAME_CAP < 2u || LXP_NETFS_UNAME_CAP < 2u
+#error "each LXP_NETFS_*_CAP must hold at least one character and its NUL"
+#endif
+
 /* Section attribute for large "far" pools such as the pipe rings, e.g.
  * __attribute__((section(".sdram_bss"))) to place them in external RAM. Empty
  * default => ordinary .bss. */

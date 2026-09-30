@@ -18,6 +18,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lxp/lxp_config.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -64,12 +66,6 @@ typedef struct {
  * recv/connect/accept/poll operations every 5 ms.
  */
 #define LXP_NET_CAP_SOCKET_READY_EVENT 0x01u
-
-/* Max concurrent socket opens the personality pools (listener + clients). Shared
- * so the host adapter can size its storage pool to match. */
-#ifndef LXP_NSOCK
-#define LXP_NSOCK 24
-#endif
 
 typedef void (*lxp_net_ready_fn)(const void *context);
 

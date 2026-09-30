@@ -51,6 +51,12 @@ expect_header_reject touch-without-input \
 	-DLXP_ENABLE_TOUCH=1 -DLXP_ENABLE_DEV_INPUT=0
 expect_header_reject latency-not-boolean \
 	-DLXP_ENABLE_LATENCY=2
+expect_header_reject fds-below-stdio \
+	-DLXP_MAX_FDS=2
+expect_header_reject path-max-too-short \
+	-DLXP_PATH_MAX=32
+expect_header_reject resource-pools-below-slots \
+	-DLXP_NSLOT=12 -DLXP_RESOURCE_POOL_COUNT=4
 
 expect_cmake_reject netfs-without-net -DLXP_ENABLE_NETFS=ON
 expect_cmake_reject netfs-exec-without-netfs -DLXP_ENABLE_NETFS_EXEC=ON

@@ -12,13 +12,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lxp/lxp_config.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define LXP_NETFS_MOUNTPOINT_CAP 64u
-#define LXP_NETFS_ANAME_CAP 96u
-#define LXP_NETFS_UNAME_CAP 32u
 
 /** One optional, read-only 9P mount. String inputs are copied by lxp_host_init_cpio(). */
 typedef struct lxp_netfs_config {

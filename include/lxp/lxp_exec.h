@@ -12,30 +12,14 @@
 
 #include <stdint.h>
 
+#include "lxp/lxp_config.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** Bounds for an execve() argument vector captured for the engine to relaunch.
- * Overridable by the consumer: entries cost 2 bytes each per slot, the payload
- * buffer costs its full width per slot. */
-#ifndef LXP_EXEC_MAXARGS
-#define LXP_EXEC_MAXARGS 32
-#endif
-#ifndef LXP_EXEC_ARGBUF
-#define LXP_EXEC_ARGBUF 768
-#endif
-
 /** Marks an exec vector entry the capture never wrote. Offset 0 is valid. */
 #define LXP_EXEC_OFF_NONE ((uint16_t)0xffffu)
-
-/** Bounds for an execve() environment vector captured for relaunch. */
-#ifndef LXP_EXEC_MAXENVS
-#define LXP_EXEC_MAXENVS 24
-#endif
-#ifndef LXP_EXEC_ENVBUF
-#define LXP_EXEC_ENVBUF 512
-#endif
 
 #if defined(__cplusplus)
 #define LXP_EXEC_STATIC_ASSERT(cond, msg) static_assert(cond, msg)

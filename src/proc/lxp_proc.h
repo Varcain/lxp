@@ -26,6 +26,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lxp/lxp_config.h"
 #include "lxp_arena.h"
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_identity.h"
@@ -87,11 +88,6 @@ typedef struct lxp_fd {
 #define LXP_FD_NET 10
 /** host-backed writable filesystem fd. @c file_idx = hostfs open-pool index. */
 #define LXP_FD_HOSTFS 11
-/** Maximum simultaneously-open file descriptors per process. A fork-per-connection
- * server (httpd) holds std streams + the listener + the accepted client, per proc. */
-#define LXP_MAX_FDS 32
-/** Maximum path length (absolute, normalized) the personality resolves. */
-#define LXP_PATH_MAX 256
 
 /** Refcounted Linux descriptor table. CLONE_FILES shares this object; ordinary
  * fork receives a private table whose entries refer to the same open-file
@@ -141,9 +137,6 @@ typedef struct lxp_mm {
 	uintptr_t dev_map_lo[2], dev_map_hi[2];
 	unsigned dev_map_attrs[2];
 } lxp_mm_t;
-
-/** Max exited children queued for wait4 (a pipeline forks several). */
-#define LXP_MAX_CHILD 8
 
 /** Process-wide identity, job-control and child-reaping state. Tasks created
  * with CLONE_THREAD share this object; a new process gets a fresh object whose

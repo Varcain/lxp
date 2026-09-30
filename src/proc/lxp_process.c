@@ -15,11 +15,6 @@
 
 #include <string.h>
 
-#ifndef LXP_RESOURCE_POOL_COUNT
-#define LXP_RESOURCE_POOL_COUNT LXP_NSLOT
-#endif
-LXP_STATIC_ASSERT(LXP_RESOURCE_POOL_COUNT >= LXP_NSLOT,
-		  "shared-resource pools must cover every live task");
 
 /*
  * Process-owned resources have independent reference counts because clone(2)

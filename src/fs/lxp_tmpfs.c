@@ -25,13 +25,9 @@
 #include "lxp_guest.h"
 #include "lxp_linux_uapi.h"
 
-/* Board-relocatable BSS section (default: normal .bss). A consumer whose on-chip SRAM is tight can
- * point this at a far region (STM32 Zephyr: SDRAM1) so the tmpfs pool — and thus a large /tmp file
- * a program mmap()s (e.g. iperf3's per-stream buffer, created mkstemp+ftruncate+mmap) — need not
- * fit the SRAM. Same knob the pipe pool uses. */
-#ifndef LXP_FAR_BSS
-#define LXP_FAR_BSS
-#endif
+/* The tmpfs pool goes through LXP_FAR_BSS (lxp_config.h), like the pipe pool, so a
+ * consumer whose on-chip SRAM is tight can place it in external RAM (STM32 Zephyr: SDRAM1)
+ * and a large /tmp file a program mmap()s need not fit the SRAM. */
 
 static lxp_wnode_t g_wnodes[LXP_NWNODE];
 #if defined(LXP_WFS_POOL_BASE)
