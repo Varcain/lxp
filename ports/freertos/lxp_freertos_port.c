@@ -572,61 +572,17 @@ struct resume_desc {
 	volatile uint32_t ready;
 };
 
-/* prog_tramp is naked asm that reaches ctx as r0+4 and then loads every core register by hardcoded
- * offset (ldmia for r4-r11, then r12/lr/sp/pc, then r1/r2/r3/xpsr). Pin each so a change to
- * lxp_resume_ctx (an LXP header) breaks the build instead of silently resuming a guest onto the
- * wrong registers. Layout-stable regardless of the appended FP block, so unconditional. */
-_Static_assert(offsetof(struct resume_desc, ctx) == 4u, "resume ctx offset (add r3,r0,#4)");
-_Static_assert(offsetof(struct resume_desc, ctx.r4_11) == 4u, "resume r4-r11 offset");
-_Static_assert(offsetof(struct resume_desc, ctx.r12) == 36u, "resume r12 offset");
-_Static_assert(offsetof(struct resume_desc, ctx.lr) == 40u, "resume lr offset");
-_Static_assert(offsetof(struct resume_desc, ctx.sp) == 44u, "resume sp offset");
-_Static_assert(offsetof(struct resume_desc, ctx.pc) == 48u, "resume pc offset");
-_Static_assert(offsetof(struct resume_desc, ctx.r1) == 52u, "resume r1 offset");
-_Static_assert(offsetof(struct resume_desc, ctx.r2) == 56u, "resume r2 offset");
-_Static_assert(offsetof(struct resume_desc, ctx.r3) == 60u, "resume r3 offset");
-_Static_assert(offsetof(struct resume_desc, ctx.xpsr) == 64u, "resume xpsr offset");
+/* prog_tramp reaches the context at desc + 4 (add r3, r0, #4) and the resume value at
+ * desc + 0; the shared tail pins the context's own layout. */
+_Static_assert(offsetof(struct resume_desc, r0) == 0u, "resume value offset (ldr r0, [r0])");
+_Static_assert(offsetof(struct resume_desc, ctx) == 4u, "resume ctx offset (add r3, r0, #4)");
 
-#if LXP_ENABLE_FPU_CONTEXT
-/* prog_tramp is naked assembly, so pin every optional field offset it consumes.
- * Appending FP state leaves all established core-register offsets unchanged. */
-_Static_assert(offsetof(struct resume_desc, ctx.fp.s) == 68u, "resume FP register offset");
-_Static_assert(offsetof(struct resume_desc, ctx.fp.fpscr) == 196u, "resume FPSCR offset");
-_Static_assert(offsetof(struct resume_desc, ctx.fp.active) == 200u, "resume FP-active offset");
-#define LXP_TRAMP_RESTORE_FP                           \
-	"ldr   r1, [r0, #200]  \n" /* ctx.fp.active */ \
-	"cbz   r1, 0f          \n"                     \
-	"add   r2, r0, #68     \n" /* ctx.fp.s */      \
-	"vldmia r2!, {s0-s31}  \n"                     \
-	"ldr   r1, [r0, #196]  \n" /* ctx.fp.fpscr */  \
-	"vmsr  fpscr, r1       \n"                     \
-	"0:                    \n"
-#else
-#define LXP_TRAMP_RESTORE_FP ""
-#endif
-
+/* Resume a guest at its captured context: r0 is the descriptor. */
 __attribute__((naked)) static void prog_tramp(void *desc __attribute__((unused)))
 {
-	/* Restore the complete syscall-visible context. APSR.NZCVQ matters: an immediate
-	 * hardware exception return preserves flags, and optimized userspace may carry a
-	 * comparison across its next syscall. Stage PC below the guest SP so r1-r3 can all
-	 * reach their final values before the branch. */
-	__asm__ volatile(LXP_TRAMP_RESTORE_FP
-			 "add   r3, r0, #4     \n" /* r3 -> ctx */
-			 "ldmia r3!, {r4-r11} \n"
-			 "ldr   r12, [r3], #4 \n"
-			 "ldr   lr,  [r3], #4 \n"
-			 "ldr   r1,  [r3], #4 \n" /* ctx.sp (temp) */
-			 "ldr   r2,  [r3], #4 \n" /* ctx.pc (temp); r3 -> ctx.r1 */
-			 "mov   sp,  r1       \n"
-			 "ldr   r1,  [r3, #12]\n" /* ctx.xpsr */
-			 "msr   APSR_nzcvq, r1\n"
-			 "push  {r2}          \n" /* stage ctx.pc */
-			 "ldr   r1,  [r3]     \n"
-			 "ldr   r2,  [r3, #4] \n"
-			 "ldr   r0,  [r0]     \n"
-			 "ldr   r3,  [r3, #8] \n"
-			 "pop   {pc}           \n");
+	__asm__ volatile("add   r3, r0, #4\n" /* r3 -> ctx */
+			 "ldr   r0, [r0]\n"   /* the resume value */
+			 LXP_CORTEX_M_RESUME_FROM_R3);
 }
 
 /* Bytes the descriptor occupies, rounded up to the MPU/cache-line granularity. */

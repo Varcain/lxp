@@ -439,46 +439,12 @@ static struct lxp_resume_ctx *zephyr_guest_resume_slot(uint32_t sp)
 	return (struct lxp_resume_ctx *)(context_top - sizeof(struct lxp_resume_ctx));
 }
 
-_Static_assert(offsetof(struct lxp_resume_ctx, sp) == 40u, "resume sp offset");
-
-#if LXP_ENABLE_FPU_CONTEXT
-/* Restore the guest's VFP state (ctx.fp) before the trampoline hands control back — r1 still holds
- * ctx here. Offsets pinned so a resume_ctx layout change is a build error, not silent corruption. */
-_Static_assert(offsetof(struct lxp_resume_ctx, fp.s) == 64u, "resume fp.s offset");
-_Static_assert(offsetof(struct lxp_resume_ctx, fp.fpscr) == 192u, "resume fp.fpscr offset");
-_Static_assert(offsetof(struct lxp_resume_ctx, fp.active) == 196u, "resume fp.active offset");
-#define LXP_ZTRAMP_RESTORE_FP                      \
-	"ldr r2, [r1, #196]\n" /* ctx.fp.active */ \
-	"cmp r2, #0\n"                             \
-	"beq 1f\n"                                 \
-	"add r2, r1, #64\n" /* &ctx.fp.s[0] */     \
-	"vldmia r2, {s0-s31}\n"                    \
-	"ldr r2, [r1, #192]\n" /* ctx.fp.fpscr */  \
-	"vmsr fpscr, r2\n"                         \
-	"1:\n"
-#else
-#define LXP_ZTRAMP_RESTORE_FP ""
-#endif
-
-/* Resume a program at a captured Linux context. This is deliberately naked so
- * no compiler prologue touches the active stack during the privilege/PSP
- * handoff. */
+/* Resume a program at a captured Linux context: r0 is the resume value, r1 the
+ * context. This is deliberately naked so no compiler prologue touches the active
+ * stack during the privilege/PSP handoff. */
 __attribute__((naked, noreturn)) static void resume_tramp(void *r0val, void *ctx, void *unused)
 {
-	__asm__ volatile("mov r3, r1\n" LXP_ZTRAMP_RESTORE_FP "ldmia r3!, {r4-r11}\n"
-			 "ldr r12, [r3], #4\n"
-			 "ldr lr, [r3], #4\n"
-			 "ldr r1, [r3], #4\n" /* ctx.sp (temp) */
-			 "ldr r2, [r3], #4\n" /* ctx.pc (temp); r3 -> ctx.r1 */
-			 "mov sp, r1\n"
-			 /* Load flags before push overwrites ctx.xpsr at sp-4. */
-			 "ldr r1, [r3, #12]\n"
-			 "msr APSR_nzcvq, r1\n"
-			 "push {r2}\n"
-			 "ldr r1, [r3]\n"
-			 "ldr r2, [r3, #4]\n"
-			 "ldr r3, [r3, #8]\n"
-			 "pop {pc}\n");
+	__asm__ volatile("mov   r3, r1\n" LXP_CORTEX_M_RESUME_FROM_R3);
 }
 
 /* K_USER creation allocates Zephyr's privileged stack and constructs the
