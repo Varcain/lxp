@@ -48,7 +48,7 @@ static void capture_ctx(int s, const struct lxp_frame *f)
  * invariant fail closed instead of overwriting an in-flight mailbox. */
 static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 {
-	int slot = slot_of(proc);
+	int slot = lxp_slot_of(proc);
 	uint8_t expected = DEFER_IDLE;
 	if (slot < 0 || slot >= LXP_NSLOT ||
 	    !__atomic_compare_exchange_n(&g_lxp_rt.slots[slot].deferred.state, &expected,
@@ -59,14 +59,14 @@ static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 	if (lxp_intent_begin(proc, &(lxp_intent_t){
 					   .kind = LXP_INTENT_DEFERRED_SYSCALL,
 				   }) != 0) {
-		deferred_state_store(slot, DEFER_IDLE);
+		lxp_deferred_state_store(slot, DEFER_IDLE);
 		f->r[0] = (uint32_t)-LXP_EAGAIN;
 		return;
 	}
 	g_lxp_rt.slots[slot].deferred.a0 = f->r[0];
 	g_lxp_rt.slots[slot].deferred.owner = (lxp_slot_ref_t){
 		.index = (int16_t)slot,
-		.generation = slot_generation(slot),
+		.generation = lxp_slot_generation(slot),
 	};
 #if LXP_ENABLE_LATENCY
 	{ /* the only timer call on the svc top half, and only when instrumented */
@@ -75,17 +75,17 @@ static void defer_syscall(struct lxp_frame *f, lxp_proc_t *proc)
 		g_lxp_rt.slots[slot].deferred.pub_ns = t;
 	}
 #endif
-	deferred_state_store(slot, DEFER_READY);
-	park_frame(f, proc);
+	lxp_deferred_state_store(slot, DEFER_READY);
+	lxp_park_frame(f, proc);
 }
 
 /* Park the program frame until the coordinator reaps the event, and wake the
  * coordinator (it blocks in event_wait rather than busy-polling). Persistent
  * ports prepare a guest-readable resume token while the original svc frame is
  * still live; ports with a native saved-frame restore return NULL. */
-void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
+void lxp_park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 {
-	int slot = slot_of(proc);
+	int slot = lxp_slot_of(proc);
 	capture_ctx(slot, f);
 	void *token = lxp_lifecycle_prepare_park(slot, &g_lxp_rt.slots[slot].resume);
 	f->r[0] = (uint32_t)(uintptr_t)token;
@@ -170,7 +170,7 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		}
 		/* Self-signal (tkill/tgkill, or kill to own pid) is delivered inline. */
 		if (nr != LXP_NR_kill || target == proc->pid) {
-			deliver_signal(f, proc, sig, 0);
+			lxp_deliver_signal(f, proc, sig, 0);
 			return;
 		}
 		/* Latch a cross-process signal on the target proc(s); it is
@@ -184,7 +184,7 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		return;
 	}
 	if (nr == LXP_NR_rt_sigreturn || nr == LXP_NR_sigreturn) {
-		sig_restore(f, proc);
+		lxp_sig_restore(f, proc);
 		return;
 	}
 	/* fork/vfork/clone: capture the parent's resume context and ask the coordinator
@@ -212,7 +212,7 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 			f->r[0] = -LXP_EAGAIN;
 			return;
 		}
-		park_frame(f, proc);
+		lxp_park_frame(f, proc);
 		return;
 	}
 	/* futex: a co-running thread's WAIT parks here / WAKE resumes peers (needs the proc
@@ -228,26 +228,26 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 
 	long r = lxp_syscall(proc, nr, (int32_t)f->r[0], (int32_t)f->r[1], (int32_t)f->r[2],
 			     (int32_t)f->r[3], (int32_t)f->r[4], (int32_t)f->r[5]);
-	coordinator_report_enosys(nr, r);
+	lxp_coordinator_report_enosys(nr, r);
 	/* A blocking syscall published a typed wait; capture the
 	 * post-svc context (resume the SAME image after the svc) and park. The
 	 * coordinator delays/wakes and resumes it through the explicit parked-resume
 	 * port action. */
 	if (proc->wait.kind != LXP_WAIT_NONE) {
-		park_frame(f, proc);
+		lxp_park_frame(f, proc);
 		return;
 	}
 	if (proc->intent.kind != LXP_INTENT_NONE) {
-		park_frame(f, proc);
+		lxp_park_frame(f, proc);
 		return;
 	}
 	/* Another proc's kill() latched a signal on us; deliver it at this syscall
 	 * boundary (Linux at-the-boundary async delivery) unless the
 	 * proc has blocked it (rt_sigprocmask) — a blocked signal stays latched and is delivered
 	 * at a later boundary once unblocked. */
-	int psig = pending_take(proc);
+	int psig = lxp_pending_take(proc);
 	if (psig) {
-		deliver_signal(f, proc, psig, r);
+		lxp_deliver_signal(f, proc, psig, r);
 		return;
 	}
 	f->r[0] = (uint32_t)r;

@@ -59,10 +59,10 @@ static void child_event_publish(int ppid, const struct lxp_child_event *event)
 		if (parent->wait.data.child.status)
 			*(int *)(uintptr_t)parent->wait.data.child.status =
 				child_wait_status(event);
-		int slot = slot_of(parent);
+		int slot = lxp_slot_of(parent);
 		(void)lxp_wait_complete(parent, LXP_WAIT_CHILD);
-		coordinator_park_slot(slot);
-		(void)coordinator_complete_slot(slot_ref_at(slot), event->pid);
+		lxp_coordinator_park_slot(slot);
+		(void)lxp_coordinator_complete_slot(lxp_slot_ref_at(slot), event->pid);
 		return;
 	}
 
@@ -76,7 +76,7 @@ static void child_event_publish(int ppid, const struct lxp_child_event *event)
 		lxp_signal_latch(parent, LXP_SIGCHLD);
 }
 
-void reap_to_parent(int ppid, int cpid, int status, int sigchld)
+void lxp_reap_to_parent(int ppid, int cpid, int status, int sigchld)
 {
 	const struct lxp_child_event event = {
 		.pid = cpid,
@@ -87,7 +87,7 @@ void reap_to_parent(int ppid, int cpid, int status, int sigchld)
 	child_event_publish(ppid, &event);
 }
 
-void notify_parent_stopped(int ppid, int cpid, int stopsig)
+void lxp_notify_parent_stopped(int ppid, int cpid, int stopsig)
 {
 	const struct lxp_child_event event = {
 		.pid = cpid,

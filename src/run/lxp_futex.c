@@ -99,7 +99,8 @@ void lxp_futex(struct lxp_frame *f, lxp_proc_t *proc, int is_time64)
 			f->r[0] = (uint32_t)-LXP_EAGAIN;
 			return;
 		}
-		park_frame(f, proc); /* the coordinator parks us; FUTEX_WAKE / timeout resumes us */
+		/* the coordinator parks us; FUTEX_WAKE / timeout resumes us */
+		lxp_park_frame(f, proc);
 		return;
 	}
 	if (op == 1 || op == 10) { /* FUTEX_WAKE / FUTEX_WAKE_BITSET */

@@ -330,11 +330,11 @@ int lxp_fd_install(lxp_proc_t *p, uint8_t kind, int idx, int flags)
  * table is full. */
 int lxp_sys_fd_alloc(lxp_proc_t *p, uint8_t kind, int idx, size_t off, int flags)
 {
-	if (kind == LXP_FD_TMPFS && wfs_open(idx) != 0)
+	if (kind == LXP_FD_TMPFS && lxp_wfs_open(idx) != 0)
 		return -LXP_EMFILE;
 	int fd = lxp_fd_open(p, kind, idx, off, flags);
 	if (fd < 0 && kind == LXP_FD_TMPFS)
-		wfs_close(idx);
+		lxp_wfs_close(idx);
 	return fd;
 }
 

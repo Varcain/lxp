@@ -357,11 +357,12 @@ int lxp_freertos_svc_c(struct lnx_capture *g)
 	g->hw[5] = f.r[14];
 	g->hw[6] = f.r[15];
 	g->hw[7] = f.xpsr;
-	/* Write r4-r11 back so a dispatch that rewrites a callee-saved register on the fast path takes
-	 * effect. rt_sigreturn restores the interrupted code's r9 (FDPIC GOT) via sig_restore — a signal
-	 * handler runs with its OWN r9, so without this the interrupted syscall resumes with the handler's
-	 * GOT and its __errno_location PLT resolves through the wrong module (-> sigaction -> SIGSEGV).
-	 * For every other syscall these equal the captured values, so SVC_Handler's reload is a no-op. */
+	/* Write r4-r11 back so a dispatch that rewrites a callee-saved register on the fast path
+	 * takes effect. rt_sigreturn restores the interrupted code's r9 (FDPIC GOT) via
+	 * lxp_sig_restore; a signal handler runs with its OWN r9, so without this the interrupted
+	 * syscall resumes with the handler's GOT and its __errno_location PLT resolves through the
+	 * wrong module (-> sigaction -> SIGSEGV). For every other syscall these equal the captured
+	 * values, so SVC_Handler's reload is a no-op. */
 	for (int i = 0; i < 8; i++)
 		g->r4_11[i] = f.r[4 + i];
 #if LXP_ENABLE_FPU_CONTEXT
@@ -1167,10 +1168,11 @@ static void LXP_FAULT_GPR_ONLY freertos_event_post(void)
 	if (g_ev)
 		xSemaphoreGiveFromISR(g_ev, &woken);
 	/* Pend a context switch if the (higher-priority) coordinator was woken: event_post runs
-	 * from the SVC/MemManage handler (e.g. a program's exit park_frame). Without this yield the
-	 * woken coordinator does NOT preempt, so an EXITED unprivileged restricted task keeps spinning
-	 * in the park entry and is context-switched (corrupting its saved registers under the MPU
-	 * port) before the coordinator reaps it. Yielding reaps it promptly, before any such switch. */
+	 * from the SVC/MemManage handler (e.g. a program's exit lxp_park_frame). Without this yield
+	 * the woken coordinator does NOT preempt, so an EXITED unprivileged restricted task keeps
+	 * spinning in the park entry and is context-switched (corrupting its saved registers under
+	 * the MPU port) before the coordinator reaps it. Yielding reaps it promptly, before any
+	 * such switch. */
 	portYIELD_FROM_ISR(woken);
 }
 static void freertos_event_wait(unsigned ms)

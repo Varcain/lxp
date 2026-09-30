@@ -28,12 +28,12 @@ static void test_stopped_wait_completion_is_retained_until_sigcont(void **state)
 	parent->group->tgid = 1;
 	parent->group->live_children = 1;
 	set_child_wait(parent, -1, 0, &status);
-	assert_int_equal(coordinator_park_slot(0), LXP_OK);
+	assert_int_equal(lxp_coordinator_park_slot(0), LXP_OK);
 	parent->stopped = 1;
 	parent->stop_kind = LXP_STOP_PARKED;
 	parent->stop_sig = LXP_SIGSTOP;
 
-	reap_to_parent(/*ppid*/ 1, /*cpid*/ 7, /*status*/ 42,
+	lxp_reap_to_parent(/*ppid*/ 1, /*cpid*/ 7, /*status*/ 42,
 		       /*sigchld=*/1);
 
 	assert_true(parent->stopped);
@@ -52,7 +52,7 @@ static void test_stopped_wait_completion_is_retained_until_sigcont(void **state)
 	assert_int_equal(g_mock.resume_r0, 7);
 }
 
-/* pending_deliverable returns the lowest-numbered UNBLOCKED pending signal and leaves blocked
+/* lxp_pending_deliverable returns the lowest-numbered UNBLOCKED pending signal and leaves blocked
  * ones set — so the mask is honored (a blocked signal is deferred, #4) and no pending signal is
  * lost to a single slot when another arrives (#5). SIGKILL/SIGSTOP are never blocked. */
 static void test_pending_deliverable(void **state)
@@ -61,20 +61,21 @@ static void test_pending_deliverable(void **state)
 	lxp_proc_t *p = &g_lxp_rt.slots[0].proc;
 	p->sig_blocked = lxp_sig_bit(LXP_SIGTERM); /* SIGTERM blocked, SIGINT not */
 	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM) | lxp_sig_bit(LXP_SIGINT);
-	assert_int_equal(pending_deliverable(p), LXP_SIGINT); /* skips the blocked SIGTERM */
+	assert_int_equal(lxp_pending_deliverable(p), LXP_SIGINT); /* skips the blocked SIGTERM */
 
 	p->pending_sigs &= ~lxp_sig_bit(LXP_SIGINT); /* consume SIGINT */
-	assert_int_equal(pending_deliverable(p), 0); /* SIGTERM still blocked -> nothing */
+	assert_int_equal(lxp_pending_deliverable(p), 0); /* SIGTERM still blocked -> nothing */
 	assert_true(p->pending_sigs & lxp_sig_bit(LXP_SIGTERM)); /* ...but not lost */
 	p->sig_blocked = 0;
-	assert_int_equal(pending_deliverable(p), LXP_SIGTERM); /* unblocked -> now deliverable */
+	/* unblocked -> now deliverable */
+	assert_int_equal(lxp_pending_deliverable(p), LXP_SIGTERM);
 
 	p->sig_blocked = (uint64_t)-1; /* even a full mask cannot block SIGKILL */
 	p->pending_sigs = lxp_sig_bit(LXP_SIGKILL);
-	assert_int_equal(pending_deliverable(p), LXP_SIGKILL);
+	assert_int_equal(lxp_pending_deliverable(p), LXP_SIGKILL);
 
 	p->pending_sigs = 0;
-	assert_int_equal(pending_deliverable(p), 0); /* empty set */
+	assert_int_equal(lxp_pending_deliverable(p), 0); /* empty set */
 }
 
 static void test_deferred_completion_takes_pending_stop_without_resume(void **state)
@@ -86,13 +87,13 @@ static void test_deferred_completion_takes_pending_stop_without_resume(void **st
 	proc->pid = 7;
 	struct lxp_frame frame = {0};
 	frame.r[7] = 999;
-	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
-	assert_int_equal(deferred_state_load(0), DEFER_READY);
+	assert_int_equal(lxp_dispatch_slot(lxp_slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal(lxp_deferred_state_load(0), DEFER_READY);
 	lxp_signal_latch(proc, LXP_SIGSTOP);
 
-	execute_deferred(0);
+	lxp_execute_deferred(0);
 
-	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
+	assert_int_equal(lxp_deferred_state_load(0), DEFER_IDLE);
 	assert_true(proc->stopped);
 	assert_int_equal(proc->stop_kind, LXP_STOP_READY);
 	assert_int_equal(proc->stop_sig, LXP_SIGSTOP);
@@ -119,12 +120,12 @@ static void test_deferred_signal_cancels_before_execute(void **state)
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	f.r[7] = 999;
-	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &f), LXP_OK);
+	assert_int_equal(lxp_dispatch_slot(lxp_slot_ref_at(0), &f), LXP_OK);
 	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
 
-	execute_deferred(0);
+	lxp_execute_deferred(0);
 
-	assert_int_equal(deferred_state_load(0), DEFER_IDLE);
+	assert_int_equal(lxp_deferred_state_load(0), DEFER_IDLE);
 	assert_int_equal(g_mock.park_calls, 1);
 	assert_int_equal(g_mock.abort_calls, 0);
 	assert_int_equal(g_mock.resume_calls, 0);
@@ -147,7 +148,7 @@ static void test_signal_interrupts_blocked_netfs_before_retry(void **state)
 						.data.io.request = -1,
 					}),
 			 LXP_OK);
-	assert_int_equal(coordinator_park_slot(0), LXP_OK);
+	assert_int_equal(lxp_coordinator_park_slot(0), LXP_OK);
 	p->pending_sigs = lxp_sig_bit(LXP_SIGTERM);
 
 	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
@@ -156,7 +157,7 @@ static void test_signal_interrupts_blocked_netfs_before_retry(void **state)
 	assert_int_equal(p->wait.kind, LXP_WAIT_NONE);
 	assert_int_equal(p->intent.kind, LXP_INTENT_EXIT);
 	assert_int_equal(p->exit_status, 128 + LXP_SIGTERM);
-	assert_true(primary_slot_pending(0));
+	assert_true(lxp_primary_slot_pending(0));
 	assert_int_equal(g_mock.resume_calls, 0);
 	assert_int_equal(g_lxp_rt.slots[0].host_state, SLOT_PARKED);
 	assert_int_equal(lxp_validate_world(NULL), LXP_OK);
@@ -181,7 +182,7 @@ static void test_caught_signal_waits_for_hostfs_completion(void **state)
 						.data.hostfs.nr = 999,
 					}),
 			 LXP_OK);
-	assert_int_equal(coordinator_park_slot(0), LXP_OK);
+	assert_int_equal(lxp_coordinator_park_slot(0), LXP_OK);
 	lxp_signal_latch(proc, LXP_SIGALRM);
 
 	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
@@ -288,16 +289,16 @@ static void test_running_stop_parks_at_boundary_and_continues(void **state)
 	frame.r[7] = LXP_NR_gettid;
 	proc->pending_sigs = lxp_sig_bit(LXP_SIGSTOP);
 
-	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal(lxp_dispatch_slot(lxp_slot_ref_at(0), &frame), LXP_OK);
 	assert_true(proc->stopped);
 	assert_int_equal(proc->stop_kind, LXP_STOP_READY);
 	assert_int_equal(proc->stop_sig, LXP_SIGSTOP);
 	assert_int_equal(proc->stop_r0, proc->pid);
 	assert_int_equal(g_mock.park_prepare_calls, 1);
-	assert_true(primary_slot_pending(0));
+	assert_true(lxp_primary_slot_pending(0));
 
 	unsigned cursor = 0;
-	struct lxp_claimed_event claimed = coordinator_claim_event(&cursor);
+	struct lxp_claimed_event claimed = lxp_coordinator_claim_event(&cursor);
 	assert_int_equal(claimed.slot, 0);
 	assert_int_equal(claimed.type, LXP_EV_STOP);
 	int next_pid = 8;
@@ -362,9 +363,9 @@ static void test_caught_sigcont_runs_after_boundary_resume(void **state)
 	frame.xpsr = 1u << 24;
 	lxp_signal_latch(proc, LXP_SIGSTOP);
 
-	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal(lxp_dispatch_slot(lxp_slot_ref_at(0), &frame), LXP_OK);
 	unsigned cursor = 0;
-	struct lxp_claimed_event claimed = coordinator_claim_event(&cursor);
+	struct lxp_claimed_event claimed = lxp_coordinator_claim_event(&cursor);
 	int next_pid = 8;
 	(void)lxp_handle_primary_event(claimed.slot, claimed.type, &next_pid);
 	assert_int_equal(g_lxp_rt.slots[0].host_state, SLOT_PARKED);
@@ -399,7 +400,7 @@ static void test_caught_sigcont_interrupts_parked_wait(void **state)
 						.data.timer.deadline_us = 1000,
 					}),
 			 LXP_OK);
-	assert_int_equal(coordinator_park_slot(0), LXP_OK);
+	assert_int_equal(lxp_coordinator_park_slot(0), LXP_OK);
 	lxp_signal_latch(proc, LXP_SIGSTOP);
 
 	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
@@ -437,9 +438,9 @@ static void test_blocked_caught_sigcont_resumes_boundary_but_stays_pending(void 
 	frame.xpsr = 1u << 24;
 	lxp_signal_latch(proc, LXP_SIGSTOP);
 
-	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal(lxp_dispatch_slot(lxp_slot_ref_at(0), &frame), LXP_OK);
 	unsigned cursor = 0;
-	struct lxp_claimed_event claimed = coordinator_claim_event(&cursor);
+	struct lxp_claimed_event claimed = lxp_coordinator_claim_event(&cursor);
 	int next_pid = 8;
 	(void)lxp_handle_primary_event(claimed.slot, claimed.type, &next_pid);
 	lxp_signal_latch(proc, LXP_SIGCONT);
@@ -468,7 +469,7 @@ static void test_blocked_caught_sigcont_keeps_parked_wait(void **state)
 						.data.timer.deadline_us = 1000,
 					}),
 			 LXP_OK);
-	assert_int_equal(coordinator_park_slot(0), LXP_OK);
+	assert_int_equal(lxp_coordinator_park_slot(0), LXP_OK);
 	lxp_signal_latch(proc, LXP_SIGSTOP);
 	assert_true(lxp_scan_blocked(1).progress);
 	assert_true(proc->stopped);
@@ -490,7 +491,7 @@ static void test_caught_sigcont_does_not_resume_vfork_owned_park(void **state)
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
 	proc->sighand->handler[LXP_SIGCONT] = 0x1234u;
-	assert_int_equal(coordinator_park_slot(0), LXP_OK);
+	assert_int_equal(lxp_coordinator_park_slot(0), LXP_OK);
 	assert_int_equal(proc->wait.kind, LXP_WAIT_NONE);
 	proc->stopped = 1;
 	proc->stop_kind = LXP_STOP_PARKED;
@@ -519,7 +520,7 @@ static void test_stopped_vfork_parent_release_waits_for_sigcont(void **state)
 	parent->pid = 1;
 	parent->group->tgid = 1;
 	parent->group->live_children = 1;
-	assert_int_equal(coordinator_park_slot(0), LXP_OK);
+	assert_int_equal(lxp_coordinator_park_slot(0), LXP_OK);
 	parent->stopped = 1;
 	parent->stop_kind = LXP_STOP_PARKED;
 	parent->stop_sig = LXP_SIGSTOP;
@@ -527,11 +528,11 @@ static void test_stopped_vfork_parent_release_waits_for_sigcont(void **state)
 	child->pid = 7;
 	child->group->tgid = 7;
 	child->group->ppid = 1;
-	child->vfork_parent = slot_ref_at(0);
+	child->vfork_parent = lxp_slot_ref_at(0);
 	child->exit_status = 0;
 	assert_int_equal(lxp_intent_exit(child, 0), LXP_OK);
-	assert_int_equal(coordinator_resume_slot(0, parent->mm->region.index,
-						 lxp_slot_resume_view(slot_ref_at(0)), 7),
+	assert_int_equal(lxp_coordinator_resume_slot(0, parent->mm->region.index,
+						 lxp_slot_resume_view(lxp_slot_ref_at(0)), 7),
 			 -LXP_EAGAIN);
 	assert_int_equal(g_mock.resume_calls, 0);
 
@@ -558,7 +559,7 @@ static void test_sigkill_wins_over_sigcont_for_stopped_task(void **state)
 	g_lxp_rt.cfg = &g_mock_cfg;
 	make_valid_running_slot(0, 0);
 	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
-	assert_int_equal(coordinator_park_slot(0), LXP_OK);
+	assert_int_equal(lxp_coordinator_park_slot(0), LXP_OK);
 	proc->stopped = 1;
 	proc->stop_kind = LXP_STOP_READY;
 	proc->stop_sig = LXP_SIGSTOP;
@@ -573,7 +574,7 @@ static void test_sigkill_wins_over_sigcont_for_stopped_task(void **state)
 	assert_int_equal(proc->exit_status, 128 + LXP_SIGKILL);
 	assert_int_equal(proc->exit_signal, LXP_SIGKILL);
 	assert_int_equal(g_mock.resume_calls, 0);
-	assert_true(primary_slot_pending(0));
+	assert_true(lxp_primary_slot_pending(0));
 }
 
 /* The stop-signal predicate: SIGSTOP always stops (uncatchable); SIGTSTP/TTIN/TTOU stop
@@ -587,15 +588,15 @@ static void test_sig_stops_proc_predicate(void **state)
 	sighand.refs = 1;
 	p->sighand = &sighand;
 	p->sighand->handler[LXP_SIGTSTP] = LXP_SIG_DFL;
-	assert_true(sig_is_stop(LXP_SIGTSTP));
-	assert_true(sig_is_stop(LXP_SIGSTOP));
-	assert_false(sig_is_stop(LXP_SIGINT));
-	assert_true(sig_stops_proc(p, LXP_SIGTSTP)); /* SIG_DFL → stops */
+	assert_true(lxp_sig_is_stop(LXP_SIGTSTP));
+	assert_true(lxp_sig_is_stop(LXP_SIGSTOP));
+	assert_false(lxp_sig_is_stop(LXP_SIGINT));
+	assert_true(lxp_sig_stops_proc(p, LXP_SIGTSTP)); /* SIG_DFL → stops */
 	p->sighand->handler[LXP_SIGTSTP] = 0x1000;   /* a caught handler → runs it, no stop */
-	assert_false(sig_stops_proc(p, LXP_SIGTSTP));
+	assert_false(lxp_sig_stops_proc(p, LXP_SIGTSTP));
 	p->sighand->handler[LXP_SIGSTOP] = 0x1000; /* SIGSTOP is uncatchable → always stops */
-	assert_true(sig_stops_proc(p, LXP_SIGSTOP));
-	assert_false(sig_stops_proc(p, LXP_SIGINT)); /* not a stop signal */
+	assert_true(lxp_sig_stops_proc(p, LXP_SIGSTOP));
+	assert_false(lxp_sig_stops_proc(p, LXP_SIGINT)); /* not a stop signal */
 }
 
 /* A stopped child wakes a parent blocked in wait4(WUNTRACED) with a WIFSTOPPED status and,
@@ -604,14 +605,14 @@ static void test_stop_notify_wakes_wuntraced_waiter(void **state)
 {
 	(void)state;
 	int status = -1;
-	deferred_slot_reassign(0);
+	lxp_deferred_slot_reassign(0);
 	g_lxp_rt.slots[0].proc.alive = 1;
 	g_lxp_rt.slots[0].proc.pid = 1;
 	g_lxp_rt.slots[0].proc.group->live_children = 1;
 	set_child_wait(&g_lxp_rt.slots[0].proc, -1, LXP_WUNTRACED, &status);
 	g_lxp_rt.slots[0].host_state = SLOT_PARKED;
 
-	notify_parent_stopped(/*ppid*/ 1, /*cpid*/ 7, LXP_SIGTSTP);
+	lxp_notify_parent_stopped(/*ppid*/ 1, /*cpid*/ 7, LXP_SIGTSTP);
 
 	assert_int_equal(g_mock.resume_calls, 1);
 	assert_int_equal(g_mock.resume_r0, 7);
@@ -633,7 +634,7 @@ static void test_stop_notify_queues_without_wuntraced(void **state)
 	g_lxp_rt.slots[0].proc.group->live_children = 1;
 	set_child_wait(&g_lxp_rt.slots[0].proc, -1, 0, NULL);
 
-	notify_parent_stopped(/*ppid*/ 1, /*cpid*/ 7, LXP_SIGTSTP);
+	lxp_notify_parent_stopped(/*ppid*/ 1, /*cpid*/ 7, LXP_SIGTSTP);
 
 	assert_int_equal(g_mock.resume_calls, 0); /* the waiter is not woken */
 	assert_int_equal(g_lxp_rt.slots[0].proc.wait.kind, LXP_WAIT_CHILD);

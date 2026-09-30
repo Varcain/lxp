@@ -35,7 +35,7 @@ unsigned lxp_region_live_users(int r)
 	return users;
 }
 
-int region_free(int r)
+int lxp_region_free(int r)
 {
 	if (r < 0 || r >= LXP_NREG || g_lxp_rt.regions[r].lease_owner.index >= 0 ||
 	    g_lxp_rt.regions[r].refs != 0)
@@ -51,7 +51,7 @@ static uint32_t region_generation_next(int r)
 	return next;
 }
 
-lxp_region_ref_t region_ref_at(int r)
+lxp_region_ref_t lxp_region_ref_at(int r)
 {
 	return (r >= 0 && r < LXP_NREG && g_lxp_rt.regions[r].refs != 0)
 		       ? (lxp_region_ref_t){
@@ -61,10 +61,10 @@ lxp_region_ref_t region_ref_at(int r)
 		       : lxp_region_ref_none();
 }
 
-lxp_region_ref_t region_reserve(int r, lxp_slot_ref_t owner)
+lxp_region_ref_t lxp_region_reserve(int r, lxp_slot_ref_t owner)
 {
 	if (r < 0 || r >= LXP_NREG || owner.index < 0 || owner.index >= LXP_NSLOT ||
-	    owner.generation == 0 || !lxp_slot_ref_equal(owner, slot_ref_at(owner.index)) ||
+	    owner.generation == 0 || !lxp_slot_ref_equal(owner, lxp_slot_ref_at(owner.index)) ||
 	    g_lxp_rt.regions[r].refs != 0)
 		return lxp_region_ref_none();
 	g_lxp_rt.regions[r].lease_owner = owner;
@@ -89,7 +89,7 @@ int lxp_region_commit_address_space(lxp_region_ref_t ref, lxp_slot_ref_t lease_o
 	return 0;
 }
 
-int region_get(lxp_region_ref_t ref)
+int lxp_region_get(lxp_region_ref_t ref)
 {
 	int r = ref.index;
 	if (r < 0 || r >= LXP_NREG || ref.generation == 0 ||
@@ -101,7 +101,7 @@ int region_get(lxp_region_ref_t ref)
 	return 0;
 }
 
-int region_put(lxp_region_ref_t ref)
+int lxp_region_put(lxp_region_ref_t ref)
 {
 	int r = ref.index;
 	if (r < 0 || r >= LXP_NREG || ref.generation == 0 ||
@@ -114,21 +114,21 @@ int region_put(lxp_region_ref_t ref)
 	return 0;
 }
 
-void proc_mm_put(lxp_proc_t *p)
+void lxp_region_mm_put(lxp_proc_t *p)
 {
 	if (!p || !p->mm)
 		return;
-	(void)region_put(p->mm->region);
+	(void)lxp_region_put(p->mm->region);
 	lxp_proc_mm_put(p);
 }
 
-int region_release_if_owned(lxp_region_ref_t region, lxp_slot_ref_t owner)
+int lxp_region_release_if_owned(lxp_region_ref_t region, lxp_slot_ref_t owner)
 {
 	int r = region.index;
 	if (r < 0 || r >= LXP_NREG || !lxp_slot_ref_equal(g_lxp_rt.regions[r].lease_owner, owner) ||
 	    g_lxp_rt.regions[r].refs != 1 || g_lxp_rt.regions[r].generation != region.generation)
 		return -1;
-	return region_put(region);
+	return lxp_region_put(region);
 }
 
 int lxp_region_lease_matches(lxp_region_ref_t region, lxp_slot_ref_t owner, unsigned refs)
@@ -203,16 +203,16 @@ static void restore_copy_span(void *dst, const void *src, size_t len)
  * state rather than the full reserved stack, while preserving NOMMU shell re-exec paths that
  * modify vfork caller frames. Returns the reserved scratch-region capability, or an invalid
  * reference if the parent cannot be isolated. */
-lxp_region_ref_t vfork_snapshot(lxp_proc_t *par, lxp_slot_ref_t child, uintptr_t sp)
+lxp_region_ref_t lxp_vfork_snapshot(lxp_proc_t *par, lxp_slot_ref_t child, uintptr_t sp)
 {
-	int parent_slot = slot_of(par);
+	int parent_slot = lxp_slot_of(par);
 	if (parent_slot < 0 || child.index < 0 || child.index >= LXP_NSLOT ||
 	    child.generation == 0 || !par->alive || !par->mm || par->mm->region.index < 0 ||
 	    par->mm->region.index >= LXP_NREG)
 		return lxp_region_ref_none();
 	int rsnap = -1;
 	for (int r = 0; r < LXP_NREG; r++)
-		if (region_free(r)) {
+		if (lxp_region_free(r)) {
 			rsnap = r;
 			break;
 		}
@@ -223,7 +223,7 @@ lxp_region_ref_t vfork_snapshot(lxp_proc_t *par, lxp_slot_ref_t child, uintptr_t
 	uint8_t *sr = g_lxp_os_ops->region(rsnap);
 	if (sp < par->stack_lo || sp > par->mm->region_hi)
 		return lxp_region_ref_none();
-	lxp_region_ref_t snapshot = region_reserve(rsnap, child);
+	lxp_region_ref_t snapshot = lxp_region_reserve(rsnap, child);
 	if (snapshot.index < 0)
 		return snapshot;
 	snapshot_copy_span(sr, pr, dlen);
@@ -238,7 +238,7 @@ lxp_region_ref_t vfork_snapshot(lxp_proc_t *par, lxp_slot_ref_t child, uintptr_t
 	g_lxp_rt.arenas[rsnap] =
 		g_lxp_rt.arenas[par->mm->region.index]; /* allocator metadata (coordinator memory) */
 	struct vfork_snapshot_guard *guard = &g_lxp_rt.vfork_guard[child.index];
-	guard->parent = slot_ref_at(parent_slot);
+	guard->parent = lxp_slot_ref_at(parent_slot);
 	guard->parent_region = par->mm->region;
 	guard->snapshot = snapshot;
 	return snapshot;
@@ -248,15 +248,16 @@ lxp_region_ref_t vfork_snapshot(lxp_proc_t *par, lxp_slot_ref_t child, uintptr_t
  * back over the parent's region + dyn_pool and restore its arena metadata. Every identity is
  * checked before the first write; failure leaves memory untouched so the caller can contain both
  * processes. */
-int vfork_restore(lxp_proc_t *par, lxp_region_ref_t snapshot, lxp_slot_ref_t child, uintptr_t sp)
+int lxp_vfork_restore(lxp_proc_t *par, lxp_region_ref_t snapshot, lxp_slot_ref_t child,
+		      uintptr_t sp)
 {
 	if (!lxp_slot_ref_is_current(child))
 		return -1;
 	struct vfork_snapshot_guard *guard = &g_lxp_rt.vfork_guard[child.index];
-	int parent_slot = slot_of(par);
+	int parent_slot = lxp_slot_of(par);
 	int rsnap = snapshot.index;
 	if (parent_slot < 0 || !par->alive || !par->mm ||
-	    !lxp_slot_ref_equal(slot_ref_at(parent_slot), guard->parent) ||
+	    !lxp_slot_ref_equal(lxp_slot_ref_at(parent_slot), guard->parent) ||
 	    !lxp_region_ref_equal(par->mm->region, guard->parent_region) ||
 	    !lxp_region_ref_equal(snapshot, guard->snapshot) || rsnap < 0 || rsnap >= LXP_NREG ||
 	    !lxp_slot_ref_equal(g_lxp_rt.regions[rsnap].lease_owner, child) ||
@@ -295,19 +296,19 @@ static int vfork_parent_is_current(lxp_slot_ref_t child)
  * error. Never copy it. Terminate a still-current suspended parent (its shared
  * image may already be dirty), fail the child, and release only a reservation
  * that is still demonstrably ours. */
-void vfork_contain_stale(lxp_slot_ref_t child_ref, lxp_proc_t *child)
+void lxp_vfork_contain_stale(lxp_slot_ref_t child_ref, lxp_proc_t *child)
 {
 	struct vfork_snapshot_guard *guard = &g_lxp_rt.vfork_guard[child_ref.index];
 	if (vfork_parent_is_current(child_ref)) {
-		coordinator_exit_slot(guard->parent.index, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION,
-				      0);
+		lxp_coordinator_exit_slot(guard->parent.index, 0, 127,
+					  LXP_EXIT_REASON_STATE_CORRUPTION, 0);
 	}
 	if (guard->snapshot.index >= 0)
-		(void)region_release_if_owned(guard->snapshot, child_ref);
+		(void)lxp_region_release_if_owned(guard->snapshot, child_ref);
 	lxp_vfork_guard_reset(child_ref.index);
 	child->vfork_parent = lxp_slot_ref_none();
 	child->snapshot = lxp_region_ref_none();
 	if (child->intent.kind == LXP_INTENT_EXEC)
 		(void)lxp_intent_complete(child, LXP_INTENT_EXEC);
-	coordinator_exit_slot(child_ref.index, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION, 0);
+	lxp_coordinator_exit_slot(child_ref.index, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION, 0);
 }

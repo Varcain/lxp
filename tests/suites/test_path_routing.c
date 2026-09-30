@@ -241,10 +241,10 @@ static lxp_conf_t *world_begin(lxp_proc_t *p)
 		return NULL;
 	p->mm->region = (lxp_region_ref_t){.index = 0, .generation = 1};
 	for (int i = 0; i < LXP_NWNODE; i++)
-		if (wnode_at(i)->used)
-			wfs_free(i);
-	assert_true(wfs_create("/tmp/w", LXP_S_IFREG | 0644u) >= 0);
-	assert_true(wfs_create("/tmp/wd", LXP_S_IFDIR | 0755u) >= 0);
+		if (lxp_wnode_at(i)->used)
+			lxp_wfs_free(i);
+	assert_true(lxp_wfs_create("/tmp/w", LXP_S_IFREG | 0644u) >= 0);
+	assert_true(lxp_wfs_create("/tmp/wd", LXP_S_IFDIR | 0755u) >= 0);
 	g_host_op[0] = '\0';
 	return fx;
 }
@@ -420,12 +420,12 @@ static long run_op(lxp_proc_t *p, lxp_conf_t *fx, enum op op, const char *path, 
 	case OP_RENAME:
 		rc = name_outcome(call(p, LXP_NR_rename, gp, gp2, 0, 0));
 		if (rc == TMP)
-			assert_true(wfs_find(path2) >= 0);
+			assert_true(lxp_wfs_find(path2) >= 0);
 		return rc;
 	case OP_LINK:
 		rc = name_outcome(call(p, LXP_NR_link, gp, gp2, 0, 0));
 		if (rc == TMP)
-			assert_true(wfs_find(path2) >= 0);
+			assert_true(lxp_wfs_find(path2) >= 0);
 		return rc;
 	}
 	return 0;
@@ -694,11 +694,11 @@ static void test_exec_from_tmpfs(void **state)
 	g_proc.alive = 1; /* a process calling execve is running */
 	uint8_t prog[LXP_MOCK_FDPIC_SIZE];
 	lxp_mock_fdpic(prog);
-	int wi = wfs_create("/tmp/prog", LXP_S_IFREG | 0755u);
+	int wi = lxp_wfs_create("/tmp/prog", LXP_S_IFREG | 0755u);
 	assert_true(wi >= 0);
-	assert_int_equal(wfs_reserve(wi, sizeof(prog)), 0);
-	memcpy(wnode_at(wi)->data, prog, sizeof(prog));
-	wnode_at(wi)->size = sizeof(prog);
+	assert_int_equal(lxp_wfs_reserve(wi, sizeof(prog)), 0);
+	memcpy(lxp_wnode_at(wi)->data, prog, sizeof(prog));
+	lxp_wnode_at(wi)->size = sizeof(prog);
 
 	long path = (long)(uintptr_t)lxp_conf_str(fx, "/tmp/prog");
 	assert_int_equal(call(&g_proc, LXP_NR_execve, path, 0, 0, 0), 0);
@@ -755,13 +755,13 @@ static void test_at_calls_resolve_from_dirfd(void **state)
 	assert_int_equal(call(&g_proc, LXP_NR_readlinkat, bin, str(fx, "sh"), b, 64), 7);
 	assert_int_equal(call(&g_proc, LXP_NR_faccessat, proc, str(fx, "stat"), 0, 0), 0);
 	assert_int_equal(call(&g_proc, LXP_NR_mkdirat, wd, str(fx, "x"), 0755, 0), 0);
-	assert_true(wfs_find("/tmp/wd/x") >= 0);
+	assert_true(lxp_wfs_find("/tmp/wd/x") >= 0);
 	assert_int_equal(call(&g_proc, LXP_NR_unlinkat, wd, str(fx, "x"), LXP_AT_REMOVEDIR, 0), 0);
 	assert_int_equal(call(&g_proc, LXP_NR_renameat, tmp, str(fx, "w"), wd, str(fx, "moved")),
 			 0);
-	assert_true(wfs_find("/tmp/wd/moved") >= 0);
+	assert_true(lxp_wfs_find("/tmp/wd/moved") >= 0);
 	assert_int_equal(call(&g_proc, LXP_NR_symlinkat, str(fx, "t"), wd, str(fx, "l"), 0), 0);
-	assert_true(wfs_find("/tmp/wd/l") >= 0);
+	assert_true(lxp_wfs_find("/tmp/wd/l") >= 0);
 
 	assert_int_equal(call(&g_proc, LXP_NR_openat, fd, str(fx, "x"), LXP_O_RDONLY, 0),
 			 -LXP_ENOTDIR);

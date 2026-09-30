@@ -15,23 +15,23 @@
 #include "proc/lxp_proc.h"
 
 /* True iff `abs` names something under /proc (which shadows the rootfs). */
-int proc_is(const char *abs);
+int lxp_proc_is(const char *abs);
 
 /* The stat mode of /proc node `abs` (S_IFREG/S_IFDIR/S_IFLNK | perms), or 0 if absent. */
-uint32_t proc_mode(const char *abs, const lxp_proc_t *p);
+uint32_t lxp_proc_mode(const char *abs, const lxp_proc_t *p);
 
 /* Generate the read-only content of the /proc file `abs` into buf[cap]; returns the
  * byte count or a negative errno. */
-long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap);
+long lxp_proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap);
 
 /* --- helpers the dispatcher's /proc getdents/readlink glue also uses --------- */
 
 /* If `abs` is /proc/<pid> or /proc/<pid>/<file>, return the pid and set *file to the
  * trailing component (NULL for the dir itself); 0 if `abs` is not a /proc/<pid> path. */
-int proc_pid(const char *abs, const lxp_proc_t *p, const char **file);
+int lxp_proc_pid(const char *abs, const lxp_proc_t *p, const char **file);
 
 /* True iff `pid` is a live/known process (pid 1, self, or a ps/top snapshot entry). */
-int proc_pid_known(const lxp_proc_t *p, int pid);
+int lxp_proc_pid_known(const lxp_proc_t *p, int pid);
 
 /* The inode of /proc node `abs` (from its path, so stat, fstat and readdir agree),
  * and of entry `name` of /proc directory `dir`. */
@@ -39,7 +39,7 @@ uint32_t lxp_procfs_inode(const char *abs);
 uint32_t lxp_procfs_child_inode(const char *dir, const char *name);
 
 /* NULL-terminated list of top-level /proc file names (for the /proc dir listing). */
-extern const char *const g_proc_files[];
+extern const char *const g_lxp_proc_files[];
 
 /* Open /proc node `abs` (already resolved): a generated-content file fd, or a
  * directory fd for getdents. Returns the fd or a negative errno. */

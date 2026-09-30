@@ -17,7 +17,7 @@ reuse the existing `-DLXP_SANITIZE=ON` ASan/UBSan flags.
 | `fuzz_fdpic`   | `lxp_loader_load_fdpic` | FDPIC ELF loader (guest exec + netfs-exec path) |
 | `fuzz_etrel`   | `lxp_loader_load`       | relocatable-object (ET_REL) loader |
 | `fuzz_cpio`    | `lxp_cpio_to_rootfs`    | newc cpio initramfs parser |
-| `fuzz_path`    | `resolve_path` + `lxp_rootfs_resolve` | path normalize + rootfs symlink follow |
+| `fuzz_path`    | `lxp_resolve_path` + `lxp_rootfs_resolve` | path normalize + rootfs symlink follow |
 | `fuzz_9p`      | `handle_reply` / `parse_getattr` | 9P2000.L reply parser (via the `LXP_FUZZ` shim) |
 | `fuzz_syscall` | `lxp_syscall`           | syscall dispatcher — the `lxp_guest_access_ok` pointer gate |
 

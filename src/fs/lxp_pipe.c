@@ -79,7 +79,7 @@ void lxp_pipe_runtime_reset(void)
 		g_pipes[i] = (lxp_pipe_t){0};
 }
 
-long pipe_try_read(int pi, void *buf, size_t len)
+long lxp_pipe_try_read(int pi, void *buf, size_t len)
 {
 	lxp_pipe_t *pp = &g_pipes[pi];
 	if (pp->count == 0)
@@ -87,7 +87,7 @@ long pipe_try_read(int pi, void *buf, size_t len)
 	return (long)lxp_ring_read(pp->buf, LXP_PIPE_BUF, &pp->rpos, &pp->count, buf, len);
 }
 
-long pipe_try_write(int pi, const void *buf, size_t len)
+long lxp_pipe_try_write(int pi, const void *buf, size_t len)
 {
 	lxp_pipe_t *pp = &g_pipes[pi];
 	if (pp->readers == 0)
@@ -103,18 +103,19 @@ long lxp_pipe_retry(lxp_proc_t *p)
 	if (!p || p->wait.kind != LXP_WAIT_PIPE)
 		return -LXP_EINVAL;
 	if (p->wait.op == 1)
-		return pipe_try_read(p->wait.data.io.object, (void *)p->wait.data.io.buffer,
+		return lxp_pipe_try_read(p->wait.data.io.object, (void *)p->wait.data.io.buffer,
 				     p->wait.data.io.length);
 	if (p->wait.op == 2)
-		return pipe_try_write(p->wait.data.io.object, (const void *)p->wait.data.io.buffer,
-				      p->wait.data.io.length);
+		return lxp_pipe_try_write(p->wait.data.io.object,
+					  (const void *)p->wait.data.io.buffer,
+					  p->wait.data.io.length);
 	return 0;
 }
 
 /* poll/select readiness. Report REAL readiness (not always-ready): a read end is
  * POLLIN when it has data or all writers closed (EOF); a write end is POLLOUT when it
  * has space or all readers closed. Always-ready breaks select() on an empty self-pipe. */
-unsigned pipe_poll(int pi, int rw)
+unsigned lxp_pipe_poll(int pi, int rw)
 {
 	lxp_pipe_t *pp = &g_pipes[pi];
 	if (rw == 0)
@@ -128,7 +129,7 @@ static long fop_read_pipe(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len)
 {
 	if (s->rw != 0)
 		return -LXP_EBADF;
-	long r = pipe_try_read(s->file_idx, buf, len);
+	long r = lxp_pipe_try_read(s->file_idx, buf, len);
 	if (r == -LXP_EAGAIN) { /* empty but a writer is open */
 		if (s->nonblock)
 			return -LXP_EAGAIN; /* O_NONBLOCK: don't park (self-pipe drain) */
@@ -149,7 +150,7 @@ static long fop_write_pipe(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t 
 {
 	if (s->rw != 1)
 		return -LXP_EBADF;
-	long r = pipe_try_write(s->file_idx, buf, len);
+	long r = lxp_pipe_try_write(s->file_idx, buf, len);
 	if (r == -LXP_EAGAIN) { /* full but a reader is open */
 		if (s->nonblock)
 			return -LXP_EAGAIN; /* O_NONBLOCK: don't park */
@@ -177,7 +178,7 @@ static void fop_close_pipe(lxp_proc_t *p, lxp_ofd_t *s)
 static unsigned fop_poll_pipe(lxp_proc_t *p, lxp_ofd_t *s)
 {
 	(void)p;
-	return (unsigned)pipe_poll(s->file_idx, s->rw); /* real readiness (empty self-pipe!) */
+	return (unsigned)lxp_pipe_poll(s->file_idx, s->rw); /* real readiness (empty self-pipe!) */
 }
 
 const lxp_file_ops_t lxp_pipe_fops = {

@@ -325,7 +325,8 @@ typedef struct lxp_proc {
 	/* vfork data isolation (NOMMU has no copy-on-write): a vfork child SHARES the parent's region,
 	 * so its pre-exec writes (e.g. a libc signal-disposition reset) would corrupt the suspended
 	 * parent. The coordinator snapshots the parent's writable data into a spare region at EV_FORK
-	 * and restores it before the parent resumes (EV_EXEC/EV_EXIT). See vfork_snapshot/vfork_restore. */
+	 * and restores it before the parent resumes (EV_EXEC/EV_EXIT). See lxp_vfork_snapshot and
+	 * lxp_vfork_restore. */
 	lxp_region_ref_t snapshot; /**< Scratch region holding the parent's data snapshot. */
 	uintptr_t stack_lo; /**< Boundary between this proc's in-region writable data and its stack. */
 	int is_fdpic; /**< Program is FDPIC: signal handlers/restorers are funcdescs {entry,GOT}. */

@@ -54,17 +54,17 @@ struct lxp_signal_delivery {
 };
 
 /* ---- coordinator primitives (lxp_run.c) ------------------------------------ */
-int slot_of(const lxp_proc_t *p); /* slot index of proc in the private runtime table */
-void park_frame(struct lxp_frame *f,
+int lxp_slot_of(const lxp_proc_t *p); /* slot index of proc in the private runtime table */
+void lxp_park_frame(struct lxp_frame *f,
 		lxp_proc_t *proc); /* park + publish this slot to the coordinator */
 
 /* ---- signal delivery (lxp_signal.c) ---------------------------------------- */
-int resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
+int lxp_resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
 		    uintptr_t *restorer);
-struct sig_save_s *sig_save_push(lxp_proc_t *proc, int sig);
+struct sig_save_s *lxp_sig_save_push(lxp_proc_t *proc, int sig);
 enum lxp_signal_action lxp_signal_prepare(lxp_proc_t *proc, int sig,
 					  struct lxp_signal_delivery *delivery);
-void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret);
-void sig_restore(struct lxp_frame *f, lxp_proc_t *proc);
+void lxp_deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret);
+void lxp_sig_restore(struct lxp_frame *f, lxp_proc_t *proc);
 
 #endif /* LXP_RUN_INTERNAL_H */

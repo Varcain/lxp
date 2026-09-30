@@ -88,7 +88,8 @@ void lxp_diag_refresh(void)
 		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
 		if (!p->alive)
 			continue;
-		char state = (slot_runnable_load(s) && p->wait.kind == LXP_WAIT_NONE) ? 'R' : 'S';
+		int running = lxp_slot_runnable_load(s) && p->wait.kind == LXP_WAIT_NONE;
+		char state = running ? 'R' : 'S';
 		if (lxp_stats_add(p->pid, p->group->ppid, p->comm, state, lxp_proc_cpu_us(p->pid),
 				  lxp_proc_nice_get(p), 0) != LXP_OK)
 			overflow = 1;
@@ -200,7 +201,7 @@ int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
 	out->abi_version = LXP_DIAG_ABI_VERSION;
 	out->struct_size = sizeof(*out);
 	out->slot = slot;
-	out->generation = slot_generation(slot);
+	out->generation = lxp_slot_generation(slot);
 	out->pid = p->pid;
 	out->tgid = p->group ? p->group->tgid : 0;
 	out->ppid = p->group ? p->group->ppid : 0;
@@ -209,9 +210,9 @@ int lxp_diag_slot_snapshot(int slot, lxp_diag_slot_t *out)
 	out->snapshot_region = p->snapshot.index;
 	out->host_state = g_lxp_rt.slots[slot].host_state;
 	out->task_status = diag_task_status(p);
-	out->deferred_state = deferred_state_load(slot);
-	out->runnable = slot_runnable_load(slot);
-	out->primary_pending = primary_slot_pending(slot);
+	out->deferred_state = lxp_deferred_state_load(slot);
+	out->runnable = lxp_slot_runnable_load(slot);
+	out->primary_pending = lxp_primary_slot_pending(slot);
 	out->signal_depth = g_lxp_sig_save[slot].depth;
 	out->native_task_known = diag_native_census_current();
 	out->native_task_present = out->native_task_known ? g_lxp_rt.diag.native_present[slot] : 0;
@@ -307,10 +308,10 @@ int lxp_validate_world(lxp_diag_error_t *error)
 			return diag_error(error, LXP_DIAG_REGION_REFS_WITHOUT_GENERATION, owner,
 					  region, 0, 1);
 		if (owner >= 0 && (owner >= LXP_NSLOT || lease.generation == 0 ||
-				   !lxp_slot_ref_equal(lease, slot_ref_at(owner))))
+				   !lxp_slot_ref_equal(lease, lxp_slot_ref_at(owner))))
 			return diag_error(
 				error, LXP_DIAG_REGION_LEASE_STALE, owner, region, lease.generation,
-				owner >= 0 && owner < LXP_NSLOT ? slot_generation(owner) : 0);
+				owner >= 0 && owner < LXP_NSLOT ? lxp_slot_generation(owner) : 0);
 		if (refs != 0 && owner < 0 && live_users == 0)
 			return diag_error(error, LXP_DIAG_REGION_REFS_WITHOUT_OWNER, -1, region,
 					  refs, 0);
@@ -319,7 +320,7 @@ int lxp_validate_world(lxp_diag_error_t *error)
 	for (int slot = 0; slot < LXP_NSLOT; slot++) {
 		const lxp_proc_t *p = &g_lxp_rt.slots[slot].proc;
 		uint8_t host = g_lxp_rt.slots[slot].host_state;
-		uint8_t deferred = deferred_state_load(slot);
+		uint8_t deferred = lxp_deferred_state_load(slot);
 		uint32_t intents = diag_intent_mask(slot);
 		uint32_t waits = diag_wait_mask(p);
 
@@ -328,10 +329,10 @@ int lxp_validate_world(lxp_diag_error_t *error)
 		if (deferred > DEFER_RUNNING)
 			return diag_error(error, LXP_DIAG_DEFERRED_STATE_INVALID, slot, -1,
 					  deferred, DEFER_RUNNING);
-		if (host != SLOT_FREE && slot_generation(slot) == 0)
+		if (host != SLOT_FREE && lxp_slot_generation(slot) == 0)
 			return diag_error(error, LXP_DIAG_HOST_STATE_WITHOUT_GENERATION, slot, -1,
 					  0, 1);
-		if (p->alive && slot_generation(slot) == 0)
+		if (p->alive && lxp_slot_generation(slot) == 0)
 			return diag_error(error, LXP_DIAG_HOST_STATE_WITHOUT_GENERATION, slot, -1,
 					  0, 1);
 		if (deferred != DEFER_IDLE &&
@@ -339,7 +340,7 @@ int lxp_validate_world(lxp_diag_error_t *error)
 		     g_lxp_rt.slots[slot].deferred.owner.index != slot))
 			return diag_error(error, LXP_DIAG_DEFERRED_GENERATION_STALE, slot, -1,
 					  g_lxp_rt.slots[slot].deferred.owner.generation,
-					  slot_generation(slot));
+					  lxp_slot_generation(slot));
 		if (p->intent.kind >= LXP_INTENT_COUNT)
 			return diag_error(error, LXP_DIAG_MULTIPLE_INTENTS, slot, -1, intents, 1);
 		if (p->wait.kind >= LXP_WAIT_COUNT)
@@ -352,7 +353,7 @@ int lxp_validate_world(lxp_diag_error_t *error)
 			return diag_error(error, LXP_DIAG_GUEST_VIEW_LEAKED, slot, -1, 1, 0);
 
 		if (!p->alive) {
-			if (slot_runnable_load(slot))
+			if (lxp_slot_runnable_load(slot))
 				return diag_error(error, LXP_DIAG_FREE_TASK_RUNNABLE, slot, -1, 1,
 						  0);
 			if (diag_native_census_current() && g_lxp_rt.diag.native_present[slot] &&
@@ -395,14 +396,14 @@ int lxp_validate_world(lxp_diag_error_t *error)
 		CHECK_RESOURCE_REFS(group, 4);
 #undef CHECK_RESOURCE_REFS
 
-		if (slot_runnable_load(slot) && host != SLOT_RUNNING && host != SLOT_FAILED &&
+		if (lxp_slot_runnable_load(slot) && host != SLOT_RUNNING && host != SLOT_FAILED &&
 		    host != SLOT_STARTING && host != SLOT_RESUMING)
 			return diag_error(error, LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH, slot,
 					  region, host, SLOT_RUNNING);
-		if (host == SLOT_RUNNING && !slot_runnable_load(slot))
+		if (host == SLOT_RUNNING && !lxp_slot_runnable_load(slot))
 			return diag_error(error, LXP_DIAG_RUNNABLE_HOST_STATE_MISMATCH, slot,
 					  region, 0, 1);
-		if (host == SLOT_PARKED && slot_runnable_load(slot))
+		if (host == SLOT_PARKED && lxp_slot_runnable_load(slot))
 			return diag_error(error, LXP_DIAG_PARKED_TASK_RUNNABLE, slot, region, 1, 0);
 		if (diag_native_census_current() &&
 		    (host == SLOT_RUNNING || host == SLOT_PARKED || host == SLOT_FAILED) &&

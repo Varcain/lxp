@@ -8,7 +8,7 @@
 #include "run/lxp_coordinator.h"
 #include "run/lxp_runtime_store.h"
 
-void primary_slot_mark(int slot)
+void lxp_primary_slot_mark(int slot)
 {
 	if (slot < 0 || slot >= LXP_NSLOT)
 		return;
@@ -17,14 +17,14 @@ void primary_slot_mark(int slot)
 	__atomic_fetch_or(&g_lxp_rt.primary_pending[word], bit, __ATOMIC_RELEASE);
 }
 
-int primary_slot_pending(int slot)
+int lxp_primary_slot_pending(int slot)
 {
 	unsigned word = (unsigned)slot / LXP_EVENT_WORD_BITS;
 	uint32_t bit = (uint32_t)1u << ((unsigned)slot % LXP_EVENT_WORD_BITS);
 	return (__atomic_load_n(&g_lxp_rt.primary_pending[word], __ATOMIC_ACQUIRE) & bit) != 0;
 }
 
-void primary_slot_clear(int slot)
+void lxp_primary_slot_clear(int slot)
 {
 	unsigned word = (unsigned)slot / LXP_EVENT_WORD_BITS;
 	uint32_t bit = (uint32_t)1u << ((unsigned)slot % LXP_EVENT_WORD_BITS);
@@ -40,11 +40,11 @@ void lxp_primary_events_reset(void)
 
 /* Publish a primary per-slot event and wake the coordinator. Ports use this for
  * contained guest faults; normal syscall/signal parking reaches it through
- * park_frame(). Safe when the slot is stale: the coordinator simply clears a
+ * lxp_park_frame(). Safe when the slot is stale: the coordinator simply clears a
  * hint that fails revalidation. */
 void lxp_event_post_slot(int slot)
 {
-	primary_slot_mark(slot);
+	lxp_primary_slot_mark(slot);
 	if (g_lxp_os_ops && g_lxp_os_ops->event_post)
 		g_lxp_os_ops->event_post();
 }
@@ -52,7 +52,7 @@ void lxp_event_post_slot(int slot)
 /* Inspect one slot's highest-priority event. The caller holds the engine
  * critical section, so a program SVC cannot change a flag between test and
  * clear. */
-int claim_slot_event(int s)
+int lxp_claim_slot_event(int s)
 {
 	lxp_proc_t *p = lxp_slot_proc(s);
 
@@ -64,9 +64,10 @@ int claim_slot_event(int s)
 		return LXP_EV_EXEC;
 	if (p->intent.kind == LXP_INTENT_FORK)
 		return LXP_EV_FORK;
-	if (p->intent.kind == LXP_INTENT_DEFERRED_SYSCALL && deferred_state_load(s) == DEFER_READY)
+	if (p->intent.kind == LXP_INTENT_DEFERRED_SYSCALL &&
+	    lxp_deferred_state_load(s) == DEFER_READY)
 		return LXP_EV_DEFER;
-	if (!slot_runnable_load(s))
+	if (!lxp_slot_runnable_load(s))
 		return LXP_EV_NONE;
 	if (p->stopped && p->stop_kind == LXP_STOP_READY)
 		return LXP_EV_STOP;
@@ -104,7 +105,7 @@ int claim_slot_event(int s)
 /* Claim at most one event. Cursor rotation is part of the API so fairness is
  * directly testable independently of the coordinator loop. Handler work stays
  * outside the bounded critical section. */
-struct lxp_claimed_event coordinator_claim_event(unsigned *cursor)
+struct lxp_claimed_event lxp_coordinator_claim_event(unsigned *cursor)
 {
 	struct lxp_claimed_event claimed = {
 		.slot = -1,
@@ -115,11 +116,11 @@ struct lxp_claimed_event coordinator_claim_event(unsigned *cursor)
 
 	for (int i = 0; i < LXP_NSLOT; i++) {
 		int s = (int)((*cursor + (unsigned)i) % LXP_NSLOT);
-		if (!primary_slot_pending(s))
+		if (!lxp_primary_slot_pending(s))
 			continue;
 		lxp_critical_token_t critical_token = g_lxp_os_ops->crit_enter();
-		primary_slot_clear(s);
-		int type = claim_slot_event(s);
+		lxp_primary_slot_clear(s);
+		int type = lxp_claim_slot_event(s);
 		g_lxp_os_ops->crit_exit(critical_token);
 		if (type == LXP_EV_NONE)
 			continue;

@@ -32,12 +32,12 @@ struct fork_txn {
 	uint8_t child_counted;
 };
 
-int fork_txn_prepare(struct fork_txn *tx, int parent_slot, int child_slot,
+int lxp_fork_txn_prepare(struct fork_txn *tx, int parent_slot, int child_slot,
 					  uint32_t clone_flags, int child_pid);
-int fork_txn_count_child(struct fork_txn *tx);
-int fork_txn_snapshot(struct fork_txn *tx, uintptr_t parent_sp);
-int fork_txn_publish(struct fork_txn *tx);
-void fork_txn_abort(struct fork_txn *tx);
-int fork_txn_commit(struct fork_txn *tx);
+int lxp_fork_txn_count_child(struct fork_txn *tx);
+int lxp_fork_txn_snapshot(struct fork_txn *tx, uintptr_t parent_sp);
+int lxp_fork_txn_publish(struct fork_txn *tx);
+void lxp_fork_txn_abort(struct fork_txn *tx);
+int lxp_fork_txn_commit(struct fork_txn *tx);
 
 #endif /* LXP_FORK_PRIVATE_H */

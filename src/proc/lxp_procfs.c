@@ -77,14 +77,14 @@ static void p_hexle(lxp_text_t *text, const uint8_t a[4])
 #endif
 
 /* True for any path inside the synthetic /proc tree. */
-int proc_is(const char *abs)
+int lxp_proc_is(const char *abs)
 {
 	return strcmp(abs, "/proc") == 0 || strncmp(abs, "/proc/", 6) == 0;
 }
 
 /* Parse "/proc/<pid|self>[/file]": returns the pid (>0) + sets *file to the
  * trailing component (NULL if the path is the /proc/<pid> dir itself), or 0. */
-int proc_pid(const char *abs, const lxp_proc_t *p, const char **file)
+int lxp_proc_pid(const char *abs, const lxp_proc_t *p, const char **file)
 {
 	*file = NULL;
 	if (strncmp(abs, "/proc/", 6) != 0)
@@ -111,14 +111,14 @@ int proc_pid(const char *abs, const lxp_proc_t *p, const char **file)
 	return pid;
 }
 
-int proc_pid_known(const lxp_proc_t *p, int pid)
+int lxp_proc_pid_known(const lxp_proc_t *p, int pid)
 {
 	/* pid 1 + the running process are always valid; every other live Linux slot
 	 * and RTOS kernel thread comes from the ps/top snapshot. */
 	return pid == 1 || pid == p->pid || lxp_pent_find(pid) != NULL;
 }
 
-const char *const g_proc_files[] = {"version",	  "uptime",	 "meminfo", "lxp_resources",
+const char *const g_lxp_proc_files[] = {"version",	  "uptime",	 "meminfo", "lxp_resources",
 #if LXP_ENABLE_FS
 				    "lxp_fs",
 #endif
@@ -129,16 +129,16 @@ const char *const g_proc_files[] = {"version",	  "uptime",	 "meminfo", "lxp_reso
 				    "loadavg",	  "filesystems", NULL};
 
 /* st_mode for a /proc node, or 0 if the path is not a synthetic /proc node. */
-uint32_t proc_mode(const char *abs, const lxp_proc_t *p)
+uint32_t lxp_proc_mode(const char *abs, const lxp_proc_t *p)
 {
 	if (strcmp(abs, "/proc") == 0)
 		return LXP_S_IFDIR | 0555u;
 	if (strcmp(abs, "/proc/self") == 0)
 		return LXP_S_IFLNK | 0777u;
 	const char *file;
-	int pid = proc_pid(abs, p, &file);
+	int pid = lxp_proc_pid(abs, p, &file);
 	if (pid > 0)
-		return !proc_pid_known(p, pid) ? 0u
+		return !lxp_proc_pid_known(p, pid) ? 0u
 		       : file		       ? (LXP_S_IFREG | 0444u)
 					       : (LXP_S_IFDIR | 0555u);
 #if LXP_ENABLE_NET
@@ -147,20 +147,20 @@ uint32_t proc_mode(const char *abs, const lxp_proc_t *p)
 	if (strcmp(abs, "/proc/net/dev") == 0 || strcmp(abs, "/proc/net/route") == 0)
 		return LXP_S_IFREG | 0444u;
 #endif
-	for (int i = 0; g_proc_files[i]; i++)
-		if (strcmp(abs + 6, g_proc_files[i]) == 0)
+	for (int i = 0; g_lxp_proc_files[i]; i++)
+		if (strcmp(abs + 6, g_lxp_proc_files[i]) == 0)
 			return LXP_S_IFREG | 0444u;
 	return 0;
 }
 
 /* Generate the content of a /proc FILE into buf[cap]; returns length, or -1. */
-long proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
+long lxp_proc_gen(const char *abs, const lxp_proc_t *p, char *buf, size_t cap)
 {
 	lxp_text_t text = lxp_text_make(buf, cap);
 	const char *file;
-	int pid = proc_pid(abs, p, &file);
+	int pid = lxp_proc_pid(abs, p, &file);
 	if (pid > 0 && file) {
-		if (!proc_pid_known(p, pid))
+		if (!lxp_proc_pid_known(p, pid))
 			return -1;
 		/* Metadata from the ps/top snapshot; fall back to pid 1 / the current
 		 * process before the first snapshot refresh. comm is the bare name —
@@ -476,7 +476,7 @@ void lxp_procfs_runtime_reset(void)
 
 long lxp_procfs_open(lxp_proc_t *p, const char *abs, int flags)
 {
-	uint32_t m = proc_mode(abs, p);
+	uint32_t m = lxp_proc_mode(abs, p);
 	if (m == 0 || (m & LXP_S_IFMT) == LXP_S_IFLNK)
 		return -LXP_ENOENT;	 /* /proc/self resolves via readlink, not open */
 	if (strlen(abs) >= LXP_PROCPATH) /* the cached path buffer is /proc-sized, not PATH_MAX */
@@ -485,7 +485,7 @@ long lxp_procfs_open(lxp_proc_t *p, const char *abs, int flags)
 	for (int i = 0; i < LXP_NPROCF; i++) {
 		if (g_procf[i].used)
 			continue;
-		long n = dir ? 0 : proc_gen(abs, p, g_procf[i].buf, LXP_PROCBUF);
+		long n = dir ? 0 : lxp_proc_gen(abs, p, g_procf[i].buf, LXP_PROCBUF);
 		if (n < 0)
 			return -LXP_ENOENT;
 		strcpy(g_procf[i].path, abs);
@@ -571,7 +571,7 @@ const lxp_file_ops_t lxp_procfs_fops = {
 static long procfs_mount_open(lxp_proc_t *p, const char *path, int flags)
 {
 	if ((flags & LXP_O_ACCMODE) != LXP_O_RDONLY || (flags & (LXP_O_CREAT | LXP_O_TRUNC))) {
-		uint32_t mode = proc_mode(path, p);
+		uint32_t mode = lxp_proc_mode(path, p);
 		if ((mode & LXP_S_IFMT) == LXP_S_IFDIR)
 			return -LXP_EISDIR;
 		return mode == 0 && !(flags & LXP_O_CREAT) ? -LXP_ENOENT : -LXP_EACCES;
@@ -581,7 +581,7 @@ static long procfs_mount_open(lxp_proc_t *p, const char *path, int flags)
 
 static long procfs_mount_stat(lxp_proc_t *p, const char *path, int follow, struct lxp_stat *st)
 {
-	uint32_t mode = proc_mode(path, p);
+	uint32_t mode = lxp_proc_mode(path, p);
 	if (mode == 0)
 		return -LXP_ENOENT;
 	if (follow && (mode & LXP_S_IFMT) == LXP_S_IFLNK) /* /proc/self: the caller's pid dir */
@@ -611,7 +611,7 @@ static long procfs_mount_readlink(lxp_proc_t *p, const char *path, char *out, si
 		target = p->fs[ei].path;
 		n = strlen(target);
 	} else {
-		return proc_mode(path, p) ? -LXP_EINVAL : -LXP_ENOENT;
+		return lxp_proc_mode(path, p) ? -LXP_EINVAL : -LXP_ENOENT;
 	}
 	if (n > cap)
 		n = cap;

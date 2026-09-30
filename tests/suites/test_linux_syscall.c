@@ -542,7 +542,7 @@ static void test_lnx_exec_script_symlink_interp(void **state)
 
 	/* setup_proc leaves an all-permitting access_ok range, and that is exactly
 	 * what hid this bug: on target the #! interpreter path is a kernel stack
-	 * buffer OUTSIDE the guest's region, so resolve_path()'s user-pointer guard
+	 * buffer OUTSIDE the guest's region, so lxp_resolve_path()'s user-pointer guard
 	 * rejected it and every interpreter script died with ENOENT. A test with no
 	 * region bound can never see that. So give this proc a real one — argv and
 	 * the strings it points at laid out in one blob, the way a guest's are —

@@ -22,7 +22,7 @@
 
 /* Copy up to dstsz-1 fuzzer bytes into dst and NUL-terminate — turns a raw
  * (data,size) buffer into a bounded C string for the string-consuming targets
- * (resolve_path, …) without ever reading past the input. Returns dst. */
+ * (lxp_resolve_path, …) without ever reading past the input. Returns dst. */
 static inline char *fuzz_cstr(char *dst, size_t dstsz, const uint8_t *data, size_t size)
 {
 	if (dstsz == 0)

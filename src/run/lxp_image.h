@@ -27,13 +27,14 @@ struct image_txn {
 	uint8_t region_committed;
 };
 
-void image_txn_init(struct image_txn *tx, int slot, lxp_region_ref_t region, lxp_slot_ref_t owner);
-int image_txn_prepare(struct image_txn *tx, const uint8_t *data, size_t len, int pid, int ppid,
+void lxp_image_txn_init(struct image_txn *tx, int slot, lxp_region_ref_t region,
+			lxp_slot_ref_t owner);
+int lxp_image_txn_prepare(struct image_txn *tx, const uint8_t *data, size_t len, int pid, int ppid,
 		      int argc, const char *const argv[], const char *const envp[],
 		      int remote_exec);
-int image_txn_publish(struct image_txn *tx);
-int image_txn_start(struct image_txn *tx);
-int image_txn_abort(struct image_txn *tx);
+int lxp_image_txn_publish(struct image_txn *tx);
+int lxp_image_txn_start(struct image_txn *tx);
+int lxp_image_txn_abort(struct image_txn *tx);
 
 int lxp_image_launch(int slot,
 		     lxp_region_ref_t region, lxp_slot_ref_t owner, const uint8_t *data, size_t len,

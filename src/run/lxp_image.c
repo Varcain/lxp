@@ -18,7 +18,8 @@
  * This keeps a partially loaded image invisible and gives both initial launch
  * and exec one idempotent cleanup path.
  */
-void image_txn_init(struct image_txn *tx, int slot, lxp_region_ref_t region, lxp_slot_ref_t owner)
+void lxp_image_txn_init(struct image_txn *tx, int slot, lxp_region_ref_t region,
+			lxp_slot_ref_t owner)
 {
 	memset(tx, 0, sizeof(*tx));
 	tx->slot = slot;
@@ -31,7 +32,7 @@ void image_txn_init(struct image_txn *tx, int slot, lxp_region_ref_t region, lxp
 /* Load an FDPIC ELF and construct its process objects without publishing the
  * slot or starting a native task. @p remote_exec means executable text is
  * copied from a RAM staging buffer into the region. */
-int image_txn_prepare(struct image_txn *tx, const uint8_t *data, size_t len, int pid, int ppid,
+int lxp_image_txn_prepare(struct image_txn *tx, const uint8_t *data, size_t len, int pid, int ppid,
 		      int argc, const char *const argv[], const char *const envp[], int remote_exec)
 {
 	const lxp_run_config_t *cfg = g_lxp_rt.cfg;
@@ -166,7 +167,7 @@ int image_txn_prepare(struct image_txn *tx, const uint8_t *data, size_t len, int
 	return LXP_OK;
 }
 
-int image_txn_publish(struct image_txn *tx)
+int lxp_image_txn_publish(struct image_txn *tx)
 {
 	if (!tx->prepared || tx->published)
 		return -LXP_EINVAL;
@@ -199,38 +200,38 @@ int image_txn_publish(struct image_txn *tx)
 	if (g_lxp_os_ops->map_device)
 		(void)g_lxp_os_ops->map_device(tx->slot, 0, 0, 0);
 	tx->published = 1;
-	return lifecycle_failpoint(LXP_FAIL_EXEC_PUBLISHED) ? -LXP_EIO : LXP_OK;
+	return lxp_lifecycle_failpoint_hit(LXP_FAIL_EXEC_PUBLISHED) ? -LXP_EIO : LXP_OK;
 }
 
-int image_txn_start(struct image_txn *tx)
+int lxp_image_txn_start(struct image_txn *tx)
 {
 	if (!tx->published)
 		return -LXP_EINVAL;
-	int rc = coordinator_launch_slot(tx->slot, tx->region.index, &tx->launch);
+	int rc = lxp_coordinator_launch_slot(tx->slot, tx->region.index, &tx->launch);
 	if (rc != LXP_OK)
 		return rc;
 	tx->native_started = 1;
-	if (lifecycle_failpoint(LXP_FAIL_EXEC_NATIVE_STARTED))
+	if (lxp_lifecycle_failpoint_hit(LXP_FAIL_EXEC_NATIVE_STARTED))
 		return -LXP_EIO;
 	if (lxp_region_commit_address_space(tx->region, tx->owner) != LXP_OK)
 		return -LXP_EIO;
 	tx->region_committed = 1;
-	return lifecycle_failpoint(LXP_FAIL_EXEC_REGION_COMMITTED) ? -LXP_EIO : LXP_OK;
+	return lxp_lifecycle_failpoint_hit(LXP_FAIL_EXEC_REGION_COMMITTED) ? -LXP_EIO : LXP_OK;
 }
 
-int image_txn_abort(struct image_txn *tx)
+int lxp_image_txn_abort(struct image_txn *tx)
 {
 	lxp_proc_t *proc = &tx->proc;
 	if (tx->published) {
 		proc = lxp_slot_proc(tx->slot);
-		if (proc->alive && coordinator_abort_slot(tx->slot) != LXP_OK)
+		if (proc->alive && lxp_coordinator_abort_slot(tx->slot) != LXP_OK)
 			return -LXP_EAGAIN;
 	}
 
 	lxp_proc_resources_put(proc);
 	if (proc->mm) {
 		if (lxp_region_ref_equal(proc->mm->region, tx->region))
-			proc_mm_put(proc);
+			lxp_region_mm_put(proc);
 		else
 			lxp_proc_mm_put(proc);
 	}
@@ -238,12 +239,12 @@ int image_txn_abort(struct image_txn *tx)
 	proc->alive = 0;
 	if (tx->published) {
 		lxp_slot_proc_reset(tx->slot);
-		slot_runnable_store(tx->slot, 0);
-		primary_slot_clear(tx->slot);
+		lxp_slot_runnable_store(tx->slot, 0);
+		lxp_primary_slot_clear(tx->slot);
 		lxp_slot_signal_reset(tx->slot);
 	}
 	if (lxp_region_lease_matches(tx->region, tx->owner, 1))
-		(void)region_release_if_owned(tx->region, tx->owner);
+		(void)lxp_region_release_if_owned(tx->region, tx->owner);
 	tx->prepared = 0;
 	tx->executable_published = 0;
 	tx->published = 0;
@@ -258,13 +259,13 @@ int lxp_image_launch(int slot,
 		     const char *const envp[], int remote_exec)
 {
 	struct image_txn tx;
-	image_txn_init(&tx, slot, region, owner);
-	int rc = image_txn_prepare(&tx, data, len, pid, ppid, argc, argv, envp, remote_exec);
+	lxp_image_txn_init(&tx, slot, region, owner);
+	int rc = lxp_image_txn_prepare(&tx, data, len, pid, ppid, argc, argv, envp, remote_exec);
 	if (rc == LXP_OK)
-		rc = image_txn_publish(&tx);
+		rc = lxp_image_txn_publish(&tx);
 	if (rc == LXP_OK)
-		rc = image_txn_start(&tx);
+		rc = lxp_image_txn_start(&tx);
 	if (rc != LXP_OK)
-		(void)image_txn_abort(&tx);
+		(void)lxp_image_txn_abort(&tx);
 	return rc;
 }

@@ -51,7 +51,7 @@
 
 #include "lxp_internal.h"
 #include "lxp_provider.h"
-#include "lxp_run_internal.h" /* g_lxp_sig_save + slot_of/park_frame ↔ src/lxp_signal.c */
+#include "lxp_run_internal.h" /* g_lxp_sig_save + lxp_slot_of/lxp_park_frame ↔ src/lxp_signal.c */
 #include "fs/lxp_eventfd.h"
 #include "fs/lxp_pipe.h"
 #include "proc/lxp_procfs.h"
@@ -64,12 +64,12 @@
 
 struct lxp_runtime g_lxp_rt;
 
-int slot_runnable_load(int slot)
+int lxp_slot_runnable_load(int slot)
 {
 	return __atomic_load_n(&g_lxp_rt.slots[slot].runnable, __ATOMIC_ACQUIRE) != 0;
 }
 
-void slot_runnable_store(int slot, int runnable)
+void lxp_slot_runnable_store(int slot, int runnable)
 {
 	__atomic_store_n(&g_lxp_rt.slots[slot].runnable, runnable != 0, __ATOMIC_RELEASE);
 }
@@ -83,7 +83,7 @@ void slot_runnable_store(int slot, int runnable)
 #if defined(LXP_TEST_FAILPOINTS)
 enum lxp_lifecycle_failpoint g_lxp_lifecycle_failpoint;
 
-int lifecycle_failpoint(enum lxp_lifecycle_failpoint point)
+int lxp_lifecycle_failpoint_hit(enum lxp_lifecycle_failpoint point)
 {
 	if (g_lxp_lifecycle_failpoint != point)
 		return 0;
@@ -91,7 +91,7 @@ int lifecycle_failpoint(enum lxp_lifecycle_failpoint point)
 	return 1;
 }
 #else
-int lifecycle_failpoint(enum lxp_lifecycle_failpoint point)
+int lxp_lifecycle_failpoint_hit(enum lxp_lifecycle_failpoint point)
 {
 	(void)point;
 	return 0;
@@ -168,16 +168,16 @@ static void lxp_coord_map(int ridx)
 		g_lxp_os_ops->coord_map(ridx);
 }
 
-void guest_view_failure(int slot, int rc)
+void lxp_guest_view_failure(int slot, int rc)
 {
 	if (slot < 0 || slot >= LXP_NSLOT || !g_lxp_rt.slots[slot].proc.alive)
 		return;
-	coordinator_exit_slot(slot, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION, (uint32_t)(-rc));
+	lxp_coordinator_exit_slot(slot, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION, (uint32_t)(-rc));
 }
 
-int coordinator_guest_view_begin(int slot, lxp_guest_view_t *view)
+int lxp_coordinator_guest_view_begin(int slot, lxp_guest_view_t *view)
 {
-	lxp_slot_ref_t ref = slot_ref_at(slot);
+	lxp_slot_ref_t ref = lxp_slot_ref_at(slot);
 	if (!lxp_slot_ref_is_current(ref) || !g_lxp_rt.slots[slot].proc.mm)
 		return -LXP_ESRCH;
 	lxp_coord_map(g_lxp_rt.slots[slot].proc.mm->region.index);
@@ -250,7 +250,7 @@ static void lxp_block_ready(const void *context)
  * providers cannot publish readiness changes. Other wait classes retain their
  * polling fallback.
  */
-unsigned coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events,
+unsigned lxp_coordinator_wait_timeout(uint32_t wait_policy, int socket_ready_events,
 				  int console_ready_events)
 {
 	int socket_poll = (wait_policy & LXP_BLOCKED_WAIT_SOCKET) && !socket_ready_events;
@@ -266,19 +266,19 @@ static int coordinator_control_event(int event)
 	       event == LXP_EV_STOP;
 }
 
-uint8_t deferred_state_load(int slot)
+uint8_t lxp_deferred_state_load(int slot)
 {
 	return __atomic_load_n(&g_lxp_rt.slots[slot].deferred.state, __ATOMIC_ACQUIRE);
 }
 
-void deferred_state_store(int slot, uint8_t state)
+void lxp_deferred_state_store(int slot, uint8_t state)
 {
 	__atomic_store_n(&g_lxp_rt.slots[slot].deferred.state, state, __ATOMIC_RELEASE);
 }
 
-void deferred_slot_reassign(int slot)
+void lxp_deferred_slot_reassign(int slot)
 {
-	deferred_state_store(slot, DEFER_IDLE);
+	lxp_deferred_state_store(slot, DEFER_IDLE);
 	uint32_t next = __atomic_add_fetch(&g_lxp_rt.slots[slot].generation, 1u, __ATOMIC_ACQ_REL);
 	if (next == 0) /* reserve zero for the static, never-assigned state */
 		(void)__atomic_add_fetch(&g_lxp_rt.slots[slot].generation, 1u, __ATOMIC_ACQ_REL);
@@ -342,7 +342,7 @@ int lxp_slot_publish_image(int slot, lxp_proc_t *image, lxp_exec_capture_t *capt
 	return LXP_OK;
 }
 
-int slot_of(const lxp_proc_t *p)
+int lxp_slot_of(const lxp_proc_t *p)
 {
 	uintptr_t a = (uintptr_t)p;
 	uintptr_t base = (uintptr_t)&g_lxp_rt.slots[0];
@@ -378,7 +378,7 @@ void lxp_run_health(lxp_run_health_t *out)
  * NUL-terminated pointers into ptrs[0..count] with a trailing NULL. The capture stores
  * offsets into @p src_buf, so the trusted pointer vector is rebuilt only here, for the
  * launch that consumes it. */
-void flatten_vec(char *buf, const char **ptrs, const char *src_buf, const uint16_t *off_vec,
+void lxp_flatten_vec(char *buf, const char **ptrs, const char *src_buf, const uint16_t *off_vec,
 		 int count)
 {
 	size_t off = 0;
@@ -394,7 +394,7 @@ void flatten_vec(char *buf, const char **ptrs, const char *src_buf, const uint16
 
 /* Tell the host about an unimplemented syscall, except one the guest probes for and
  * falls back from (LXP_SYS_QUIET_ENOSYS: socket() without networking). */
-void coordinator_report_enosys(long nr, long result)
+void lxp_coordinator_report_enosys(long nr, long result)
 {
 	if (result == -LXP_ENOSYS && g_lxp_rt.cfg && g_lxp_rt.cfg->on_enosys &&
 	    !(lxp_syscall_flags(nr) & LXP_SYS_QUIET_ENOSYS))
@@ -403,23 +403,23 @@ void coordinator_report_enosys(long nr, long result)
 
 uint32_t lxp_guest_sched_weight(int slot)
 {
-	if (slot < 0 || slot >= LXP_NSLOT || !slot_runnable_load(slot))
+	if (slot < 0 || slot >= LXP_NSLOT || !lxp_slot_runnable_load(slot))
 		return 0;
 	return lxp_nice_weight(lxp_proc_nice_get(&g_lxp_rt.slots[slot].proc));
 }
 
 /* ---- host task lifecycle --------------------------------------------------- */
-uint32_t slot_generation(int sidx)
+uint32_t lxp_slot_generation(int sidx)
 {
 	return __atomic_load_n(&g_lxp_rt.slots[sidx].generation, __ATOMIC_ACQUIRE);
 }
 
-lxp_slot_ref_t slot_ref_at(int slot)
+lxp_slot_ref_t lxp_slot_ref_at(int slot)
 {
 	return (slot >= 0 && slot < LXP_NSLOT)
 		       ? (lxp_slot_ref_t){
 				 .index = (int16_t)slot,
-				 .generation = slot_generation(slot),
+				 .generation = lxp_slot_generation(slot),
 			 }
 		       : lxp_slot_ref_none();
 }
@@ -451,17 +451,18 @@ int lxp_slot_ref_current(int slot, lxp_slot_ref_t *out)
 {
 	if (!out || slot < 0 || slot >= LXP_NSLOT)
 		return -LXP_EINVAL;
-	uint32_t generation = slot_generation(slot);
+	uint32_t generation = lxp_slot_generation(slot);
 	if (generation == 0 || !g_lxp_rt.slots[slot].proc.alive)
 		return -LXP_ESRCH;
-	*out = slot_ref_at(slot);
+	*out = lxp_slot_ref_at(slot);
 	return LXP_OK;
 }
 
 int lxp_slot_ref_is_current(lxp_slot_ref_t ref)
 {
 	return ref.index >= 0 && ref.index < LXP_NSLOT && ref.generation != 0 &&
-	       slot_generation(ref.index) == ref.generation && g_lxp_rt.slots[ref.index].proc.alive;
+	       lxp_slot_generation(ref.index) == ref.generation &&
+	       g_lxp_rt.slots[ref.index].proc.alive;
 }
 
 const struct lxp_resume_ctx *lxp_slot_resume_view(lxp_slot_ref_t ref)
@@ -472,7 +473,7 @@ const struct lxp_resume_ctx *lxp_slot_resume_view(lxp_slot_ref_t ref)
 int lxp_slot_resume_clone_for_fork(lxp_slot_ref_t child, lxp_slot_ref_t parent, uintptr_t child_sp)
 {
 	if (child.index < 0 || child.index >= LXP_NSLOT || child.generation == 0 ||
-	    child.index == parent.index || slot_generation(child.index) != child.generation ||
+	    child.index == parent.index || lxp_slot_generation(child.index) != child.generation ||
 	    g_lxp_rt.slots[child.index].proc.alive || !lxp_slot_ref_is_current(parent))
 		return -LXP_ESRCH;
 	g_lxp_rt.slots[child.index].resume = g_lxp_rt.slots[parent.index].resume;
@@ -483,9 +484,10 @@ int lxp_slot_resume_clone_for_fork(lxp_slot_ref_t child, lxp_slot_ref_t parent, 
 int lxp_slot_ref_is_runnable(lxp_slot_ref_t ref)
 {
 	if (ref.index < 0 || ref.index >= LXP_NSLOT || ref.generation == 0 ||
-	    !slot_runnable_load(ref.index))
+	    !lxp_slot_runnable_load(ref.index))
 		return 0;
-	return slot_generation(ref.index) == ref.generation && g_lxp_rt.slots[ref.index].proc.alive;
+	return lxp_slot_generation(ref.index) == ref.generation &&
+	       g_lxp_rt.slots[ref.index].proc.alive;
 }
 
 int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out)
@@ -587,7 +589,7 @@ int lxp_slot_report_memory_fault(lxp_slot_ref_t ref, const lxp_guest_fault_t *fa
  * changing it. The backend map is installed first; only a successful host
  * transition commits the matching access_ok range below. */
 #if LXP_ENABLE_DEV
-int device_map_index(const lxp_proc_t *p, uintptr_t addr, size_t len)
+int lxp_device_map_index(const lxp_proc_t *p, uintptr_t addr, size_t len)
 {
 	if (!p || !p->mm || len == 0 || addr > UINTPTR_MAX - len)
 		return -LXP_EINVAL;
@@ -606,7 +608,7 @@ int device_map_index(const lxp_proc_t *p, uintptr_t addr, size_t len)
  * live in each engine task. Rebuild one slot from its mm after fork, rollback,
  * task replacement, or resume. A clear request (size == 0) removes every
  * device entry owned by the slot. */
-int coordinator_restore_mm_maps(int sidx, const lxp_mm_t *mm)
+int lxp_coordinator_restore_mm_maps(int sidx, const lxp_mm_t *mm)
 {
 	int has_maps = 0;
 	for (int i = 0; mm && i < 2; i++)
@@ -634,7 +636,7 @@ int coordinator_restore_mm_maps(int sidx, const lxp_mm_t *mm)
  * all peers from the still-unmodified mm so a partial hardware update cannot
  * escape into userspace. */
 #if LXP_ENABLE_DEV
-int coordinator_map_mm_range(lxp_mm_t *mm, uintptr_t addr, size_t len, unsigned attrs)
+int lxp_coordinator_map_mm_range(lxp_mm_t *mm, uintptr_t addr, size_t len, unsigned attrs)
 {
 	if (!g_lxp_os_ops->map_device)
 		return -LXP_ENODEV;
@@ -644,7 +646,7 @@ int coordinator_map_mm_range(lxp_mm_t *mm, uintptr_t addr, size_t len, unsigned 
 		if (g_lxp_os_ops->map_device(s, addr, len, attrs) != 0) {
 			for (int r = 0; r < LXP_NSLOT; r++)
 				if (g_lxp_rt.slots[r].proc.alive && g_lxp_rt.slots[r].proc.mm == mm)
-					(void)coordinator_restore_mm_maps(r, mm);
+					(void)lxp_coordinator_restore_mm_maps(r, mm);
 			return -LXP_ENOMEM;
 		}
 	}
@@ -655,7 +657,7 @@ int coordinator_map_mm_range(lxp_mm_t *mm, uintptr_t addr, size_t len, unsigned 
 /* Report a stable snapshot before LXP_EV_EXIT clears/reuses the process slot. The
  * callback is deliberately outside exception context; an embedded host may log
  * it, increment retained counters, or leave it unset for zero runtime cost. */
-void notify_guest_exit(int slot, const lxp_proc_t *proc)
+void lxp_notify_guest_exit(int slot, const lxp_proc_t *proc)
 {
 	if (!g_lxp_rt.cfg || !g_lxp_rt.cfg->on_guest_exit)
 		return;
@@ -675,7 +677,7 @@ void notify_guest_exit(int slot, const lxp_proc_t *proc)
 
 /* A parent's live children and queued zombies share one bounded accounting
  * budget. This prevents a later child status from being silently dropped. */
-int fork_capacity_available(const lxp_proc_t *proc)
+int lxp_fork_capacity_available(const lxp_proc_t *proc)
 {
 	if (!proc || !proc->group)
 		return 0;
@@ -684,7 +686,7 @@ int fork_capacity_available(const lxp_proc_t *proc)
 	       proc->group->live_children < LXP_MAX_CHILD - proc->group->child_count;
 }
 
-int thread_group_live_count(const lxp_thread_group_t *group)
+int lxp_thread_group_live_count(const lxp_thread_group_t *group)
 {
 	int live = 0;
 	for (int s = 0; s < LXP_NSLOT; s++)
@@ -693,7 +695,7 @@ int thread_group_live_count(const lxp_thread_group_t *group)
 	return live;
 }
 
-void thread_group_request_exit(int source_slot, int status)
+void lxp_thread_group_request_exit(int source_slot, int status)
 {
 	if (source_slot < 0 || source_slot >= LXP_NSLOT)
 		return;
@@ -706,7 +708,7 @@ void thread_group_request_exit(int source_slot, int status)
 		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
 		if (!p->alive || p->group != group)
 			continue;
-		coordinator_exit_slot(s, 1, status & 0xff, LXP_EXIT_REASON_NORMAL, 0);
+		lxp_coordinator_exit_slot(s, 1, status & 0xff, LXP_EXIT_REASON_NORMAL, 0);
 	}
 }
 
@@ -714,7 +716,7 @@ void thread_group_request_exit(int source_slot, int status)
  * commit point, peer threads may no longer execute in the old shared address
  * space. Stop their host tasks immediately; their normal EV_EXIT teardown
  * releases per-task references on subsequent coordinator passes. */
-int thread_group_stop_exec_peers(int source_slot, int failure_status)
+int lxp_thread_group_stop_exec_peers(int source_slot, int failure_status)
 {
 	lxp_thread_group_t *group = g_lxp_rt.slots[source_slot].proc.group;
 	int rc = LXP_OK;
@@ -722,9 +724,9 @@ int thread_group_stop_exec_peers(int source_slot, int failure_status)
 		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
 		if (s == source_slot || !p->alive || p->group != group)
 			continue;
-		if (coordinator_abort_slot(s) != LXP_OK)
+		if (lxp_coordinator_abort_slot(s) != LXP_OK)
 			rc = -LXP_EAGAIN;
-		coordinator_exit_slot(s, 0, failure_status & 0xff, LXP_EXIT_REASON_NORMAL, 0);
+		lxp_coordinator_exit_slot(s, 0, failure_status & 0xff, LXP_EXIT_REASON_NORMAL, 0);
 	}
 	return rc;
 }
@@ -733,7 +735,7 @@ int thread_group_stop_exec_peers(int source_slot, int failure_status)
  * is suspended before its host syscall runs; immediate completion resumes that
  * same task, while a blocking syscall leaves it parked for the established wait
  * event. Host RT tasks above the coordinator can preempt all work performed here. */
-void execute_deferred(int slot)
+void lxp_execute_deferred(int slot)
 {
 	uint8_t expected = DEFER_READY;
 	if (!__atomic_compare_exchange_n(&g_lxp_rt.slots[slot].deferred.state, &expected,
@@ -741,21 +743,21 @@ void execute_deferred(int slot)
 		return;
 	struct deferred_req *req = &g_lxp_rt.slots[slot].deferred;
 	lxp_proc_t *proc = &g_lxp_rt.slots[slot].proc;
-	if (!proc->alive || !lxp_slot_ref_equal(req->owner, slot_ref_at(slot))) {
-		deferred_state_store(slot, DEFER_IDLE);
+	if (!proc->alive || !lxp_slot_ref_equal(req->owner, lxp_slot_ref_at(slot))) {
+		lxp_deferred_state_store(slot, DEFER_IDLE);
 		if (proc->intent.kind == LXP_INTENT_DEFERRED_SYSCALL)
 			(void)lxp_intent_complete(proc, LXP_INTENT_DEFERRED_SYSCALL);
 		return;
 	}
-	if (coordinator_park_slot(slot) != LXP_OK) {
-		deferred_state_store(slot, DEFER_IDLE);
+	if (lxp_coordinator_park_slot(slot) != LXP_OK) {
+		lxp_deferred_state_store(slot, DEFER_IDLE);
 		return;
 	}
 	lxp_guest_view_t view;
-	int view_rc = coordinator_guest_view_begin(slot, &view);
+	int view_rc = lxp_coordinator_guest_view_begin(slot, &view);
 	if (view_rc != LXP_OK) {
-		deferred_state_store(slot, DEFER_IDLE);
-		guest_view_failure(slot, view_rc);
+		lxp_deferred_state_store(slot, DEFER_IDLE);
+		lxp_guest_view_failure(slot, view_rc);
 		return;
 	}
 #if LXP_ENABLE_LATENCY
@@ -785,27 +787,27 @@ void execute_deferred(int slot)
 	long a5 = (long)(int32_t)g_lxp_rt.slots[slot].resume.r4_11[1];
 	(void)lxp_intent_complete(proc, LXP_INTENT_DEFERRED_SYSCALL);
 	long r = lxp_syscall(proc, nr, a0, a1, a2, a3, a4, a5);
-	coordinator_report_enosys(nr, r);
-	deferred_state_store(slot, DEFER_IDLE);
+	lxp_coordinator_report_enosys(nr, r);
+	lxp_deferred_state_store(slot, DEFER_IDLE);
 
 	/* Existing retry state owns completion from here and expects the parked host
 	 * task to remain present; exec/exit are likewise consumed by higher-level events. The
 	 * deferred event hint was consumed before entering this function, so publish
 	 * the follow-on state before returning to the coordinator wait loop. */
 	if (proc->wait.kind != LXP_WAIT_NONE || proc->intent.kind != LXP_INTENT_NONE) {
-		primary_slot_mark(slot);
+		lxp_primary_slot_mark(slot);
 		lxp_guest_view_end(&view);
 		return;
 	}
 
-	int psig = pending_take(proc);
+	int psig = lxp_pending_take(proc);
 	if (psig) {
-		deliver_signal_parked(slot, proc, psig, r);
+		lxp_deliver_signal_parked(slot, proc, psig, r);
 		lxp_guest_view_end(&view);
 		return;
 	}
 	lxp_guest_view_end(&view);
-	(void)coordinator_complete_slot(slot_ref_at(slot), r);
+	(void)lxp_coordinator_complete_slot(lxp_slot_ref_at(slot), r);
 }
 
 /* A failed abort leaves the native task and its Linux resources intact by
@@ -816,7 +818,7 @@ void execute_deferred(int slot)
 static void coordinator_quiesce_all(void)
 {
 	for (int s = 0; s < LXP_NSLOT; s++) {
-		while (coordinator_abort_slot(s) != LXP_OK)
+		while (lxp_coordinator_abort_slot(s) != LXP_OK)
 			g_lxp_os_ops->event_wait(1u);
 	}
 }
@@ -841,14 +843,14 @@ static void coordinator_reset_pools(void)
 #endif
 }
 
-void coordinator_teardown_all(void)
+void lxp_coordinator_teardown_all(void)
 {
 	coordinator_quiesce_all();
 	lxp_trap_publish(0);
 	for (int s = 0; s < LXP_NSLOT; s++) {
 		lxp_proc_t *p = &g_lxp_rt.slots[s].proc;
-		deferred_slot_reassign(s);
-		primary_slot_clear(s);
+		lxp_deferred_slot_reassign(s);
+		lxp_primary_slot_clear(s);
 #if LXP_ENABLE_NETFS
 		if (p->wait.kind == LXP_WAIT_NETFS)
 			lxp_netfs_cancel(p);
@@ -861,11 +863,11 @@ void coordinator_teardown_all(void)
 			p->mm->dev_map_lo[1] = p->mm->dev_map_hi[1] = 0;
 		}
 		if (p->snapshot.index >= 0)
-			(void)region_release_if_owned(p->snapshot, slot_ref_at(s));
-		proc_mm_put(p);
+			(void)lxp_region_release_if_owned(p->snapshot, lxp_slot_ref_at(s));
+		lxp_region_mm_put(p);
 		lxp_proc_group_put(p);
 		g_lxp_sig_save[s].depth = 0;
-		slot_runnable_store(s, 0);
+		lxp_slot_runnable_store(s, 0);
 		memset(p, 0, sizeof(*p));
 		p->snapshot = lxp_region_ref_none();
 		p->vfork_parent = lxp_slot_ref_none();
@@ -896,10 +898,10 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	g_lxp_rt.rootfs_lo = cfg->rootfs_image;
 	g_lxp_rt.rootfs_hi = g_lxp_rt.rootfs_lo + cfg->rootfs_image_size;
 	for (int i = 0; i < LXP_NSLOT; i++) {
-		slot_runnable_store(i, 0);
+		lxp_slot_runnable_store(i, 0);
 		lxp_slot_set_host_state(i, SLOT_FREE);
 		g_lxp_rt.slots[i].proc.alive = 0;
-		deferred_slot_reassign(i);
+		lxp_deferred_slot_reassign(i);
 	}
 	lxp_primary_events_reset();
 	lxp_blocked_fair_reset();
@@ -932,9 +934,9 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	 * snapshot/exec-handoff regions. */
 	lxp_trap_publish(1);
 	lxp_reset_halt_request();
-	(void)region_reserve(0, slot_ref_at(0));
-	lxp_region_ref_t initial_region = region_ref_at(0);
-	lxp_slot_ref_t initial_owner = slot_ref_at(0);
+	(void)lxp_region_reserve(0, lxp_slot_ref_at(0));
+	lxp_region_ref_t initial_region = lxp_region_ref_at(0);
+	lxp_slot_ref_t initial_owner = lxp_slot_ref_at(0);
 	if (lxp_image_launch(0, initial_region, initial_owner, initial.data, initial.size,
 			     1, 0, initial.argc, initial.argv, cfg->env, 0) != 0) {
 		goto launch_failed;
@@ -981,7 +983,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		/* Event classes: enum lxp_ev_class, generated with the latency stats array
 		 * and class names from LXP_LAT_CLASS_LIST in lxp_latency.h so they cannot
 		 * fall out of step. LXP_EV_NONE (0) means "nothing claimed". */
-		struct lxp_claimed_event claimed = coordinator_claim_event(&event_cursor);
+		struct lxp_claimed_event claimed = lxp_coordinator_claim_event(&event_cursor);
 		int es = claimed.slot;
 		int et = claimed.type;
 		/* Lifecycle/control work remains strict. Ordinary guest publications are
@@ -989,7 +991,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		 * service classes from reaching their weighted scan. */
 		if (es >= 0 && et != LXP_EV_NONE && !coordinator_control_event(et) &&
 		    guest_event_burst >= LXP_COORDINATOR_EVENT_BURST) {
-			primary_slot_mark(es);
+			lxp_primary_slot_mark(es);
 			es = -1;
 			et = LXP_EV_NONE;
 			guest_event_burst = 0;
@@ -1064,7 +1066,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		socket_ready_events = g_lxp_net_ops && (g_lxp_net_ops->capabilities &
 							LXP_NET_CAP_SOCKET_READY_EVENT);
 #endif
-		unsigned to = coordinator_wait_timeout(blocked.wait_policy, socket_ready_events,
+		unsigned to = lxp_coordinator_wait_timeout(blocked.wait_policy, socket_ready_events,
 						       console_ready_events);
 		if (blocked.next_deadline_us != UINT64_MAX && blocked.next_deadline_us > now) {
 			uint64_t d_ms = (blocked.next_deadline_us - now + 999u) /
@@ -1076,13 +1078,13 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		}
 		eng->event_wait(to);
 	}
-	coordinator_teardown_all();
+	lxp_coordinator_teardown_all();
 	lxp_diag_refresh();
 	lxp_diag_checkpoint();
 	return rc;
 
 launch_failed:
-	coordinator_teardown_all();
+	lxp_coordinator_teardown_all();
 	lxp_diag_refresh();
 	lxp_diag_checkpoint();
 	return LXP_RUN_ELAUNCH;

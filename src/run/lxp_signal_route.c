@@ -45,13 +45,13 @@ int lxp_signal_process_group(int pgid, int sig)
  * handler; the handler's sa_restorer -> rt_sigreturn restores the saved frame and the syscall
  * returns -EINTR. SIG_IGN just resumes with `ret`; SIG_DFL terminates (the LXP_EV_EXIT pass
  * reaps it). */
-void deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret)
+void lxp_deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret)
 {
 	struct lxp_signal_delivery delivery;
 	enum lxp_signal_action action = lxp_signal_prepare(proc, sig, &delivery);
 	if (action == LXP_SIGNAL_IGNORE) {
-		(void)coordinator_complete_slot(
-			slot_ref_at(slot),
+		(void)lxp_coordinator_complete_slot(
+			lxp_slot_ref_at(slot),
 			ret); /* IGN or default-ignore (SIGCHLD/SIGCONT/...) */
 		return;
 	}
@@ -62,12 +62,12 @@ void deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret)
 		proc->stop_kind = LXP_STOP_PARKED;
 		proc->stop_sig = (uint8_t)sig;
 		proc->stop_r0 = 0;
-		(void)coordinator_complete_slot(slot_ref_at(slot), ret);
-		notify_parent_stopped(proc->group->ppid, proc->pid, sig);
+		(void)lxp_coordinator_complete_slot(lxp_slot_ref_at(slot), ret);
+		lxp_notify_parent_stopped(proc->group->ppid, proc->pid, sig);
 		return;
 	}
 	if (action == LXP_SIGNAL_TERMINATE) {
-		primary_slot_mark(slot);
+		lxp_primary_slot_mark(slot);
 		return;
 	}
 	if (action != LXP_SIGNAL_HANDLER)
@@ -87,11 +87,12 @@ void deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret)
 	sv->fp = resume->fp;
 #endif
 	/* Reuse the slot ctx as the handler-entry frame; sp + r4-r11 stay = the thread's, except r9
-	 * (the handler's own GOT for FDPIC — resolve_handler derefs the {entry,GOT} funcdescs; the
-	 * restart handler lives in libpthread, a different module than the interrupted libc). */
+	 * (the handler's own GOT for FDPIC: lxp_resolve_handler derefs the {entry,GOT} funcdescs,
+	 * and the restart handler lives in libpthread, a different module than the interrupted
+	 * libc). */
 	if (proc->is_fdpic)
 		resume->r4_11[5] = delivery.got;      /* r9 = handler's GOT */
 	resume->lr = delivery.restorer | 1u;	      /* return -> sa_restorer entry -> sigreturn */
 	resume->pc = delivery.entry | 1u;	      /* enter the handler (Thumb) */
-	coordinator_resume_slot(slot, proc->mm->region.index, resume, sig); /* r0 = signo */
+	lxp_coordinator_resume_slot(slot, proc->mm->region.index, resume, sig); /* r0 = signo */
 }

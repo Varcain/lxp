@@ -65,9 +65,9 @@ int reset_state(void **state)
 
 void make_valid_running_slot(int slot, int region)
 {
-	deferred_slot_reassign(slot);
-	lxp_slot_ref_t owner = slot_ref_at(slot);
-	lxp_region_ref_t region_ref = region_reserve(region, owner);
+	lxp_deferred_slot_reassign(slot);
+	lxp_slot_ref_t owner = lxp_slot_ref_at(slot);
+	lxp_region_ref_t region_ref = lxp_region_reserve(region, owner);
 	assert_int_equal(region_ref.index, region);
 	assert_int_equal(lxp_region_commit_address_space(region_ref, owner), LXP_OK);
 	g_lxp_rt.slots[slot].proc.alive = 1;
@@ -83,11 +83,11 @@ void make_valid_running_slot(int slot, int region)
 void prepare_mock_image_txn(struct image_txn *tx, int slot, int region)
 {
 	lxp_proc_child_discard(&g_lxp_rt.slots[slot].proc);
-	deferred_slot_reassign(slot);
-	lxp_slot_ref_t owner = slot_ref_at(slot);
-	lxp_region_ref_t region_ref = region_reserve(region, owner);
+	lxp_deferred_slot_reassign(slot);
+	lxp_slot_ref_t owner = lxp_slot_ref_at(slot);
+	lxp_region_ref_t region_ref = lxp_region_reserve(region, owner);
 	assert_int_equal(region_ref.index, region);
-	image_txn_init(tx, slot, region_ref, owner);
+	lxp_image_txn_init(tx, slot, region_ref, owner);
 	assert_int_equal(lxp_proc_init(&tx->proc, &g_mock_arenas[slot], 0), LXP_OK);
 	tx->proc.alive = 1;
 	tx->proc.mm->region = region_ref;

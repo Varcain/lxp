@@ -8,7 +8,7 @@
 #include "run/lxp_coordinator.h"
 #include "lxp_run_internal.h"
 
-void coordinator_exit_slot(int slot, int group, int status, uint8_t reason, uint32_t detail)
+void lxp_coordinator_exit_slot(int slot, int group, int status, uint8_t reason, uint32_t detail)
 {
 	lxp_proc_t *proc = lxp_slot_proc(slot);
 	proc->exit_status = status;
@@ -17,21 +17,21 @@ void coordinator_exit_slot(int slot, int group, int status, uint8_t reason, uint
 	proc->exit_detail = detail;
 	proc->exit_address = 0;
 	(void)lxp_intent_exit(proc, group);
-	primary_slot_mark(slot);
+	lxp_primary_slot_mark(slot);
 }
 
 struct lxp_exit_result lxp_handle_exit(int slot)
 {
 	struct lxp_exit_result result = {0};
 	lxp_proc_t *proc = lxp_slot_proc(slot);
-	lxp_slot_ref_t exiting_ref = slot_ref_at(slot);
+	lxp_slot_ref_t exiting_ref = lxp_slot_ref_at(slot);
 	if (proc->intent.data.exit.group)
-		thread_group_request_exit(slot, proc->exit_status);
+		lxp_thread_group_request_exit(slot, proc->exit_status);
 
 	/* Host termination is the commit point. Keep every Linux reference intact
 	 * and retry the exit event if the RTOS did not stop the task. */
-	if (coordinator_abort_slot(slot) != LXP_OK) {
-		primary_slot_mark(slot);
+	if (lxp_coordinator_abort_slot(slot) != LXP_OK) {
+		lxp_primary_slot_mark(slot);
 		return result;
 	}
 
@@ -50,23 +50,23 @@ struct lxp_exit_result lxp_handle_exit(int slot)
 	if (lxp_slot_ref_is_current(parent_ref) && proc->snapshot.index >= 0) {
 		/* A vfork child died before exec: undo its writes to the shared
 		 * address space before resuming the parent. */
-		if (vfork_restore(lxp_slot_proc(parent_slot), proc->snapshot, exiting_ref,
+		if (lxp_vfork_restore(lxp_slot_proc(parent_slot), proc->snapshot, exiting_ref,
 				  lxp_slot_resume_view(parent_ref)->sp) != 0) {
-			vfork_contain_stale(exiting_ref, proc);
+			lxp_vfork_contain_stale(exiting_ref, proc);
 			parent_slot = -1;
 			status = proc->exit_status;
 		} else {
-			(void)region_release_if_owned(proc->snapshot, exiting_ref);
+			(void)lxp_region_release_if_owned(proc->snapshot, exiting_ref);
 		}
 	}
 
-	notify_guest_exit(slot, proc);
-	proc_mm_put(proc);
+	lxp_notify_guest_exit(slot, proc);
+	lxp_region_mm_put(proc);
 	proc->alive = 0;
 	lxp_slot_debug_clear(slot);
-	slot_runnable_store(slot, 0);
-	deferred_slot_reassign(slot);
-	int group_is_dead = thread_group_live_count(group) == 0;
+	lxp_slot_runnable_store(slot, 0);
+	lxp_deferred_slot_reassign(slot);
+	int group_is_dead = lxp_thread_group_live_count(group) == 0;
 	if (tgid == 1 && group_is_dead) {
 		lxp_proc_group_put(proc);
 		result.stop_coordinator = 1;
@@ -75,9 +75,9 @@ struct lxp_exit_result lxp_handle_exit(int slot)
 	}
 
 	if (parent_slot >= 0 && lxp_slot_ref_is_current(parent_ref))
-		(void)coordinator_complete_slot(parent_ref, pid);
+		(void)lxp_coordinator_complete_slot(parent_ref, pid);
 	if (group_is_dead)
-		reap_to_parent(ppid, tgid, status,
+		lxp_reap_to_parent(ppid, tgid, status,
 			       /*sigchld=*/!lxp_slot_ref_is_current(parent_ref));
 	lxp_proc_group_put(proc);
 	return result;

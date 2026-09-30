@@ -8,7 +8,7 @@
  * wait4 (the -EINTR reap) and the FDPIC-r9 restore across that signal — needs a parent
  * that PARKS in wait4 (vfork's child-exits-first timing precludes it) and a multi-module
  * FDPIC image (these guests are single-module + GOT-free). Those are guarded by the host
- * coordinator suite (reap_to_parent SIGCHLD suppression) and the on-target busybox rootfs;
+ * coordinator suite (lxp_reap_to_parent SIGCHLD suppression) and the on-target busybox rootfs;
  * here we lock down that the failed-exec vfork path itself reaps 127 without faulting. */
 #include "lxpsys.h"
 

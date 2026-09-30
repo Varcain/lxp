@@ -7,7 +7,7 @@
  * Signal delivery over the uniform svc frame: resolve an FDPIC handler descriptor,
  * push a handler frame (saving the interrupted context per slot), and restore it at
  * rt_sigreturn. Driven by the run loop's dispatch + event loop (lxp_run.c) via the
- * coordinator primitives in lxp_run_internal.h; deliver_signal_parked (the parked-proc
+ * coordinator primitives in lxp_run_internal.h; lxp_deliver_signal_parked (the parked-proc
  * variant, which resumes via the engine) stays with the coordinator. Which signal is
  * delivered, and what its disposition means, is policy (signal/lxp_signal_policy.c).
  */
@@ -23,7 +23,7 @@
  * {entry, GOT} — deref, since the handler may live in a different module (e.g. libpthread) than the
  * interrupted code and needs its own r9=GOT. Non-FDPIC (e.g. the posix host test): raw entries, no
  * GOT change. */
-int resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
+int lxp_resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t *got,
 		    uintptr_t *restorer)
 {
 	uintptr_t h = lxp_sig_handler_get(proc, sig);
@@ -49,9 +49,9 @@ int resolve_handler(const lxp_proc_t *proc, int sig, uintptr_t *entry, uint32_t 
  * signal that wakes rt_sigsuspend, the frame must restore the mask from before
  * the suspend, not the temporary wait mask. Consume that association here so a
  * signal nested inside the handler restores only its own entry mask. */
-struct sig_save_s *sig_save_push(lxp_proc_t *proc, int sig)
+struct sig_save_s *lxp_sig_save_push(lxp_proc_t *proc, int sig)
 {
-	int slot = slot_of(proc);
+	int slot = lxp_slot_of(proc);
 	if (slot < 0 || slot >= LXP_NSLOT)
 		return NULL;
 	struct sig_save_stack_s *stack = &g_lxp_sig_save[slot];
@@ -79,9 +79,9 @@ enum lxp_signal_action lxp_signal_prepare(lxp_proc_t *proc, int sig,
 {
 	if (!proc || !delivery || sig < 1 || sig >= LXP_NSIG)
 		return LXP_SIGNAL_INVALID;
-	if (sig_stops_proc(proc, sig))
+	if (lxp_sig_stops_proc(proc, sig))
 		return LXP_SIGNAL_STOP;
-	if (sig_swallowed(proc, sig))
+	if (lxp_sig_swallowed(proc, sig))
 		return LXP_SIGNAL_IGNORE;
 
 	uintptr_t handler = lxp_sig_handler_get(proc, sig);
@@ -89,12 +89,12 @@ enum lxp_signal_action lxp_signal_prepare(lxp_proc_t *proc, int sig,
 		lxp_signal_terminate(proc, sig, LXP_EXIT_REASON_SIGNAL, 0, 0);
 		return LXP_SIGNAL_TERMINATE;
 	}
-	if (resolve_handler(proc, sig, &delivery->entry, &delivery->got, &delivery->restorer) !=
+	if (lxp_resolve_handler(proc, sig, &delivery->entry, &delivery->got, &delivery->restorer) !=
 	    0) {
 		lxp_signal_terminate(proc, LXP_SIGSEGV, LXP_EXIT_REASON_MEMORY_FAULT, 0, handler);
 		return LXP_SIGNAL_TERMINATE;
 	}
-	delivery->save = sig_save_push(proc, sig);
+	delivery->save = lxp_sig_save_push(proc, sig);
 	if (!delivery->save) {
 		lxp_signal_terminate(proc, LXP_SIGSEGV, LXP_EXIT_REASON_SIGNAL_DEPTH, 0, 0);
 		return LXP_SIGNAL_TERMINATE;
@@ -104,7 +104,7 @@ enum lxp_signal_action lxp_signal_prepare(lxp_proc_t *proc, int sig,
 
 /* Deliver signal `sig` to `proc`; `ret` is the interrupted syscall's result
  * (0 for a kill/tkill, -EINTR for a console-interrupted read). */
-void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
+void lxp_deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 {
 	if (!proc || sig < 1 || sig >= LXP_NSIG) {
 		f->r[0] = (uint32_t)-LXP_EINVAL;
@@ -129,7 +129,7 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		proc->stop_kind = LXP_STOP_READY;
 		proc->stop_sig = (uint8_t)sig;
 		proc->stop_r0 = ret;
-		park_frame(f, proc);
+		lxp_park_frame(f, proc);
 		return;
 	}
 	if (action == LXP_SIGNAL_IGNORE) {
@@ -138,7 +138,7 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 		return;
 	}
 	if (action == LXP_SIGNAL_TERMINATE) {
-		park_frame(f, proc); /* the coordinator reaps it */
+		lxp_park_frame(f, proc); /* the coordinator reaps it */
 		return;
 	}
 	if (action != LXP_SIGNAL_HANDLER) {
@@ -171,9 +171,9 @@ void deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret)
 }
 
 /* rt_sigreturn: restore the context saved at delivery. */
-void sig_restore(struct lxp_frame *f, lxp_proc_t *proc)
+void lxp_sig_restore(struct lxp_frame *f, lxp_proc_t *proc)
 {
-	int slot = slot_of(proc);
+	int slot = lxp_slot_of(proc);
 	if (slot < 0 || slot >= LXP_NSLOT)
 		return;
 	struct sig_save_stack_s *stack = &g_lxp_sig_save[slot];

@@ -64,27 +64,29 @@ long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_s
 #endif
 	for (int i = 0; i < p->fs_count && !full; i++) {
 		const char *name = lxp_path_child_name(dirpath, p->fs[i].path);
-		if (!name || wfs_find(p->fs[i].path) >= 0
+		if (!name || lxp_wfs_find(p->fs[i].path) >= 0
 #if LXP_ENABLE_FS
 		    || strcmp(p->fs[i].path, host_mount) == 0
 #endif
 		)
 			continue;
-		if (!dirent_emit(sink, &pos, s, LXP_INO_ROOTFS + (uint64_t)i, name, file_mode(&p->fs[i])))
+		if (!dirent_emit(sink, &pos, s, LXP_INO_ROOTFS + (uint64_t)i, name,
+				 lxp_file_mode(&p->fs[i])))
 			full = 1;
 	}
 	/* writable-overlay children */
 	for (int i = 0; i < LXP_NWNODE && !full; i++) {
-		if (!wnode_at(i)->used)
+		if (!lxp_wnode_at(i)->used)
 			continue;
 #if LXP_ENABLE_FS
-		if (strcmp(wnode_at(i)->path, host_mount) == 0)
+		if (strcmp(lxp_wnode_at(i)->path, host_mount) == 0)
 			continue;
 #endif
-		const char *name = lxp_path_child_name(dirpath, wnode_at(i)->path);
+		const char *name = lxp_path_child_name(dirpath, lxp_wnode_at(i)->path);
 		if (!name)
 			continue;
-		if (!dirent_emit(sink, &pos, s, LXP_INO_TMPFS + (uint64_t)i, name, wnode_at(i)->mode))
+		if (!dirent_emit(sink, &pos, s, LXP_INO_TMPFS + (uint64_t)i, name,
+				 lxp_wnode_at(i)->mode))
 			full = 1;
 	}
 #if LXP_ENABLE_FS
@@ -108,12 +110,13 @@ long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_s
 	}
 #endif
 	/* synthetic /proc children */
-	if (!full && proc_is(dirpath)) {
+	if (!full && lxp_proc_is(dirpath)) {
 		const char *file;
-		int dpid = proc_pid(dirpath, p, &file);
+		int dpid = lxp_proc_pid(dirpath, p, &file);
 		if (strcmp(dirpath, "/proc") == 0) {
-			for (int i = 0; g_proc_files[i] && !full; i++)
-				if (!proc_emit(sink, &pos, s, dirpath, g_proc_files[i], LXP_S_IFREG))
+			for (int i = 0; g_lxp_proc_files[i] && !full; i++)
+				if (!proc_emit(sink, &pos, s, dirpath, g_lxp_proc_files[i],
+					       LXP_S_IFREG))
 					full = 1;
 			if (!full && !proc_emit(sink, &pos, s, dirpath, "self", LXP_S_IFLNK))
 				full = 1;
@@ -145,7 +148,7 @@ long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_s
 				if (!proc_emit(sink, &pos, s, dirpath, pidstr, LXP_S_IFDIR))
 					full = 1;
 			}
-		} else if (dpid > 0 && !file && proc_pid_known(p, dpid)) {
+		} else if (dpid > 0 && !file && lxp_proc_pid_known(p, dpid)) {
 			static const char *const pf[] = {"stat", "cmdline", "status", "comm", NULL};
 			for (int i = 0; pf[i] && !full; i++)
 				if (!proc_emit(sink, &pos, s, dirpath, pf[i], LXP_S_IFREG))

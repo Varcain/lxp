@@ -12,7 +12,7 @@
  * removal (ENOSPC only when the live set truly exhausts the pool).
  *
  * The node objects, pool and FD_TMPFS file operations live in src/fs/lxp_tmpfs.c; the
- * path syscalls and getdents reach a node via wnode_at().
+ * path syscalls and getdents reach a node via lxp_wnode_at().
  */
 #ifndef LXP_FS_TMPFS_H
 #define LXP_FS_TMPFS_H
@@ -36,32 +36,32 @@ typedef struct {
 } lxp_wnode_t;
 
 /* The i-th node (0 <= i < LXP_NWNODE). The pool is otherwise private to lxp_tmpfs.c. */
-lxp_wnode_t *wnode_at(int i);
+lxp_wnode_t *lxp_wnode_at(int i);
 
 /* Find a writable node by absolute path (any type), or -1. */
-int wfs_find(const char *abspath);
+int lxp_wfs_find(const char *abspath);
 
 /* Allocate a node for abspath with mode; -1 if the table is full / path too long. */
-int wfs_create(const char *abspath, uint32_t mode);
+int lxp_wfs_create(const char *abspath, uint32_t mode);
 
 /* Ensure node i can hold `need` bytes (grows from the pool, reclaiming the old
  * block). 0 on success, -1 if the pool is exhausted. */
-int wfs_reserve(int i, size_t need);
+int lxp_wfs_reserve(int i, size_t need);
 
 /* Retain/release one open-file description for node i. dup/fork aliases share
  * that description and therefore do not add another node reference. */
-int wfs_open(int i);
-void wfs_close(int i);
+int lxp_wfs_open(int i);
+void lxp_wfs_close(int i);
 
 /* Rename node i to newabs, replacing an existing node there; a directory carries its
  * descendants along. 0, or -ENAMETOOLONG, -EINVAL (a directory into its own subtree)
  * or -ENOTEMPTY (replacing a directory that has entries). */
-int wfs_rename(int i, const char *newabs);
+int lxp_wfs_rename(int i, const char *newabs);
 
 /* Remove node i's directory entry (unlink/rmdir, or rename replacing an
  * existing destination). Its bytes remain accessible to existing open-file
  * descriptions and are reclaimed after the final close. Nodes without open
  * descriptions are reclaimed immediately. */
-void wfs_free(int i);
+void lxp_wfs_free(int i);
 
 #endif /* LXP_FS_TMPFS_H */

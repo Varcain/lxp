@@ -20,7 +20,7 @@ int lxp_initial_resolve(const lxp_run_config_t *config, const char *path, int ar
 
 	int image_index = lxp_rootfs_resolve_index(config->rootfs, config->rootfs_count, path);
 	if (image_index < 0 || !config->rootfs[image_index].data ||
-	    (file_mode(&config->rootfs[image_index]) & LXP_S_IFMT) == LXP_S_IFDIR)
+	    (lxp_file_mode(&config->rootfs[image_index]) & LXP_S_IFMT) == LXP_S_IFDIR)
 		return -LXP_ENOENT;
 
 	int script = lxp_script_parse(config->rootfs[image_index].data,
@@ -33,13 +33,13 @@ int lxp_initial_resolve(const lxp_run_config_t *config, const char *path, int ar
 			out->argv[i] = argv[i];
 	} else {
 		char interpreter[LXP_PATH_MAX];
-		if (resolve_path_trusted(out->script.interpreter, interpreter,
+		if (lxp_resolve_path_trusted(out->script.interpreter, interpreter,
 					 sizeof(interpreter)) != 0)
 			return -LXP_ENOEXEC;
 		image_index =
 			lxp_rootfs_resolve_index(config->rootfs, config->rootfs_count, interpreter);
 		if (image_index < 0 || !config->rootfs[image_index].data ||
-		    (file_mode(&config->rootfs[image_index]) & LXP_S_IFMT) == LXP_S_IFDIR)
+		    (lxp_file_mode(&config->rootfs[image_index]) & LXP_S_IFMT) == LXP_S_IFDIR)
 			return -LXP_ENOENT;
 
 		const int prefix_count = out->script.has_argument ? 3 : 2;

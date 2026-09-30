@@ -816,7 +816,7 @@ static void test_hostfs_metrics_proc(void **state)
 	char out[1024];
 	setup(&proc, &arena);
 
-	long len = proc_gen("/proc/lxp_fs", &proc, out, sizeof(out) - 1u);
+	long len = lxp_proc_gen("/proc/lxp_fs", &proc, out, sizeof(out) - 1u);
 	assert_true(len > 0);
 	out[len] = '\0';
 	assert_non_null(strstr(out, "provider_available 1\n"));
@@ -905,11 +905,11 @@ static void test_mount_semantics_read_only_and_proc_reporting(void **state)
 	assert_int_equal(call(&proc, LXP_NR_access, (long)(uintptr_t)"/mnt/hello.txt", 1, 0),
 			 -LXP_EACCES);
 
-	long len = proc_gen("/proc/mounts", &proc, out, sizeof(out) - 1u);
+	long len = lxp_proc_gen("/proc/mounts", &proc, out, sizeof(out) - 1u);
 	assert_true(len > 0);
 	out[len] = '\0';
 	assert_non_null(strstr(out, "/dev/mmcblk0 /mnt vfat ro,nosuid,nodev,noexec 0 0\n"));
-	len = proc_gen("/proc/filesystems", &proc, out, sizeof(out) - 1u);
+	len = lxp_proc_gen("/proc/filesystems", &proc, out, sizeof(out) - 1u);
 	assert_true(len > 0);
 	out[len] = '\0';
 	assert_non_null(strstr(out, "\tvfat\n"));

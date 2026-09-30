@@ -15,7 +15,7 @@
 #include "lxp_linux_uapi.h"
 
 /* Effective st_mode for a rootfs node (0 in the table means a regular file). */
-uint32_t file_mode(const lxp_file_t *f)
+uint32_t lxp_file_mode(const lxp_file_t *f)
 {
 	return f->mode ? f->mode : (LXP_S_IFREG | 0644u);
 }
@@ -24,7 +24,7 @@ uint32_t file_mode(const lxp_file_t *f)
 static long fop_pread_rootfs(lxp_proc_t *p, lxp_ofd_t *s, void *buf, size_t len, uint64_t off)
 {
 	const lxp_file_t *f = &p->fs[s->file_idx];
-	if ((file_mode(f) & LXP_S_IFMT) == LXP_S_IFDIR)
+	if ((lxp_file_mode(f) & LXP_S_IFMT) == LXP_S_IFDIR)
 		return -LXP_EISDIR;
 	return lxp_vfs_read_mem(p, f->data, f->size, buf, len, off);
 }
@@ -61,15 +61,15 @@ static long fop_mmap_rootfs(lxp_proc_t *p, lxp_ofd_t *s, size_t len, int prot, u
 static long fop_getdents_rootfs(lxp_proc_t *p, lxp_ofd_t *s, lxp_dirent_sink_t *sink)
 {
 	const lxp_file_t *f = &p->fs[s->file_idx];
-	if ((file_mode(f) & LXP_S_IFMT) != LXP_S_IFDIR)
+	if ((lxp_file_mode(f) & LXP_S_IFMT) != LXP_S_IFDIR)
 		return -LXP_ENOTDIR;
 	return lxp_dir_list(p, s, f->path, sink);
 }
 
 static long fop_fstat_rootfs(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
-	lxp_stat_init(st, LXP_INO_ROOTFS + (uint32_t)s->file_idx, file_mode(&p->fs[s->file_idx]),
-		      p->fs[s->file_idx].size);
+	lxp_stat_init(st, LXP_INO_ROOTFS + (uint32_t)s->file_idx,
+		      lxp_file_mode(&p->fs[s->file_idx]), p->fs[s->file_idx].size);
 	return 0;
 }
 
@@ -77,7 +77,7 @@ static long fop_fstat_rootfs(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 static long fop_dir_path_rootfs(lxp_proc_t *p, lxp_ofd_t *s, char *out, size_t cap)
 {
 	const lxp_file_t *f = &p->fs[s->file_idx];
-	if ((file_mode(f) & LXP_S_IFMT) != LXP_S_IFDIR)
+	if ((lxp_file_mode(f) & LXP_S_IFMT) != LXP_S_IFDIR)
 		return -LXP_ENOTDIR;
 	return lxp_vfs_copy_path(f->path, out, cap);
 }

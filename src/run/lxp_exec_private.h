@@ -51,11 +51,11 @@ struct exec_txn {
 	uint8_t terminal;
 };
 
-void exec_txn_init(struct exec_txn *tx, int slot);
-int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
+void lxp_exec_txn_init(struct exec_txn *tx, int slot);
+int lxp_exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
 						 size_t image_size, int remote_exec);
-int exec_txn_reserve(struct exec_txn *tx);
-int exec_txn_commit(struct exec_txn *tx);
-void exec_txn_abort(struct exec_txn *tx, long error, int reason);
+int lxp_exec_txn_reserve(struct exec_txn *tx);
+int lxp_exec_txn_commit(struct exec_txn *tx);
+void lxp_exec_txn_abort(struct exec_txn *tx, long error, int reason);
 
 #endif /* LXP_EXEC_PRIVATE_H */

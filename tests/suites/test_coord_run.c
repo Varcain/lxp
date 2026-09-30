@@ -23,7 +23,7 @@ static void test_memory_policy_snapshot_and_key_track_every_generation(void **st
 {
 	(void)state;
 	make_valid_running_slot(0, 2);
-	lxp_slot_ref_t slot = slot_ref_at(0);
+	lxp_slot_ref_t slot = lxp_slot_ref_at(0);
 	lxp_mm_t *mm = g_lxp_rt.slots[0].proc.mm;
 	mm->device_generation = 7u;
 	mm->exec_generation = 11u;
@@ -61,7 +61,7 @@ static void test_memory_policy_snapshot_and_key_track_every_generation(void **st
 	assert_true(lxp_memory_policy_address_space_matches_key(&policy, &key) == 0);
 
 	lxp_slot_ref_t stale = slot;
-	deferred_slot_reassign(0);
+	lxp_deferred_slot_reassign(0);
 	assert_int_equal(lxp_slot_memory_policy(stale, &policy), -LXP_ESRCH);
 }
 
@@ -69,7 +69,7 @@ static void test_memory_policy_validator_rejects_noncanonical_snapshots(void **s
 {
 	(void)state;
 	make_valid_running_slot(0, 2);
-	lxp_slot_ref_t slot = slot_ref_at(0);
+	lxp_slot_ref_t slot = lxp_slot_ref_at(0);
 	lxp_mm_t *mm = g_lxp_rt.slots[0].proc.mm;
 	mm->device_generation = 7u;
 	mm->exec_generation = 11u;
@@ -367,10 +367,10 @@ static void test_storage_sync_is_deferred(void **state)
 	frame.r[0] = 1; /* stdout: valid, with no persistent backing in this fixture */
 	frame.r[7] = LXP_NR_fsync;
 
-	assert_int_equal(lxp_dispatch_slot(slot_ref_at(0), &frame), LXP_OK);
-	assert_int_equal(deferred_state_load(0), DEFER_READY);
+	assert_int_equal(lxp_dispatch_slot(lxp_slot_ref_at(0), &frame), LXP_OK);
+	assert_int_equal(lxp_deferred_state_load(0), DEFER_READY);
 	assert_int_equal(g_mock.event_posts, 1);
-	execute_deferred(0);
+	lxp_execute_deferred(0);
 	assert_int_equal(g_mock.resume_r0, 0);
 }
 

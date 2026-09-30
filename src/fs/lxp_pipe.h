@@ -27,13 +27,13 @@ void lxp_pipe_runtime_reset(void);
 
 /* Drain up to len bytes: >0 = bytes read; 0 = EOF (empty, no writers); -EAGAIN =
  * empty but a writer is open (caller blocks). */
-long pipe_try_read(int pi, void *buf, size_t len);
+long lxp_pipe_try_read(int pi, void *buf, size_t len);
 
 /* Append up to len bytes: >0 = bytes written; -EPIPE = no readers (broken pipe);
  * -EAGAIN = full but a reader is open (caller blocks). */
-long pipe_try_write(int pi, const void *buf, size_t len);
+long lxp_pipe_try_write(int pi, const void *buf, size_t len);
 
 /* poll/select readiness for a pipe end (rw = fd.rw: 0 read end, 1 write end). */
-unsigned pipe_poll(int pi, int rw);
+unsigned lxp_pipe_poll(int pi, int rw);
 
 #endif /* LXP_FS_PIPE_H */

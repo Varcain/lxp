@@ -29,17 +29,17 @@ static void test_debug_record_follows_slot_program(void **state)
 	strcpy(tx.proc.comm, "dbgdemo");
 	tx.debug.text_base = 0x1000u;
 	tx.debug.entry = 0x1041u;
-	assert_int_equal(image_txn_publish(&tx), LXP_OK);
+	assert_int_equal(lxp_image_txn_publish(&tx), LXP_OK);
 	assert_string_equal(g_lxp_dbg[1].comm, "dbgdemo");
 	assert_int_equal(g_lxp_dbg[1].text_base, 0x1000u);
 	assert_int_equal(g_lxp_dbg[1].entry, 0x1041u);
-	assert_int_equal(image_txn_abort(&tx), LXP_OK);
+	assert_int_equal(lxp_image_txn_abort(&tx), LXP_OK);
 	assert_null(g_lxp_dbg[1].comm);
 
 	make_valid_running_slot(0, 0);
 	g_lxp_dbg[0].comm = g_lxp_rt.slots[0].proc.comm;
 	assert_int_equal(lxp_intent_exit(&g_lxp_rt.slots[0].proc, 0), LXP_OK);
-	primary_slot_clear(0);
+	lxp_primary_slot_clear(0);
 	(void)lxp_handle_exit(0);
 	assert_null(g_lxp_dbg[0].comm);
 }
@@ -144,9 +144,9 @@ static void test_world_validator_reports_stale_mailbox(void **state)
 {
 	(void)state;
 	make_valid_running_slot(0, 0);
-	g_lxp_rt.slots[0].deferred.owner = slot_ref_at(0);
+	g_lxp_rt.slots[0].deferred.owner = lxp_slot_ref_at(0);
 	g_lxp_rt.slots[0].deferred.owner.generation++;
-	deferred_state_store(0, DEFER_READY);
+	lxp_deferred_state_store(0, DEFER_READY);
 	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
 	assert_int_equal(error.issue, LXP_DIAG_DEFERRED_GENERATION_STALE);
@@ -180,10 +180,10 @@ static void test_world_validator_rejects_stale_region_capabilities(void **state)
 static void test_world_validator_rejects_stale_region_leases(void **state)
 {
 	(void)state;
-	deferred_slot_reassign(0);
-	lxp_region_ref_t lease = region_reserve(1, slot_ref_at(0));
+	lxp_deferred_slot_reassign(0);
+	lxp_region_ref_t lease = lxp_region_reserve(1, lxp_slot_ref_at(0));
 	assert_int_equal(lease.index, 1);
-	deferred_slot_reassign(0);
+	lxp_deferred_slot_reassign(0);
 	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
 	assert_int_equal(error.issue, LXP_DIAG_REGION_LEASE_STALE);
@@ -196,10 +196,10 @@ static void test_world_validator_reports_resource_refcount_drift(void **state)
 	(void)state;
 	make_valid_running_slot(0, 0);
 	make_valid_running_slot(1, 1);
-	assert_int_equal(region_put(region_ref_at(1)), LXP_OK);
+	assert_int_equal(lxp_region_put(lxp_region_ref_at(1)), LXP_OK);
 	g_lxp_rt.slots[1].proc.mm = g_lxp_rt.slots[0].proc.mm;
-	g_lxp_rt.slots[1].proc.mm->region = region_ref_at(0);
-	assert_int_equal(region_get(g_lxp_rt.slots[1].proc.mm->region), LXP_OK);
+	g_lxp_rt.slots[1].proc.mm->region = lxp_region_ref_at(0);
+	assert_int_equal(lxp_region_get(g_lxp_rt.slots[1].proc.mm->region), LXP_OK);
 	lxp_diag_error_t error;
 	assert_int_equal(lxp_validate_world(&error), -LXP_EINVAL);
 	assert_int_equal(error.issue, LXP_DIAG_RESOURCE_REFCOUNT_TOO_SMALL);
@@ -301,10 +301,10 @@ static void test_resource_stats_track_slots_and_reserved_regions(void **state)
 {
 	(void)state;
 	lxp_trap_publish(1);
-	deferred_slot_reassign(0);
-	deferred_slot_reassign(1);
-	lxp_region_ref_t shared = region_reserve(0, slot_ref_at(0));
-	lxp_region_ref_t reserved = region_reserve(2, slot_ref_at(1));
+	lxp_deferred_slot_reassign(0);
+	lxp_deferred_slot_reassign(1);
+	lxp_region_ref_t shared = lxp_region_reserve(0, lxp_slot_ref_at(0));
+	lxp_region_ref_t reserved = lxp_region_reserve(2, lxp_slot_ref_at(1));
 	assert_int_equal(shared.index, 0);
 	assert_int_equal(reserved.index, 2);
 	g_lxp_rt.slots[0].proc.alive = 1;
@@ -352,7 +352,7 @@ static void test_notify_guest_exit_preserves_attribution(void **state)
 	memcpy(p->comm, "sigctx", 7);
 	g_lxp_rt.cfg = &g_mock_cfg;
 
-	notify_guest_exit(3, p);
+	lxp_notify_guest_exit(3, p);
 
 	assert_int_equal(g_mock.exit_notify_calls, 1);
 	assert_int_equal(g_mock.exit_info.slot, 3);

@@ -837,7 +837,7 @@ static int zephyr_spawn_resume(int sidx, uint32_t generation, int ridx,
 		    lxp_slot_memory_policy(task_slot_ref(sidx), &policy) != LXP_OK ||
 		    !lxp_memory_policy_matches_key(&policy, &g_slots[sidx].policy))
 			return -1;
-		/* PendSV saved the svc frame that park_frame redirected to the naked
+		/* PendSV saved the svc frame that lxp_park_frame redirected to the naked
 		 * the park entry. Reuse that exact native frame: deriving a new PSP
 		 * from the Linux SP loses Zephyr's exception-alignment/lazy-FP
 		 * invariants, while resuming through another user exception can try

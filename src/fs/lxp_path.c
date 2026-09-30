@@ -6,13 +6,13 @@
  *
  * Path resolution: normalize "." / ".." / duplicate slashes, resolve a user path
  * against the process cwd to an absolute path, and look a path up in the read-only
- * cpio rootfs. Pure string + rootfs-table work — the dispatcher calls resolve_path()
- * and fs_lookup() (see fs/lxp_path.h).
+ * cpio rootfs. Pure string + rootfs-table work — the dispatcher calls lxp_resolve_path()
+ * and lxp_fs_lookup() (see fs/lxp_path.h).
  */
 #include "fs/lxp_path.h"
 
 #include "fs/lxp_vfs.h"
-#include "lxp_internal.h" /* lxp_guest_strnlen, file_mode */
+#include "lxp_internal.h" /* lxp_guest_strnlen, lxp_file_mode */
 #include "lxp_linux_uapi.h"
 #include "proc/lxp_proc.h"
 
@@ -88,7 +88,7 @@ static long resolve_from(const char *base, const char *in, char *out, size_t out
  * Resolve `in` (absolute, or relative to the process cwd) into a normalized
  * absolute path in out[outlen]. Returns 0, or -ENAMETOOLONG on overflow.
  */
-long resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen)
+long lxp_resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen)
 {
 	/* Every path syscall funnels through here, so one check guards them all: reject a
 	 * path pointer that isn't a NUL-terminated string wholly inside the program's memory
@@ -99,10 +99,10 @@ long resolve_path(const lxp_proc_t *p, const char *in, char *out, size_t outlen)
 	return resolve_from(p->fs_context->cwd, in, out, outlen);
 }
 
-long resolve_path_at(lxp_proc_t *p, int dirfd, const char *in, char *out, size_t outlen)
+long lxp_resolve_path_at(lxp_proc_t *p, int dirfd, const char *in, char *out, size_t outlen)
 {
 	if (dirfd == LXP_AT_FDCWD)
-		return resolve_path(p, in, out, outlen);
+		return lxp_resolve_path(p, in, out, outlen);
 	if (lxp_guest_strnlen(p, in, LXP_PATH_MAX) < 0)
 		return -LXP_EFAULT;
 	if (in[0] == '/') /* an absolute path ignores dirfd */
@@ -112,11 +112,11 @@ long resolve_path_at(lxp_proc_t *p, int dirfd, const char *in, char *out, size_t
 	return rc < 0 ? rc : resolve_from(base, in, out, outlen);
 }
 
-long resolve_path_trusted(const char *in, char *out, size_t outlen)
+long lxp_resolve_path_trusted(const char *in, char *out, size_t outlen)
 {
 	/* No lxp_guest_strnlen() here, and that is the point: `in` is a string the kernel
 	 * copied out of a file's own bytes, so it does not live in the guest's
-	 * region and resolve_path()'s pointer guard rejects it with -EFAULT — which
+	 * region and lxp_resolve_path()'s pointer guard rejects it with -EFAULT — which
 	 * the #! path reported as ENOENT, making every interpreter script
 	 * unrunnable on target. There is no pointer to validate here, only content. */
 	if (!in || in[0] != '/')
@@ -142,7 +142,7 @@ static int fsx_follow(const lxp_file_t *fs, int count, int idx)
 {
 	for (int hop = 0; hop < 8 && idx >= 0; hop++) {
 		const lxp_file_t *lnk = &fs[idx];
-		if ((file_mode(lnk) & LXP_S_IFMT) != LXP_S_IFLNK)
+		if ((lxp_file_mode(lnk) & LXP_S_IFMT) != LXP_S_IFLNK)
 			return idx;
 		const char *tgt = (const char *)lnk->data;
 		size_t tl = lnk->size;
@@ -169,12 +169,12 @@ static int fsx_follow(const lxp_file_t *fs, int count, int idx)
 }
 
 /* Find the rootfs index for an absolute path, or -1. */
-int fs_lookup(const lxp_proc_t *p, const char *abspath)
+int lxp_fs_lookup(const lxp_proc_t *p, const char *abspath)
 {
 	return fsx_lookup(p->fs, p->fs_count, abspath);
 }
 
-int fs_follow(const lxp_proc_t *p, int idx)
+int lxp_fs_follow(const lxp_proc_t *p, int idx)
 {
 	return fsx_follow(p->fs, p->fs_count, idx);
 }

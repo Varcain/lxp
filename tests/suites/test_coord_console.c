@@ -282,13 +282,13 @@ static void test_console_sigint_targets_fg_group(void **state)
 
 	/* No foreground group yet (pre-first-tcsetpgrp): ^C signals nobody. */
 	lxp_console_tty()->fg_pgrp = 0;
-	console_signal_fg(LXP_SIGINT);
+	lxp_console_signal_fg(LXP_SIGINT);
 	for (int i = 0; i < 5; i++)
 		assert_false(g_lxp_rt.slots[i].proc.pending_sigs & bit);
 
 	/* Shell put group 3 in the foreground: ^C hits that group only. */
 	lxp_console_tty()->fg_pgrp = 3;
-	console_signal_fg(LXP_SIGINT);
+	lxp_console_signal_fg(LXP_SIGINT);
 	assert_true(g_lxp_rt.slots[2].proc.pending_sigs & bit);  /* fg job (pgid 3) */
 	assert_true(g_lxp_rt.slots[3].proc.pending_sigs & bit);  /* fg pipeline peer (pgid 3) */
 	assert_false(g_lxp_rt.slots[0].proc.pending_sigs & bit); /* init (pgid 1) */
@@ -353,7 +353,7 @@ static void test_console_sigtstp_targets_fg_group(void **state)
 	}
 	const uint64_t bit = lxp_sig_bit(LXP_SIGTSTP);
 	lxp_console_tty()->fg_pgrp = 3;
-	console_signal_fg(LXP_SIGTSTP);
+	lxp_console_signal_fg(LXP_SIGTSTP);
 	assert_true(g_lxp_rt.slots[1].proc.pending_sigs & bit);  /* fg job (pgid 3) */
 	assert_false(g_lxp_rt.slots[0].proc.pending_sigs & bit); /* the shell (pgid 2) */
 	assert_false(g_lxp_rt.slots[2].proc.pending_sigs & bit); /* background job (pgid 5) */

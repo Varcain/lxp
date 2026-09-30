@@ -24,7 +24,7 @@ struct lxp_primary_result lxp_handle_primary_event(int slot, int event, int *nex
 		return result;
 
 	case LXP_EV_DEFER:
-		execute_deferred(slot);
+		lxp_execute_deferred(slot);
 		return result;
 
 	case LXP_EV_STOP: {
@@ -33,8 +33,8 @@ struct lxp_primary_result lxp_handle_primary_event(int slot, int event, int *nex
 			result.flow = LXP_PRIMARY_SCAN_BLOCKED;
 			return result;
 		}
-		if (coordinator_park_slot(slot) == LXP_OK)
-			notify_parent_stopped(proc->group->ppid, proc->pid, proc->stop_sig);
+		if (lxp_coordinator_park_slot(slot) == LXP_OK)
+			lxp_notify_parent_stopped(proc->group->ppid, proc->pid, proc->stop_sig);
 		return result;
 	}
 
@@ -69,7 +69,7 @@ struct lxp_primary_result lxp_handle_primary_event(int slot, int event, int *nex
 #endif
 	case LXP_EV_SIGSUSPEND:
 	case LXP_EV_CONSOLEWAIT:
-		(void)coordinator_park_slot(slot);
+		(void)lxp_coordinator_park_slot(slot);
 		return result;
 
 	default:

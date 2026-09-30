@@ -12,13 +12,13 @@
 #include "run/lxp_exec_private.h"
 #include "run/lxp_runtime_store.h"
 
-void exec_txn_init(struct exec_txn *tx, int slot)
+void lxp_exec_txn_init(struct exec_txn *tx, int slot)
 {
 	memset(tx, 0, sizeof(*tx));
 	tx->phase = EXEC_TXN_EMPTY;
 	tx->slot = slot;
 	tx->old = lxp_slot_proc(slot);
-	tx->old_ref = slot_ref_at(slot);
+	tx->old_ref = lxp_slot_ref_at(slot);
 	tx->parent_ref = tx->old->vfork_parent;
 	tx->pid = tx->old->pid;
 	tx->ppid = tx->old->group->ppid;
@@ -30,7 +30,7 @@ void exec_txn_init(struct exec_txn *tx, int slot)
 
 /* Validate the image before reserving anything, so an image that can never load
  * fails with ENOEXEC regardless of region pressure. */
-int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
+int lxp_exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
 						 size_t image_size, int remote_exec)
 {
 	if (tx->phase != EXEC_TXN_EMPTY || !image)
@@ -39,10 +39,10 @@ int exec_txn_validate_image(struct exec_txn *tx, const uint8_t *image,
 	    LXP_OK)
 		return -LXP_ENOEXEC;
 	tx->phase = EXEC_TXN_VALIDATED;
-	return lifecycle_failpoint(LXP_FAIL_EXEC_IMAGE_VALIDATED) ? -LXP_ENOEXEC : LXP_OK;
+	return lxp_lifecycle_failpoint_hit(LXP_FAIL_EXEC_IMAGE_VALIDATED) ? -LXP_ENOEXEC : LXP_OK;
 }
 
-int exec_txn_reserve(struct exec_txn *tx)
+int lxp_exec_txn_reserve(struct exec_txn *tx)
 {
 	if (tx->phase != EXEC_TXN_VALIDATED || !lxp_slot_ref_is_current(tx->old_ref))
 		return -LXP_EINVAL;
@@ -56,7 +56,7 @@ int exec_txn_reserve(struct exec_txn *tx)
 			 * image. A stale snapshot cannot be retried as a guest-visible
 			 * exec error because the parent would remain parked with no
 			 * trustworthy restore source. */
-			vfork_contain_stale(tx->old_ref, tx->old);
+			lxp_vfork_contain_stale(tx->old_ref, tx->old);
 			tx->terminal = 1;
 			return -LXP_EIO;
 		}
@@ -64,19 +64,19 @@ int exec_txn_reserve(struct exec_txn *tx)
 	} else {
 		int ridx = -1;
 		for (int r = 0; r < LXP_NREG; r++)
-			if (region_free(r)) {
+			if (lxp_region_free(r)) {
 				ridx = r;
 				break;
 			}
 		if (ridx < 0)
 			return -LXP_ENOMEM;
-		tx->region = region_reserve(ridx, tx->old_ref);
+		tx->region = lxp_region_reserve(ridx, tx->old_ref);
 		if (tx->region.index < 0)
 			return -LXP_ENOMEM;
 	}
 	tx->region_acquired = 1;
 	tx->phase = EXEC_TXN_RESERVED;
-	return lifecycle_failpoint(LXP_FAIL_EXEC_REGION_ACQUIRED) ? -LXP_ENOMEM : LXP_OK;
+	return lxp_lifecycle_failpoint_hit(LXP_FAIL_EXEC_REGION_ACQUIRED) ? -LXP_ENOMEM : LXP_OK;
 }
 
 /* Transfer the old image's process objects to the transaction after its native
@@ -96,14 +96,14 @@ static void exec_txn_detach_old(struct exec_txn *tx)
 	old->fs_context = NULL;
 	old->sighand = NULL;
 	old->group = NULL;
-	proc_mm_put(old);
+	lxp_region_mm_put(old);
 	old->snapshot = lxp_region_ref_none();
 	old->alive = 0;
-	slot_runnable_store(tx->slot, 0);
+	lxp_slot_runnable_store(tx->slot, 0);
 	tx->old_detached = 1;
 }
 
-int exec_txn_commit(struct exec_txn *tx)
+int lxp_exec_txn_commit(struct exec_txn *tx)
 {
 	if (tx->phase != EXEC_TXN_RESERVED)
 		return -LXP_EINVAL;
@@ -115,9 +115,9 @@ int exec_txn_commit(struct exec_txn *tx)
 		const struct lxp_resume_ctx *parent_resume =
 			lxp_slot_resume_view(tx->parent_ref);
 		if (!parent_resume || tx->old->snapshot.index < 0 ||
-		    vfork_restore(lxp_slot_proc(tx->parent_ref.index), tx->old->snapshot,
+		    lxp_vfork_restore(lxp_slot_proc(tx->parent_ref.index), tx->old->snapshot,
 				  tx->old_ref, parent_resume->sp) != 0) {
-			vfork_contain_stale(tx->old_ref, tx->old);
+			lxp_vfork_contain_stale(tx->old_ref, tx->old);
 			tx->terminal = 1;
 			return -LXP_EIO;
 		}
@@ -127,9 +127,9 @@ int exec_txn_commit(struct exec_txn *tx)
 		tx->old->snapshot = lxp_region_ref_none();
 	}
 
-	if (thread_group_stop_exec_peers(tx->slot, 127) != LXP_OK)
+	if (lxp_thread_group_stop_exec_peers(tx->slot, 127) != LXP_OK)
 		return -LXP_EAGAIN;
-	if (coordinator_abort_slot(tx->slot) != LXP_OK)
+	if (lxp_coordinator_abort_slot(tx->slot) != LXP_OK)
 		return -LXP_EAGAIN;
 
 	/* execve gets a private descriptor table and applies close-on-exec only
@@ -140,14 +140,14 @@ int exec_txn_commit(struct exec_txn *tx)
 	lxp_fd_close_on_exec(tx->old);
 
 	exec_txn_detach_old(tx);
-	deferred_slot_reassign(tx->slot);
+	lxp_deferred_slot_reassign(tx->slot);
 	tx->slot_reassigned = 1;
-	tx->new_ref = slot_ref_at(tx->slot);
+	tx->new_ref = lxp_slot_ref_at(tx->slot);
 	if (lxp_region_lease_reassign(tx->region, tx->old_ref, tx->new_ref) != LXP_OK)
 		return -LXP_EIO;
 	if (g_lxp_os_ops->map_device)
 		(void)g_lxp_os_ops->map_device(tx->slot, 0, 0, 0);
-	return lifecycle_failpoint(LXP_FAIL_EXEC_COMMITTED) ? -LXP_EIO : LXP_OK;
+	return lxp_lifecycle_failpoint_hit(LXP_FAIL_EXEC_COMMITTED) ? -LXP_EIO : LXP_OK;
 }
 
 static void exec_txn_adopt_old_resources(struct exec_txn *tx)
@@ -196,7 +196,7 @@ static void exec_txn_resume_parent(struct exec_txn *tx)
 	if (!tx->parent_restored || tx->parent_resumed ||
 	    !lxp_slot_ref_is_current(tx->parent_ref))
 		return;
-	(void)coordinator_complete_slot(tx->parent_ref, tx->pid);
+	(void)lxp_coordinator_complete_slot(tx->parent_ref, tx->pid);
 	tx->parent_resumed = 1;
 }
 
@@ -211,8 +211,8 @@ static void exec_txn_report_failure(struct exec_txn *tx, int reason)
 	};
 	memcpy(report.comm, tx->comm, sizeof(report.comm));
 	exec_txn_resume_parent(tx);
-	notify_guest_exit(tx->slot, &report);
-	reap_to_parent(tx->ppid, tx->pid, 127,
+	lxp_notify_guest_exit(tx->slot, &report);
+	lxp_reap_to_parent(tx->ppid, tx->pid, 127,
 		       /*sigchld=*/!lxp_slot_ref_is_current(tx->parent_ref));
 }
 
@@ -222,7 +222,7 @@ static void exec_txn_report_failure(struct exec_txn *tx, int reason)
  * proves the native task stopped, then releases whichever side still owns the
  * staged image and process resources.
  */
-void exec_txn_abort(struct exec_txn *tx, long error, int reason)
+void lxp_exec_txn_abort(struct exec_txn *tx, long error, int reason)
 {
 	if (!tx || tx->phase == EXEC_TXN_ABORTED || tx->phase == EXEC_TXN_FINISHED ||
 	    tx->terminal)
@@ -230,43 +230,43 @@ void exec_txn_abort(struct exec_txn *tx, long error, int reason)
 
 	if (tx->phase < EXEC_TXN_COMMITTED) {
 		if (tx->region_acquired && !tx->uses_snapshot)
-			(void)region_release_if_owned(tx->region, tx->old_ref);
+			(void)lxp_region_release_if_owned(tx->region, tx->old_ref);
 		tx->region_acquired = 0;
 		tx->phase = EXEC_TXN_ABORTED;
-		(void)coordinator_complete_slot(tx->old_ref, error);
+		(void)lxp_coordinator_complete_slot(tx->old_ref, error);
 		return;
 	}
 
 	if (!tx->old_detached) {
-		if (coordinator_abort_slot(tx->slot) != LXP_OK) {
+		if (lxp_coordinator_abort_slot(tx->slot) != LXP_OK) {
 			/* The old process still owns every released-state candidate.
 			 * Keep it intact for the ordinary exit retry. */
 			if (tx->region_acquired)
-				(void)region_release_if_owned(tx->region, tx->old_ref);
+				(void)lxp_region_release_if_owned(tx->region, tx->old_ref);
 			return;
 		}
 		exec_txn_detach_old(tx);
 	}
 	if (!tx->slot_reassigned) {
-		deferred_slot_reassign(tx->slot);
+		lxp_deferred_slot_reassign(tx->slot);
 		tx->slot_reassigned = 1;
-		tx->new_ref = slot_ref_at(tx->slot);
+		tx->new_ref = lxp_slot_ref_at(tx->slot);
 		if (tx->region_acquired)
 			(void)lxp_region_lease_reassign(tx->region, tx->old_ref, tx->new_ref);
 	}
 
 	if (tx->image_initialized) {
-		if (image_txn_abort(&tx->image) != LXP_OK)
+		if (lxp_image_txn_abort(&tx->image) != LXP_OK)
 			return; /* published slot still owns every resource */
 	} else if (tx->region_acquired &&
 		   lxp_region_lease_matches(tx->region, tx->new_ref, 1)) {
-		(void)region_release_if_owned(tx->region, tx->new_ref);
+		(void)lxp_region_release_if_owned(tx->region, tx->new_ref);
 	}
 	exec_txn_release_saved(tx);
 	exec_txn_report_failure(tx, reason);
 	lxp_slot_proc_reset(tx->slot);
-	slot_runnable_store(tx->slot, 0);
-	primary_slot_clear(tx->slot);
+	lxp_slot_runnable_store(tx->slot, 0);
+	lxp_primary_slot_clear(tx->slot);
 	lxp_vfork_guard_reset(tx->slot);
 	tx->region_acquired = 0;
 	tx->phase = EXEC_TXN_ABORTED;
@@ -278,23 +278,23 @@ void lxp_handle_exec(int slot)
 	lxp_proc_t *proc = lxp_slot_proc(slot);
 
 	/* Freeze the old image before copying its trusted capture. */
-	if (coordinator_park_slot(slot) != LXP_OK)
+	if (lxp_coordinator_park_slot(slot) != LXP_OK)
 		return;
 	(void)lxp_intent_complete(proc, LXP_INTENT_EXEC);
 	lxp_exec_capture_t *capture = proc->exec_capture;
 	if (!capture) {
-		coordinator_exit_slot(slot, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION, 0);
+		lxp_coordinator_exit_slot(slot, 0, 127, LXP_EXIT_REASON_STATE_CORRUPTION, 0);
 		return;
 	}
 
 	int argc = capture->argc;
 	int envc = capture->envc;
 	struct lxp_exec_scratch *scratch = &g_lxp_rt.exec;
-	flatten_vec(scratch->args, scratch->argv, capture->argv_buf, capture->argv, argc);
-	flatten_vec(scratch->envs, scratch->envp, capture->env_buf, capture->env, envc);
+	lxp_flatten_vec(scratch->args, scratch->argv, capture->argv_buf, capture->argv, argc);
+	lxp_flatten_vec(scratch->envs, scratch->envp, capture->env_buf, capture->env, envc);
 
 	struct exec_txn tx;
-	exec_txn_init(&tx, slot);
+	lxp_exec_txn_init(&tx, slot);
 	const uint8_t *image = NULL;
 	size_t image_size = 0;
 	int remote_exec = 0; /* a staged copy: its text is loaded into the region, not mapped */
@@ -308,42 +308,42 @@ void lxp_handle_exec(int slot)
 		image_size = cfg->rootfs[tx.image_index].size;
 	}
 
-	int rc = exec_txn_validate_image(&tx, image, image_size, remote_exec);
+	int rc = lxp_exec_txn_validate_image(&tx, image, image_size, remote_exec);
 	if (rc == LXP_OK)
-		rc = exec_txn_reserve(&tx);
+		rc = lxp_exec_txn_reserve(&tx);
 	if (rc != LXP_OK) {
-		exec_txn_abort(&tx, rc, LXP_EXIT_REASON_EXEC_RESOURCE);
+		lxp_exec_txn_abort(&tx, rc, LXP_EXIT_REASON_EXEC_RESOURCE);
 		return;
 	}
 
-	rc = exec_txn_commit(&tx);
+	rc = lxp_exec_txn_commit(&tx);
 	if (rc != LXP_OK) {
-		exec_txn_abort(&tx, rc, LXP_EXIT_REASON_EXEC_RESOURCE);
+		lxp_exec_txn_abort(&tx, rc, LXP_EXIT_REASON_EXEC_RESOURCE);
 		return;
 	}
 
-	image_txn_init(&tx.image, slot, tx.region, tx.new_ref);
+	lxp_image_txn_init(&tx.image, slot, tx.region, tx.new_ref);
 	tx.image_initialized = 1;
-	rc = image_txn_prepare(&tx.image, image, image_size, tx.pid, tx.ppid, argc,
+	rc = lxp_image_txn_prepare(&tx.image, image, image_size, tx.pid, tx.ppid, argc,
 			       scratch->argv, scratch->envp, remote_exec);
-	if (rc == LXP_OK && lifecycle_failpoint(LXP_FAIL_EXEC_IMAGE_PREPARED))
+	if (rc == LXP_OK && lxp_lifecycle_failpoint_hit(LXP_FAIL_EXEC_IMAGE_PREPARED))
 		rc = -LXP_EIO;
 	if (rc != LXP_OK) {
-		exec_txn_abort(&tx, rc, LXP_EXIT_REASON_EXEC_LOAD);
+		lxp_exec_txn_abort(&tx, rc, LXP_EXIT_REASON_EXEC_LOAD);
 		return;
 	}
 	tx.phase = EXEC_TXN_IMAGE_READY;
 	exec_txn_adopt_old_resources(&tx);
 
-	rc = image_txn_publish(&tx.image);
+	rc = lxp_image_txn_publish(&tx.image);
 	if (rc != LXP_OK) {
-		exec_txn_abort(&tx, rc, LXP_EXIT_REASON_EXEC_LOAD);
+		lxp_exec_txn_abort(&tx, rc, LXP_EXIT_REASON_EXEC_LOAD);
 		return;
 	}
 	tx.phase = EXEC_TXN_PUBLISHED;
-	rc = image_txn_start(&tx.image);
+	rc = lxp_image_txn_start(&tx.image);
 	if (rc != LXP_OK) {
-		exec_txn_abort(&tx, rc, LXP_EXIT_REASON_EXEC_LOAD);
+		lxp_exec_txn_abort(&tx, rc, LXP_EXIT_REASON_EXEC_LOAD);
 		return;
 	}
 

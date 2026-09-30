@@ -67,7 +67,7 @@ int lxp_console_poll_interrupts(void)
 		return 0;
 	int sig = lxp_tty_signal_for(tty, ch);
 	if (sig) {
-		console_signal_fg(sig);
+		lxp_console_signal_fg(sig);
 		return 1;
 	}
 	unsigned tail = ta->head + ta->count;
@@ -79,7 +79,7 @@ int lxp_console_poll_interrupts(void)
 /* Raise @p sig on the console's foreground process group: every live member takes it at
  * its next syscall boundary or coordinator retry. With no foreground group yet (before
  * the shell's first tcsetpgrp) this is a no-op. */
-void console_signal_fg(int sig)
+void lxp_console_signal_fg(int sig)
 {
 	(void)lxp_signal_process_group(lxp_console_tty()->fg_pgrp, sig);
 }

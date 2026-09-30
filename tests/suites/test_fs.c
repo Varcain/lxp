@@ -6,13 +6,14 @@
  *
  * Fresh unit suite for the subsystems extracted out of the syscall dispatcher and the
  * pure syscall-boundary helpers — none of which had dedicated tests before:
- *   - path resolution   (src/fs/lxp_path.c):  resolve_path normalization + rootfs
+ *   - path resolution   (src/fs/lxp_path.c):  lxp_resolve_path normalization + rootfs
  *                                              symlink follow (lxp_rootfs_resolve).
- *   - writable VFS       (src/fs/lxp_tmpfs.c): wfs_create/find/reserve + wnode_at.
+ *   - writable VFS       (src/fs/lxp_tmpfs.c): lxp_wfs_create/find/reserve + lxp_wnode_at.
  *   - pipe ring          (src/fs/lxp_pipe.c):  alloc + the no-reader/no-writer guards.
- *   - synthetic /proc    (src/proc/lxp_procfs.c): proc_is / proc_gen.
+ *   - synthetic /proc    (src/proc/lxp_procfs.c): lxp_proc_is / lxp_proc_gen.
  *   - bounded text       (src/lxp_text.h): decimal construction and truncation.
- *   - pointer validators (src/lxp_syscall.c):  lxp_guest_access_ok / lxp_guest_strnlen / file_mode.
+ *   - pointer validators (src/lxp_syscall.c):  lxp_guest_access_ok / lxp_guest_strnlen /
+ *     lxp_file_mode.
  * The syscall suite drives these through lxp_syscall(); here they are exercised directly.
  */
 #include "../framework/lxp_test.h"
@@ -53,26 +54,26 @@ static void test_path_normalize(void **s)
 	strcpy(p.fs_context->cwd, "/foo");
 	char out[LXP_PATH_MAX];
 
-	assert_int_equal(resolve_path(&p, "/a/./b", out, sizeof(out)), 0);
+	assert_int_equal(lxp_resolve_path(&p, "/a/./b", out, sizeof(out)), 0);
 	assert_string_equal(out, "/a/b");
-	assert_int_equal(resolve_path(&p, "/a/b/../c", out, sizeof(out)), 0);
+	assert_int_equal(lxp_resolve_path(&p, "/a/b/../c", out, sizeof(out)), 0);
 	assert_string_equal(out, "/a/c");
-	assert_int_equal(resolve_path(&p, "//a//b/", out, sizeof(out)), 0);
+	assert_int_equal(lxp_resolve_path(&p, "//a//b/", out, sizeof(out)), 0);
 	assert_string_equal(out, "/a/b");
 	/* relative → joined onto (absolute, normalized) cwd */
-	assert_int_equal(resolve_path(&p, "rel/x", out, sizeof(out)), 0);
+	assert_int_equal(lxp_resolve_path(&p, "rel/x", out, sizeof(out)), 0);
 	assert_string_equal(out, "/foo/rel/x");
 	/* ".." can never escape the root */
-	assert_int_equal(resolve_path(&p, "/../../a", out, sizeof(out)), 0);
+	assert_int_equal(lxp_resolve_path(&p, "/../../a", out, sizeof(out)), 0);
 	assert_string_equal(out, "/a");
-	assert_int_equal(resolve_path(&p, "/a/../..", out, sizeof(out)), 0);
+	assert_int_equal(lxp_resolve_path(&p, "/a/../..", out, sizeof(out)), 0);
 	assert_string_equal(out, "/");
 	/* an input longer than LXP_PATH_MAX has no NUL in range → rejected, not overrun */
 	char big[LXP_PATH_MAX + 64];
 	memset(big, 'x', sizeof(big) - 1);
 	big[0] = '/';
 	big[sizeof(big) - 1] = '\0';
-	assert_true(resolve_path(&p, big, out, sizeof(out)) < 0);
+	assert_true(lxp_resolve_path(&p, big, out, sizeof(out)) < 0);
 }
 
 /* ---- path: rootfs lookup follows symlinks to the final target ----------------- */
@@ -105,9 +106,9 @@ static void test_path_rootfs_resolve(void **s)
 static void wfs_reset(void)
 {
 	for (int i = 0; i < LXP_NWNODE; i++) {
-		lxp_wnode_t *w = wnode_at(i);
+		lxp_wnode_t *w = lxp_wnode_at(i);
 		if (w->used)
-			wfs_free(i);
+			lxp_wfs_free(i);
 	}
 }
 
@@ -116,22 +117,22 @@ static void test_tmpfs_nodes(void **s)
 	(void)s;
 	wfs_reset();
 
-	assert_int_equal(wfs_find("/tmp/a"), -1);
-	int a = wfs_create("/tmp/a", LXP_S_IFREG | 0644u);
+	assert_int_equal(lxp_wfs_find("/tmp/a"), -1);
+	int a = lxp_wfs_create("/tmp/a", LXP_S_IFREG | 0644u);
 	assert_true(a >= 0);
-	assert_int_equal(wfs_find("/tmp/a"), a);
-	assert_int_equal(wnode_at(a)->mode, LXP_S_IFREG | 0644u);
+	assert_int_equal(lxp_wfs_find("/tmp/a"), a);
+	assert_int_equal(lxp_wnode_at(a)->mode, LXP_S_IFREG | 0644u);
 
-	int d = wfs_create("/tmp/d", LXP_S_IFDIR | 0755u);
+	int d = lxp_wfs_create("/tmp/d", LXP_S_IFDIR | 0755u);
 	assert_true(d >= 0);
 	assert_int_not_equal(d, a); /* distinct paths → distinct nodes */
-	assert_int_equal(wnode_at(d)->mode, LXP_S_IFDIR | 0755u);
+	assert_int_equal(lxp_wnode_at(d)->mode, LXP_S_IFDIR | 0755u);
 
 	/* reserve grows capacity from the pool; the node can then hold the bytes */
-	assert_int_equal(wfs_reserve(a, 100), 0);
-	assert_true(wnode_at(a)->cap >= 100);
-	assert_non_null(wnode_at(a)->data);
-	assert_int_equal(wfs_reserve(a, (size_t)LXP_WFS_POOL - LXP_ARENA_ALIGN + 1u), -1);
+	assert_int_equal(lxp_wfs_reserve(a, 100), 0);
+	assert_true(lxp_wnode_at(a)->cap >= 100);
+	assert_non_null(lxp_wnode_at(a)->data);
+	assert_int_equal(lxp_wfs_reserve(a, (size_t)LXP_WFS_POOL - LXP_ARENA_ALIGN + 1u), -1);
 }
 
 /* Renaming a directory carries its whole subtree; it cannot move into itself or
@@ -140,28 +141,29 @@ static void test_tmpfs_rename_moves_children(void **s)
 {
 	(void)s;
 	wfs_reset();
-	int d = wfs_create("/tmp/d", LXP_S_IFDIR | 0755u);
-	int a = wfs_create("/tmp/d/a", LXP_S_IFREG | 0644u);
-	int sub = wfs_create("/tmp/d/s", LXP_S_IFDIR | 0755u);
-	int b = wfs_create("/tmp/d/s/b", LXP_S_IFREG | 0644u);
-	int other = wfs_create("/tmp/dx", LXP_S_IFREG | 0644u); /* shares a prefix, not a parent */
+	int d = lxp_wfs_create("/tmp/d", LXP_S_IFDIR | 0755u);
+	int a = lxp_wfs_create("/tmp/d/a", LXP_S_IFREG | 0644u);
+	int sub = lxp_wfs_create("/tmp/d/s", LXP_S_IFDIR | 0755u);
+	int b = lxp_wfs_create("/tmp/d/s/b", LXP_S_IFREG | 0644u);
+	/* shares a prefix, not a parent */
+	int other = lxp_wfs_create("/tmp/dx", LXP_S_IFREG | 0644u);
 	assert_true(d >= 0 && a >= 0 && sub >= 0 && b >= 0 && other >= 0);
 
-	assert_int_equal(wfs_rename(d, "/tmp/e"), 0);
-	assert_int_equal(wfs_find("/tmp/e"), d);
-	assert_int_equal(wfs_find("/tmp/e/a"), a);
-	assert_int_equal(wfs_find("/tmp/e/s"), sub);
-	assert_int_equal(wfs_find("/tmp/e/s/b"), b);
-	assert_int_equal(wfs_find("/tmp/d/a"), -1);
-	assert_int_equal(wfs_find("/tmp/dx"), other);
+	assert_int_equal(lxp_wfs_rename(d, "/tmp/e"), 0);
+	assert_int_equal(lxp_wfs_find("/tmp/e"), d);
+	assert_int_equal(lxp_wfs_find("/tmp/e/a"), a);
+	assert_int_equal(lxp_wfs_find("/tmp/e/s"), sub);
+	assert_int_equal(lxp_wfs_find("/tmp/e/s/b"), b);
+	assert_int_equal(lxp_wfs_find("/tmp/d/a"), -1);
+	assert_int_equal(lxp_wfs_find("/tmp/dx"), other);
 
-	assert_int_equal(wfs_rename(d, "/tmp/e/s/inner"), -LXP_EINVAL);
-	int target = wfs_create("/tmp/t", LXP_S_IFDIR | 0755u);
+	assert_int_equal(lxp_wfs_rename(d, "/tmp/e/s/inner"), -LXP_EINVAL);
+	int target = lxp_wfs_create("/tmp/t", LXP_S_IFDIR | 0755u);
 	assert_true(target >= 0);
-	assert_true(wfs_create("/tmp/t/keep", LXP_S_IFREG | 0644u) >= 0);
-	assert_int_equal(wfs_rename(other, "/tmp/t"), -LXP_ENOTEMPTY);
-	assert_int_equal(wfs_rename(other, "/tmp/e/s"), -LXP_ENOTEMPTY);
-	assert_int_equal(wfs_find("/tmp/dx"), other); /* a refused rename changes nothing */
+	assert_true(lxp_wfs_create("/tmp/t/keep", LXP_S_IFREG | 0644u) >= 0);
+	assert_int_equal(lxp_wfs_rename(other, "/tmp/t"), -LXP_ENOTEMPTY);
+	assert_int_equal(lxp_wfs_rename(other, "/tmp/e/s"), -LXP_ENOTEMPTY);
+	assert_int_equal(lxp_wfs_find("/tmp/dx"), other); /* a refused rename changes nothing */
 }
 
 /* The pool reclaims freed blocks (arena-backed, not a leaky bump pool). Both cases
@@ -174,22 +176,22 @@ static void test_tmpfs_reclaim(void **s)
 
 	/* unlink reclaims a node's bytes: create+grow+free an 8K file 64 times (512K total). */
 	for (int i = 0; i < 64; i++) {
-		int n = wfs_create("/tmp/big", LXP_S_IFREG | 0644u);
+		int n = lxp_wfs_create("/tmp/big", LXP_S_IFREG | 0644u);
 		assert_true(n >= 0);
-		assert_int_equal(wfs_reserve(n, 8192), 0);
-		assert_true(wnode_at(n)->cap >= 8192);
-		wfs_free(n);
+		assert_int_equal(lxp_wfs_reserve(n, 8192), 0);
+		assert_true(lxp_wnode_at(n)->cap >= 8192);
+		lxp_wfs_free(n);
 	}
 
 	/* Growth reuses the adjacent free tail in place. Cross half the pool to prove
 	 * capacity is not artificially limited by an old+new copy overlap. */
-	int g = wfs_create("/tmp/grow", LXP_S_IFREG | 0644u);
+	int g = lxp_wfs_create("/tmp/grow", LXP_S_IFREG | 0644u);
 	assert_true(g >= 0);
 	for (size_t sz = 1024; sz <= 3u * LXP_WFS_POOL / 4u; sz += 1024)
-		assert_int_equal(wfs_reserve(g, sz), 0);
-	assert_true(wnode_at(g)->cap >= 3u * LXP_WFS_POOL / 4u);
-	wfs_free(g);
-	assert_null(wnode_at(g)->data); /* wfs_free clears the node */
+		assert_int_equal(lxp_wfs_reserve(g, sz), 0);
+	assert_true(lxp_wnode_at(g)->cap >= 3u * LXP_WFS_POOL / 4u);
+	lxp_wfs_free(g);
+	assert_null(lxp_wnode_at(g)->data); /* lxp_wfs_free clears the node */
 }
 
 /* ---- pipe: alloc + the empty/no-peer guard paths ------------------------------ */
@@ -202,18 +204,18 @@ static void test_pipe_guards(void **s)
 	/* No live process holds either end (host test has no proc-table fds), so: an empty
 	 * pipe with no writer reads EOF, and a write with no reader is a broken pipe. */
 	uint8_t buf[8];
-	assert_int_equal(pipe_try_read(pi, buf, sizeof(buf)), 0);   /* EOF */
-	assert_int_equal(pipe_try_write(pi, "abc", 3), -LXP_EPIPE); /* no readers */
+	assert_int_equal(lxp_pipe_try_read(pi, buf, sizeof(buf)), 0);   /* EOF */
+	assert_int_equal(lxp_pipe_try_write(pi, "abc", 3), -LXP_EPIPE); /* no readers */
 }
 
 /* ---- procfs: membership test, text builder, content generation ---------------- */
 static void test_procfs(void **s)
 {
 	(void)s;
-	assert_int_equal(proc_is("/proc"), 1);
-	assert_int_equal(proc_is("/proc/meminfo"), 1);
-	assert_int_equal(proc_is("/proctored"), 0); /* prefix must be exactly "/proc/" */
-	assert_int_equal(proc_is("/etc/passwd"), 0);
+	assert_int_equal(lxp_proc_is("/proc"), 1);
+	assert_int_equal(lxp_proc_is("/proc/meminfo"), 1);
+	assert_int_equal(lxp_proc_is("/proctored"), 0); /* prefix must be exactly "/proc/" */
+	assert_int_equal(lxp_proc_is("/etc/passwd"), 0);
 
 	char b[32];
 	lxp_text_t text = lxp_text_make(b, sizeof(b));
@@ -229,7 +231,7 @@ static void test_procfs(void **s)
 	lxp_proc_t p;
 	setup_proc(&p, &arena);
 	char out[512];
-	long r = proc_gen("/proc/meminfo", &p, out, sizeof(out) - 1);
+	long r = lxp_proc_gen("/proc/meminfo", &p, out, sizeof(out) - 1);
 	assert_true(r > 0);
 	assert_true((size_t)r < sizeof(out));
 	out[r] = '\0';
@@ -244,7 +246,7 @@ static void test_procfs(void **s)
 	assert_non_null(strstr(out, "HostHeapTotal:  12288 kB"));
 	assert_non_null(strstr(out, "HostHeapFree:   3072 kB"));
 
-	r = proc_gen("/proc/lxp_resources", &p, out, sizeof(out) - 1);
+	r = lxp_proc_gen("/proc/lxp_resources", &p, out, sizeof(out) - 1);
 	assert_true(r > 0);
 	assert_true((size_t)r < sizeof(out));
 	out[r] = '\0';
@@ -258,12 +260,12 @@ static void test_procfs(void **s)
 	assert_non_null(strstr(out, "host_heap_total 12582912\n"));
 	assert_non_null(strstr(out, "host_heap_free 3145728\n"));
 
-	r = proc_gen("/proc/rt_scope", &p, out, sizeof(out) - 1);
+	r = lxp_proc_gen("/proc/rt_scope", &p, out, sizeof(out) - 1);
 	assert_true(r > 0);
 	out[r] = '\0';
 	assert_string_equal(out, "available 0\n");
 
-	r = proc_gen("/proc/version", &p, out, sizeof(out) - 1);
+	r = lxp_proc_gen("/proc/version", &p, out, sizeof(out) - 1);
 	assert_true(r > 0);
 	assert_true((size_t)r < sizeof(out));
 	out[r] = '\0';
@@ -271,17 +273,17 @@ static void test_procfs(void **s)
 				 "(uClibc)\n");
 
 	lxp_proc_nice_set(&p, -7);
-	r = proc_gen("/proc/self/stat", &p, out, sizeof(out) - 1);
+	r = lxp_proc_gen("/proc/self/stat", &p, out, sizeof(out) - 1);
 	assert_true(r > 0);
 	out[r] = '\0';
 	assert_non_null(strstr(out, " 13 -7 0 0 0 0 0\n"));
-	r = proc_gen("/proc/self/status", &p, out, sizeof(out) - 1);
+	r = lxp_proc_gen("/proc/self/status", &p, out, sizeof(out) - 1);
 	assert_true(r > 0);
 	out[r] = '\0';
 	assert_non_null(strstr(out, "Nice:\t-7\n"));
 }
 
-/* ---- pointer validators: lxp_guest_access_ok / lxp_guest_strnlen / file_mode ------------------- */
+/* ---- pointer validators: lxp_guest_access_ok / lxp_guest_strnlen / lxp_file_mode ---- */
 static void test_user_helpers(void **s)
 {
 	(void)s;
@@ -301,8 +303,8 @@ static void test_user_helpers(void **s)
 
 	const lxp_file_t reg = {"/f", NULL, 0, 0}; /* mode 0 → a regular file */
 	const lxp_file_t dir = {"/d", NULL, 0, LXP_S_IFDIR | 0755u};
-	assert_int_equal(file_mode(&reg), LXP_S_IFREG | 0644u);
-	assert_int_equal(file_mode(&dir), LXP_S_IFDIR | 0755u);
+	assert_int_equal(lxp_file_mode(&reg), LXP_S_IFREG | 0644u);
+	assert_int_equal(lxp_file_mode(&dir), LXP_S_IFDIR | 0755u);
 }
 
 int test_fs_run(void)

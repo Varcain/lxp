@@ -4,10 +4,10 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Signal-delivery tests: drive src/lxp_signal.c (resolve_handler / sig_swallowed /
- * deliver_signal / sig_restore) directly over a synthetic svc frame. lxp_signal.c is
- * coupled to the coordinator only through three symbols (g_lxp_sig_save / slot_of /
- * park_frame, normally in the excluded lxp_run.c); this suite provides host stubs for
+ * Signal-delivery tests: drive src/lxp_signal.c (lxp_resolve_handler / lxp_sig_swallowed /
+ * lxp_deliver_signal / lxp_sig_restore) directly over a synthetic svc frame. lxp_signal.c is
+ * coupled to the coordinator only through three symbols (g_lxp_sig_save / lxp_slot_of /
+ * lxp_park_frame, normally in the excluded lxp_run.c); this suite provides host stubs for
  * them, giving the signal TU its first unit coverage (before this it was reachable only
  * indirectly through QEMU).
  */
@@ -21,12 +21,12 @@
 /* ---- coordinator stubs (would be lxp_run.c) -------------------------------- */
 struct sig_save_stack_s g_lxp_sig_save[LXP_NSLOT];
 static int g_park_calls;
-int slot_of(const lxp_proc_t *p)
+int lxp_slot_of(const lxp_proc_t *p)
 {
 	(void)p;
 	return 0; /* the tests use a single proc → slot 0 */
 }
-void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
+void lxp_park_frame(struct lxp_frame *f, lxp_proc_t *proc)
 {
 	(void)f;
 	(void)proc;
@@ -57,15 +57,16 @@ static void test_sig_swallowed(void **st)
 	lxp_proc_t p;
 	setup_signal_proc(&p);
 	p.sighand->handler[SIG_CUSTOM] = LXP_SIG_IGN;
-	assert_int_equal(sig_swallowed(&p, SIG_CUSTOM), 1); /* SIG_IGN */
+	assert_int_equal(lxp_sig_swallowed(&p, SIG_CUSTOM), 1); /* SIG_IGN */
 	p.sighand->handler[LXP_SIGCHLD] = LXP_SIG_DFL;
-	assert_int_equal(sig_swallowed(&p, LXP_SIGCHLD),
+	assert_int_equal(lxp_sig_swallowed(&p, LXP_SIGCHLD),
 			 1); /* SIG_DFL of a default-ignore signal */
 	p.sighand->handler[LXP_SIGCONT] = LXP_SIG_DFL;
-	assert_int_equal(sig_swallowed(&p, LXP_SIGCONT),
+	assert_int_equal(lxp_sig_swallowed(&p, LXP_SIGCONT),
 			 1); /* SIGCONT is default-ignore too (fg's kill(-pgid)) */
 	p.sighand->handler[SIG_CUSTOM] = 0x4321;
-	assert_int_equal(sig_swallowed(&p, SIG_CUSTOM), 0); /* a real handler is not swallowed */
+	/* a real handler is not swallowed */
+	assert_int_equal(lxp_sig_swallowed(&p, SIG_CUSTOM), 0);
 }
 
 static void test_resolve_handler_nonfdpic(void **st)
@@ -78,7 +79,7 @@ static void test_resolve_handler_nonfdpic(void **st)
 	p.sighand->restorer = 0xbbbb0000;
 	uintptr_t entry, restorer;
 	uint32_t got;
-	assert_int_equal(resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer), 0);
+	assert_int_equal(lxp_resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer), 0);
 	assert_int_equal((uint32_t)entry, 0xaaaa0000); /* raw entry, no descriptor deref */
 	assert_int_equal(got, 0);
 	assert_int_equal((uint32_t)restorer, 0xbbbb0000);
@@ -97,7 +98,7 @@ static void test_resolve_handler_fdpic(void **st)
 	p.sighand->restorer = (uintptr_t)rdesc;
 	uintptr_t entry, restorer;
 	uint32_t got;
-	assert_int_equal(resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer), 0);
+	assert_int_equal(lxp_resolve_handler(&p, SIG_CUSTOM, &entry, &got, &restorer), 0);
 	assert_int_equal((uint32_t)entry, 0xc0de0000);
 	assert_int_equal(got, 0x60700000);
 	assert_int_equal((uint32_t)restorer, 0x5e570000);
@@ -110,9 +111,9 @@ static void test_deliver_bad_signal(void **st)
 	setup_signal_proc(&p);
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
-	deliver_signal(&f, &p, LXP_NSIG, 0); /* >= NSIG */
+	lxp_deliver_signal(&f, &p, LXP_NSIG, 0); /* >= NSIG */
 	assert_int_equal((int32_t)f.r[0], -LXP_EINVAL);
-	deliver_signal(&f, &p, 0, 0); /* < 1 */
+	lxp_deliver_signal(&f, &p, 0, 0); /* < 1 */
 	assert_int_equal((int32_t)f.r[0], -LXP_EINVAL);
 }
 
@@ -126,7 +127,7 @@ static void test_deliver_ignored(void **st)
 	memset(&f, 0, sizeof(f));
 	f.r[15] = 0x1000;
 	g_lxp_sig_save[0].depth = 0;
-	deliver_signal(&f, &p, SIG_CUSTOM, 42);
+	lxp_deliver_signal(&f, &p, SIG_CUSTOM, 42);
 	assert_int_equal((int32_t)f.r[0], 42);	  /* r0 = the interrupted result, no redirect */
 	assert_int_equal(f.r[15], 0x1000);	  /* pc unchanged */
 	assert_int_equal(g_lxp_sig_save[0].depth, 0); /* nothing saved */
@@ -141,7 +142,7 @@ static void test_deliver_default_terminates(void **st)
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	g_park_calls = 0;
-	deliver_signal(&f, &p, SIG_CUSTOM, 0);
+	lxp_deliver_signal(&f, &p, SIG_CUSTOM, 0);
 	assert_int_equal(p.intent.kind, LXP_INTENT_EXIT);
 	assert_int_equal(p.exit_status, 128 + SIG_CUSTOM);
 	assert_int_equal(g_park_calls, 1); /* the coordinator reaps the parked frame */
@@ -155,7 +156,7 @@ static void test_deliver_sigchld_swallowed(void **st)
 	p.sighand->handler[LXP_SIGCHLD] = LXP_SIG_DFL;
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
-	deliver_signal(&f, &p, LXP_SIGCHLD, 7);
+	lxp_deliver_signal(&f, &p, LXP_SIGCHLD, 7);
 	assert_int_equal((int32_t)f.r[0], 7);
 	assert_int_equal(p.intent.kind, LXP_INTENT_NONE); /* SIGCHLD default is ignore */
 }
@@ -172,7 +173,7 @@ static void test_deliver_sigcont_swallowed(void **st)
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	g_park_calls = 0;
-	deliver_signal(&f, &p, LXP_SIGCONT, 5);
+	lxp_deliver_signal(&f, &p, LXP_SIGCONT, 5);
 	assert_int_equal((int32_t)f.r[0], 5);
 	assert_int_equal(p.intent.kind, LXP_INTENT_NONE); /* SIGCONT never terminates */
 	assert_int_equal(g_park_calls, 0);		  /* not reaped */
@@ -207,7 +208,7 @@ static void test_deliver_and_restore(void **st)
 	f.xpsr = 0;
 	g_lxp_sig_save[0].depth = 0;
 
-	deliver_signal(&f, &p, SIG_CUSTOM, 0);
+	lxp_deliver_signal(&f, &p, SIG_CUSTOM, 0);
 	assert_int_equal(f.r[0], SIG_CUSTOM);	      /* r0 = signo */
 	assert_int_equal(f.r[15], 0xdead0000u & ~1u); /* pc -> handler */
 	assert_int_equal(f.r[14], 0xbeef0000u | 1u);  /* lr -> restorer (Thumb) */
@@ -223,7 +224,7 @@ static void test_deliver_and_restore(void **st)
 	/* Model arbitrary floating-point work by the handler. */
 	memset(&fp, 0xa5, sizeof(fp));
 
-	sig_restore(&f, &p);
+	lxp_sig_restore(&f, &p);
 	assert_int_equal(f.r[15], 0x1000u & ~1u); /* interrupted pc restored */
 	assert_int_equal(f.r[14], 0x2000);
 	assert_int_equal(f.r[1], 0x11); /* r1-r3 restored exactly */
@@ -246,7 +247,7 @@ static void test_sig_restore_noop(void **st)
 	f.r[0] = 0x1234;
 	f.r[15] = 0x5678;
 	g_lxp_sig_save[0].depth = 0;
-	sig_restore(&f, &p);
+	lxp_sig_restore(&f, &p);
 	assert_int_equal(f.r[0], 0x1234); /* untouched */
 	assert_int_equal(f.r[15], 0x5678);
 }
@@ -282,7 +283,7 @@ static void test_nested_delivery_restores_lifo(void **st)
 	f.xpsr = 0x21000000u;
 	g_lxp_sig_save[0].depth = 0;
 
-	deliver_signal(&f, &p, SIG_CUSTOM, 77);
+	lxp_deliver_signal(&f, &p, SIG_CUSTOM, 77);
 	assert_int_equal(g_lxp_sig_save[0].depth, 1);
 	assert_true(lxp_sig_blocked(&p, SIG_CUSTOM));
 
@@ -298,7 +299,7 @@ static void test_nested_delivery_restores_lifo(void **st)
 	fp.fpscr = 0x02000000u;
 	struct lxp_fp_context outer_handler_fp = fp;
 
-	deliver_signal(&f, &p, SIG_NESTED, -LXP_EINTR);
+	lxp_deliver_signal(&f, &p, SIG_NESTED, -LXP_EINTR);
 	assert_int_equal(g_lxp_sig_save[0].depth, 2);
 	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, 0x1000);
 	assert_int_equal(g_lxp_sig_save[0].frame[1].pc, 0xdead0100);
@@ -306,7 +307,7 @@ static void test_nested_delivery_restores_lifo(void **st)
 	assert_true(lxp_sig_blocked(&p, SIG_NESTED));
 	memset(&fp, 0xa5, sizeof(fp)); /* arbitrary VFP work in the inner handler */
 
-	sig_restore(&f, &p);
+	lxp_sig_restore(&f, &p);
 	assert_int_equal(g_lxp_sig_save[0].depth, 1);
 	assert_int_equal((int32_t)f.r[0], -LXP_EINTR);
 	assert_int_equal(f.r[1], 0x1111);
@@ -316,7 +317,7 @@ static void test_nested_delivery_restores_lifo(void **st)
 	assert_true(lxp_sig_blocked(&p, SIG_CUSTOM));
 	assert_false(lxp_sig_blocked(&p, SIG_NESTED));
 
-	sig_restore(&f, &p);
+	lxp_sig_restore(&f, &p);
 	assert_int_equal(g_lxp_sig_save[0].depth, 0);
 	assert_int_equal(f.r[0], 77);
 	assert_int_equal(f.r[1], 0x11);
@@ -348,16 +349,16 @@ static void test_nested_sigsuspend_mask_restore(void **st)
 	struct lxp_frame f;
 	memset(&f, 0, sizeof(f));
 	g_lxp_sig_save[0].depth = 0;
-	deliver_signal(&f, &p, SIG_CUSTOM, -LXP_EINTR);
+	lxp_deliver_signal(&f, &p, SIG_CUSTOM, -LXP_EINTR);
 	assert_int_equal(p.sigsuspend_active, 0);
 	assert_int_equal(g_lxp_sig_save[0].frame[0].saved_mask, before_suspend);
 	assert_int_equal(p.sig_blocked, wait_mask | lxp_sig_bit(SIG_CUSTOM));
 
-	deliver_signal(&f, &p, SIG_NESTED, 0);
+	lxp_deliver_signal(&f, &p, SIG_NESTED, 0);
 	assert_int_equal(g_lxp_sig_save[0].frame[1].saved_mask, wait_mask | lxp_sig_bit(SIG_CUSTOM));
-	sig_restore(&f, &p);
+	lxp_sig_restore(&f, &p);
 	assert_int_equal(p.sig_blocked, wait_mask | lxp_sig_bit(SIG_CUSTOM));
-	sig_restore(&f, &p);
+	lxp_sig_restore(&f, &p);
 	assert_int_equal(p.sig_blocked, before_suspend);
 }
 
@@ -380,11 +381,11 @@ static void test_signal_depth_overflow_is_contained(void **st)
 		 * that legitimate recursive-delivery path without requiring one unique
 		 * signal number for every configurable stack level. */
 		p.sig_blocked &= ~lxp_sig_bit(SIG_CUSTOM);
-		deliver_signal(&f, &p, SIG_CUSTOM, 0);
+		lxp_deliver_signal(&f, &p, SIG_CUSTOM, 0);
 	}
 	uint32_t oldest_pc = g_lxp_sig_save[0].frame[0].pc;
 	p.sig_blocked &= ~lxp_sig_bit(SIG_CUSTOM);
-	deliver_signal(&f, &p, SIG_CUSTOM, 0);
+	lxp_deliver_signal(&f, &p, SIG_CUSTOM, 0);
 
 	assert_int_equal(g_lxp_sig_save[0].depth, LXP_SIGNAL_NEST_MAX);
 	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, oldest_pc);
@@ -409,16 +410,16 @@ static void test_deliver_masks_signal(void **st)
 	memset(&f, 0, sizeof(f));
 	g_lxp_sig_save[0].depth = 0;
 
-	deliver_signal(&f, &p, SIG_CUSTOM, 0);
+	lxp_deliver_signal(&f, &p, SIG_CUSTOM, 0);
 	assert_true(lxp_sig_blocked(&p, SIG_CUSTOM));  /* self-blocked for the handler */
 	assert_true(lxp_sig_blocked(&p, LXP_SIGALRM)); /* the prior block is preserved */
 	/* A self-signal while its handler is active is deferred, not recursively
 	 * delivered into a second frame. */
-	deliver_signal(&f, &p, SIG_CUSTOM, 0);
+	lxp_deliver_signal(&f, &p, SIG_CUSTOM, 0);
 	assert_int_equal(g_lxp_sig_save[0].depth, 1);
 	assert_true((p.pending_sigs & lxp_sig_bit(SIG_CUSTOM)) != 0);
 
-	sig_restore(&f, &p);
+	lxp_sig_restore(&f, &p);
 	assert_false(lxp_sig_blocked(&p, SIG_CUSTOM)); /* handler self-block undone */
 	assert_true(lxp_sig_blocked(&p, LXP_SIGALRM)); /* prior mask restored */
 

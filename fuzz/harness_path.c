@@ -4,7 +4,7 @@
  *
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
- * Fuzz target: the path resolver, resolve_path (src/fs/lxp_path.c) — "." / ".." /
+ * Fuzz target: the path resolver, lxp_resolve_path (src/fs/lxp_path.c) — "." / ".." /
  * duplicate-slash normalization + cwd join + the LXP_PATH_MAX bound — and the rootfs
  * lookup + symlink follow, lxp_rootfs_resolve. The fuzzer bytes become the untrusted
  * path string; a small fixed rootfs with a symlink drives the follow loop. ASan (stack
@@ -51,7 +51,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	fuzz_cstr(in, sizeof(in), data, size);
 
 	char out[LXP_PATH_MAX];
-	(void)resolve_path(&p, in, out, sizeof(out));
+	(void)lxp_resolve_path(&p, in, out, sizeof(out));
 
 	const uint8_t *d = NULL;
 	size_t n = 0;

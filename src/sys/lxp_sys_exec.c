@@ -178,7 +178,7 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 		return vr;
 	cap->envc = envc;
 	char execabs[LXP_PATH_MAX];
-	long rr = resolve_path(p, path, execabs, sizeof(execabs));
+	long rr = lxp_resolve_path(p, path, execabs, sizeof(execabs));
 	if (rr < 0)
 		return rr;
 	const uint8_t *image;
@@ -218,13 +218,14 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	int argc = raw_argc;
 	if (script_rc == LXP_SCRIPT_PRESENT) {
 		char interpabs[LXP_PATH_MAX];
-		/* _trusted, not resolve_path(): interp was copied out of the script's
+		/* _trusted, not lxp_resolve_path(): interp was copied out of the script's
 		 * own bytes into this stack buffer, so it is not a guest pointer and
-		 * resolve_path()'s lxp_guest_strnlen guard rejects it -EFAULT. That made
+		 * lxp_resolve_path()'s lxp_guest_strnlen guard rejects it -EFAULT. That made
 		 * every #! script unrunnable — BusyBox init's /etc/init.d/rcS included. */
-		if (resolve_path_trusted(script.interpreter, interpabs, sizeof(interpabs)) < 0)
+		if (lxp_resolve_path_trusted(script.interpreter, interpabs, sizeof(interpabs)) < 0)
 			return -LXP_ENOENT;
-		int interp_idx = fs_follow(p, fs_lookup(p, interpabs)); /* from the rootfs */
+		/* from the rootfs */
+		int interp_idx = lxp_fs_follow(p, lxp_fs_lookup(p, interpabs));
 		if (interp_idx < 0)
 			return -LXP_ENOENT;
 		long ar = exec_rewrite_script_argv(cap, raw_argc, raw_argbytes, script.interpreter,

@@ -25,35 +25,35 @@ static int is_dir(uint32_t mode)
 
 static long overlay_open(lxp_proc_t *p, const char *path, int flags)
 {
-	int wi = wfs_find(path);
+	int wi = lxp_wfs_find(path);
 	if ((flags & LXP_O_ACCMODE) != LXP_O_RDONLY || (flags & LXP_O_CREAT)) {
 		if (wi < 0) {
-			int fi = fs_lookup(p, path);
+			int fi = lxp_fs_lookup(p, path);
 			if (fi >= 0) {
 				/* A rootfs name, followed to what a write would reach. */
-				fi = fs_follow(p, fi);
-				return fi >= 0 && is_dir(file_mode(&p->fs[fi])) ? -LXP_EISDIR
+				fi = lxp_fs_follow(p, fi);
+				return fi >= 0 && is_dir(lxp_file_mode(&p->fs[fi])) ? -LXP_EISDIR
 										: -LXP_EROFS;
 			}
 			if (!(flags & LXP_O_CREAT))
 				return -LXP_ENOENT;
-			wi = wfs_create(path, LXP_S_IFREG | 0644u);
+			wi = lxp_wfs_create(path, LXP_S_IFREG | 0644u);
 			if (wi < 0)
 				return -LXP_EMFILE;
 		} else {
-			if (is_dir(wnode_at(wi)->mode))
+			if (is_dir(lxp_wnode_at(wi)->mode))
 				return -LXP_EISDIR;
 			if (flags & LXP_O_TRUNC)
-				wnode_at(wi)->size = 0;
+				lxp_wnode_at(wi)->size = 0;
 		}
 		return lxp_sys_fd_alloc(p, LXP_FD_TMPFS, wi,
-					(flags & LXP_O_APPEND) ? wnode_at(wi)->size : 0, flags);
+					(flags & LXP_O_APPEND) ? lxp_wnode_at(wi)->size : 0, flags);
 	}
 	if (wi >= 0)
 		return lxp_sys_fd_alloc(p, LXP_FD_TMPFS, wi, 0, flags);
 	/* Follow symlinks so a read open of e.g. /lib/libc.so.0 -> libuClibc.so returns the
 	 * target ELF (ld.so opens its .so deps by their symlinked SONAMEs). */
-	int fi = fs_follow(p, fs_lookup(p, path));
+	int fi = lxp_fs_follow(p, lxp_fs_lookup(p, path));
 	if (fi >= 0)
 		return lxp_sys_fd_alloc(p, LXP_FD_FILE, fi, 0, flags);
 	return -LXP_ENOENT;
@@ -61,17 +61,17 @@ static long overlay_open(lxp_proc_t *p, const char *path, int flags)
 
 static long overlay_stat(lxp_proc_t *p, const char *path, int follow, struct lxp_stat *st)
 {
-	int wi = wfs_find(path);
+	int wi = lxp_wfs_find(path);
 	if (wi >= 0) {
-		lxp_stat_init(st, LXP_INO_TMPFS + (uint32_t)wi, wnode_at(wi)->mode,
-			      wnode_at(wi)->size);
+		lxp_stat_init(st, LXP_INO_TMPFS + (uint32_t)wi, lxp_wnode_at(wi)->mode,
+			      lxp_wnode_at(wi)->size);
 		return 0;
 	}
-	int fi = fs_lookup(p, path);
+	int fi = lxp_fs_lookup(p, path);
 	if (fi >= 0 && follow)
-		fi = fs_follow(p, fi);
+		fi = lxp_fs_follow(p, fi);
 	if (fi >= 0) {
-		lxp_stat_init(st, LXP_INO_ROOTFS + (uint32_t)fi, file_mode(&p->fs[fi]),
+		lxp_stat_init(st, LXP_INO_ROOTFS + (uint32_t)fi, lxp_file_mode(&p->fs[fi]),
 			      p->fs[fi].size);
 		return 0;
 	}
@@ -93,24 +93,24 @@ static long overlay_mkdir(lxp_proc_t *p, const char *path, uint32_t mode)
 {
 	if (overlay_exists(p, path))
 		return -LXP_EEXIST;
-	return wfs_create(path, LXP_S_IFDIR | (mode & 0777u)) < 0 ? -LXP_ENOSPC : 0;
+	return lxp_wfs_create(path, LXP_S_IFDIR | (mode & 0777u)) < 0 ? -LXP_ENOSPC : 0;
 }
 
 /* unlink (dir = 0) or rmdir (dir = 1) of a tmpfs node; rootfs entries stay. */
 static long overlay_remove(lxp_proc_t *p, const char *path, int dir)
 {
-	int wi = wfs_find(path);
+	int wi = lxp_wfs_find(path);
 	if (wi < 0)
-		return fs_lookup(p, path) >= 0 ? -LXP_EROFS : -LXP_ENOENT;
-	int node_is_dir = is_dir(wnode_at(wi)->mode);
+		return lxp_fs_lookup(p, path) >= 0 ? -LXP_EROFS : -LXP_ENOENT;
+	int node_is_dir = is_dir(lxp_wnode_at(wi)->mode);
 	if (dir && !node_is_dir)
 		return -LXP_ENOTDIR;
 	if (!dir && node_is_dir)
 		return -LXP_EISDIR;
 	for (int j = 0; node_is_dir && j < LXP_NWNODE; j++)
-		if (wnode_at(j)->used && lxp_path_child_name(path, wnode_at(j)->path))
+		if (lxp_wnode_at(j)->used && lxp_path_child_name(path, lxp_wnode_at(j)->path))
 			return -LXP_ENOTEMPTY;
-	wfs_free(wi); /* reclaim the node and its pool bytes */
+	lxp_wfs_free(wi); /* reclaim the node and its pool bytes */
 	return 0;
 }
 
@@ -119,15 +119,15 @@ static long overlay_symlink(lxp_proc_t *p, const char *target, size_t target_len
 {
 	if (overlay_exists(p, path))
 		return -LXP_EEXIST;
-	int wi = wfs_create(path, LXP_S_IFLNK | 0777u);
+	int wi = lxp_wfs_create(path, LXP_S_IFLNK | 0777u);
 	if (wi < 0)
 		return -LXP_ENOSPC;
-	if (wfs_reserve(wi, target_len) < 0) {
-		wfs_free(wi); /* roll back the just-created node (its data is still NULL) */
+	if (lxp_wfs_reserve(wi, target_len) < 0) {
+		lxp_wfs_free(wi); /* roll back the just-created node (its data is still NULL) */
 		return -LXP_ENOSPC;
 	}
-	memcpy(wnode_at(wi)->data, target, target_len);
-	wnode_at(wi)->size = target_len;
+	memcpy(lxp_wnode_at(wi)->data, target, target_len);
+	lxp_wnode_at(wi)->size = target_len;
 	return 0;
 }
 
@@ -145,51 +145,52 @@ static long overlay_link(lxp_proc_t *p, const char *from, const char *to)
 	const uint8_t *src;
 	size_t len;
 	uint32_t mode;
-	int wi = wfs_find(from);
+	int wi = lxp_wfs_find(from);
 	if (wi >= 0) {
-		src = wnode_at(wi)->data;
-		len = wnode_at(wi)->size;
-		mode = wnode_at(wi)->mode;
+		src = lxp_wnode_at(wi)->data;
+		len = lxp_wnode_at(wi)->size;
+		mode = lxp_wnode_at(wi)->mode;
 	} else {
-		int fi = fs_lookup(p, from);
+		int fi = lxp_fs_lookup(p, from);
 		if (fi < 0)
 			return -LXP_ENOENT;
 		src = p->fs[fi].data;
 		len = p->fs[fi].size;
-		mode = file_mode(&p->fs[fi]);
+		mode = lxp_file_mode(&p->fs[fi]);
 	}
 	if (is_dir(mode))
 		return -LXP_EPERM;
-	int ni = wfs_create(to, LXP_S_IFREG | (mode & 0777u));
+	int ni = lxp_wfs_create(to, LXP_S_IFREG | (mode & 0777u));
 	if (ni < 0)
 		return -LXP_ENOSPC;
 	if (len > 0) {
-		if (wfs_reserve(ni, len) < 0) {
-			wfs_free(ni);
+		if (lxp_wfs_reserve(ni, len) < 0) {
+			lxp_wfs_free(ni);
 			return -LXP_ENOSPC;
 		}
-		memcpy(wnode_at(ni)->data, src, len); /* the arena never moves the source block */
-		wnode_at(ni)->size = len;
+		/* the arena never moves the source block */
+		memcpy(lxp_wnode_at(ni)->data, src, len);
+		lxp_wnode_at(ni)->size = len;
 	}
 	return 0;
 }
 
 static long overlay_rename(lxp_proc_t *p, const char *from, const char *to)
 {
-	int wi = wfs_find(from);
+	int wi = lxp_wfs_find(from);
 	if (wi < 0)
-		return fs_lookup(p, from) >= 0 ? -LXP_EROFS : -LXP_ENOENT;
-	if (wfs_find(to) < 0 && fs_lookup(p, to) >= 0)
+		return lxp_fs_lookup(p, from) >= 0 ? -LXP_EROFS : -LXP_ENOENT;
+	if (lxp_wfs_find(to) < 0 && lxp_fs_lookup(p, to) >= 0)
 		return -LXP_EROFS; /* it would replace a name the rootfs holds */
-	return wfs_rename(wi, to);
+	return lxp_wfs_rename(wi, to);
 }
 
 /* Permission bits stick on a tmpfs node and are accepted, inert, on a rootfs entry. */
 static long overlay_chmod(lxp_proc_t *p, const char *path, uint32_t mode)
 {
-	int wi = wfs_find(path);
+	int wi = lxp_wfs_find(path);
 	if (wi >= 0) {
-		wnode_at(wi)->mode = (wnode_at(wi)->mode & LXP_S_IFMT) | (mode & 0777u);
+		lxp_wnode_at(wi)->mode = (lxp_wnode_at(wi)->mode & LXP_S_IFMT) | (mode & 0777u);
 		return 0;
 	}
 	return overlay_exists(p, path) ? 0 : -LXP_ENOENT;
@@ -208,16 +209,16 @@ static long overlay_readlink(lxp_proc_t *p, const char *path, char *out, size_t 
 	uint32_t mode;
 	const uint8_t *data;
 	size_t size;
-	int wi = wfs_find(path);
+	int wi = lxp_wfs_find(path);
 	if (wi >= 0) {
-		mode = wnode_at(wi)->mode;
-		data = wnode_at(wi)->data;
-		size = wnode_at(wi)->size;
+		mode = lxp_wnode_at(wi)->mode;
+		data = lxp_wnode_at(wi)->data;
+		size = lxp_wnode_at(wi)->size;
 	} else {
-		int fi = fs_lookup(p, path);
+		int fi = lxp_fs_lookup(p, path);
 		if (fi < 0)
 			return overlay_exists(p, path) ? -LXP_EINVAL : -LXP_ENOENT;
-		mode = file_mode(&p->fs[fi]);
+		mode = lxp_file_mode(&p->fs[fi]);
 		data = p->fs[fi].data;
 		size = p->fs[fi].size;
 	}
@@ -235,7 +236,7 @@ static long overlay_access(lxp_proc_t *p, const char *path, int mode)
 	long rc = overlay_stat(p, path, 0, &st);
 	if (rc < 0)
 		return rc;
-	if ((mode & 2) && wfs_find(path) < 0 && !is_dir(st.mode))
+	if ((mode & 2) && lxp_wfs_find(path) < 0 && !is_dir(st.mode))
 		return -LXP_EROFS;
 	return 0;
 }
@@ -252,8 +253,8 @@ static long overlay_chdir(lxp_proc_t *p, const char *path)
 	if (!is_dir(st.mode))
 		return -LXP_ENOTDIR;
 	const char *dir = path;
-	if (wfs_find(path) < 0) {
-		int fi = fs_follow(p, fs_lookup(p, path));
+	if (lxp_wfs_find(path) < 0) {
+		int fi = lxp_fs_follow(p, lxp_fs_lookup(p, path));
 		if (fi >= 0)
 			dir = p->fs[fi].path;
 	}
@@ -267,20 +268,20 @@ static long overlay_chdir(lxp_proc_t *p, const char *path)
 static long overlay_exec(lxp_proc_t *p, const char *path, const uint8_t **data, size_t *size,
 			 int *rootfs_index)
 {
-	int wi = wfs_find(path);
+	int wi = lxp_wfs_find(path);
 	if (wi >= 0) {
-		if (is_dir(wnode_at(wi)->mode))
+		if (is_dir(lxp_wnode_at(wi)->mode))
 			return -LXP_EACCES;
-		*data = wnode_at(wi)->data;
-		*size = wnode_at(wi)->size;
+		*data = lxp_wnode_at(wi)->data;
+		*size = lxp_wnode_at(wi)->size;
 		*rootfs_index = -1;
 		return 0;
 	}
 	/* Follow symlinks, e.g. /bin/echo -> busybox (Buildroot installs applets as symlinks). */
-	int fi = fs_follow(p, fs_lookup(p, path));
+	int fi = lxp_fs_follow(p, lxp_fs_lookup(p, path));
 	if (fi < 0)
 		return -LXP_ENOENT;
-	if (is_dir(file_mode(&p->fs[fi])))
+	if (is_dir(lxp_file_mode(&p->fs[fi])))
 		return -LXP_EACCES;
 	*data = p->fs[fi].data;
 	*size = p->fs[fi].size;
