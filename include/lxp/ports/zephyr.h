@@ -21,12 +21,8 @@
 #include "lxp/lxp_port.h"
 #include "lxp/ports/cortex_m.h"
 
-#define LXP_ZEPHYR_PORT_CONFIG_ABI_VERSION 4u
 
 typedef struct lxp_zephyr_port_config {
-	uint32_t abi_version;
-	uint32_t struct_size;
-
 	/* Storage, memory attributes and host services every Cortex-M port shares.
 	 * This port also requires common.thread_list and random_fill below. */
 	lxp_cortex_m_port_common_t common;

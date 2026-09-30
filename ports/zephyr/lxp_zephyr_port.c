@@ -967,8 +967,7 @@ static int zephyr_port_config_valid(void)
 	const uintptr_t pools = (uintptr_t)PORT_CONFIG.common.dynamic_pools;
 	const size_t program_bytes = (size_t)LXP_NREG * LXP_PROG_REGION_SIZE;
 	const size_t dynamic_bytes = (size_t)LXP_NREG * LXP_DYN_POOL_SIZE;
-	if (PORT_CONFIG.abi_version != LXP_ZEPHYR_PORT_CONFIG_ABI_VERSION ||
-	    PORT_CONFIG.struct_size != sizeof(PORT_CONFIG) || !lxp_cortex_m_port_config_valid() ||
+	if (!lxp_cortex_m_port_config_valid() ||
 	    PORT_CONFIG.guest_quantum_ms == 0u ||
 	    PORT_CONFIG.quantum_priority >= PORT_CONFIG.guest_priority ||
 	    PORT_CONFIG.guest_priority >= CONFIG_NUM_PREEMPT_PRIORITIES ||
@@ -1053,8 +1052,6 @@ static void zephyr_teardown(void)
 const lxp_cortex_m_port_common_t *const g_lxp_cortex_m_port_common = &PORT_CONFIG.common;
 
 const lxp_os_ops_t g_lxp_host_engine = {
-	.abi_version = LXP_OS_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_os_ops_t),
 	.core =
 		{
 			.prepare = zephyr_prepare,

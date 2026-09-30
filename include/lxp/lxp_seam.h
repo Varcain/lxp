@@ -114,7 +114,6 @@ int lxp_trap_active(void);
 
 /** Maximum device capabilities represented by an address-space policy. */
 #define LXP_MEMORY_DEVICE_MAX 2u
-#define LXP_MEMORY_POLICY_ABI_VERSION 2u
 
 typedef struct lxp_device_capability {
 	uintptr_t base;
@@ -129,8 +128,6 @@ typedef struct lxp_device_capability {
  * all four still match.
  */
 typedef struct lxp_memory_policy {
-	uint32_t abi_version;
-	uint32_t struct_size;
 	lxp_slot_ref_t slot;
 	lxp_region_ref_t address_space;
 	uint32_t device_generation;
@@ -156,11 +153,11 @@ typedef struct lxp_memory_policy_key {
 } lxp_memory_policy_key_t;
 
 /**
- * Validate the complete, versioned memory-policy representation before a
- * seam translates it into native MPU/domain state.
+ * Validate the complete memory-policy representation before a seam translates
+ * it into native MPU/domain state.
  *
- * Returns LXP_OK for the current canonical representation, LXP_ERR_INVALID_PARAM for
- * a malformed, truncated, stale-version, or otherwise non-canonical policy.
+ * Returns LXP_OK for the canonical representation, LXP_ERR_INVALID_PARAM for a
+ * malformed or otherwise non-canonical policy.
  */
 int lxp_memory_policy_validate(const lxp_memory_policy_t *policy);
 

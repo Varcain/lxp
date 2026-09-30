@@ -794,8 +794,6 @@ static int nuttx_validate_memory_contract(const lxp_cpu_memory_contract_t *decla
 const lxp_cortex_m_port_common_t *const g_lxp_cortex_m_port_common = &PORT_CONFIG.common;
 
 const lxp_os_ops_t g_lxp_host_engine = {
-	.abi_version = LXP_OS_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_os_ops_t),
 	.core =
 		{
 			.prepare = nuttx_prepare,
@@ -1224,8 +1222,7 @@ static int nuttx_port_config_valid(void)
 	const uintptr_t pools = (uintptr_t)PORT_CONFIG.common.dynamic_pools;
 	const size_t program_bytes = (size_t)LXP_NREG * LXP_PROG_REGION_SIZE;
 	const size_t dynamic_bytes = (size_t)LXP_NREG * LXP_DYN_POOL_SIZE;
-	if (PORT_CONFIG.abi_version != LXP_NUTTX_PORT_CONFIG_ABI_VERSION ||
-	    PORT_CONFIG.struct_size != sizeof(PORT_CONFIG) || !lxp_cortex_m_port_config_valid() ||
+	if (!lxp_cortex_m_port_config_valid() ||
 	    !PORT_CONFIG.common.thread_list || !PORT_CONFIG.slot_stacks ||
 	    PORT_CONFIG.slot_stack_stride < PORT_CONFIG.slot_stack_size ||
 	    PORT_CONFIG.slot_stack_size < 1024u || PORT_CONFIG.slot_stack_count < LXP_NSLOT ||

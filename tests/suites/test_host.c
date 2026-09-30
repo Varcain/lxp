@@ -98,8 +98,6 @@ static int mock_guest_stack_usage(size_t *used, size_t *size)
 }
 
 static const lxp_os_ops_t g_os_ops = {
-	.abi_version = LXP_OS_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_os_ops_t),
 	.task =
 		{
 			.guest_stack_usage = mock_guest_stack_usage,
@@ -396,12 +394,11 @@ static void test_host_rejects_invalid_contract_before_rootfs_access(void **state
 	(void)state;
 	lxp_host_t host;
 	lxp_host_config_t config = {0};
-	lxp_os_ops_t bad_ops = g_os_ops;
 	memset(&g_capture, 0, sizeof(g_capture));
 	assert_int_equal(lxp_host_init_cpio(NULL, &config), LXP_ERR_INVALID_PARAM);
 	assert_int_equal(lxp_host_init_cpio(&host, &config), LXP_ERR_INVALID_PARAM);
-	bad_ops.abi_version++;
-	config.providers.os = &bad_ops;
+	/* A complete rootfs configuration without an OS port. */
+	config.providers.os = NULL;
 	config.rootfs_image = &host;
 	config.rootfs_image_size = sizeof(host);
 	config.rootfs_storage = (lxp_file_t *)&host;

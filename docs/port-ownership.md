@@ -21,7 +21,7 @@ LXP owns:
 - reusable host composition under `include/lxp/lxp_host.h`: early rootfs-window
   publication, zero-heap CPIO ingestion, immutable provider/rootfs/network
   topology capture, and construction of complete per-run contracts;
-- the versioned, quiescent host observation in `include/lxp/lxp_observe.h`,
+- the quiescent host observation in `include/lxp/lxp_observe.h`,
   which copies run health, world-validation results, object-size accounting,
   optional latency rows, and normalized native guest-stack usage without
   exposing process-global registries or an RTOS-specific accessor;

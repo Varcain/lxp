@@ -61,23 +61,20 @@ typedef enum lxp_cpu_memory_attrs {
 	LXP_CPU_MEM_ATTR_NORMAL_WBWA_NSH = 2,
 } lxp_cpu_memory_attrs_t;
 
-#define LXP_CPU_MEMORY_CONTRACT_ABI_VERSION 1u
 #define LXP_CPU_MEMORY_DCACHE_ENABLED (1u << 0)
 #define LXP_CPU_MEMORY_ICACHE_ENABLED (1u << 1)
 #define LXP_CPU_MEMORY_KNOWN_FLAGS \
 	(LXP_CPU_MEMORY_DCACHE_ENABLED | LXP_CPU_MEMORY_ICACHE_ENABLED)
 
 /**
- * Versioned declaration of the CPU-side memory assumptions shared by the
- * personality core and its engine port.
+ * Declaration of the CPU-side memory assumptions shared by the personality
+ * core and its engine port.
  *
  * Geometry is zero for a disabled cache. An enabled cache supplies power-of-2
  * line sizes and complete L1 capacities in bytes. The port validates this
  * immutable declaration against live hardware and MPU state after prepare().
  */
 typedef struct lxp_cpu_memory_contract {
-	uint32_t abi_version;
-	uint32_t struct_size;
 	lxp_cpu_memory_model_t model;
 	lxp_cpu_memory_attrs_t normal_attrs;
 	uint32_t flags;
@@ -86,8 +83,6 @@ typedef struct lxp_cpu_memory_contract {
 	uint32_t dcache_size;
 	uint32_t icache_size;
 } lxp_cpu_memory_contract_t;
-
-#define LXP_OS_OPS_ABI_VERSION 12u
 
 /* Opaque host critical-section state. Ports which use irq-save primitives
  * return the native key through this value; ports with internally nested
@@ -236,7 +231,7 @@ typedef struct lxp_os_memory_ops {
 	/* Guest-memory cache maintenance (NULL => no-op; a coherent host needs none). */
 	void (*cache_clean)(const void *base, size_t len);
 	void (*cache_invalidate)(const void *base, size_t len);
-	/* Immutable, separately versioned CPU-memory declaration plus its
+	/* Immutable CPU-memory declaration plus its
 	 * live-hardware validator. lxp_run() first checks the portable contract,
 	 * then invokes validate_memory_contract after prepare() has installed the
 	 * port's MPU/cache state and before any guest image is loaded. A mismatch
@@ -268,8 +263,6 @@ typedef struct lxp_os_services {
 } lxp_os_services_t;
 
 typedef struct lxp_os_ops {
-	uint32_t abi_version; /**< Must be LXP_OS_OPS_ABI_VERSION. */
-	uint32_t struct_size; /**< Must be sizeof(lxp_os_ops_t). */
 	lxp_os_core_ops_t core;
 	lxp_os_task_ops_t task;
 	lxp_os_memory_ops_t memory;

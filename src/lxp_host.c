@@ -69,8 +69,7 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 	memset(host, 0, sizeof(*host));
 	lxp_host_state_t *state = host_state(host);
 	const lxp_os_ops_t *os_ops = config ? config->providers.os : NULL;
-	if (!os_ops || os_ops->abi_version != LXP_OS_OPS_ABI_VERSION ||
-	    os_ops->struct_size != sizeof(*os_ops) || !config->rootfs_image ||
+	if (!os_ops || !config->rootfs_image ||
 	    config->rootfs_image_size == 0u || !config->rootfs_storage ||
 	    config->rootfs_capacity <= 0 || !config->rootfs_name_storage ||
 	    config->rootfs_name_capacity == 0u)

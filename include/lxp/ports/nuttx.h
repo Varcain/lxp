@@ -20,7 +20,6 @@
 #include "lxp/lxp_port.h"
 #include "lxp/ports/cortex_m.h"
 
-#define LXP_NUTTX_PORT_CONFIG_ABI_VERSION 4u
 
 typedef struct lxp_nuttx_mpu_region {
 	uintptr_t base;
@@ -32,9 +31,6 @@ typedef struct lxp_nuttx_mpu_region {
 } lxp_nuttx_mpu_region_t;
 
 typedef struct lxp_nuttx_port_config {
-	uint32_t abi_version;
-	uint32_t struct_size;
-
 	/* Storage, memory attributes and host services every Cortex-M port shares.
 	 * This port also requires common.thread_list: it lists the host's threads,
 	 * and the port appends the guest tasks it owns. */

@@ -78,8 +78,6 @@ static int qemu_validate_memory_contract(const lxp_cpu_memory_contract_t *declar
 }
 
 const lxp_freertos_port_config_t g_lxp_freertos_port_config = {
-	.abi_version = LXP_FREERTOS_PORT_CONFIG_ABI_VERSION,
-	.struct_size = sizeof(lxp_freertos_port_config_t),
 	.common =
 		{
 			.program_regions = &g_prog_regions[0][0],
@@ -93,8 +91,6 @@ const lxp_freertos_port_config_t g_lxp_freertos_port_config = {
 			.guest_memory_texscb = configTEX_S_C_B_SRAM,
 			.cpu_memory_contract =
 				{
-					.abi_version = LXP_CPU_MEMORY_CONTRACT_ABI_VERSION,
-					.struct_size = sizeof(lxp_cpu_memory_contract_t),
 					.model = LXP_CPU_MEM_UNCACHED,
 					.normal_attrs = LXP_CPU_MEM_ATTR_NORMAL_NC_NSH,
 				},

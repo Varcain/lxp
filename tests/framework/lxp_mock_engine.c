@@ -211,8 +211,6 @@ static int mock_map_device(int sidx, uintptr_t addr, size_t size, unsigned attrs
 }
 
 const lxp_cpu_memory_contract_t g_mock_memory_contract = {
-	.abi_version = LXP_CPU_MEMORY_CONTRACT_ABI_VERSION,
-	.struct_size = sizeof(lxp_cpu_memory_contract_t),
 	.model = LXP_CPU_MEM_UNCACHED,
 	.normal_attrs = LXP_CPU_MEM_ATTR_NORMAL_NC_NSH,
 };
@@ -515,8 +513,6 @@ static const char *mock_system_version(void)
 }
 
 const lxp_os_ops_t g_mock_eng = {
-	.abi_version = LXP_OS_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_os_ops_t),
 	.core =
 		{
 			.prepare = mock_prepare,

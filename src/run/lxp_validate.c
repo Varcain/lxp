@@ -26,9 +26,7 @@ static int cache_geometry_valid(uint32_t flags, uint32_t enabled_flag, uint32_t 
 
 static int cpu_memory_contract_valid(const lxp_cpu_memory_contract_t *contract)
 {
-	if (!contract || contract->abi_version != LXP_CPU_MEMORY_CONTRACT_ABI_VERSION ||
-	    contract->struct_size != sizeof(*contract) ||
-	    (contract->flags & ~LXP_CPU_MEMORY_KNOWN_FLAGS) != 0u ||
+	if (!contract || (contract->flags & ~LXP_CPU_MEMORY_KNOWN_FLAGS) != 0u ||
 	    !cache_geometry_valid(contract->flags, LXP_CPU_MEMORY_DCACHE_ENABLED,
 				  contract->dcache_line_size, contract->dcache_size) ||
 	    !cache_geometry_valid(contract->flags, LXP_CPU_MEMORY_ICACHE_ENABLED,
@@ -46,8 +44,7 @@ static int cpu_memory_contract_valid(const lxp_cpu_memory_contract_t *contract)
 
 int lxp_os_ops_valid(const lxp_os_ops_t *ops)
 {
-	if (!ops || ops->abi_version != LXP_OS_OPS_ABI_VERSION ||
-	    ops->struct_size != sizeof(*ops) || !ops->memory.region || !ops->task.spawn_launch ||
+	if (!ops || !ops->memory.region || !ops->task.spawn_launch ||
 	    !ops->task.spawn_resume || !ops->task.abort_slot || !ops->task.park_entry ||
 	    !ops->task.park_prepare || !ops->task.park_slot || !ops->core.crit_enter ||
 	    !ops->core.crit_exit || !ops->core.event_post || !ops->core.event_wait ||

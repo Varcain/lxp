@@ -19,7 +19,6 @@
 #include "lxp/lxp_port.h"
 #include "lxp/ports/cortex_m.h"
 
-#define LXP_FREERTOS_PORT_CONFIG_ABI_VERSION 5u
 #define LXP_FREERTOS_ROOTFS_REGION_MAX 2u
 
 typedef void (*lxp_freertos_tick_fn)(void);
@@ -32,9 +31,6 @@ typedef struct lxp_freertos_rootfs_region {
 } lxp_freertos_rootfs_region_t;
 
 typedef struct lxp_freertos_port_config {
-	uint32_t abi_version;
-	uint32_t struct_size;
-
 	/* Storage, memory attributes and host services every Cortex-M port shares.
 	 * This port also requires random_fill below; common.thread_list is optional. */
 	lxp_cortex_m_port_common_t common;

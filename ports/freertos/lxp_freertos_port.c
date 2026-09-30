@@ -1106,8 +1106,7 @@ static void freertos_cache_invalidate(const void *base, size_t len)
  * lxp_run() via g_lxp_host_engine.core.prepare before the run loop. */
 static int freertos_prepare(void)
 {
-	if (PORT_CONFIG.abi_version != LXP_FREERTOS_PORT_CONFIG_ABI_VERSION ||
-	    PORT_CONFIG.struct_size != sizeof(PORT_CONFIG) || !lxp_cortex_m_port_config_valid() ||
+	if (!lxp_cortex_m_port_config_valid() ||
 	    !PORT_CONFIG.tick_subscribe || !PORT_CONFIG.tick_unsubscribe ||
 	    !PORT_CONFIG.random_fill ||
 	    PORT_CONFIG.rootfs_region_count > LXP_FREERTOS_ROOTFS_REGION_MAX ||
@@ -1187,8 +1186,6 @@ static void freertos_rootfs_window(const void *base, size_t len);
 const lxp_cortex_m_port_common_t *const g_lxp_cortex_m_port_common = &PORT_CONFIG.common;
 
 const lxp_os_ops_t g_lxp_host_engine = {
-	.abi_version = LXP_OS_OPS_ABI_VERSION,
-	.struct_size = sizeof(lxp_os_ops_t),
 	.core =
 		{
 			.prepare = freertos_prepare,

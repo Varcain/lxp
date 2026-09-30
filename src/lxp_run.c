@@ -517,8 +517,7 @@ int lxp_slot_region_ref(lxp_slot_ref_t ref, lxp_region_ref_t *out)
 
 int lxp_memory_policy_validate(const lxp_memory_policy_t *policy)
 {
-	if (!policy || policy->abi_version != LXP_MEMORY_POLICY_ABI_VERSION ||
-	    policy->struct_size != sizeof(*policy) || policy->slot.index < 0 ||
+	if (!policy || policy->slot.index < 0 ||
 	    policy->slot.index >= LXP_NSLOT || policy->slot.generation == 0 ||
 	    policy->address_space.index < 0 || policy->address_space.index >= LXP_NREG ||
 	    policy->address_space.generation == 0 || policy->device_generation == 0 ||
@@ -561,8 +560,6 @@ int lxp_slot_memory_policy(lxp_slot_ref_t ref, lxp_memory_policy_t *out)
 		return LXP_ERR_INVALID_PARAM;
 
 	*out = (lxp_memory_policy_t){
-		.abi_version = LXP_MEMORY_POLICY_ABI_VERSION,
-		.struct_size = sizeof(*out),
 		.slot = ref,
 		.address_space = region,
 		.device_generation = mm->device_generation,

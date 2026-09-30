@@ -38,8 +38,6 @@ static void test_memory_policy_snapshot_and_key_track_every_generation(void **st
 
 	lxp_memory_policy_t policy;
 	assert_int_equal(lxp_slot_memory_policy(slot, &policy), LXP_OK);
-	assert_int_equal(policy.abi_version, LXP_MEMORY_POLICY_ABI_VERSION);
-	assert_int_equal(policy.struct_size, sizeof(policy));
 	assert_true(lxp_slot_ref_equal(policy.slot, slot));
 	assert_true(lxp_region_ref_equal(policy.address_space, mm->region));
 	assert_int_equal(policy.device_generation, 7u);
@@ -81,18 +79,11 @@ static void test_memory_policy_validator_rejects_noncanonical_snapshots(void **s
 	assert_int_equal(lxp_slot_memory_policy(slot, &canonical), LXP_OK);
 
 	lxp_memory_policy_t invalid = canonical;
-	invalid.abi_version++;
+	invalid.slot.generation = 0;
 	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	lxp_memory_policy_key_t invalid_key = lxp_memory_policy_make_key(&invalid);
 	lxp_memory_policy_key_t empty_key = {0};
 	assert_memory_equal(&invalid_key, &empty_key, sizeof(invalid_key));
-
-	invalid = canonical;
-	invalid.struct_size--;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
-	invalid = canonical;
-	invalid.slot.generation = 0;
-	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
 	invalid = canonical;
 	invalid.address_space.index = LXP_NREG;
 	assert_int_equal(lxp_memory_policy_validate(&invalid), LXP_ERR_INVALID_PARAM);
@@ -193,12 +184,6 @@ static void test_port_abi_and_required_ops_are_validated(void **state)
 	assert_false(lxp_net_ops_valid(&net_ops));
 
 	lxp_os_ops_t ops = g_mock_eng;
-	ops.abi_version++;
-	assert_false(lxp_os_ops_valid(&ops));
-	ops = g_mock_eng;
-	ops.struct_size--;
-	assert_false(lxp_os_ops_valid(&ops));
-	ops = g_mock_eng;
 	ops.services.random_fill = NULL;
 	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
@@ -212,16 +197,6 @@ static void test_port_abi_and_required_ops_are_validated(void **state)
 	assert_false(lxp_os_ops_valid(&ops));
 	ops = g_mock_eng;
 	lxp_cpu_memory_contract_t invalid_contract = g_mock_memory_contract;
-	invalid_contract.abi_version++;
-	ops.memory.cpu_memory_contract = &invalid_contract;
-	assert_false(lxp_os_ops_valid(&ops));
-	ops = g_mock_eng;
-	invalid_contract = g_mock_memory_contract;
-	invalid_contract.struct_size--;
-	ops.memory.cpu_memory_contract = &invalid_contract;
-	assert_false(lxp_os_ops_valid(&ops));
-	ops = g_mock_eng;
-	invalid_contract = g_mock_memory_contract;
 	invalid_contract.model = (lxp_cpu_memory_model_t)99;
 	ops.memory.cpu_memory_contract = &invalid_contract;
 	assert_false(lxp_os_ops_valid(&ops));
