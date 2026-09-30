@@ -108,3 +108,6 @@ and `scripts/check-features.sh` ties it to `lxp_config.h` and CI.
 | `scripts/check-symbols.sh` | Every exported symbol carries the `lxp_` prefix. |
 | `scripts/check-features.sh` | The feature table, `lxp_config.h` and the CI legs agree. |
 | `scripts/gate-build.sh` | Every unit cross-compiles for Cortex-M under each gate combination. |
+
+[extending.md](extending.md) adds a syscall, a descriptor kind, a device or a mount backend;
+[porting.md](porting.md) adds a port for another RTOS.

@@ -2,7 +2,7 @@
 
 Recipes for the four common extensions. Each lists the files to touch and the check that fails
 if a step is missed. Read [architecture.md](architecture.md) first for the layers these fit
-into.
+into. To support another RTOS, see [porting.md](porting.md).
 
 ## A syscall
 

@@ -139,6 +139,7 @@ via a drop-in `lxp_config_user.h`.
 - **Host unit tests** (cmocka, fetched at configure time): `cmake -S . -B build -DLXP_BUILD_TESTS=ON && cmake --build build --target lxp_tests && ctest --test-dir build -L lxp` — the OS-agnostic sources drive `lxp_syscall()` and the arena directly on x86-64, no emulator.
 - **QEMU end-to-end** (Cortex-M7): `ports/qemu-mps2/` runs static and dynamic (busybox) FDPIC guests on `qemu-system-arm -M mps2-an500` under FreeRTOS, unprivileged behind the MPU — see its README.
 - **Port ownership**: [docs/port-ownership.md](docs/port-ownership.md) defines which integration code belongs in lxp and which remains owned by a consuming host or board.
+- **Porting**: [docs/porting.md](docs/porting.md) walks through writing a port for another RTOS.
 
 ## License
 
