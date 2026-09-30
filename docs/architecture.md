@@ -15,7 +15,7 @@ that answer it.
 | Core | `src/` (the `LXP_CORE_SOURCES` group) | The syscall layer, the VFS and its filesystems, processes, signal policy, the loader. It needs only the provider contracts. |
 | Coordinator | `src/run/`, `src/lxp_run.c`, `src/lxp_signal.c`, `src/lxp_host.c` | The run loop that drives processes through the port: traps, fork/exec/exit, waits, signals, diagnostics. |
 | Port support | `src/lxp_async_gate.c`, `lxp_latency.c`, `lxp_rt_metrics.c` | Self-contained helpers that ports and hosts link beside the core. |
-| Ports | `ports/freertos`, `ports/nuttx`, `ports/zephyr`, `ports/posix`, `ports/qemu-mps2` | Optional `lxp_os_ops_t` implementations. Only here may native RTOS headers appear. |
+| Ports | `ports/freertos`, `ports/nuttx`, `ports/zephyr`, `ports/posix`, `ports/qemu-mps2` | Optional `lxp_os_ops_t` implementations. Only here may native RTOS headers appear. `ports/common` holds the services the Cortex-M ports share; a consumer builds it beside its port. |
 
 `cmake/lxp_sources.cmake` lists every translation unit in exactly one of these groups (plus
 the optional groups that follow the feature gates) and fails configuration when a new `src/*.c`

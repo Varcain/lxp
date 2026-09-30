@@ -39,15 +39,16 @@
 #include "lxp/lxp_seam.h"
 #include "lxp/ports/freertos.h"
 
+#include "../common/lxp_cortex_m_port.h"
+
 #define TRAMP_STACK_WORDS 192u		  /* tramp prologue; the program uses its own stack */
 #define TRAMP_STORAGE_WORDS 256u	  /* 768-byte stack + 256-byte resume handoff */
 #define SLOT_PRIO (tskIDLE_PRIORITY + 1u) /* below the run-loop task (its creator) */
 #define GUEST_SCHED_PRIO (SLOT_PRIO + 1u) /* no higher than coordinator; above every guest */
 #define GUEST_SCHED_STACK_WORDS 128u /* measured peak: 33 words under QEMU M9 stress */
 #define PORT_CONFIG g_lxp_freertos_port_config
-#define dyn_pools ((uint8_t (*)[LXP_DYN_POOL_SIZE])(void *)PORT_CONFIG.dynamic_pools)
-#define prog_regions ((uint8_t (*)[LXP_PROG_REGION_SIZE])(void *)PORT_CONFIG.program_regions)
-#define g_exec_captures (PORT_CONFIG.exec_captures)
+#define dyn_pools ((uint8_t (*)[LXP_DYN_POOL_SIZE])(void *)PORT_CONFIG.common.dynamic_pools)
+#define prog_regions ((uint8_t (*)[LXP_PROG_REGION_SIZE])(void *)PORT_CONFIG.common.program_regions)
 struct freertos_prepared_profile {
 	lxp_memory_policy_key_t key;
 	MemoryRegion_t regions[portNUM_CONFIGURABLE_REGIONS];
@@ -91,16 +92,6 @@ static lxp_slot_ref_t task_slot_ref(int slot)
 			    slot >= 0 && slot < LXP_NSLOT ? g_slots[slot].generation : 0);
 }
 
-#if LXP_ENABLE_NETFS_EXEC
-/* Staging buffer for a fetched remote ELF: the netfs layer fills it, the loader copies its text
- * into the program region. Placement and capacity are consumer policy. */
-static uint8_t *freertos_exec_stage(size_t *cap)
-{
-	if (cap)
-		*cap = PORT_CONFIG.exec_stage_size;
-	return PORT_CONFIG.exec_stage;
-}
-#endif
 /* Each allocation is a 1K-aligned PMSAv7 stack region. The task uses the
  * bottom 768 bytes; the top 256 bytes retain its persistent resume handoff. */
 static StackType_t g_tramp_stacks[LXP_NSLOT][TRAMP_STORAGE_WORDS]
@@ -720,7 +711,7 @@ static int freertos_prepare_profile(int sidx, uint32_t generation, int ridx)
 		return 0;
 
 	memset(prepared, 0, sizeof(*prepared));
-	const uint32_t tex_s_c_b = PORT_CONFIG.guest_memory_texscb;
+	const uint32_t tex_s_c_b = PORT_CONFIG.common.guest_memory_texscb;
 	const uint32_t rw_xn = portMPU_REGION_READ_WRITE | portMPU_REGION_EXECUTE_NEVER |
 			       (tex_s_c_b << portMPU_RASR_TEX_S_C_B_LOCATION);
 	prepared->regions[0] = (MemoryRegion_t){
@@ -893,36 +884,6 @@ static int freertos_spawn_common(int sidx, uint32_t generation, int ridx, struct
 }
 
 /* ---- the vtable: FreeRTOS task spawn --------------------------------------- */
-static uint8_t *freertos_region(int ridx)
-{
-	return prog_regions[ridx];
-}
-
-static uint8_t *freertos_dyn_pool(int ridx, size_t *size)
-{
-	if (size)
-		*size = LXP_DYN_POOL_SIZE;
-	return dyn_pools[ridx];
-}
-
-static lxp_exec_capture_t *freertos_exec_capture(int sidx)
-{
-	return (sidx >= 0 && sidx < LXP_NSLOT) ? &g_exec_captures[sidx] : NULL;
-}
-
-static int freertos_publish_executable(lxp_region_ref_t address_space, uintptr_t base, size_t len)
-{
-	int ridx = address_space.index;
-	if (ridx < 0 || ridx >= LXP_NREG || address_space.generation == 0 || len == 0)
-		return LXP_ERR_INVALID_PARAM;
-	uintptr_t region_lo = (uintptr_t)prog_regions[ridx];
-	if (base != region_lo || len != LXP_PROG_REGION_SIZE / 2u)
-		return LXP_ERR_INVALID_PARAM;
-	if (PORT_CONFIG.cache_geometry &&
-	    lxp_cortex_m_publish_executable(PORT_CONFIG.cache_geometry, base, len) != 0)
-		return LXP_ERR_INVALID_PARAM;
-	return LXP_OK;
-}
 
 static int freertos_spawn_launch(int sidx, uint32_t generation, int ridx,
 				 const lxp_guest_launch_t *launch)
@@ -1016,9 +977,9 @@ static void freertos_coord_map(int ridx)
 
 	/* Normal WBWA cacheable, non-shareable, RW, execute-never — the exact attributes
 	 * freertos_spawn_common gives the guest's own view of these pools. */
-	const uint32_t attr =
-		portMPU_REGION_READ_WRITE | portMPU_REGION_EXECUTE_NEVER |
-		((uint32_t)PORT_CONFIG.guest_memory_texscb << portMPU_RASR_TEX_S_C_B_LOCATION);
+	const uint32_t attr = portMPU_REGION_READ_WRITE | portMPU_REGION_EXECUTE_NEVER |
+			      ((uint32_t)PORT_CONFIG.common.guest_memory_texscb
+			       << portMPU_RASR_TEX_S_C_B_LOCATION);
 	/* PMSAv7 RASR: ENABLE=bit0, SIZE field=log2(bytes)-1 in bits[5:1]. The pool arrays
 	 * are size-aligned (see prog_regions/dyn_pools), so each base is region-aligned. */
 	const uint32_t prog_rasr =
@@ -1192,34 +1153,15 @@ static int32_t slot_for_thread(uintptr_t identity)
 
 static int lxp_seam_thread_list(struct lxp_thread_info *out, size_t max_count, size_t *actual_count)
 {
-	return PORT_CONFIG.thread_list
-		       ? PORT_CONFIG.thread_list(out, max_count, actual_count, slot_for_thread)
+	return PORT_CONFIG.common.thread_list
+		       ? PORT_CONFIG.common.thread_list(out, max_count, actual_count,
+							slot_for_thread)
 		       : LXP_ERR_NOT_SUPPORTED;
-}
-
-static int lxp_seam_mem_stats(struct lxp_mem_stats *out)
-{
-	return PORT_CONFIG.mem_stats ? PORT_CONFIG.mem_stats(out) : LXP_ERR_NOT_SUPPORTED;
-}
-
-static const char *lxp_seam_system_version(void)
-{
-	return PORT_CONFIG.system_version ? PORT_CONFIG.system_version : "FreeRTOS";
 }
 
 static int freertos_random_fill(void *buf, size_t len)
 {
 	return PORT_CONFIG.random_fill ? PORT_CONFIG.random_fill(buf, len) : LXP_ERR_NOT_SUPPORTED;
-}
-
-static int freertos_time_us(uint64_t *out)
-{
-	return PORT_CONFIG.time_us ? PORT_CONFIG.time_us(out) : LXP_ERR_NOT_SUPPORTED;
-}
-
-static int freertos_time_ns(uint64_t *out)
-{
-	return PORT_CONFIG.time_ns ? PORT_CONFIG.time_ns(out) : LXP_ERR_NOT_SUPPORTED;
 }
 
 static void freertos_cache_clean(const void *base, size_t len)
@@ -1242,14 +1184,9 @@ static void freertos_cache_invalidate(const void *base, size_t len)
 static int freertos_prepare(void)
 {
 	if (PORT_CONFIG.abi_version != LXP_FREERTOS_PORT_CONFIG_ABI_VERSION ||
-	    PORT_CONFIG.struct_size != sizeof(PORT_CONFIG) || !PORT_CONFIG.program_regions ||
-	    PORT_CONFIG.program_region_stride != LXP_PROG_REGION_SIZE ||
-	    PORT_CONFIG.program_region_count < LXP_NREG || !PORT_CONFIG.dynamic_pools ||
-	    PORT_CONFIG.dynamic_pool_stride != LXP_DYN_POOL_SIZE ||
-	    PORT_CONFIG.dynamic_pool_count < LXP_NREG || !PORT_CONFIG.exec_captures ||
-	    PORT_CONFIG.exec_capture_count < LXP_NSLOT || !PORT_CONFIG.tick_subscribe ||
-	    !PORT_CONFIG.tick_unsubscribe || !PORT_CONFIG.time_us || !PORT_CONFIG.time_ns ||
-	    !PORT_CONFIG.random_fill || !PORT_CONFIG.validate_memory_contract ||
+	    PORT_CONFIG.struct_size != sizeof(PORT_CONFIG) || !lxp_cortex_m_port_config_valid() ||
+	    !PORT_CONFIG.tick_subscribe || !PORT_CONFIG.tick_unsubscribe ||
+	    !PORT_CONFIG.random_fill ||
 	    PORT_CONFIG.rootfs_region_count > LXP_FREERTOS_ROOTFS_REGION_MAX ||
 	    2u + PORT_CONFIG.rootfs_region_count >= portNUM_CONFIGURABLE_REGIONS)
 		return LXP_ERR_INVALID_PARAM;
@@ -1258,19 +1195,15 @@ static int freertos_prepare(void)
 	    (PORT_CONFIG.coordinator_rootfs_region < 2u ||
 	     PORT_CONFIG.coordinator_rootfs_region >= portNUM_CONFIGURABLE_REGIONS))
 		return LXP_ERR_INVALID_PARAM;
-#if LXP_ENABLE_NETFS_EXEC
-	if (!PORT_CONFIG.exec_stage || PORT_CONFIG.exec_stage_size == 0u)
-		return LXP_ERR_INVALID_PARAM;
-#endif
 	for (unsigned i = 0; i < PORT_CONFIG.rootfs_region_count; i++) {
 		const lxp_freertos_rootfs_region_t *region = &PORT_CONFIG.rootfs_regions[i];
 		if (region->size < 32u || (region->size & (region->size - 1u)) != 0u ||
 		    (region->base & (region->size - 1u)) != 0u)
 			return LXP_ERR_INVALID_PARAM;
 	}
-	if (PORT_CONFIG.cache_geometry &&
-	    lxp_cortex_m_cache_geometry_read(PORT_CONFIG.cache_geometry) != 0)
-		return LXP_ERR_NOT_SUPPORTED; /* a cache hierarchy the port cannot maintain */
+	int rc = lxp_cortex_m_port_cache_prepare();
+	if (rc != LXP_OK)
+		return rc;
 	if (!g_ev)
 		g_ev = xSemaphoreCreateBinaryStatic(&g_ev_buf);
 	if (!g_sched_ev)
@@ -1279,7 +1212,7 @@ static int freertos_prepare(void)
 		return LXP_ERR_NO_MEMORY;
 	if (uxTaskPriorityGet(NULL) < GUEST_SCHED_PRIO)
 		return LXP_ERR_INVALID_PARAM; /* the coordinator may not run below the scheduler */
-	int rc = PORT_CONFIG.host_prepare ? PORT_CONFIG.host_prepare() : LXP_OK;
+	rc = lxp_cortex_m_port_host_prepare();
 	if (rc != LXP_OK)
 		return rc;
 	(void)xSemaphoreTake(g_sched_ev, 0);
@@ -1326,22 +1259,18 @@ static void freertos_teardown(void)
 	freertos_tick_budget_reset();
 }
 
-static int freertos_validate_memory_contract(const lxp_cpu_memory_contract_t *declared)
-{
-	if (declared != &PORT_CONFIG.cpu_memory_contract)
-		return LXP_ERR_INVALID_PARAM;
-	return PORT_CONFIG.validate_memory_contract(declared, PORT_CONFIG.cache_geometry);
-}
 static void freertos_rootfs_window(const void *base, size_t len);
+
+const lxp_cortex_m_port_common_t *const g_lxp_cortex_m_port_common = &PORT_CONFIG.common;
 
 const lxp_os_ops_t g_lxp_host_engine = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
 	.prepare = freertos_prepare,
 	.teardown = freertos_teardown,
-	.region = freertos_region,
-	.dyn_pool = freertos_dyn_pool,
-	.exec_capture = freertos_exec_capture,
+	.region = lxp_cortex_m_port_region,
+	.dyn_pool = lxp_cortex_m_port_dyn_pool,
+	.exec_capture = lxp_cortex_m_port_exec_capture,
 	.spawn_launch = freertos_spawn_launch,
 	.spawn_resume = freertos_spawn_resume,
 	.abort_slot = freertos_abort_slot,
@@ -1354,14 +1283,14 @@ const lxp_os_ops_t g_lxp_host_engine = {
 	.event_wait = freertos_event_wait,
 	/* OS-service ops (host adapter): the personality core reaches these through
 	 * lxp_time_us/ns, lxp_thread_list, lxp_cache_clean/invalidate. */
-	.time_us = freertos_time_us,
-	.time_ns = freertos_time_ns,
+	.time_us = lxp_cortex_m_port_time_us,
+	.time_ns = lxp_cortex_m_port_time_ns,
 	.thread_list = lxp_seam_thread_list,
-	.mem_stats = lxp_seam_mem_stats,
-	.system_version = lxp_seam_system_version,
-	.publish_executable = freertos_publish_executable,
-	.cpu_memory_contract = &PORT_CONFIG.cpu_memory_contract,
-	.validate_memory_contract = freertos_validate_memory_contract,
+	.mem_stats = lxp_cortex_m_port_mem_stats,
+	.system_version = lxp_cortex_m_port_system_version,
+	.publish_executable = lxp_cortex_m_port_publish_executable,
+	.cpu_memory_contract = &PORT_CONFIG.common.cpu_memory_contract,
+	.validate_memory_contract = lxp_cortex_m_port_validate_memory_contract,
 	.guest_stack_usage = freertos_guest_stack_usage,
 	.cache_clean = freertos_cache_clean,
 	.cache_invalidate = freertos_cache_invalidate,
@@ -1369,7 +1298,7 @@ const lxp_os_ops_t g_lxp_host_engine = {
 		freertos_coord_map, /* coherent coordinator view of the serviced slot's pools */
 	.rootfs_window = freertos_rootfs_window,
 #if LXP_ENABLE_NETFS_EXEC
-	.exec_stage = freertos_exec_stage,
+	.exec_stage = lxp_cortex_m_port_exec_stage,
 #endif
 	.random_fill = freertos_random_fill,
 };

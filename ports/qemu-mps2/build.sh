@@ -51,7 +51,8 @@ done
 for f in "$FRT/tasks.c" "$FRT/queue.c" "$FRT/list.c" "$PORT/port.c" "$MPU_WRAP"; do
     $ARMCC $FLAGS $INC -c "$f" -o "build/$(basename "$f").o" || err=1
 done
-for f in "$LXP_ROOT/ports/freertos/lxp_freertos_port.c" engine.c boot.c; do
+for f in "$LXP_ROOT/ports/freertos/lxp_freertos_port.c" \
+         "$LXP_ROOT/ports/common/lxp_cortex_m_port.c" engine.c boot.c; do
     $ARMCC $PORTFLAGS $INC -c "$f" -o "build/$(basename "$f").o" || err=1
 done
 if [ "$err" -ne 0 ]; then echo "COMPILE FAILED"; exit 1; fi

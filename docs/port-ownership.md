@@ -142,7 +142,9 @@ live in `ports/nuttx/` behind an immutable host configuration. Zephyr K_USER
 thread, software-fault, memory-domain, park/resume, guest-rotation and fault
 containment mechanics likewise live in `ports/zephyr/`; its consumer supplies
 only storage placement, priorities, memory policy and host-service callbacks.
-There are no remaining consumer-owned production RTOS seams.
+There are no remaining consumer-owned production RTOS seams. What the Cortex-M
+ports share (the common configuration prefix and the operations that only read
+it) lives once in `ports/common/`.
 
 Move one engine at a time. A move is complete only when:
 

@@ -15,6 +15,10 @@ The embedding system supplies exactly one `g_lxp_freertos_port_config` declared
 by `include/lxp/ports/freertos.h`. That object provides storage placement,
 rootfs memory attributes, the CPU-memory contract, and board/HAL callbacks such
 as time, entropy, cache maintenance, thread reporting and fatal diagnostics.
+The part every Cortex-M port shares is its `.common` member
+(`lxp_cortex_m_port_common_t`, `include/lxp/ports/cortex_m.h`), served by
+`ports/common/lxp_cortex_m_port.c`, which a build selecting this port compiles
+beside `lxp_freertos_port.c`.
 It also supplies a synchronized single-subscriber bridge to the embedding
 system's FreeRTOS tick hook. The port publishes its guest-only weighted-slicing
 callback during per-run prepare and withdraws it during teardown; the generic
