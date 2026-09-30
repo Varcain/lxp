@@ -98,7 +98,8 @@ typedef struct lxp_host {
  */
 int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config);
 
-/** Run one Linux init program using the host's providers and rootfs. */
+/** Run one Linux init program using the host's providers and rootfs. Returns what
+ * @ref lxp_run returns, or @c LXP_ERR_INVALID_PARAM for a host never initialized. */
 int lxp_host_run(const lxp_host_t *host, const lxp_launch_config_t *launch_config, const char *path,
 		 int argc, const char *const argv[]);
 

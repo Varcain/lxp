@@ -49,6 +49,7 @@
 #include "pty/lxp_pty.h" /* pty-layer park/retry (lxp_pty_retry) */
 #endif
 
+#include "lxp_errno.h"
 #include "lxp_internal.h"
 #include "lxp_provider.h"
 #include "lxp_run_internal.h" /* g_lxp_sig_save + lxp_slot_of/lxp_park_frame ↔ src/lxp_signal.c */
@@ -889,10 +890,10 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 {
 	if (!eng || !eng->exec_capture || !cfg || !cfg->rootfs || !cfg->rootfs_image ||
 	    cfg->rootfs_image_size == 0u || !path || argc < 1 || !argv)
-		return LXP_RUN_ELAUNCH;
+		return LXP_ERR_INVALID_PARAM;
 	for (int s = 0; s < LXP_NSLOT; s++)
 		if (!eng->exec_capture(s))
-			return LXP_RUN_ELAUNCH;
+			return LXP_ERR_INVALID_PARAM;
 	g_lxp_rt.cfg = cfg;
 	lxp_os_publish(eng);
 	g_lxp_rt.rootfs_lo = cfg->rootfs_image;
@@ -915,15 +916,18 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	 * bounded provider initialization is legal. */
 	lxp_dev_autoreg_all();
 #endif
+	int err; /* why the initial program could not be launched */
 #if LXP_ENABLE_NETFS
 	/* Copy this run's remote-fs topology and initiate its non-blocking 9P
 	 * connection. A down server remains non-fatal and reconnects lazily. */
-	if (lxp_netfs_init(cfg->netfs_config) != LXP_OK)
+	err = lxp_netfs_init(cfg->netfs_config);
+	if (err != LXP_OK)
 		goto launch_failed;
 #endif
 
 	struct lxp_initial_image initial;
-	if (lxp_initial_resolve(cfg, path, argc, argv, &initial) != 0)
+	err = lxp_err_from_errno(lxp_initial_resolve(cfg, path, argc, argv, &initial));
+	if (err != LXP_OK)
 		goto launch_failed;
 
 	/* Concurrent process model: the run loop COORDINATES the live process SET
@@ -937,17 +941,18 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 	(void)lxp_region_reserve(0, lxp_slot_ref_at(0));
 	lxp_region_ref_t initial_region = lxp_region_ref_at(0);
 	lxp_slot_ref_t initial_owner = lxp_slot_ref_at(0);
-	if (lxp_image_launch(0, initial_region, initial_owner, initial.data, initial.size,
-			     1, 0, initial.argc, initial.argv, cfg->env, 0) != 0) {
+	err = lxp_err_from_errno(lxp_image_launch(0, initial_region, initial_owner, initial.data,
+						  initial.size, 1, 0, initial.argc, initial.argv,
+						  cfg->env, 0));
+	if (err != LXP_OK)
 		goto launch_failed;
-	}
 	/* Interpreter scripts name the interpreter's final non-symlink image here,
 	 * so /proc/self/exe keeps re-execing the ELF which actually runs. */
 	g_lxp_rt.slots[0].proc.exec_file_idx = initial.file_index;
 	lxp_diag_refresh();
 	lxp_diag_checkpoint();
 
-	int rc = LXP_RUN_ETIMEOUT;
+	int rc = LXP_ERR_TIMEOUT;
 	int next_pid = 2;
 	int idle = 0;
 	unsigned event_cursor = 0;
@@ -1040,7 +1045,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		if (blocked.any_busy)
 			idle = 0;
 		else if (++idle > 20000) {
-			rc = LXP_RUN_ETIMEOUT;
+			rc = LXP_ERR_TIMEOUT;
 			break;
 		}
 		if (now - last_refresh_us >= 200000ull) {
@@ -1087,7 +1092,7 @@ launch_failed:
 	lxp_coordinator_teardown_all();
 	lxp_diag_refresh();
 	lxp_diag_checkpoint();
-	return LXP_RUN_ELAUNCH;
+	return err;
 }
 
 /* THE port entry (see lxp_run.h). Validate and publish this run's exact
@@ -1097,7 +1102,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const lxp_block_ops_t *block_ops, const lxp_run_config_t *run_config, const char *path,
 	    int argc, const char *const argv[])
 {
-	int rc = LXP_RUN_ELAUNCH;
+	int rc = LXP_OK;
 	int prepare_entered = 0;
 	int net_entered = 0;
 	int fs_entered = 0;
@@ -1110,7 +1115,7 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    !lxp_display_ops_valid(display_ops) || !lxp_fs_ops_valid(fs_ops) ||
 	    !lxp_block_ops_valid(block_ops) || !lxp_run_config_valid(run_config) || !path ||
 	    argc < 1 || !argv)
-		return LXP_RUN_ELAUNCH;
+		return LXP_ERR_INVALID_PARAM;
 
 	/* Assign even NULL providers so a later sequential run cannot inherit one. */
 	lxp_providers_publish(net_ops, display_ops, fs_ops, block_ops);
@@ -1119,18 +1124,21 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	dev_entered = 1;
 #endif
 #if LXP_ENABLE_NET
-	if (net_ops->run_begin(lxp_socket_ready, os_ops) != LXP_OK)
+	rc = net_ops->run_begin(lxp_socket_ready, os_ops);
+	if (rc != LXP_OK)
 		goto out;
 	net_entered = 1;
 	lxp_sock_run_begin(run_config->netif);
 #endif
 #if LXP_ENABLE_FS
-	if (fs_ops->run_begin(lxp_fs_completion_ready, os_ops) != LXP_OK)
+	rc = fs_ops->run_begin(lxp_fs_completion_ready, os_ops);
+	if (rc != LXP_OK)
 		goto out;
 	fs_entered = 1;
 #endif
 #if LXP_ENABLE_BLOCK
-	if (block_ops->run_begin(lxp_block_ready, os_ops) != LXP_OK)
+	rc = block_ops->run_begin(lxp_block_ready, os_ops);
+	if (rc != LXP_OK)
 		goto out;
 	block_entered = 1;
 #endif
@@ -1145,15 +1153,18 @@ int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 
 	if (os_ops->prepare) {
 		prepare_entered = 1;
-		if (os_ops->prepare() != LXP_OK)
+		rc = os_ops->prepare();
+		if (rc != LXP_OK)
 			goto out;
 	}
-	if (os_ops->validate_memory_contract(os_ops->cpu_memory_contract) != LXP_OK)
+	rc = os_ops->validate_memory_contract(os_ops->cpu_memory_contract);
+	if (rc != LXP_OK)
 		goto out;
 	if (run_config->console_subscribe) {
-		if (run_config->console_subscribe(run_config->io_ctx, lxp_console_ready, os_ops) !=
-		    LXP_OK)
+		if (run_config->console_subscribe(run_config->io_ctx, lxp_console_ready, os_ops)) {
+			rc = LXP_ERR_NOT_SUPPORTED;
 			goto out;
+		}
 		console_entered = 1;
 	}
 	rc = lxp_run_common(os_ops, run_config, console_entered, path, argc, argv);

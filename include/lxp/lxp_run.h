@@ -114,7 +114,9 @@ typedef struct lxp_run_config {
 	/** Optional paired run-scoped readiness subscription. A successful
 	 * subscription lets the coordinator wait for an event instead of polling a
 	 * parked console every 5 ms. The provider must stop callbacks before
-	 * console_unsubscribe returns. Both callbacks must be set or both NULL. */
+	 * console_unsubscribe returns. Both callbacks must be set or both NULL.
+	 * console_subscribe returns 0 once subscribed; any other result makes
+	 * lxp_run() fail with LXP_ERR_NOT_SUPPORTED. */
 	lxp_console_subscribe_fn console_subscribe;
 	lxp_console_unsubscribe_fn console_unsubscribe;
 	/** Run-scoped interface used by eth0 ioctls and /proc/net. NULL leaves
@@ -125,12 +127,6 @@ typedef struct lxp_run_config {
 	const lxp_netfs_config_t *netfs_config;
 	void *guest_exit_ctx; /**< Opaque, passed to @p on_guest_exit. */
 } lxp_run_config_t;
-
-/** @ref lxp_run outcomes (negative; a non-negative result is the init
- * process's exit status). */
-#define LXP_RUN_ELAUNCH (-1)  /**< The init program could not be loaded. */
-#define LXP_RUN_EEXEC (-2)	  /**< A child execve relaunch failed. */
-#define LXP_RUN_ETIMEOUT (-3) /**< init did not exit within the run budget. */
 
 /**
  * Load @p path from the rootfs and run it as pid 1, driving the NOMMU process
@@ -156,7 +152,13 @@ typedef struct lxp_run_config {
  * @c os_ops->prepare(), drives the loop, then @c os_ops->teardown() and tears down
  * its threads before returning, so a host may call this repeatedly.
  *
- * @return the init exit status (>= 0), or one of the @c LXP_RUN_E* codes (< 0).
+ * @return the init exit status (>= 0), or a negative lxp_err_t naming why the run
+ * failed: @c LXP_ERR_INVALID_PARAM for a malformed call; the failing provider's or
+ * @c os_ops->prepare()'s own result when host setup fails; @c LXP_ERR_NOT_SUPPORTED
+ * when the console refuses its readiness subscription; why @p path could not be
+ * launched (@c LXP_ERR_NOT_FOUND for a missing program, @c LXP_ERR_NOT_SUPPORTED for
+ * one that cannot be executed, @c LXP_ERR_NO_MEMORY); or @c LXP_ERR_TIMEOUT when every
+ * process stays blocked with nothing left to wake it.
  */
 int lxp_run(const lxp_os_ops_t *os_ops, const lxp_net_ops_t *net_ops,
 	    const lxp_display_ops_t *display_ops, const lxp_fs_ops_t *fs_ops,

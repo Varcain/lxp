@@ -207,8 +207,8 @@ typedef struct lxp_os_ops {
 	 * restore in teardown. NULL => skipped. Once prepare() is entered, teardown()
 	 * runs exactly once even when prepare() returns an error, so prepare() may
 	 * acquire resources incrementally and rely on teardown() to roll back its
-	 * completed steps. prepare() returns LXP_OK or an lxp_err_t naming the cause; a
-	 * failure makes lxp_run() return LXP_RUN_ELAUNCH. */
+	 * completed steps. prepare() returns LXP_OK or an lxp_err_t naming the cause,
+	 * which lxp_run() then returns. */
 	int (*prepare)(void);
 	void (*teardown)(void);
 

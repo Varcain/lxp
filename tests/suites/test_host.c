@@ -390,7 +390,7 @@ static void test_failed_reinit_clears_previous_host(void **state)
 	bad.rootfs_image_size = 16u;
 	assert_int_equal(lxp_host_init_cpio(&host, &bad), LXP_ERR_INVAL);
 	assert_int_equal(host.initialized, 0);
-	assert_int_equal(lxp_host_run(&host, NULL, "/bin/init", 1, NULL), LXP_RUN_ELAUNCH);
+	assert_int_equal(lxp_host_run(&host, NULL, "/bin/init", 1, NULL), LXP_ERR_INVALID_PARAM);
 }
 
 static void test_host_rejects_invalid_contract_before_rootfs_access(void **state)

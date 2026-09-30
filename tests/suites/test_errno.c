@@ -5,7 +5,8 @@
  * This file is part of the lxp module (the OS-agnostic Linux personality).
  *
  * Provider results as the guest sees them (src/lxp_errno.c): every lxp_err_t code has
- * exactly the errno below, and sockets read a timeout as would-block.
+ * exactly the errno below, and sockets read a timeout as would-block. The inverse gives
+ * every such errno back to a host as a code that means it.
  */
 #include "../framework/lxp_test.h"
 #include "lxp_errno.h"
@@ -79,11 +80,30 @@ static void test_net_reads_timeout_as_would_block(void **state)
 			assert_int_equal(lxp_net_errno_from_err(err), lxp_errno_from_err(err));
 }
 
+/* Every errno a provider result can become maps back to a code with that same errno;
+ * the errnos with no code of their own take the nearest one. */
+static void test_errno_maps_back_to_its_code(void **state)
+{
+	(void)state;
+	for (int err = LXP_ERR_CROSS_DEVICE; err <= LXP_OK; err++) {
+		long e = lxp_errno_from_err(err);
+		assert_int_equal(lxp_errno_from_err(lxp_err_from_errno(e)), e);
+	}
+	assert_int_equal(lxp_err_from_errno(0), LXP_OK);
+	assert_int_equal(lxp_err_from_errno(-LXP_ENOENT), LXP_ERR_NOT_FOUND);
+	assert_int_equal(lxp_err_from_errno(-LXP_E2BIG), LXP_ERR_INVALID_PARAM);
+	assert_int_equal(lxp_err_from_errno(-LXP_ENOEXEC), LXP_ERR_NOT_SUPPORTED);
+	assert_int_equal(lxp_err_from_errno(-LXP_ENOSYS), LXP_ERR_NOT_SUPPORTED);
+	assert_int_equal(lxp_err_from_errno(-LXP_EPERM), LXP_ERR_PERMISSION);
+	assert_int_equal(lxp_err_from_errno(-LXP_ECHILD), LXP_ERR_IO);
+}
+
 int test_errno_run(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_every_code_has_its_errno),
 		cmocka_unit_test(test_net_reads_timeout_as_would_block),
+		cmocka_unit_test(test_errno_maps_back_to_its_code),
 	};
 	return cmocka_run_group_tests_name("errno", tests, NULL, NULL);
 }

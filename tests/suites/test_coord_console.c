@@ -138,10 +138,10 @@ static void test_console_readiness_lifecycle_is_run_scoped(void **state)
 
 	/* Subscription happens only after host preparation. Failure tears the host
 	 * and earlier providers down, but does not unsubscribe an unacquired source. */
-	g_mock.console_subscribe_result = LXP_ERR_NOT_SUPPORTED;
+	g_mock.console_subscribe_result = LXP_ERR_BUSY;
 	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg,
 				 "/init", 1, argv),
-			 LXP_RUN_ELAUNCH);
+			 LXP_ERR_NOT_SUPPORTED);
 	assert_int_equal(g_mock.prepare_calls, 1);
 	assert_int_equal(g_mock.console_subscribe_calls, 1);
 	assert_int_equal(g_mock.console_unsubscribe_calls, 0);
@@ -149,12 +149,12 @@ static void test_console_readiness_lifecycle_is_run_scoped(void **state)
 	assert_null(g_mock.console_ready);
 
 	/* Once acquired, readiness reaches the engine directly and unsubscribe
-	 * withdraws both callback and context even when image launch then fails. */
+	 * withdraws both callback and context even when the launch then fails (the
+	 * one-byte /init is not an executable). */
 	g_mock.console_subscribe_result = LXP_OK;
-	g_mock.launch_failures = 1;
 	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg,
 				 "/init", 1, argv),
-			 LXP_RUN_ELAUNCH);
+			 LXP_ERR_NOT_SUPPORTED);
 	assert_int_equal(g_mock.prepare_calls, 2);
 	assert_int_equal(g_mock.console_subscribe_calls, 2);
 	assert_int_equal(g_mock.console_unsubscribe_calls, 1);

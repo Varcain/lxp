@@ -97,7 +97,7 @@ int lxp_host_run(const lxp_host_t *host, const lxp_launch_config_t *launch_confi
 		 int argc, const char *const argv[])
 {
 	if (!host || host->initialized != LXP_HOST_INITIALIZED)
-		return LXP_RUN_ELAUNCH;
+		return LXP_ERR_INVALID_PARAM;
 	lxp_netfs_config_t netfs_config = {
 		.mountpoint = host->netfs_mountpoint,
 		.server_ip = {host->netfs_server_ip[0], host->netfs_server_ip[1],

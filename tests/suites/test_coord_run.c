@@ -237,7 +237,7 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	invalid_net_ops.run_end = NULL;
 	assert_int_equal(lxp_run(&g_mock_eng, &invalid_net_ops, NULL, &g_mock_fs_ops, NULL, &cfg,
 				 "/init", 1, argv),
-			 LXP_RUN_ELAUNCH);
+			 LXP_ERR_INVALID_PARAM);
 	assert_int_equal(g_mock.net_begin_calls, 0);
 	assert_int_equal(g_mock.prepare_calls, 0);
 
@@ -246,7 +246,7 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	g_mock.fs_ready_fire_in_prepare = 1;
 	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
 			 1, argv),
-			 LXP_RUN_ELAUNCH);
+			 LXP_ERR_IO);
 	assert_int_equal(g_mock.net_begin_calls, 1);
 	assert_int_equal(g_mock.net_end_calls, 1);
 	assert_int_equal(g_mock.fs_begin_calls, 1);
@@ -269,12 +269,42 @@ static void test_failed_prepare_is_rolled_back(void **state)
 	g_mock.net_begin_result = LXP_ERR_WOULD_BLOCK;
 	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
 				 1, argv),
-			 LXP_RUN_ELAUNCH);
+			 LXP_ERR_WOULD_BLOCK);
 	assert_int_equal(g_mock.net_begin_calls, 2);
 	assert_int_equal(g_mock.net_end_calls, 1);
 	assert_int_equal(g_mock.prepare_calls, 1);
 	assert_int_equal(g_mock.teardown_calls, 1);
 	assert_null(g_lxp_net_ops);
+}
+
+static void test_run_reports_why_launch_failed(void **state)
+{
+	(void)state;
+	uint8_t image[1] = {0};
+	const lxp_file_t files[] = {
+		{.path = "/init", .data = image, .size = sizeof(image), .mode = LXP_S_IFREG | 0755},
+	};
+	const lxp_run_config_t cfg = {
+		.rootfs = files,
+		.rootfs_count = 1,
+		.rootfs_image = image,
+		.rootfs_image_size = sizeof(image),
+	};
+	const char *const argv[] = {"init", NULL};
+	lxp_net_ops_t net_ops = *g_test_net_ops;
+	net_ops.run_begin = mock_net_begin;
+	net_ops.run_end = mock_net_end;
+
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
+				 0, argv),
+			 LXP_ERR_INVALID_PARAM);
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg,
+				 "/missing", 1, argv),
+			 LXP_ERR_NOT_FOUND);
+	assert_int_equal(lxp_run(&g_mock_eng, &net_ops, NULL, &g_mock_fs_ops, NULL, &cfg, "/init",
+				 1, argv),
+			 LXP_ERR_NOT_SUPPORTED); /* one byte is not an executable */
+	assert_int_equal(g_mock.teardown_calls, 2);
 }
 
 static void test_initial_launch_resolves_scripts_and_symlinks(void **state)
@@ -384,6 +414,7 @@ int test_coord_run_run(void)
 		cmocka_unit_test_setup(test_system_version_routes_to_engine, reset_state),
 		cmocka_unit_test_setup(test_port_abi_and_required_ops_are_validated, reset_state),
 		cmocka_unit_test_setup(test_failed_prepare_is_rolled_back, reset_state),
+		cmocka_unit_test_setup(test_run_reports_why_launch_failed, reset_state),
 		cmocka_unit_test_setup(test_initial_launch_resolves_scripts_and_symlinks,
 				       reset_state),
 		cmocka_unit_test_setup(test_rootfs_requires_one_explicit_trusted_window,
