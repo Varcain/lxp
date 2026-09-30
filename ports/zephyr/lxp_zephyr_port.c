@@ -33,6 +33,7 @@
 
 #include "lxp/arch/cortex_m_cache.h"
 #include "lxp/arch/cortex_m_mpu.h"
+#include "lxp/arch/cortex_m_scb.h"
 #include "lxp/lxp_exec.h"
 #include "lxp/lxp_run.h"
 #include "lxp/lxp_rt_metrics.h"
@@ -931,17 +932,6 @@ static void zephyr_crit_exit(lxp_critical_token_t token)
 #endif
 }
 
-/* SCB->ICSR PENDSVSET — raw (0xE000ED04, bit 28), matching the raw-SCS style used elsewhere
- * in the personality seams; avoids a cmsis_core.h include dependency. Writing the whole word
- * is the documented idiom (the other writable ICSR bits are write-1-to-act, so writing 0 to
- * them is a no-op) — Zephyr's own z_arm_exc_exit does `SCB->ICSR = SCB_ICSR_PENDSVSET_Msk`. */
-#define LXP_ICSR (*(volatile uint32_t *)0xE000ED04u)
-#define LXP_PENDSVSET (1u << 28)
-#define LXP_CFSR (*(volatile uint32_t *)0xE000ED28u)
-#define LXP_HFSR (*(volatile uint32_t *)0xE000ED2Cu)
-#define LXP_MMFAR (*(volatile uint32_t *)0xE000ED34u)
-#define LXP_BFAR (*(volatile uint32_t *)0xE000ED38u)
-
 /* Event wakeup: the dispatch (fault/exception context) gives this when a program parks; the
  * coordinator takes it instead of busy-polling. ISR-safe k_sem_give. */
 K_SEM_DEFINE(g_lxp_ev, 0, 1);
@@ -957,7 +947,10 @@ static void zephyr_event_post(void)
 	 * self-switch (nothing higher became ready) is harmless. In thread context (the
 	 * coordinator's own cross-kill post) k_sem_give already reschedules, so skip. */
 	if (k_is_in_isr()) {
-		LXP_ICSR = LXP_PENDSVSET;
+		/* Writing the whole word is the documented idiom: the other writable ICSR
+		 * bits are write-1-to-act, so the zeros are no-ops. Zephyr's own
+		 * z_arm_exc_exit does `SCB->ICSR = SCB_ICSR_PENDSVSET_Msk`. */
+		LXP_CORTEX_M_SCB_ICSR = LXP_CORTEX_M_SCB_ICSR_PENDSVSET;
 	}
 }
 static void zephyr_event_wait(unsigned ms)
@@ -987,10 +980,10 @@ void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
 			volatile lxp_zephyr_fault_diag_t *diag = &g_lxp_zephyr_fault_diag[sidx];
 			diag->count++;
 			diag->reason = reason;
-			diag->cfsr = LXP_CFSR & 0x03ffffffu;
-			diag->hfsr = LXP_HFSR;
-			diag->mmfar = LXP_MMFAR;
-			diag->bfar = LXP_BFAR;
+			diag->cfsr = LXP_CORTEX_M_SCB_CFSR & 0x03ffffffu;
+			diag->hfsr = LXP_CORTEX_M_SCB_HFSR;
+			diag->mmfar = LXP_CORTEX_M_SCB_MMFAR;
+			diag->bfar = LXP_CORTEX_M_SCB_BFAR;
 			diag->pc = esf ? esf->basic.pc : 0u;
 			diag->suppressed_dump_lines =
 				g_guest_fault_dump_lines - g_guest_fault_dump_consumed;
@@ -998,9 +991,11 @@ void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
 
 			lxp_guest_fault_t fault = {
 				.detail = diag->cfsr ? diag->cfsr : reason,
-				.address = (diag->cfsr & (1u << 7))    ? diag->mmfar
-					   : (diag->cfsr & (1u << 15)) ? diag->bfar
-								       : 0u,
+				.address = (diag->cfsr & LXP_CORTEX_M_SCB_CFSR_MMARVALID)
+						   ? diag->mmfar
+					   : (diag->cfsr & LXP_CORTEX_M_SCB_CFSR_BFARVALID)
+						   ? diag->bfar
+						   : 0u,
 			};
 			(void)lxp_slot_report_memory_fault(task_slot_ref(sidx), &fault);
 			return;
