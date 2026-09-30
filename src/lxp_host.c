@@ -14,6 +14,44 @@
 
 #define LXP_HOST_INITIALIZED 0x4c585048u /* "LXPH" */
 
+#if defined(__GNUC__)
+#define LXP_HOST_MAY_ALIAS __attribute__((__may_alias__))
+#else
+#define LXP_HOST_MAY_ALIAS
+#endif
+
+/* The record behind the opaque lxp_host_t storage. */
+typedef struct LXP_HOST_MAY_ALIAS lxp_host_state {
+	lxp_providers_t providers;
+	const lxp_file_t *rootfs;
+	int rootfs_count;
+	const void *rootfs_image;
+	size_t rootfs_image_size;
+	lxp_netif_t netif;
+	char netfs_mountpoint[LXP_NETFS_MOUNTPOINT_CAP];
+	uint8_t netfs_server_ip[4];
+	uint16_t netfs_port;
+	char netfs_aname[LXP_NETFS_ANAME_CAP];
+	char netfs_uname[LXP_NETFS_UNAME_CAP];
+	uint32_t netfs_configured;
+	uint32_t initialized;
+} lxp_host_state_t;
+
+LXP_STATIC_ASSERT(sizeof(lxp_host_state_t) <= sizeof(lxp_host_t),
+		  "the host record outgrew LXP_HOST_STORAGE_WORDS");
+LXP_STATIC_ASSERT(_Alignof(lxp_host_state_t) <= _Alignof(lxp_host_t),
+		  "lxp_host_t storage is not aligned for the host record");
+
+static lxp_host_state_t *host_state(lxp_host_t *host)
+{
+	return (lxp_host_state_t *)(void *)host->_storage;
+}
+
+static const lxp_host_state_t *host_state_const(const lxp_host_t *host)
+{
+	return host ? (const lxp_host_state_t *)(const void *)host->_storage : NULL;
+}
+
 static void copy_config_string(char *dst, size_t capacity, const char *src)
 {
 	size_t len = src ? strlen(src) : 0u;
@@ -27,6 +65,7 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 	if (!host)
 		return LXP_ERR_INVALID_PARAM;
 	memset(host, 0, sizeof(*host));
+	lxp_host_state_t *state = host_state(host);
 	const lxp_os_ops_t *os_ops = config ? config->providers.os : NULL;
 	if (!os_ops || os_ops->abi_version != LXP_OS_OPS_ABI_VERSION ||
 	    os_ops->struct_size != sizeof(*os_ops) || !config->rootfs_image ||
@@ -66,56 +105,57 @@ int lxp_host_init_cpio(lxp_host_t *host, const lxp_host_config_t *config)
 	if (count <= 0)
 		return LXP_ERR_INVALID_PARAM;
 
-	host->providers = config->providers;
-	host->rootfs = config->rootfs_storage;
-	host->rootfs_count = count;
-	host->rootfs_image = config->rootfs_image;
-	host->rootfs_image_size = config->rootfs_image_size;
-	host->netif = config->netif;
+	state->providers = config->providers;
+	state->rootfs = config->rootfs_storage;
+	state->rootfs_count = count;
+	state->rootfs_image = config->rootfs_image;
+	state->rootfs_image_size = config->rootfs_image_size;
+	state->netif = config->netif;
 	if (config->netfs_config) {
-		copy_config_string(host->netfs_mountpoint, sizeof(host->netfs_mountpoint),
+		copy_config_string(state->netfs_mountpoint, sizeof(state->netfs_mountpoint),
 				   config->netfs_config->mountpoint);
-		memcpy(host->netfs_server_ip, config->netfs_config->server_ip,
-		       sizeof(host->netfs_server_ip));
-		host->netfs_port = config->netfs_config->port;
-		copy_config_string(host->netfs_aname, sizeof(host->netfs_aname),
+		memcpy(state->netfs_server_ip, config->netfs_config->server_ip,
+		       sizeof(state->netfs_server_ip));
+		state->netfs_port = config->netfs_config->port;
+		copy_config_string(state->netfs_aname, sizeof(state->netfs_aname),
 				   config->netfs_config->aname);
-		copy_config_string(host->netfs_uname, sizeof(host->netfs_uname),
+		copy_config_string(state->netfs_uname, sizeof(state->netfs_uname),
 				   (config->netfs_config->uname && config->netfs_config->uname[0])
 					   ? config->netfs_config->uname
 					   : "root");
-		host->netfs_configured = 1u;
+		state->netfs_configured = 1u;
 	}
-	host->initialized = LXP_HOST_INITIALIZED;
+	state->initialized = LXP_HOST_INITIALIZED;
 	return LXP_OK;
 }
 
 int lxp_host_run(const lxp_host_t *host, const lxp_launch_config_t *launch_config, const char *path,
 		 int argc, const char *const argv[])
 {
-	if (!host || host->initialized != LXP_HOST_INITIALIZED)
+	const lxp_host_state_t *state = host_state_const(host);
+	if (!state || state->initialized != LXP_HOST_INITIALIZED)
 		return LXP_ERR_INVALID_PARAM;
 	lxp_netfs_config_t netfs_config = {
-		.mountpoint = host->netfs_mountpoint,
-		.server_ip = {host->netfs_server_ip[0], host->netfs_server_ip[1],
-			      host->netfs_server_ip[2], host->netfs_server_ip[3]},
-		.port = host->netfs_port,
-		.aname = host->netfs_aname,
-		.uname = host->netfs_uname,
+		.mountpoint = state->netfs_mountpoint,
+		.server_ip = {state->netfs_server_ip[0], state->netfs_server_ip[1],
+			      state->netfs_server_ip[2], state->netfs_server_ip[3]},
+		.port = state->netfs_port,
+		.aname = state->netfs_aname,
+		.uname = state->netfs_uname,
 	};
 
 	lxp_run_config_t config = {
-		.rootfs = host->rootfs,
-		.rootfs_count = host->rootfs_count,
-		.rootfs_image = host->rootfs_image,
-		.rootfs_image_size = host->rootfs_image_size,
-		.netif = host->netif,
-		.netfs_config = host->netfs_configured ? &netfs_config : NULL,
+		.rootfs = state->rootfs,
+		.rootfs_count = state->rootfs_count,
+		.rootfs_image = state->rootfs_image,
+		.rootfs_image_size = state->rootfs_image_size,
+		.netif = state->netif,
+		.netfs_config = state->netfs_configured ? &netfs_config : NULL,
 	};
 	if (launch_config)
 		config.launch = *launch_config;
 
-	return lxp_run(&host->providers, &config, path, argc, argv);
+	return lxp_run(&state->providers, &config, path, argc, argv);
 }
 
 int lxp_host_observe(const lxp_host_t *host, lxp_host_observation_t *out)
@@ -123,7 +163,8 @@ int lxp_host_observe(const lxp_host_t *host, lxp_host_observation_t *out)
 	if (!out)
 		return LXP_ERR_INVALID_PARAM;
 	memset(out, 0, sizeof(*out));
-	if (!host || host->initialized != LXP_HOST_INITIALIZED)
+	const lxp_host_state_t *state = host_state_const(host);
+	if (!state || state->initialized != LXP_HOST_INITIALIZED)
 		return LXP_ERR_INVALID_PARAM;
 
 	out->abi_version = LXP_HOST_OBSERVATION_ABI_VERSION;
@@ -136,10 +177,10 @@ int lxp_host_observe(const lxp_host_t *host, lxp_host_observation_t *out)
 	lxp_diag_size_report(&out->sizes);
 	lxp_diag_health(&out->diagnostics);
 
-	if (host->providers.os->guest_stack_usage) {
+	if (state->providers.os->guest_stack_usage) {
 		size_t used = 0u;
 		size_t size = 0u;
-		if (host->providers.os->guest_stack_usage(&used, &size) == LXP_OK && size != 0u &&
+		if (state->providers.os->guest_stack_usage(&used, &size) == LXP_OK && size != 0u &&
 		    used <= size) {
 			out->guest_stack.used = used;
 			out->guest_stack.size = size;

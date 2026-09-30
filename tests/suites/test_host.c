@@ -273,10 +273,9 @@ static void test_host_parses_once_and_composes_each_launch(void **state)
 	assert_int_equal(g_capture.rootfs_window_calls, 1);
 	assert_ptr_equal(g_capture.rootfs_window_base, image);
 	assert_int_equal(g_capture.rootfs_window_size, image_size);
-	assert_int_equal(host.rootfs_count, 2);
-	assert_string_equal(host.rootfs[0].path, "/");
-	assert_string_equal(host.rootfs[1].path, "/bin/init");
-	assert_memory_equal(host.rootfs[1].data,
+	assert_string_equal(rootfs[0].path, "/");
+	assert_string_equal(rootfs[1].path, "/bin/init");
+	assert_memory_equal(rootfs[1].data,
 			    "\x7f"
 			    "ELF",
 			    4);
@@ -385,7 +384,6 @@ static void test_failed_reinit_clears_previous_host(void **state)
 	lxp_host_config_t bad = good;
 	bad.rootfs_image_size = 16u;
 	assert_int_equal(lxp_host_init_cpio(&host, &bad), LXP_ERR_INVALID_PARAM);
-	assert_int_equal(host.initialized, 0);
 	assert_int_equal(lxp_host_run(&host, NULL, "/bin/init", 1, NULL), LXP_ERR_INVALID_PARAM);
 }
 
@@ -435,7 +433,7 @@ static void test_host_rejects_invalid_topology_before_rootfs_access(void **state
 	memset(&g_capture, 0, sizeof(g_capture));
 	assert_int_equal(lxp_host_init_cpio(&host, &config), LXP_ERR_INVALID_PARAM);
 	assert_int_equal(g_capture.rootfs_window_calls, 0);
-	assert_int_equal(host.initialized, 0);
+	assert_int_equal(lxp_host_run(&host, NULL, "/bin/init", 1, NULL), LXP_ERR_INVALID_PARAM);
 
 	config.netfs_config = NULL;
 	config.providers.net = NULL;

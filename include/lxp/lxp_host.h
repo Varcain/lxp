@@ -41,23 +41,16 @@ typedef struct lxp_host_config {
 	const lxp_netfs_config_t *netfs_config;
 } lxp_host_config_t;
 
-/** Immutable, zero-heap host instance. Treat fields as read-only after a
- * successful @ref lxp_host_init_cpio call. Sequential launches may reuse one
+/** Pointer-width words of storage an @ref lxp_host_t reserves. The host's private record
+ * must fit (lxp_host.c asserts it); the rest is headroom, so the record can change without
+ * changing this size. */
+#define LXP_HOST_STORAGE_WORDS 72u
+
+/** Immutable, zero-heap host instance built by @ref lxp_host_init_cpio. Opaque: the caller
+ * provides its storage but never reads or copies it. Sequential launches may reuse one
  * instance; concurrent @ref lxp_host_run calls are not supported. */
 typedef struct lxp_host {
-	lxp_providers_t providers;
-	const lxp_file_t *rootfs;
-	int rootfs_count;
-	const void *rootfs_image;
-	size_t rootfs_image_size;
-	lxp_netif_t netif;
-	char netfs_mountpoint[LXP_NETFS_MOUNTPOINT_CAP];
-	uint8_t netfs_server_ip[4];
-	uint16_t netfs_port;
-	char netfs_aname[LXP_NETFS_ANAME_CAP];
-	char netfs_uname[LXP_NETFS_UNAME_CAP];
-	uint32_t netfs_configured;
-	uint32_t initialized;
+	uintptr_t _storage[LXP_HOST_STORAGE_WORDS];
 } lxp_host_t;
 
 /**
