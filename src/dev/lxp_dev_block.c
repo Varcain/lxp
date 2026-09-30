@@ -7,6 +7,7 @@
  */
 
 #include "lxp/lxp_config.h"
+#include "lxp_errno.h"
 
 #if LXP_ENABLE_BLOCK
 
@@ -150,7 +151,7 @@ static long block_open(struct lxp_dev *dev, struct lxp_dev_open *open, int flags
 			return -LXP_EBUSY;
 		int rc = g_lxp_block_ops->open(provider_flags);
 		if (rc != LXP_OK)
-			return lxp_provider_error(rc);
+			return lxp_errno_from_err(rc);
 		g_provider_writer = 1u;
 	} else {
 		if (g_provider_writer || g_provider_readers == UINT8_MAX)
@@ -158,7 +159,7 @@ static long block_open(struct lxp_dev *dev, struct lxp_dev_open *open, int flags
 		if (g_provider_readers == 0u) {
 			int rc = g_lxp_block_ops->open(0u);
 			if (rc != LXP_OK)
-				return lxp_provider_error(rc);
+				return lxp_errno_from_err(rc);
 		}
 		g_provider_readers++;
 	}
@@ -217,7 +218,7 @@ static long block_transfer(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_p
 	if (done > count)
 		return -LXP_EIO;
 	if (rc != LXP_OK)
-		return lxp_provider_error(rc);
+		return lxp_errno_from_err(rc);
 	open->pos += done;
 	return (long)done;
 }
@@ -266,7 +267,7 @@ static long block_reread(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_pro
 			return -LXP_EAGAIN;
 		if (rc != LXP_OK) {
 			g_reread_open = NULL;
-			return lxp_provider_error(rc);
+			return lxp_errno_from_err(rc);
 		}
 		open->u.block.reread_phase = 1u;
 	}
@@ -277,7 +278,7 @@ static long block_reread(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_pro
 	open->u.block.reread_phase = 0u;
 	g_reread_open = NULL;
 	if (rc != LXP_OK)
-		return lxp_provider_error(rc);
+		return lxp_errno_from_err(rc);
 	if (done != sizeof(g_mbr))
 		return -LXP_EIO;
 	parse_mbr();
@@ -327,7 +328,7 @@ static long block_sync(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_proc_
 	(void)dev;
 	(void)open;
 	block_select(proc);
-	return lxp_provider_error(g_lxp_block_ops->sync());
+	return lxp_errno_from_err(g_lxp_block_ops->sync());
 }
 
 static void block_cancel(struct lxp_dev *dev, struct lxp_dev_open *open, lxp_proc_t *proc)

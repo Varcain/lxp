@@ -17,6 +17,7 @@
  */
 
 #include "lxp/lxp_config.h"
+#include "lxp_errno.h"
 
 #if LXP_ENABLE_DEV_DMA2D
 
@@ -147,7 +148,7 @@ static long dma2d_ioctl(struct lxp_dev *d, struct lxp_dev_open *o, lxp_proc_t *p
 		long r = dma2d_prepare_op(p, &s, &op);
 		if (r)
 			return r;
-		return g_lxp_display_ops->dma2d_submit(&op);
+		return lxp_errno_from_err(g_lxp_display_ops->dma2d_submit(&op));
 	}
 
 	return -LXP_ENOTTY;

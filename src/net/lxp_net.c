@@ -19,6 +19,7 @@
  */
 
 #include "lxp/lxp_config.h"
+#include "lxp_errno.h"
 
 #if LXP_ENABLE_NET
 
@@ -77,38 +78,6 @@ static void addr_to_guest_sin(const lxp_sockaddr_t *oa, lxp_sockaddr_in *sin)
 	memcpy(&sin->sin_addr, oa->addr, 4);
 }
 
-/* Provider error -> negated Linux errno. LXP_ERR_TIMEOUT is the "would block"
- * signal from a non-blocking op and is handled by the caller before this. */
-static long net_errno_to_lnx(int e)
-{
-	switch (e) {
-	case LXP_OK:
-		return 0;
-	case LXP_ERR_NET_REFUSED:
-		return -LXP_ECONNREFUSED;
-	case LXP_ERR_NET_UNREACHABLE:
-		return -LXP_ENETUNREACH;
-	case LXP_ERR_NET_ADDR_IN_USE:
-		return -LXP_EADDRINUSE;
-	case LXP_ERR_NET_ADDR_NOT_AVAILABLE:
-		return -LXP_EADDRNOTAVAIL;
-	case LXP_ERR_NET_RESET:
-		return -LXP_ECONNRESET;
-	case LXP_ERR_NET_CLOSED:
-		return -LXP_EPIPE;
-	case LXP_ERR_TIMEOUT:
-		return -LXP_EAGAIN;
-	case LXP_ERR_INVALID_PARAM:
-		return -LXP_EINVAL;
-	case LXP_ERR_NO_MEMORY:
-		return -LXP_ENOMEM;
-	case LXP_ERR_NET_DNS_FAIL:
-	case LXP_ERR_NOT_SUPPORTED:
-	default:
-		return -LXP_EOPNOTSUPP;
-	}
-}
-
 /* Copy an lxp_sockaddr_t out to a guest (sockaddr*, socklen_t*) pair, honouring
  * the caller's buffer cap and writing back the untruncated size (Linux semantics). */
 static long copy_sockaddr_out(lxp_proc_t *p, void *uaddr, void *uaddrlen, const lxp_sockaddr_t *oa)
@@ -159,7 +128,7 @@ long lxp_sock_new(int domain, int type, int protocol)
 	memset(o, 0, sizeof(*o));
 	int r = g_lxp_net_ops->sock_open(LXP_AF_INET, ot, proto, &o->sock);
 	if (r != LXP_OK)
-		return net_errno_to_lnx(r);
+		return lxp_net_errno_from_err(r);
 	/* Drive blocking via the coordinator's park/retry: keep the backing socket
 	 * non-blocking so every op returns at once (a 0 timeout is NOT uniformly
 	 * non-blocking — some backends map it to SO_RCVTIMEO = block-forever). */
@@ -167,7 +136,7 @@ long lxp_sock_new(int domain, int type, int protocol)
 	if (r != LXP_OK) {
 		g_lxp_net_ops->sock_close(o->sock);
 		memset(o, 0, sizeof(*o));
-		return net_errno_to_lnx(r);
+		return lxp_net_errno_from_err(r);
 	}
 	o->used = 1;
 	o->type = (uint8_t)ot;
@@ -208,7 +177,7 @@ static long sock_connect_poll(struct sock_open *o)
 		return -LXP_EAGAIN; /* still connecting */
 	int se = g_lxp_net_ops->sock_get_error(o->sock);
 	o->connecting = 0;
-	return se == LXP_OK ? 0 : net_errno_to_lnx(se);
+	return se == LXP_OK ? 0 : lxp_net_errno_from_err(se);
 }
 
 /* Send @p len bytes (to @p dest when set): the bytes sent, or a negated errno. */
@@ -220,7 +189,7 @@ static long sock_try_send(struct sock_open *o, const void *buf, size_t len,
 		     : g_lxp_net_ops->sock_send(o->sock, buf, len, &sent);
 	if (r == LXP_OK)
 		return (long)sent;
-	return r == LXP_ERR_TIMEOUT ? -LXP_EAGAIN : net_errno_to_lnx(r);
+	return lxp_net_errno_from_err(r);
 }
 
 /* Receive up to @p len bytes, filling the guest's source address when @p usrc is set:
@@ -240,7 +209,7 @@ static long sock_try_recv(lxp_proc_t *p, struct sock_open *o, void *buf, size_t 
 	}
 	if (r == LXP_ERR_NET_CLOSED)
 		return 0;
-	return r == LXP_ERR_TIMEOUT ? -LXP_EAGAIN : net_errno_to_lnx(r);
+	return lxp_net_errno_from_err(r);
 }
 
 long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen)
@@ -291,7 +260,7 @@ long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen
 		};
 		return lxp_wait_park(p, &wait); /* parked */
 	}
-	return net_errno_to_lnx(r);
+	return lxp_net_errno_from_err(r);
 }
 
 long lxp_sock_bind(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen)
@@ -307,7 +276,7 @@ long lxp_sock_bind(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen)
 		return -LXP_EAFNOSUPPORT;
 	lxp_sockaddr_t oa;
 	guest_sin_to_addr(&sin, &oa);
-	return net_errno_to_lnx(g_lxp_net_ops->sock_bind(o->sock, &oa));
+	return lxp_net_errno_from_err(g_lxp_net_ops->sock_bind(o->sock, &oa));
 }
 
 long lxp_sock_listen(int oi, int backlog)
@@ -315,7 +284,7 @@ long lxp_sock_listen(int oi, int backlog)
 	struct sock_open *o = open_slot(oi);
 	if (!o)
 		return -LXP_EBADF;
-	return net_errno_to_lnx(g_lxp_net_ops->sock_listen(o->sock, backlog));
+	return lxp_net_errno_from_err(g_lxp_net_ops->sock_listen(o->sock, backlog));
 }
 
 /* Accept one pending connection on listen slot @lo into a fresh pool slot + fd.
@@ -338,12 +307,12 @@ static long do_accept(lxp_proc_t *p, struct sock_open *lo, void *uaddr, void *ua
 	if (r == LXP_ERR_TIMEOUT)
 		return -LXP_EAGAIN; /* no pending connection (non-blocking listen socket) */
 	if (r != LXP_OK)
-		return net_errno_to_lnx(r);
+		return lxp_net_errno_from_err(r);
 	r = g_lxp_net_ops->sock_set_nonblock(co->sock, 1);
 	if (r != LXP_OK) {
 		g_lxp_net_ops->sock_close(co->sock);
 		memset(co, 0, sizeof(*co));
-		return net_errno_to_lnx(r);
+		return lxp_net_errno_from_err(r);
 	}
 	co->used = 1;
 	if (flags & LXP_SOCK_NONBLOCK)
@@ -468,7 +437,7 @@ long lxp_sock_sendmsg(lxp_proc_t *p, int oi, const lxp_iovec *iov, int iovcnt, i
 		return (long)sent;
 	if (r == LXP_ERR_TIMEOUT)
 		return -LXP_EAGAIN; /* a datagram send does not park */
-	return net_errno_to_lnx(r);
+	return lxp_net_errno_from_err(r);
 }
 
 long lxp_sock_recv(lxp_proc_t *p, int oi, void *ubuf, size_t len, int flags, void *usrc,
@@ -504,7 +473,7 @@ long lxp_sock_shutdown(int oi, int how)
 	if (!o)
 		return -LXP_EBADF;
 	int oh = (how == 0) ? LXP_SHUT_RD : (how == 1) ? LXP_SHUT_WR : LXP_SHUT_RDWR;
-	return net_errno_to_lnx(g_lxp_net_ops->sock_shutdown(o->sock, oh));
+	return lxp_net_errno_from_err(g_lxp_net_ops->sock_shutdown(o->sock, oh));
 }
 
 long lxp_sock_getsockname(lxp_proc_t *p, int oi, void *uaddr, void *uaddrlen)
@@ -515,7 +484,7 @@ long lxp_sock_getsockname(lxp_proc_t *p, int oi, void *uaddr, void *uaddrlen)
 	lxp_sockaddr_t oa;
 	int r = g_lxp_net_ops->sock_getsockname(o->sock, &oa);
 	if (r != LXP_OK)
-		return net_errno_to_lnx(r);
+		return lxp_net_errno_from_err(r);
 	return copy_sockaddr_out(p, uaddr, uaddrlen, &oa);
 }
 
@@ -527,7 +496,7 @@ long lxp_sock_getpeername(lxp_proc_t *p, int oi, void *uaddr, void *uaddrlen)
 	lxp_sockaddr_t oa;
 	int r = g_lxp_net_ops->sock_getpeername(o->sock, &oa);
 	if (r != LXP_OK)
-		return net_errno_to_lnx(r);
+		return lxp_net_errno_from_err(r);
 	return copy_sockaddr_out(p, uaddr, uaddrlen, &oa);
 }
 
@@ -542,7 +511,7 @@ long lxp_sock_getsockopt(lxp_proc_t *p, int oi, int level, int optname, void *uv
 	int val = 0;
 	if (level == LXP_SOL_SOCKET && optname == LXP_SO_ERROR) {
 		int se = g_lxp_net_ops->sock_get_error(o->sock);
-		val = (int)(-net_errno_to_lnx(se)); /* positive Linux errno, or 0 */
+		val = (int)(-lxp_net_errno_from_err(se)); /* positive Linux errno, or 0 */
 	}
 	/* Other accepted options report their emulated zero value. */
 	uint32_t n = cap < sizeof(int) ? cap : (uint32_t)sizeof(int);
@@ -692,7 +661,7 @@ static long sock_route(lxp_proc_t *p, unsigned long req, unsigned long arg)
 			memcpy(gw.addr, &route.rt_gateway.sin_addr, 4); /* set gw */
 		/* SIOCDELRT leaves gw all-zero (clears it). */
 		int r = g_lxp_net_ops->netif_set_addr(g_lnx_netif, NULL, NULL, &gw);
-		return r == LXP_OK ? 0 : net_errno_to_lnx(r);
+		return r == LXP_OK ? 0 : lxp_net_errno_from_err(r);
 	}
 	return 0; /* non-default routes: accept, nothing to program on a one-hop link */
 }
@@ -760,7 +729,7 @@ long lxp_sock_ioctl(lxp_proc_t *p, unsigned long req, unsigned long arg)
 		int r = (req == LXP_SIOCSIFADDR)
 				? g_lxp_net_ops->netif_set_addr(nif, &sa, NULL, NULL)
 				: g_lxp_net_ops->netif_set_addr(nif, NULL, &sa, NULL);
-		result = r == LXP_OK ? 0 : net_errno_to_lnx(r);
+		result = r == LXP_OK ? 0 : lxp_net_errno_from_err(r);
 		break;
 	}
 	case LXP_SIOCGIFHWADDR: {

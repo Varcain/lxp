@@ -7,6 +7,7 @@
  * host-owned writable filesystem provider.
  */
 #include "lxp/lxp_config.h"
+#include "lxp_errno.h"
 
 #if LXP_ENABLE_FS
 
@@ -76,7 +77,7 @@ static void hostfs_select(lxp_proc_t *proc)
 static long hostfs_result(lxp_proc_t *proc, int result)
 {
 	if (result != LXP_ERR_WOULD_BLOCK)
-		return result == LXP_OK ? 0 : lxp_provider_error(result);
+		return result == LXP_OK ? 0 : lxp_errno_from_err(result);
 	if (!proc || g_hostfs_syscall.proc != proc)
 		return -LXP_EAGAIN;
 	if (proc->wait.kind == LXP_WAIT_HOSTFS)
@@ -250,7 +251,7 @@ long lxp_hostfs_read(lxp_proc_t *proc, int index, void *buf, size_t len)
 		return hostfs_result(proc, rc);
 	if (done > len)
 		return -LXP_EIO;
-	return rc == LXP_OK || rc == LXP_ERR_EOF ? (long)done : lxp_provider_error(rc);
+	return rc == LXP_OK || rc == LXP_ERR_EOF ? (long)done : lxp_errno_from_err(rc);
 }
 
 long lxp_hostfs_write(lxp_proc_t *proc, int index, const void *buf, size_t len)
@@ -269,7 +270,7 @@ long lxp_hostfs_write(lxp_proc_t *proc, int index, const void *buf, size_t len)
 		return hostfs_result(proc, rc);
 	if (done > len)
 		return -LXP_EIO;
-	return rc == LXP_OK ? (long)done : lxp_provider_error(rc);
+	return rc == LXP_OK ? (long)done : lxp_errno_from_err(rc);
 }
 
 int64_t lxp_hostfs_seek(lxp_proc_t *proc, int index, int64_t offset, int whence)
@@ -310,7 +311,7 @@ static long hostfs_positioned(lxp_proc_t *proc, int index, void *buf, size_t len
 		return hostfs_result(proc, rc);
 	if (done > len)
 		return -LXP_EIO;
-	return rc == LXP_OK || (!write && rc == LXP_ERR_EOF) ? (long)done : lxp_provider_error(rc);
+	return rc == LXP_OK || (!write && rc == LXP_ERR_EOF) ? (long)done : lxp_errno_from_err(rc);
 }
 
 long lxp_hostfs_pread(lxp_proc_t *proc, int index, void *buf, size_t len, uint64_t offset)
@@ -371,7 +372,7 @@ long lxp_hostfs_sync_all(void)
 			continue;
 		hostfs_select(NULL);
 		int native = g_lxp_fs_ops->file_sync(g_hostfs_open[i].handle.file);
-		long rc = native == LXP_OK ? 0 : lxp_provider_error(native);
+		long rc = native == LXP_OK ? 0 : lxp_errno_from_err(native);
 		if (rc < 0)
 			return rc;
 	}
@@ -489,7 +490,7 @@ long lxp_hostfs_dir_peek(lxp_proc_t *proc, int index, const lxp_fs_dirent_t **en
 		if (rc == LXP_ERR_EOF)
 			return 0;
 		if (rc != LXP_OK)
-			return lxp_provider_error(rc);
+			return lxp_errno_from_err(rc);
 		slot->pending.name[LXP_FS_NAME_MAX - 1u] = '\0';
 		slot->has_pending = 1;
 	}

@@ -20,6 +20,7 @@ get_filename_component(LXP_SOURCE_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(LXP_CORE_SOURCES
     "${LXP_SOURCE_ROOT}/src/lxp_syscall.c"
     "${LXP_SOURCE_ROOT}/src/lxp_bootstrap.c"
+    "${LXP_SOURCE_ROOT}/src/lxp_errno.c"
     "${LXP_SOURCE_ROOT}/src/lxp_guest.c"
     "${LXP_SOURCE_ROOT}/src/lxp_provider.c"
     "${LXP_SOURCE_ROOT}/src/fs/lxp_console.c"

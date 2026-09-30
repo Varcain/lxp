@@ -38,7 +38,4 @@ void lxp_providers_clear(void);
  * NULL between runs. */
 void lxp_os_publish(const lxp_os_ops_t *ops);
 
-/* Translate the engine-neutral provider result space to Linux errno. */
-long lxp_provider_error(int result);
-
 #endif /* LXP_PROVIDER_H */
