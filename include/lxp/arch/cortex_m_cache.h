@@ -17,6 +17,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lxp/arch/cortex_m_scb.h"
+
 struct lxp_cortex_m_cache_geometry {
 	uint32_t l1_type;
 	size_t d_line_size;
@@ -86,16 +88,6 @@ static inline int lxp_cortex_m_cache_line_span(uintptr_t base, size_t len, size_
 
 #define LXP_CORTEX_M_SCB_CCR_DC (1u << 16)
 #define LXP_CORTEX_M_SCB_CCR_IC (1u << 17)
-
-static inline void lxp_cortex_m_dsb(void)
-{
-	__asm volatile("dsb 0xf" ::: "memory");
-}
-
-static inline void lxp_cortex_m_isb(void)
-{
-	__asm volatile("isb 0xf" ::: "memory");
-}
 
 static inline uint32_t lxp_cortex_m_ccsidr_read(uint32_t csselr)
 {

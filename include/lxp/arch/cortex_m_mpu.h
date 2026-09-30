@@ -74,6 +74,23 @@ static inline int lxp_cortex_m_mpu_region_decode(uint32_t rbar, uint32_t rasr,
 	return 0;
 }
 
+/** Encode an enabled region's RASR, the inverse of lxp_cortex_m_mpu_region_decode():
+ *  @p size bytes (a power of two from 32 bytes to 4 GiB), access permission @p access,
+ *  memory type @p texscb (TEX:S:C:B), execute-never when @p execute_never, and the
+ *  subregion-disable mask @p subregion_disable. 0 for a size RASR cannot express. */
+static inline uint32_t lxp_cortex_m_mpu_rasr(uint64_t size, uint8_t access, uint8_t texscb,
+					     int execute_never, uint8_t subregion_disable)
+{
+	if (size < 32u || size > (UINT64_C(1) << 32) || (size & (size - 1u)) != 0u)
+		return 0u;
+	uint32_t size_field = 0u;
+	while ((UINT64_C(1) << (size_field + 1u)) < size)
+		size_field++;
+	return 1u | (size_field << 1) | ((uint32_t)subregion_disable << 8) |
+	       ((uint32_t)(texscb & 0x3fu) << 16) | ((uint32_t)(access & 7u) << 24) |
+	       ((execute_never ? 1u : 0u) << 28);
+}
+
 static inline int lxp_cortex_m_mpu_region_contains(const struct lxp_cortex_m_mpu_region *region,
 						   uintptr_t base, size_t len)
 {
