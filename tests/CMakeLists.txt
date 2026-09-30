@@ -24,13 +24,13 @@ include("${LXP_ROOT}/cmake/lxp_sources.cmake")
 # Module TUs the suites exercise. NOT src/lxp_run.c (the coordinator) — its OS-service
 # hooks come from tests/stub_lnx_run.c instead.
 # Use the canonical non-coordinator group so host coverage cannot drift from the
-# firmware inventory. The coordinator hooks used by lxp_signal.c come from the
-# test fixtures; coordinator policy has its own target below.
+# firmware inventory; coordinator policy has its own target below.
 set(LXP_TEST_MODULE_SRC ${LXP_NON_COORDINATOR_SOURCES})
 
 add_executable(lxp_test_stub
   ${LXP_TEST_MODULE_SRC}
   "${LXP_ROOT}/ports/posix/lxp_port_posix.c"  # g_lxp_net_ops over BSD sockets + netif
+  "${LXP_ROOT}/src/lxp_signal.c"  # frame delivery, against test_signal.c's coordinator stubs
   "${CMAKE_CURRENT_SOURCE_DIR}/stub_lnx_run.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/stub_main.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/suites/test_arena.c"

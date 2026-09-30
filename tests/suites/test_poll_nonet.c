@@ -21,26 +21,12 @@
 #include "framework/lxp_proc_fixture.h"
 #include "fs/lxp_poll.h"
 #include "lxp/lxp_seam.h"
-#include "lxp_run_internal.h" /* struct sig_save_stack_s, slot_of, park_frame */
 
 #if LXP_ENABLE_NET || !LXP_ENABLE_PTY
 #error "this suite checks the build with networking off and ptys on"
 #endif
 
 #define SC(...) lxp_syscall(__VA_ARGS__)
-
-/* lxp_signal.c's coordinator symbols (lxp_run.c is not linked; see test_signal.c). */
-struct sig_save_stack_s g_lxp_sig_save[LXP_NSLOT];
-int slot_of(const lxp_proc_t *p)
-{
-	(void)p;
-	return 0;
-}
-void park_frame(struct lxp_frame *f, lxp_proc_t *proc)
-{
-	(void)f;
-	(void)proc;
-}
 
 static long poll_pump(lxp_proc_t *p)
 {

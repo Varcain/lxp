@@ -24,8 +24,8 @@ set_property(CACHE LXP_FUZZ_ENGINE PROPERTY STRINGS libfuzzer replay afl)
 set(LXP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 include("${LXP_ROOT}/cmake/lxp_sources.cmake")
 
-# Same canonical non-coordinator group as the host tests. Coordinator hooks come
-# from tests/stub_lnx_run.c + fuzz_stubs.c.
+# Same canonical non-coordinator group as the host tests. The coordinator services
+# the core calls come from tests/stub_lnx_run.c.
 set(FUZZ_MODULE_SRC ${LXP_NON_COORDINATOR_SOURCES})
 
 # ---- engine -> compile / link flag sets --------------------------------------
@@ -66,8 +66,7 @@ message(STATUS "lxp fuzz: engine=${LXP_FUZZ_ENGINE} compiler=${CMAKE_C_COMPILER_
 add_library(lxp_fuzz_obj OBJECT
   ${FUZZ_MODULE_SRC}
   "${LXP_ROOT}/ports/posix/lxp_port_posix.c"   # g_lxp_net_ops over BSD sockets
-  "${LXP_ROOT}/tests/stub_lnx_run.c"           # clock + no-op cache/flush + mock display
-  "${CMAKE_CURRENT_SOURCE_DIR}/fuzz_stubs.c")  # g_lxp_sig_save / slot_of / park_frame
+  "${LXP_ROOT}/tests/stub_lnx_run.c")          # clock + no-op cache/flush + mock display
 target_include_directories(lxp_fuzz_obj PUBLIC "${LXP_ROOT}/include" "${LXP_ROOT}/src")
 target_compile_definitions(lxp_fuzz_obj PUBLIC
   LXP_ENABLE_DEV=1 LXP_ENABLE_PTY=1 LXP_ENABLE_NET=1 LXP_ENABLE_NETFS=1

@@ -1,7 +1,10 @@
 # Copyright (C) 2026 Kamil Lulko <kamil.lulko@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Canonical LXP translation-unit inventory.
+# Canonical LXP translation-unit inventory, grouped by what each unit depends on:
+# the core needs only the provider contract (plus the few coordinator services in
+# src/lxp_internal.h, which host tests stub), the coordinator needs the core and an
+# engine, and the port-support units need nothing.
 #
 # Standalone builds, embedding firmware, host tests, and fuzzers import these
 # feature groups instead of independently rediscovering or copying the source
@@ -12,7 +15,9 @@ include_guard(GLOBAL)
 
 get_filename_component(LXP_SOURCE_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
-set(LXP_RUNTIME_SOURCES
+# The personality core: syscalls, the VFS, processes, signal policy, the provider
+# wrappers, the process snapshot, the arena allocator and the program loader.
+set(LXP_CORE_SOURCES
     "${LXP_SOURCE_ROOT}/src/lxp_syscall.c"
     "${LXP_SOURCE_ROOT}/src/lxp_bootstrap.c"
     "${LXP_SOURCE_ROOT}/src/lxp_guest.c"
@@ -46,12 +51,17 @@ set(LXP_RUNTIME_SOURCES
     "${LXP_SOURCE_ROOT}/src/sys/lxp_sys_proc.c"
     "${LXP_SOURCE_ROOT}/src/sys/lxp_sys_signal.c"
     "${LXP_SOURCE_ROOT}/src/sys/lxp_sys_time.c"
+    "${LXP_SOURCE_ROOT}/src/lxp_arena.c"
+    "${LXP_SOURCE_ROOT}/src/lxp_loader.c"
+    "${LXP_SOURCE_ROOT}/src/lxp_stats.c"
 )
 
+# The run-loop coordinator: the trap, the event loop and its units, the host API and
+# delivery of a signal onto a guest's trap frame.
 set(LXP_COORDINATOR_SOURCES
-    "${LXP_SOURCE_ROOT}/src/lxp_async_gate.c"
     "${LXP_SOURCE_ROOT}/src/lxp_host.c"
     "${LXP_SOURCE_ROOT}/src/lxp_run.c"
+    "${LXP_SOURCE_ROOT}/src/lxp_signal.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_blocked.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_child.c"
     "${LXP_SOURCE_ROOT}/src/run/lxp_console_input.c"
@@ -71,20 +81,12 @@ set(LXP_COORDINATOR_SOURCES
     "${LXP_SOURCE_ROOT}/src/run/lxp_validate.c"
 )
 
-set(LXP_POST_COORDINATOR_SOURCES
-    "${LXP_SOURCE_ROOT}/src/lxp_signal.c"
-    "${LXP_SOURCE_ROOT}/src/lxp_stats.c"
-)
-set(LXP_UTILITY_SOURCES
+# Self-contained units that ports and hosts link beside the core: the asynchronous
+# completion gate and the latency and real-time metrics recorders.
+set(LXP_PORT_SUPPORT_SOURCES
+    "${LXP_SOURCE_ROOT}/src/lxp_async_gate.c"
     "${LXP_SOURCE_ROOT}/src/lxp_latency.c"
     "${LXP_SOURCE_ROOT}/src/lxp_rt_metrics.c"
-    "${LXP_SOURCE_ROOT}/src/lxp_arena.c"
-    "${LXP_SOURCE_ROOT}/src/lxp_loader.c"
-)
-set(LXP_BASE_SOURCES
-    ${LXP_RUNTIME_SOURCES}
-    ${LXP_POST_COORDINATOR_SOURCES}
-    ${LXP_UTILITY_SOURCES}
 )
 
 set(LXP_DEV_SOURCES
@@ -124,16 +126,23 @@ set(LXP_OPTIONAL_SOURCES
     ${LXP_PTY_SOURCES}
 )
 set(LXP_NON_COORDINATOR_SOURCES
-    ${LXP_BASE_SOURCES}
+    ${LXP_CORE_SOURCES}
+    ${LXP_PORT_SUPPORT_SOURCES}
     ${LXP_OPTIONAL_SOURCES}
 )
 set(LXP_ALL_SOURCES
-    ${LXP_RUNTIME_SOURCES}
+    ${LXP_CORE_SOURCES}
     ${LXP_COORDINATOR_SOURCES}
-    ${LXP_POST_COORDINATOR_SOURCES}
-    ${LXP_UTILITY_SOURCES}
+    ${LXP_PORT_SUPPORT_SOURCES}
     ${LXP_OPTIONAL_SOURCES}
 )
+
+# The previous group names, kept for consumers until they move to the groups above.
+# Together they still name every non-optional unit exactly once.
+set(LXP_RUNTIME_SOURCES ${LXP_CORE_SOURCES})
+set(LXP_POST_COORDINATOR_SOURCES)
+set(LXP_UTILITY_SOURCES ${LXP_PORT_SUPPORT_SOURCES})
+set(LXP_BASE_SOURCES ${LXP_CORE_SOURCES} ${LXP_PORT_SUPPORT_SOURCES})
 
 # Fail closed when a translation unit is added without an ownership decision.
 # CONFIGURE_DEPENDS makes supported generators re-run this check after src/
