@@ -20,8 +20,7 @@
 #include "lxp_syscall.h"
 #include "lxp_provider.h"
 #include "fs/lxp_poll.h"
-/* The POSIX reference port provides the synthetic netif bound for one run. */
-lxp_netif_t lxp_posix_netif(void);
+#include "lxp/ports/posix.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>

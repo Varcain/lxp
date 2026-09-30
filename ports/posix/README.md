@@ -13,8 +13,8 @@ hooks the host tests need come from `tests/stub_lnx_run.c`.
 
 | Entry point | Declared in | Provides |
 |---|---|---|
-| `lxp_posix_net_ops()` | `include/lxp/lxp_port_posix.h` | The immutable `lxp_net_ops_t`: TCP and UDP sockets, blocking with timeouts, non-blocking mode, `poll`, `shutdown`, name queries. |
-| `lxp_posix_netif()` | the port source | A synthetic `eth0` for `ifconfig`-style ioctls: loopback 127.0.0.1/8 and up, with a fixed MAC; the setters change it in memory. |
+| `lxp_posix_net_ops()` | `include/lxp/ports/posix.h` | The immutable `lxp_net_ops_t`: TCP and UDP sockets, blocking with timeouts, non-blocking mode, `poll`, `shutdown`, name queries. |
+| `lxp_posix_netif()` | `include/lxp/ports/posix.h` | A synthetic `eth0` for `ifconfig`-style ioctls: loopback 127.0.0.1/8 and up, with a fixed MAC; the setters change it in memory. |
 
 Socket handles come from a fixed pool of `LXP_NSOCK` entries, plus one for the 9P client when
 netfs is built, emptied at `run_begin` and `run_end`. Host `errno` values are translated to

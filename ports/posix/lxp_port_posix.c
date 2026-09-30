@@ -13,7 +13,7 @@
 #include "lxp/lxp_config.h"
 #include "lxp/lxp_net_ops.h"
 #include "lxp/lxp_port.h"
-#include "lxp/lxp_port_posix.h"
+#include "lxp/ports/posix.h"
 #include "lxp/lxp_types.h"
 
 #include <arpa/inet.h>
@@ -359,7 +359,6 @@ struct lxp_netif {
 };
 static struct lxp_netif g_posix_netif = {.ip = {127, 0, 0, 1}, .nm = {255, 0, 0, 0}, .up = 1};
 
-/* Synthetic handle a host can bind to one run for eth0 SIOC* ioctls. */
 lxp_netif_t lxp_posix_netif(void)
 {
 	return &g_posix_netif;

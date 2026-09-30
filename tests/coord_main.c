@@ -17,7 +17,7 @@
 #include <cmocka.h>
 
 #include "framework/lxp_mock_engine.h"
-#include "lxp/lxp_port_posix.h"
+#include "lxp/ports/posix.h"
 
 #define LXP_COORD_SUITES(X) X(lifecycle) X(fork_exec) X(signal) X(futex) X(console) X(diag) X(run)
 
