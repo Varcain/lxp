@@ -22,7 +22,7 @@ reuse the existing `-DLXP_SANITIZE=ON` ASan/UBSan flags.
 | `fuzz_syscall` | `lxp_syscall`           | syscall dispatcher — the `lxp_guest_access_ok` pointer gate |
 
 Stateful lifecycle protocol coverage lives beside these byte-oriented
-harnesses in `tests/suites/test_run_coord.c`. Its bounded command generator
+harnesses in `tests/suites/test_coord_lifecycle.c`. Its bounded command generator
 enumerates park, timeout, signal, exit, slot-reuse, and stale-completion
 sequences and validates the whole coordinator world after every legal
 transition. Keeping it in the coordinator test binary lets the commands drive

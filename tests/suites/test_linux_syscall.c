@@ -96,7 +96,7 @@ static void test_lnx_niceness(void **state)
 	assert_int_equal(lxp_nice_weight(-20), 40);
 	assert_int_equal(lxp_nice_weight(19), 1);
 	/* nice(2) moves the value by its increment, clamped to [-20, 19]; get/setpriority
-	 * are answered by the coordinator (test_run_coord.c). */
+	 * are answered by the coordinator (test_coord_lifecycle.c). */
 	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, -7, 0, 0, 0, 0, 0), 0);
 	assert_int_equal(lxp_proc_nice_get(&p), -7);
 	assert_int_equal(lxp_syscall(&p, LXP_NR_nice, 50, 0, 0, 0, 0, 0), 0);
