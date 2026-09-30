@@ -88,9 +88,6 @@ typedef struct lxp_zephyr_critical_metrics {
 /** Supplied exactly once by the embedding system. */
 extern const lxp_zephyr_port_config_t g_lxp_zephyr_port_config;
 
-/** Engine table owned by this port and consumed by the host composition. */
-extern const lxp_os_ops_t g_lxp_host_engine;
-
 /** Bounded post-mortem records for contained unprivileged guest faults. */
 extern volatile lxp_zephyr_fault_diag_t g_lxp_zephyr_fault_diag[LXP_NSLOT];
 

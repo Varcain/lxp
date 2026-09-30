@@ -90,7 +90,4 @@ typedef struct lxp_nuttx_port_config {
 /** Supplied exactly once by the embedding system. */
 extern const lxp_nuttx_port_config_t g_lxp_nuttx_port_config;
 
-/** Engine table owned by this port and consumed by the host composition. */
-extern const lxp_os_ops_t g_lxp_host_engine;
-
 #endif /* LXP_PORTS_NUTTX_H */

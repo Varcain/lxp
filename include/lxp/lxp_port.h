@@ -271,6 +271,10 @@ typedef struct lxp_os_ops {
 	int (*guest_stack_usage)(size_t *used, size_t *size);
 } lxp_os_ops_t;
 
+/** The engine table of the one OS port linked into the image. The port defines it; the
+ *  embedding system passes it as lxp_providers_t.os. */
+extern const lxp_os_ops_t g_lxp_host_engine;
+
 #ifdef __cplusplus
 }
 #endif
