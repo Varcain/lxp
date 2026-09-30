@@ -68,10 +68,11 @@
 #include "lxp/lxp_seam.h"
 #include "lxp/ports/nuttx.h"
 
+#include "../common/lxp_cortex_m_port.h"
+
 #define PORT_CONFIG g_lxp_nuttx_port_config
-#define dyn_pools ((uint8_t (*)[LXP_DYN_POOL_SIZE])(void *)PORT_CONFIG.dynamic_pools)
-#define prog_regions ((uint8_t (*)[LXP_PROG_REGION_SIZE])(void *)PORT_CONFIG.program_regions)
-#define g_exec_captures (PORT_CONFIG.exec_captures)
+#define dyn_pools ((uint8_t (*)[LXP_DYN_POOL_SIZE])(void *)PORT_CONFIG.common.dynamic_pools)
+#define prog_regions ((uint8_t (*)[LXP_PROG_REGION_SIZE])(void *)PORT_CONFIG.common.program_regions)
 
 /* NuttX's own SVCall handler — chained (not patched) for non-Linux svcs.
  * Declared in arch/arm/src/common/arm_internal.h (off the app include path);
@@ -122,18 +123,6 @@ extern dq_queue_t g_stoppedtasks;
 #define LXP_EXC_RETURN_THREAD \
 	(LXP_EXC_RETURN_BASE | LXP_EXC_RETURN_STACK | LXP_EXC_RETURN_FPU | (1u << 3))
 
-/* nxtask_init stores struct tls_info_s at stack_alloc_ptr and NuttX later
- * trusts its cancellation, cleanup, errno, and task-info fields. Keep that
- * allocation outside every unprivileged guest MPU range. The task never
- * executes ordinary code on this substrate stack: spawn_task() relocates the
- * initial ARM exception frame to the guest PSP before activation. The validated
- * 1 KiB minimum leaves room for TLS, argv metadata, and the full FPU frame. */
-static uint8_t *nuttx_exec_stage(size_t *cap)
-{
-	if (cap)
-		*cap = PORT_CONFIG.exec_stage_size;
-	return PORT_CONFIG.exec_stage;
-}
 
 static struct task_tcb_s g_tcb[LXP_NSLOT];
 static pid_t g_guest_budget_pid = -1;
@@ -332,22 +321,6 @@ static int lxp_svc_handler(int irq, void *context, void *arg)
 }
 
 /* ---- the vtable: NuttX task spawn ------------------------------------------ */
-static uint8_t *nuttx_region(int ridx)
-{
-	return prog_regions[ridx];
-}
-
-static uint8_t *nuttx_dyn_pool(int ridx, size_t *size)
-{
-	if (size)
-		*size = LXP_DYN_POOL_SIZE;
-	return dyn_pools[ridx];
-}
-
-static lxp_exec_capture_t *nuttx_exec_capture(int sidx)
-{
-	return (sidx >= 0 && sidx < LXP_NSLOT) ? &g_exec_captures[sidx] : NULL;
-}
 
 /* map_device: prepare one of this slot's two UNPRIVILEGED device MPU
  * ranges. Programming the hardware here would make the mapping global until
@@ -459,6 +432,13 @@ static int spawn_task(int sidx, uintptr_t guest_sp)
 	g_tcb[sidx].cmn.flags = TCB_FLAG_TTYPE_TASK; /* static TCB: no FREE_TCB/FREE_STACK */
 	char nm[6];
 	lxp_slot_name(nm, sidx); /* diagnostic only; attribution uses the task PID */
+	/* nxtask_init stores struct tls_info_s at stack_alloc_ptr and NuttX later
+	 * trusts its cancellation, cleanup, errno, and task-info fields, so the host
+	 * keeps that allocation outside every unprivileged guest MPU range. The task
+	 * never executes ordinary code on this substrate stack: the initial ARM
+	 * exception frame is relocated to the guest PSP below, before activation. The
+	 * validated 1 KiB minimum leaves room for TLS, argv metadata, and the full
+	 * FPU frame. */
 	uint8_t *slot_stack =
 		PORT_CONFIG.slot_stacks + (size_t)sidx * PORT_CONFIG.slot_stack_stride;
 	if (nxtask_init(&g_tcb[sidx], nm, PORT_CONFIG.guest_priority, slot_stack,
@@ -479,21 +459,6 @@ static int spawn_task(int sidx, uintptr_t guest_sp)
  * publisher derives the live line geometry and maintains only those lines,
  * without an RTOS range API that may escalate to a whole-cache operation.
  */
-static int nuttx_publish_executable(lxp_region_ref_t address_space, uintptr_t text_lo,
-				    size_t text_size)
-{
-	int ridx = address_space.index;
-	if (ridx < 0 || ridx >= LXP_NREG || address_space.generation == 0 || text_size == 0)
-		return LXP_ERR_INVALID_PARAM;
-	uintptr_t region_lo = (uintptr_t)prog_regions[ridx];
-	if (text_lo != region_lo || text_size != LXP_PROG_REGION_SIZE / 2u)
-		return LXP_ERR_INVALID_PARAM;
-
-	if (PORT_CONFIG.cache_geometry &&
-	    lxp_cortex_m_publish_executable(PORT_CONFIG.cache_geometry, text_lo, text_size) != 0)
-		return LXP_ERR_INVALID_PARAM;
-	return LXP_OK;
-}
 
 static int nuttx_spawn_launch(int sidx, uint32_t generation, int ridx,
 			      const lxp_guest_launch_t *launch)
@@ -770,7 +735,7 @@ static int32_t slot_for_pid(uintptr_t identity)
  * when some low-activity host threads remain represented by threads-overflow. */
 static int nuttx_thread_list(struct lxp_thread_info *o, size_t m, size_t *n)
 {
-	if ((!o && m != 0u) || !n || !PORT_CONFIG.host_thread_list)
+	if ((!o && m != 0u) || !n || !PORT_CONFIG.common.thread_list)
 		return LXP_ERR_INVALID_PARAM;
 	size_t guest_count = 0;
 	for (int s = 0; s < LXP_NSLOT; s++)
@@ -779,7 +744,7 @@ static int nuttx_thread_list(struct lxp_thread_info *o, size_t m, size_t *n)
 	size_t host_limit = guest_count < m ? m - guest_count : 0;
 	size_t local_n = 0;
 	size_t *written = n ? n : &local_n;
-	int rc = PORT_CONFIG.host_thread_list(o, host_limit, written, slot_for_pid);
+	int rc = PORT_CONFIG.common.thread_list(o, host_limit, written, slot_for_pid);
 	size_t raw_count = *written < host_limit ? *written : host_limit;
 	size_t count = 0;
 
@@ -820,41 +785,22 @@ static int nuttx_thread_list(struct lxp_thread_info *o, size_t m, size_t *n)
 	return rc;
 }
 
-static int nuttx_time_us(uint64_t *out)
-{
-	return PORT_CONFIG.time_us ? PORT_CONFIG.time_us(out) : LXP_ERR_NOT_SUPPORTED;
-}
-
-static int nuttx_time_ns(uint64_t *out)
-{
-	return PORT_CONFIG.time_ns ? PORT_CONFIG.time_ns(out) : LXP_ERR_NOT_SUPPORTED;
-}
-
-static int nuttx_mem_stats(struct lxp_mem_stats *out)
-{
-	return PORT_CONFIG.mem_stats ? PORT_CONFIG.mem_stats(out) : LXP_ERR_NOT_SUPPORTED;
-}
-
-static const char *nuttx_system_version(void)
-{
-	return PORT_CONFIG.system_version ? PORT_CONFIG.system_version
-					  : "NuttX " CONFIG_VERSION_STRING;
-}
-
 /* Defined at end of file (they reference the MPU / IRQ helpers declared below);
  * the module's lxp_run() invokes them via g_lxp_host_engine.prepare/.teardown. */
 static int nuttx_prepare(void);
 static void nuttx_teardown(void);
 static int nuttx_validate_memory_contract(const lxp_cpu_memory_contract_t *declared);
 
+const lxp_cortex_m_port_common_t *const g_lxp_cortex_m_port_common = &PORT_CONFIG.common;
+
 const lxp_os_ops_t g_lxp_host_engine = {
 	.abi_version = LXP_OS_OPS_ABI_VERSION,
 	.struct_size = sizeof(lxp_os_ops_t),
 	.prepare = nuttx_prepare,
 	.teardown = nuttx_teardown,
-	.region = nuttx_region,
-	.dyn_pool = nuttx_dyn_pool,
-	.exec_capture = nuttx_exec_capture,
+	.region = lxp_cortex_m_port_region,
+	.dyn_pool = lxp_cortex_m_port_dyn_pool,
+	.exec_capture = lxp_cortex_m_port_exec_capture,
 	.map_device = nuttx_map_device,
 	.spawn_launch = nuttx_spawn_launch,
 	.spawn_resume = nuttx_spawn_resume,
@@ -868,18 +814,18 @@ const lxp_os_ops_t g_lxp_host_engine = {
 	.event_wait = nuttx_event_wait,
 	/* Ordinary CPU accesses are coherent because region 1 and the per-guest
 	 * overlays use matching attributes. Device/DMA transfers remain explicit. */
-	.time_us = nuttx_time_us,
-	.time_ns = nuttx_time_ns,
+	.time_us = lxp_cortex_m_port_time_us,
+	.time_ns = lxp_cortex_m_port_time_ns,
 	.thread_list = nuttx_thread_list,
-	.mem_stats = nuttx_mem_stats,
-	.system_version = nuttx_system_version,
-	.publish_executable = nuttx_publish_executable,
-	.cpu_memory_contract = &PORT_CONFIG.cpu_memory_contract,
+	.mem_stats = lxp_cortex_m_port_mem_stats,
+	.system_version = lxp_cortex_m_port_system_version,
+	.publish_executable = lxp_cortex_m_port_publish_executable,
+	.cpu_memory_contract = &PORT_CONFIG.common.cpu_memory_contract,
 	.validate_memory_contract = nuttx_validate_memory_contract,
 	.random_fill =
 		nuttx_random_fill, /* REQUIRED: without it exec() can't seed AT_RANDOM → no launch */
 #if LXP_ENABLE_NETFS_EXEC
-	.exec_stage = nuttx_exec_stage,
+	.exec_stage = lxp_cortex_m_port_exec_stage,
 #endif
 };
 
@@ -1024,12 +970,12 @@ static int nuttx_prepare_profile(int sidx, const lxp_memory_policy_t *policy)
 	}
 	prepared->rbar[0] = (uint32_t)program_base;
 	prepared->rasr[0] = (1u << 0) | LXP_MPU_RASR_SIZE(writable_size) |
-			    ((uint32_t)PORT_CONFIG.guest_memory_texscb << 16) | (0x3u << 24) |
-			    (1u << 28);
+			    ((uint32_t)PORT_CONFIG.common.guest_memory_texscb << 16) |
+			    (0x3u << 24) | (1u << 28);
 	prepared->rbar[1] = (uint32_t)(uintptr_t)dyn_pools[ridx];
 	prepared->rasr[1] = (1u << 0) | LXP_MPU_RASR_SIZE(LXP_DYN_POOL_SIZE) |
-			    ((uint32_t)PORT_CONFIG.guest_memory_texscb << 16) | (0x3u << 24) |
-			    (1u << 28);
+			    ((uint32_t)PORT_CONFIG.common.guest_memory_texscb << 16) |
+			    (0x3u << 24) | (1u << 28);
 
 	unsigned caps = 0;
 	for (unsigned i = 0; i < LXP_DEVICE_MPU_COUNT; i++) {
@@ -1052,21 +998,21 @@ static int nuttx_prepare_profile(int sidx, const lxp_memory_policy_t *policy)
 		 * code runs. AP=2 therefore keeps privileged write access for a later
 		 * reload while granting the guest read-only execution. */
 		prepared->rasr[4] = (1u << 0) | LXP_MPU_RASR_SIZE(policy->copied_text_size) |
-				    ((uint32_t)PORT_CONFIG.guest_memory_texscb << 16) |
+				    ((uint32_t)PORT_CONFIG.common.guest_memory_texscb << 16) |
 				    (0x2u << 24);
 	}
 
 	const struct lxp_cortex_m_mpu_expectation program = {
 		.base = program_base,
 		.size = writable_size,
-		.texscb = PORT_CONFIG.guest_memory_texscb,
+		.texscb = PORT_CONFIG.common.guest_memory_texscb,
 		.access = 3u,
 		.execute_never = 1u,
 	};
 	const struct lxp_cortex_m_mpu_expectation dynamic = {
 		.base = (uintptr_t)dyn_pools[ridx],
 		.size = LXP_DYN_POOL_SIZE,
-		.texscb = PORT_CONFIG.guest_memory_texscb,
+		.texscb = PORT_CONFIG.common.guest_memory_texscb,
 		.access = 3u,
 		.execute_never = 1u,
 	};
@@ -1094,7 +1040,7 @@ static int nuttx_prepare_profile(int sidx, const lxp_memory_policy_t *policy)
 		const struct lxp_cortex_m_mpu_expectation executable = {
 			.base = policy->copied_text_base,
 			.size = policy->copied_text_size,
-			.texscb = PORT_CONFIG.guest_memory_texscb,
+			.texscb = PORT_CONFIG.common.guest_memory_texscb,
 			.access = 2u,
 			.execute_never = 0u,
 		};
@@ -1296,53 +1242,41 @@ static int nuttx_region_config_valid(const lxp_nuttx_mpu_region_t *region, int r
 
 static int nuttx_port_config_valid(void)
 {
+	const uintptr_t programs = (uintptr_t)PORT_CONFIG.common.program_regions;
+	const uintptr_t pools = (uintptr_t)PORT_CONFIG.common.dynamic_pools;
 	const size_t program_bytes = (size_t)LXP_NREG * LXP_PROG_REGION_SIZE;
 	const size_t dynamic_bytes = (size_t)LXP_NREG * LXP_DYN_POOL_SIZE;
 	if (PORT_CONFIG.abi_version != LXP_NUTTX_PORT_CONFIG_ABI_VERSION ||
-	    PORT_CONFIG.struct_size != sizeof(PORT_CONFIG) || !PORT_CONFIG.program_regions ||
-	    PORT_CONFIG.program_region_stride != LXP_PROG_REGION_SIZE ||
-	    PORT_CONFIG.program_region_count < LXP_NREG || !PORT_CONFIG.dynamic_pools ||
-	    PORT_CONFIG.dynamic_pool_stride != LXP_DYN_POOL_SIZE ||
-	    PORT_CONFIG.dynamic_pool_count < LXP_NREG || !PORT_CONFIG.exec_captures ||
-	    PORT_CONFIG.exec_capture_count < LXP_NSLOT || !PORT_CONFIG.slot_stacks ||
+	    PORT_CONFIG.struct_size != sizeof(PORT_CONFIG) || !lxp_cortex_m_port_config_valid() ||
+	    !PORT_CONFIG.common.thread_list || !PORT_CONFIG.slot_stacks ||
 	    PORT_CONFIG.slot_stack_stride < PORT_CONFIG.slot_stack_size ||
 	    PORT_CONFIG.slot_stack_size < 1024u || PORT_CONFIG.slot_stack_count < LXP_NSLOT ||
 	    PORT_CONFIG.guest_priority == 0u ||
-	    PORT_CONFIG.trusted_tcb_base >= PORT_CONFIG.trusted_tcb_end || !PORT_CONFIG.time_us ||
-	    !PORT_CONFIG.time_ns || !PORT_CONFIG.host_thread_list || !PORT_CONFIG.mem_stats ||
-	    !PORT_CONFIG.system_version || !PORT_CONFIG.validate_memory_contract ||
+	    PORT_CONFIG.trusted_tcb_base >= PORT_CONFIG.trusted_tcb_end ||
 	    !nuttx_region_config_valid(&PORT_CONFIG.code_region, 1) ||
 	    !nuttx_region_config_valid(&PORT_CONFIG.pool_region, 1) ||
 	    !nuttx_region_config_valid(&PORT_CONFIG.rootfs_region, 0) ||
-	    PORT_CONFIG.pool_region.texscb != PORT_CONFIG.guest_memory_texscb ||
-	    ((uintptr_t)PORT_CONFIG.program_regions & (LXP_PROG_REGION_SIZE - 1u)) != 0u ||
-	    ((uintptr_t)PORT_CONFIG.dynamic_pools & (LXP_DYN_POOL_SIZE - 1u)) != 0u ||
+	    PORT_CONFIG.pool_region.texscb != PORT_CONFIG.common.guest_memory_texscb ||
+	    (programs & (LXP_PROG_REGION_SIZE - 1u)) != 0u ||
+	    (pools & (LXP_DYN_POOL_SIZE - 1u)) != 0u ||
 	    (uintptr_t)g_tcb < PORT_CONFIG.trusted_tcb_base ||
 	    (uintptr_t)g_tcb + sizeof(g_tcb) > PORT_CONFIG.trusted_tcb_end ||
 	    lxp_range_overlaps(PORT_CONFIG.code_region.base, PORT_CONFIG.code_region.size,
 				 PORT_CONFIG.pool_region.base, PORT_CONFIG.pool_region.size) ||
-	    lxp_range_overlaps((uintptr_t)PORT_CONFIG.program_regions, program_bytes,
-				 (uintptr_t)PORT_CONFIG.dynamic_pools, dynamic_bytes) ||
 	    (PORT_CONFIG.rootfs_region.enabled &&
 	     (lxp_range_overlaps(PORT_CONFIG.rootfs_region.base, PORT_CONFIG.rootfs_region.size,
 				   PORT_CONFIG.code_region.base, PORT_CONFIG.code_region.size) ||
 	      lxp_range_overlaps(PORT_CONFIG.rootfs_region.base, PORT_CONFIG.rootfs_region.size,
 				   PORT_CONFIG.pool_region.base, PORT_CONFIG.pool_region.size))))
 		return 0;
-#if LXP_ENABLE_NETFS_EXEC
-	if (!PORT_CONFIG.exec_stage || PORT_CONFIG.exec_stage_size == 0u)
-		return 0;
-#endif
 	struct lxp_cortex_m_mpu_region pool = {
 		.base = (uint32_t)PORT_CONFIG.pool_region.base,
 		.size = PORT_CONFIG.pool_region.size,
 		.subregion_disable = PORT_CONFIG.pool_region.subregion_disable,
 		.enabled = 1u,
 	};
-	return lxp_cortex_m_mpu_region_contains(&pool, (uintptr_t)PORT_CONFIG.program_regions,
-						program_bytes) &&
-	       lxp_cortex_m_mpu_region_contains(&pool, (uintptr_t)PORT_CONFIG.dynamic_pools,
-						dynamic_bytes);
+	return lxp_cortex_m_mpu_region_contains(&pool, programs, program_bytes) &&
+	       lxp_cortex_m_mpu_region_contains(&pool, pools, dynamic_bytes);
 }
 
 /* Per-run bring-up / teardown (was the body of the old lxp_run() wrapper). The
@@ -1352,10 +1286,10 @@ static int nuttx_prepare(void)
 {
 	if (!nuttx_port_config_valid())
 		return LXP_ERR_INVALID_PARAM;
-	if (PORT_CONFIG.cache_geometry &&
-	    lxp_cortex_m_cache_geometry_read(PORT_CONFIG.cache_geometry) != 0)
-		return LXP_ERR_NOT_SUPPORTED; /* a cache hierarchy the port cannot maintain */
-	int rc = PORT_CONFIG.host_prepare ? PORT_CONFIG.host_prepare() : LXP_OK;
+	int rc = lxp_cortex_m_port_cache_prepare();
+	if (rc != LXP_OK)
+		return rc;
+	rc = lxp_cortex_m_port_host_prepare();
 	if (rc != LXP_OK)
 		return rc;
 	g_irq_install_mask = 0;
@@ -1408,10 +1342,10 @@ static int nuttx_validate_static_mpu(void)
 	    !lxp_cortex_m_mpu_region_matches(&snapshot.regions[1], pool->base, pool->size,
 					     pool->subregion_disable, pool->texscb, 1u, 1u) ||
 	    !lxp_cortex_m_mpu_region_contains(&snapshot.regions[1],
-					      (uintptr_t)PORT_CONFIG.program_regions,
+					      (uintptr_t)PORT_CONFIG.common.program_regions,
 					      (size_t)LXP_NREG * LXP_PROG_REGION_SIZE) ||
 	    !lxp_cortex_m_mpu_region_contains(&snapshot.regions[1],
-					      (uintptr_t)PORT_CONFIG.dynamic_pools,
+					      (uintptr_t)PORT_CONFIG.common.dynamic_pools,
 					      (size_t)LXP_NREG * LXP_DYN_POOL_SIZE))
 		return 0;
 	if (rootfs->enabled)
@@ -1423,9 +1357,9 @@ static int nuttx_validate_static_mpu(void)
 
 static int nuttx_validate_memory_contract(const lxp_cpu_memory_contract_t *declared)
 {
-	if (declared != &PORT_CONFIG.cpu_memory_contract || !nuttx_validate_static_mpu())
+	if (!nuttx_validate_static_mpu())
 		return LXP_ERR_INVALID_PARAM;
-	return PORT_CONFIG.validate_memory_contract(declared, PORT_CONFIG.cache_geometry);
+	return lxp_cortex_m_port_validate_memory_contract(declared);
 }
 
 static void nuttx_teardown(void)

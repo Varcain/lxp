@@ -8,7 +8,11 @@ The embedding product supplies one immutable `lxp_nuttx_port_config_t`. It
 contains physical storage placement, static MPU regions and memory attributes,
 trusted TCB bounds, native priority, time/thread/memory providers, version
 text, optional accounting callbacks, and the live memory-contract validator.
-No oveRTOS board or application symbols are referenced by the port.
+The part every Cortex-M port shares is its `.common` member
+(`lxp_cortex_m_port_common_t`, `include/lxp/ports/cortex_m.h`), served by
+`ports/common/lxp_cortex_m_port.c`, which a build selecting this port compiles
+beside `lxp_nuttx_port.c`. No oveRTOS board or application symbols are
+referenced by the port.
 
 The port deliberately has four NuttX-internal dependencies because the public
 NuttX API cannot express the required operations: `arm_svcall`,
