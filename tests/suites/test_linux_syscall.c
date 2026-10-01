@@ -828,6 +828,42 @@ static void test_lnx_tmpfs(void **state)
 			 -LXP_ENOENT);
 }
 
+/* Unlinking a closed file returns its bytes to the pool: `cp` of a large file into /tmp
+ * followed by `rm` must leave room for the next file and for a symlink. */
+static void test_lnx_tmpfs_unlink_reclaims_bytes(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup_proc(&p, &arena);
+	lxp_proc_set_rootfs(&p, k_rootfs, K_ROOTFS_N);
+
+	static char chunk[4096];
+	memset(chunk, 'x', sizeof(chunk));
+	const size_t total = 3u * LXP_WFS_POOL / 4u; /* most of the pool, as a big cp does */
+	for (int round = 0; round < 3; round++) {
+		long fd = lxp_syscall(&p, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)"/tmp/big",
+				      LXP_O_WRONLY | LXP_O_CREAT | LXP_O_TRUNC, 0644, 0, 0);
+		assert_true(fd >= 3);
+		for (size_t done = 0; done < total; done += sizeof(chunk)) {
+			size_t n = total - done < sizeof(chunk) ? total - done : sizeof(chunk);
+			assert_int_equal(lxp_syscall(&p, LXP_NR_write, fd, (long)(uintptr_t)chunk,
+						     (long)n, 0, 0, 0),
+					 (long)n);
+		}
+		assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
+		assert_int_equal(lxp_syscall(&p, LXP_NR_unlinkat, LXP_AT_FDCWD,
+					     (long)(uintptr_t)"/tmp/big", 0, 0, 0, 0),
+				 0);
+		assert_int_equal(lxp_syscall(&p, LXP_NR_symlinkat, (long)(uintptr_t)"/etc/passwd",
+					     LXP_AT_FDCWD, (long)(uintptr_t)"/tmp/link", 0, 0, 0),
+				 0);
+		assert_int_equal(lxp_syscall(&p, LXP_NR_unlinkat, LXP_AT_FDCWD,
+					     (long)(uintptr_t)"/tmp/link", 0, 0, 0, 0),
+				 0);
+	}
+}
+
 /* unlink removes the name but an existing open-file description keeps the
  * inode and bytes alive. SQLite opens and immediately unlinks temp databases. */
 static void test_lnx_tmpfs_unlink_open(void **state)
@@ -1369,6 +1405,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_exec_capture_is_per_proc),
 		cmocka_unit_test(test_lnx_fcntl_getfl_access_mode),
 		cmocka_unit_test(test_lnx_tmpfs),
+		cmocka_unit_test(test_lnx_tmpfs_unlink_reclaims_bytes),
 		cmocka_unit_test(test_lnx_tmpfs_unlink_open),
 		cmocka_unit_test(test_lnx_getdents),
 		cmocka_unit_test(test_lnx_execve),

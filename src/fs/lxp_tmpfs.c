@@ -100,8 +100,10 @@ int lxp_wfs_reserve(int i, size_t need)
 		g_wfs_ready = 1;
 	}
 	uint8_t *nd = lxp_arena_realloc(&g_wfs_arena, w->data, ncap);
-	if (!nd && ncap != mincap)
-		nd = lxp_arena_realloc(&g_wfs_arena, w->data, mincap);
+	if (!nd && ncap != mincap) {
+		ncap = mincap; /* the geometric step did not fit; take exactly what is needed */
+		nd = lxp_arena_realloc(&g_wfs_arena, w->data, ncap);
+	}
 	if (!nd)
 		return -1;
 	w->data = nd;
