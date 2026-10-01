@@ -168,9 +168,13 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 			f->r[0] = 0; /* kill() succeeds; the run loop stops next iteration */
 			return;
 		}
-		/* Self-signal (tkill/tgkill, or kill to own pid) is delivered inline. */
+		/* Self-signal (tkill/tgkill, or kill to own pid) is delivered inline. Signal 0
+		 * only probes that the target exists, and the caller does. */
 		if (nr != LXP_NR_kill || target == proc->pid) {
-			lxp_deliver_signal(f, proc, sig, 0);
+			if (sig == 0)
+				f->r[0] = 0;
+			else
+				lxp_deliver_signal(f, proc, sig, 0);
 			return;
 		}
 		/* Latch a cross-process signal on the target proc(s); it is
@@ -180,6 +184,16 @@ void lxp_trap_dispatch(struct lxp_frame *f, lxp_proc_t *proc)
 		 * all (but init). Skips the sender + init; an explicit self-signal took the inline
 		 * path above. */
 		int recipients = lxp_signal_send(proc, target > 0 ? target : 0, want_pgid, sig);
+		/* A process-group target includes the caller when it belongs to that group, as on
+		 * Linux; only the kill(-1) broadcast leaves the caller out. The other members
+		 * were latched above; the caller takes its signal here, inline. */
+		if (target <= 0 && target != -1 && proc->group && proc->group->pgid == want_pgid) {
+			if (sig == 0)
+				f->r[0] = 0;
+			else
+				lxp_deliver_signal(f, proc, sig, 0);
+			return;
+		}
 		f->r[0] = recipients ? 0 : -LXP_ESRCH;
 		return;
 	}

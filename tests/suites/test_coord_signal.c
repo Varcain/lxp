@@ -243,6 +243,52 @@ static void test_kill_targets_process_group(void **state)
 	assert_false(g_lxp_rt.slots[2].proc.pending_sigs & bit); /* pgid 3, not in group 2 */
 }
 
+/* A group target includes the caller when it is in that group: `sh -c 'kill 0'` running alone
+ * in its job's group must signal itself, not fail with ESRCH. Signal 0 to oneself succeeds. */
+static void test_kill_group_includes_caller(void **state)
+{
+	(void)state;
+	/* init(1,1) and a lone shell(2,2): no other process shares the shell's group. */
+	g_lxp_rt.slots[0].proc.alive = 1;
+	g_lxp_rt.slots[0].proc.pid = 1;
+	g_lxp_rt.slots[0].proc.group->pgid = 1;
+	lxp_proc_t *shell = &g_lxp_rt.slots[1].proc;
+	shell->alive = 1;
+	shell->pid = 2;
+	shell->group->pgid = 2;
+
+	struct lxp_frame f;
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_kill;
+	f.r[0] = 0; /* kill(0, 0): probe the caller's own group */
+	f.r[1] = 0;
+	lxp_trap_dispatch(&f, shell);
+	assert_int_equal((int32_t)f.r[0], 0);
+
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_kill;
+	f.r[0] = 2; /* kill(getpid(), 0) */
+	f.r[1] = 0;
+	lxp_trap_dispatch(&f, shell);
+	assert_int_equal((int32_t)f.r[0], 0);
+
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_kill;
+	f.r[0] = (uint32_t)-1; /* the broadcast leaves the caller out; only init is left */
+	f.r[1] = LXP_SIGTERM;
+	lxp_trap_dispatch(&f, shell);
+	assert_int_equal((int32_t)f.r[0], -LXP_ESRCH);
+	assert_int_equal(shell->exit_status, 0);
+
+	memset(&f, 0, sizeof(f));
+	f.r[7] = LXP_NR_kill;
+	f.r[0] = 0; /* kill(0, SIGTERM) with the default action terminates the caller */
+	f.r[1] = LXP_SIGTERM;
+	lxp_trap_dispatch(&f, shell);
+	assert_int_equal(shell->exit_status, 128 + LXP_SIGTERM);
+	assert_false(g_lxp_rt.slots[0].proc.pending_sigs & lxp_sig_bit(LXP_SIGTERM));
+}
+
 /* setpgid(0,pgid)/getpgrp track a real per-proc group; setsid makes the caller a leader. */
 static void test_setpgid_getpgrp_track_group(void **state)
 {
@@ -650,6 +696,7 @@ int test_coord_signal_run(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test_setup(test_kill_targets_process_group, reset_state),
+		cmocka_unit_test_setup(test_kill_group_includes_caller, reset_state),
 		cmocka_unit_test_setup(test_setpgid_getpgrp_track_group, reset_state),
 		cmocka_unit_test_setup(test_running_stop_parks_at_boundary_and_continues,
 				       reset_state),
