@@ -202,6 +202,7 @@ static const lxp_file_t g_rootfs[] = {
 	ROOTFS_LINK("/bin/sh", "busybox"),
 	ROOTFS_DIR("/data"),
 	ROOTFS_DIR("/dev"),
+	ROOTFS_DIR("/dev/pts"),
 	ROOTFS_DIR("/etc"),
 	ROOTFS_FILE("/etc/hosts", g_hosts, LXP_S_IFREG | 0644u),
 	ROOTFS_LINK("/etclink", "etc"),
@@ -664,6 +665,42 @@ static void test_dev_nodes_stat_as_devices(void **state)
 	world_end(&g_proc);
 }
 
+/* /dev/pts lists each live pty slave by the inode stat reports for it: ttyname(3) scans
+ * that listing for the fd's device, so a slave missing from it has no name. */
+static void test_pts_directory_lists_slaves(void **state)
+{
+	(void)state;
+	lxp_conf_t *fx = world_begin(&g_proc);
+	assert_non_null(fx);
+	uint8_t *buf = lxp_conf_alloc(fx, 256);
+	uint32_t *ptn = lxp_conf_alloc(fx, sizeof(*ptn));
+	long master = call(&g_proc, LXP_NR_openat, LXP_AT_FDCWD,
+			   (long)(uintptr_t)lxp_conf_str(fx, "/dev/ptmx"), LXP_O_RDWR, 0);
+	assert_true(master >= 0);
+	assert_int_equal(
+		call(&g_proc, LXP_NR_ioctl, master, (long)LXP_TIOCGPTN, (long)(uintptr_t)ptn, 0), 0);
+	char num[12];
+	snprintf(num, sizeof(num), "%u", *ptn);
+	char name[24];
+	snprintf(name, sizeof(name), "/dev/pts/%u", *ptn);
+	assert_int_equal(call(&g_proc, LXP_NR_stat64, (long)(uintptr_t)lxp_conf_str(fx, name),
+			      (long)(uintptr_t)buf, 0, 0),
+			 0);
+	uint64_t ino = lxp_view_kstat64(buf).ino;
+
+	long dir = call(&g_proc, LXP_NR_openat, LXP_AT_FDCWD,
+			(long)(uintptr_t)lxp_conf_str(fx, "/dev/pts"),
+			LXP_O_RDONLY | LXP_O_DIRECTORY, 0);
+	assert_true(dir >= 0);
+	long n = call(&g_proc, LXP_NR_getdents64, dir, (long)(uintptr_t)buf, 256, 0);
+	assert_true(n > 0);
+	assert_int_equal(lxp_view_dirent64_ino(buf, n, num), ino);
+
+	assert_int_equal(call(&g_proc, LXP_NR_close, dir, 0, 0, 0), 0);
+	assert_int_equal(call(&g_proc, LXP_NR_close, master, 0, 0, 0), 0);
+	world_end(&g_proc);
+}
+
 /* chdir through a rootfs symlink lands where it leads, so relative paths resolve from the
  * real directory. */
 static void test_chdir_follows_symlinks(void **state)
@@ -821,6 +858,7 @@ int test_path_routing_run(void)
 		cmocka_unit_test(test_route_namespace_operations),
 		cmocka_unit_test(test_route_lookups),
 		cmocka_unit_test(test_dev_nodes_stat_as_devices),
+		cmocka_unit_test(test_pts_directory_lists_slaves),
 		cmocka_unit_test(test_chdir_follows_symlinks),
 		cmocka_unit_test(test_exec_from_tmpfs),
 		cmocka_unit_test(test_at_calls_resolve_from_dirfd),

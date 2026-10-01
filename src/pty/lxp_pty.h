@@ -40,6 +40,10 @@ long lxp_pty_open_master(int flags);
  *  fd's @c file_idx) or a negative errno. @p flags carries O_NONBLOCK. */
 long lxp_pty_open_slave(int num, int flags);
 
+/* Each login holds one pty pair (a master + a slave), so two pairs allow two concurrent
+ * SSH logins; their numbers N (/dev/pts/N) are 0 .. LXP_NPTY - 1. */
+#define LXP_NPTY 2
+
 /** Whether pty @p num is allocated, i.e. whether /dev/pts/N exists. */
 int lxp_pty_exists(int num);
 

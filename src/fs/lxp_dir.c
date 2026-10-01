@@ -7,7 +7,7 @@
  * Directory listings of the local namespace. A rootfs, tmpfs or /proc directory
  * lists the union of everything below its path: rootfs entries, writable-overlay
  * nodes (which shadow rootfs entries of the same path), the host mount point,
- * registered devices and synthetic /proc entries.
+ * registered devices, the live /dev/pts slaves and synthetic /proc entries.
  */
 #include "fs/lxp_dir.h"
 
@@ -25,6 +25,9 @@
 #endif
 #if LXP_ENABLE_FS
 #include "fs/lxp_hostfs.h"
+#endif
+#if LXP_ENABLE_PTY
+#include "pty/lxp_pty.h"
 #endif
 
 #include <string.h>
@@ -106,6 +109,21 @@ long lxp_dir_list(lxp_proc_t *p, lxp_ofd_t *s, const char *dirpath, lxp_dirent_s
 		if (!name)
 			continue;
 		if (!dirent_emit(sink, &pos, s, LXP_INO_DEV + (uint64_t)i, name, dmode))
+			full = 1;
+	}
+#endif
+#if LXP_ENABLE_PTY
+	/* the live pty slaves, as devfs answers /dev/pts/N (ttyname(3) scans this list) */
+	for (int n = 0; strcmp(dirpath, "/dev/pts") == 0 && n < LXP_NPTY && !full; n++) {
+		if (!lxp_pty_exists(n))
+			continue;
+		struct lxp_stat st;
+		lxp_pty_stat(n, 0, &st);
+		char num[12];
+		lxp_text_t num_text = lxp_text_make(num, sizeof(num) - 1);
+		lxp_text_u64(&num_text, (uint64_t)n);
+		num[num_text.length] = '\0';
+		if (!dirent_emit(sink, &pos, s, st.ino, num, st.mode))
 			full = 1;
 	}
 #endif
