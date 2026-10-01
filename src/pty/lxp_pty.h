@@ -72,8 +72,11 @@ int lxp_pty_nonblock(int idx, int is_master);
 /** fcntl F_SETFL for an FD_PTY end (tracks O_NONBLOCK). */
 void lxp_pty_setfl(int idx, int is_master, int flags);
 
-/** fstat(2): report a character device (S_IFCHR) with zero size. */
-void lxp_pty_fstat(uint32_t *mode, uint64_t *size);
+struct lxp_stat;
+/** stat(2) of pty @p idx's end: the slave is /dev/pts/N (char 136:N), the master reports
+ *  /dev/ptmx's device (char 5:2). stat of /dev/pts/N and fstat of its open slave agree, which
+ *  ttyname(3) relies on. */
+void lxp_pty_stat(int idx, int is_master, struct lxp_stat *st);
 
 /** Retry a parked pty read/write for the run-loop coordinator; bytes / 0 (EOF) /
  *  @c -LXP_EAGAIN while still blocked. */

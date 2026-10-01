@@ -152,9 +152,7 @@ static long devfs_stat(lxp_proc_t *p, const char *path, int follow, struct lxp_s
 	if (num >= 0) {
 		if (!lxp_pty_exists(num))
 			return -LXP_ENOENT;
-		uint64_t size;
-		lxp_pty_fstat(&st->mode, &size); /* as fstat reports an open end */
-		devfs_node(st, LXP_INO_PTY + (uint32_t)num, st->mode, 136, (uint32_t)num);
+		lxp_pty_stat(num, 0, st); /* as fstat reports the open slave */
 		return 0;
 	}
 #endif

@@ -293,10 +293,10 @@ unsigned lxp_pty_poll(int idx, int is_master)
 	return r;
 }
 
-void lxp_pty_fstat(uint32_t *mode, uint64_t *size)
+void lxp_pty_stat(int idx, int is_master, struct lxp_stat *st)
 {
-	*mode = LXP_S_IFCHR | 0620u;
-	*size = 0;
+	lxp_stat_init(st, LXP_INO_PTY + (uint32_t)idx, LXP_S_IFCHR | 0620u, 0);
+	st->rdev = is_master ? ((5u << 8) | 2u) : ((136u << 8) | (uint32_t)idx);
 }
 
 int lxp_pty_nonblock(int idx, int is_master)
@@ -443,10 +443,7 @@ static long fop_write_pty(lxp_proc_t *p, lxp_ofd_t *s, const void *buf, size_t l
 static long fop_fstat_pty(lxp_proc_t *p, lxp_ofd_t *s, struct lxp_stat *st)
 {
 	(void)p;
-	uint32_t mode;
-	uint64_t size;
-	lxp_pty_fstat(&mode, &size); /* S_IFCHR so isatty() → interactive shell */
-	lxp_stat_init(st, LXP_INO_PTY + (uint32_t)s->file_idx, mode, size);
+	lxp_pty_stat(s->file_idx, s->rw, st); /* S_IFCHR so isatty() → interactive shell */
 	return 0;
 }
 

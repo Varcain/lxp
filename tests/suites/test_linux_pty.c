@@ -9,11 +9,12 @@
  * SVC, no run loop) to exercise the FD_PTY routing + the in-kernel line
  * discipline — open /dev/ptmx (master) + /dev/pts/N (slave) via TIOCGPTN,
  * canonical line delivery + echo, raw passthrough, ONLCR output mapping,
- * O_NONBLOCK EAGAIN, endpoint lifetime, foreground-group signals, and winsize
- * round-trip.
+ * O_NONBLOCK EAGAIN, endpoint lifetime, foreground-group signals, winsize
+ * round-trip, and the device identity ttyname(3) matches on.
  */
 
 #include "../framework/lxp_test.h"
+#include "fs/lxp_stat.h"
 #include "lxp_arena.h"
 #include "pty/lxp_pty.h"
 #include "lxp_syscall.h"
@@ -226,6 +227,31 @@ static void test_pty_winsize(void **st)
 	assert_int_equal(r.ws_col, 100);
 }
 
+/* ttyname(3) finds a terminal by stat'ing /dev/pts entries for the st_rdev that fstat of
+ * the fd reports (dropbear names a session's pty this way), so the two must agree. */
+static void test_pty_device_identity(void **st)
+{
+	(void)st;
+	pty_setup();
+	int mfd, sfd;
+	open_pair(&mfd, &sfd);
+	unsigned ptn = 0xffff;
+	assert_int_equal(sc(LXP_NR_ioctl, mfd, LXP_TIOCGPTN, (long)(uintptr_t)&ptn), 0);
+	char path[24];
+	snprintf(path, sizeof(path), "/dev/pts/%u", ptn);
+	struct lxp_kstat64 node, end;
+	assert_int_equal(sc(LXP_NR_stat64, (long)(uintptr_t)path, (long)(uintptr_t)&node, 0), 0);
+	assert_int_equal(sc(LXP_NR_fstat64, sfd, (long)(uintptr_t)&end, 0), 0);
+	assert_int_equal(node.st_mode & LXP_S_IFMT, LXP_S_IFCHR);
+	assert_int_equal(end.st_mode & LXP_S_IFMT, LXP_S_IFCHR);
+	assert_int_equal(node.st_rdev, (136u << 8) | ptn);
+	assert_int_equal(end.st_rdev, node.st_rdev);
+	assert_int_equal(end.st_ino, node.st_ino);
+	/* The master reports /dev/ptmx's device, as on Linux. */
+	assert_int_equal(sc(LXP_NR_fstat64, mfd, (long)(uintptr_t)&end, 0), 0);
+	assert_int_equal(end.st_rdev, (5u << 8) | 2u);
+}
+
 int test_linux_pty_run(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -238,6 +264,7 @@ int test_linux_pty_run(void)
 		cmocka_unit_test(test_pty_foreground_signal),
 		cmocka_unit_test(test_pty_suspend_signal),
 		cmocka_unit_test(test_pty_winsize),
+		cmocka_unit_test(test_pty_device_identity),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
