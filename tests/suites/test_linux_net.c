@@ -214,6 +214,82 @@ static void test_net_open_rejects_blocking_provider(void **state)
 	publish_net(g_probe_net_ops);
 }
 
+/* Provider results a refused connect can produce: some stacks (lwIP) report the RST that
+ * answers the SYN as a reset. Linux reports ECONNREFUSED, so the guest must see that. */
+static int g_probe_connect_result;
+static int g_probe_error;
+
+static int probe_connect(lxp_socket_t socket, const lxp_sockaddr_t *addr, uint64_t timeout_ns)
+{
+	(void)socket;
+	(void)addr;
+	(void)timeout_ns;
+	return g_probe_connect_result;
+}
+
+static int probe_poll(lxp_socket_t socket, unsigned events, unsigned *revents,
+		      uint64_t timeout_ns)
+{
+	(void)socket;
+	(void)events;
+	(void)timeout_ns;
+	*revents = LXP_SOCK_POLLERR | LXP_SOCK_POLLHUP;
+	return LXP_OK;
+}
+
+static int probe_get_error(lxp_socket_t socket)
+{
+	(void)socket;
+	return g_probe_error;
+}
+
+static void test_net_connect_reset_is_refused(void **state)
+{
+	(void)state;
+	lxp_arena_t arena;
+	lxp_proc_t p;
+	setup(&p, &arena);
+	g_probe_net_ops = g_lxp_net_ops;
+	lxp_net_ops_t probe = *g_probe_net_ops;
+	probe.sock_connect = probe_connect;
+	probe.sock_poll = probe_poll;
+	probe.sock_get_error = probe_get_error;
+	publish_net(&probe);
+	lxp_sockaddr_in a;
+	guest_addr(&a, 9);
+
+	/* The connect fails at once with a reset. */
+	g_probe_connect_result = LXP_ERR_NET_RESET;
+	long fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM, 0, 0, 0, 0);
+	assert_true(fd >= 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_connect, fd, (long)(uintptr_t)&a, sizeof(a), 0, 0,
+				     0),
+			 -LXP_ECONNREFUSED);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
+
+	/* A non-blocking connect is in progress, then the reset arrives: the next connect
+	 * call and SO_ERROR both report the refusal. */
+	g_probe_connect_result = LXP_ERR_TIMEOUT;
+	g_probe_error = LXP_ERR_NET_RESET;
+	fd = lxp_syscall(&p, LXP_NR_socket, LXP_AF_INET, LXP_SOCK_STREAM | LXP_SOCK_NONBLOCK, 0, 0,
+			 0, 0);
+	assert_true(fd >= 3);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_connect, fd, (long)(uintptr_t)&a, sizeof(a), 0, 0,
+				     0),
+			 -LXP_EINPROGRESS);
+	int err = 0;
+	uint32_t len = sizeof(err);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_getsockopt, fd, LXP_SOL_SOCKET, LXP_SO_ERROR,
+				     (long)(uintptr_t)&err, (long)(uintptr_t)&len, 0),
+			 0);
+	assert_int_equal(err, LXP_ECONNREFUSED);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_connect, fd, (long)(uintptr_t)&a, sizeof(a), 0, 0,
+				     0),
+			 -LXP_ECONNREFUSED);
+	assert_int_equal(lxp_syscall(&p, LXP_NR_close, fd, 0, 0, 0, 0, 0), 0);
+	publish_net(g_probe_net_ops);
+}
+
 static void test_net_connect_errors(void **state)
 {
 	(void)state;
@@ -740,6 +816,7 @@ int test_linux_net_run(void)
 		cmocka_unit_test(test_net_socket_open_stat),
 		cmocka_unit_test(test_net_open_rejects_blocking_provider),
 		cmocka_unit_test(test_net_connect_errors),
+		cmocka_unit_test(test_net_connect_reset_is_refused),
 		cmocka_unit_test(test_net_bind_address_not_available),
 		cmocka_unit_test(test_net_loopback_roundtrip),
 		cmocka_unit_test(test_net_sendmsg_recvmsg),

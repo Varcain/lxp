@@ -168,6 +168,14 @@ void lxp_sock_close(int oi)
 /* Each attempt below is run by the call itself and again by lxp_sock_retry() while the
  * call is parked, so a retry repeats exactly what blocked. -EAGAIN: it would still block. */
 
+/* The errno a connect reports for provider error @p err. A reset while the connection is
+ * being established is the peer refusing it: Linux answers ECONNREFUSED there, while some
+ * stacks (lwIP) report the reset itself. */
+static long connect_errno(int err)
+{
+	return err == LXP_ERR_NET_RESET ? -LXP_ECONNREFUSED : lxp_net_errno_from_err(err);
+}
+
 /* An in-flight connect: 0 once it completed, else its error. */
 static long sock_connect_poll(struct sock_open *o)
 {
@@ -177,7 +185,7 @@ static long sock_connect_poll(struct sock_open *o)
 		return -LXP_EAGAIN; /* still connecting */
 	int se = g_lxp_net_ops->sock_get_error(o->sock);
 	o->connecting = 0;
-	return se == LXP_OK ? 0 : lxp_net_errno_from_err(se);
+	return se == LXP_OK ? 0 : connect_errno(se);
 }
 
 /* Send @p len bytes (to @p dest when set): the bytes sent, or a negated errno. */
@@ -260,7 +268,7 @@ long lxp_sock_connect(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen
 		};
 		return lxp_wait_park(p, &wait); /* parked */
 	}
-	return lxp_net_errno_from_err(r);
+	return connect_errno(r);
 }
 
 long lxp_sock_bind(lxp_proc_t *p, int oi, const void *uaddr, unsigned addrlen)
@@ -511,7 +519,9 @@ long lxp_sock_getsockopt(lxp_proc_t *p, int oi, int level, int optname, void *uv
 	int val = 0;
 	if (level == LXP_SOL_SOCKET && optname == LXP_SO_ERROR) {
 		int se = g_lxp_net_ops->sock_get_error(o->sock);
-		val = (int)(-lxp_net_errno_from_err(se)); /* positive Linux errno, or 0 */
+		/* A non-blocking connect learns its result here. */
+		val = (int)(o->connecting ? -connect_errno(se)
+					  : -lxp_net_errno_from_err(se)); /* positive errno, or 0 */
 	}
 	/* Other accepted options report their emulated zero value. */
 	uint32_t n = cap < sizeof(int) ? cap : (uint32_t)sizeof(int);
