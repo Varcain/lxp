@@ -206,6 +206,7 @@ static const lxp_file_t g_rootfs[] = {
 	ROOTFS_DIR("/etc"),
 	ROOTFS_FILE("/etc/hosts", g_hosts, LXP_S_IFREG | 0644u),
 	ROOTFS_LINK("/etclink", "etc"),
+	ROOTFS_LINK("/etc/tmplink", "../tmp/target"),
 	ROOTFS_DIR("/mnt"),
 	ROOTFS_DIR("/mnt/pi"),
 	ROOTFS_DIR("/proc"),
@@ -701,6 +702,74 @@ static void test_pts_directory_lists_slaves(void **state)
 	world_end(&g_proc);
 }
 
+/* Make a tmpfs symlink @p link -> @p target. */
+static void tmpfs_symlink(lxp_conf_t *fx, const char *target, const char *link)
+{
+	assert_int_equal(call(&g_proc, LXP_NR_symlink, (long)(uintptr_t)lxp_conf_str(fx, target),
+			      (long)(uintptr_t)lxp_conf_str(fx, link), 0, 0),
+			 0);
+}
+
+/* Open @p path read-only and read it into @p buf: the byte count, or a negated errno. */
+static long read_path(lxp_conf_t *fx, const char *path, int flags, char *buf, size_t cap)
+{
+	long fd = call(&g_proc, LXP_NR_openat, LXP_AT_FDCWD, (long)(uintptr_t)lxp_conf_str(fx, path),
+		       LXP_O_RDONLY | flags, 0);
+	if (fd < 0)
+		return fd;
+	long n = call(&g_proc, LXP_NR_read, fd, (long)(uintptr_t)buf, (long)cap, 0);
+	assert_int_equal(call(&g_proc, LXP_NR_close, fd, 0, 0, 0), 0);
+	return n;
+}
+
+/* A symlink the overlay holds in tmpfs, or a rootfs one that leads out of the rootfs, is
+ * followed by open, stat, access and chdir like any other: the link's own name only shows
+ * through lstat, readlink and O_NOFOLLOW. */
+static void test_tmpfs_symlinks_are_followed(void **state)
+{
+	(void)state;
+	lxp_conf_t *fx = world_begin(&g_proc);
+	assert_non_null(fx);
+	char *buf = lxp_conf_alloc(fx, 64);
+	uint8_t *st = lxp_conf_alloc(fx, 128);
+	tmpfs_symlink(fx, "/etc/hosts", "/tmp/l");
+	assert_int_equal(read_path(fx, "/tmp/l", 0, buf, 64), (long)sizeof(g_hosts) - 1);
+	assert_memory_equal(buf, g_hosts, sizeof(g_hosts) - 1);
+	assert_int_equal(call(&g_proc, LXP_NR_stat64, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/l"),
+			      (long)(uintptr_t)st, 0, 0),
+			 0);
+	assert_int_equal(lxp_view_kstat64(st).mode & LXP_S_IFMT, LXP_S_IFREG);
+	assert_int_equal(call(&g_proc, LXP_NR_lstat64, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/l"),
+			      (long)(uintptr_t)st, 0, 0),
+			 0);
+	assert_int_equal(lxp_view_kstat64(st).mode & LXP_S_IFMT, LXP_S_IFLNK);
+	/* A relative target resolves against the link's directory. */
+	tmpfs_symlink(fx, "../etc", "/tmp/e");
+	assert_int_equal(call(&g_proc, LXP_NR_access, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/e"),
+			      0, 0, 0),
+			 0);
+	assert_int_equal(call(&g_proc, LXP_NR_chdir, (long)(uintptr_t)lxp_conf_str(fx, "/tmp/e"),
+			      0, 0, 0),
+			 0);
+	assert_string_equal(g_proc.fs_context->cwd, "/etc");
+	/* A rootfs link into tmpfs reaches the tmpfs file. */
+	long fd = call(&g_proc, LXP_NR_openat, LXP_AT_FDCWD,
+		       (long)(uintptr_t)lxp_conf_str(fx, "/tmp/target"), LXP_O_WRONLY | LXP_O_CREAT,
+		       0644);
+	assert_true(fd >= 0);
+	assert_int_equal(call(&g_proc, LXP_NR_write, fd, (long)(uintptr_t)lxp_conf_str(fx, "hi"), 2,
+			      0),
+			 2);
+	assert_int_equal(call(&g_proc, LXP_NR_close, fd, 0, 0, 0), 0);
+	assert_int_equal(read_path(fx, "/etc/tmplink", 0, buf, 64), 2);
+	/* O_NOFOLLOW does not follow; a loop ends in ELOOP. */
+	assert_int_equal(read_path(fx, "/tmp/l", LXP_O_NOFOLLOW, buf, 64), -LXP_ELOOP);
+	tmpfs_symlink(fx, "/tmp/b", "/tmp/a");
+	tmpfs_symlink(fx, "/tmp/a", "/tmp/b");
+	assert_int_equal(read_path(fx, "/tmp/a", 0, buf, 64), -LXP_ELOOP);
+	world_end(&g_proc);
+}
+
 /* chdir through a rootfs symlink lands where it leads, so relative paths resolve from the
  * real directory. */
 static void test_chdir_follows_symlinks(void **state)
@@ -860,6 +929,7 @@ int test_path_routing_run(void)
 		cmocka_unit_test(test_dev_nodes_stat_as_devices),
 		cmocka_unit_test(test_pts_directory_lists_slaves),
 		cmocka_unit_test(test_chdir_follows_symlinks),
+		cmocka_unit_test(test_tmpfs_symlinks_are_followed),
 		cmocka_unit_test(test_exec_from_tmpfs),
 		cmocka_unit_test(test_at_calls_resolve_from_dirfd),
 	};

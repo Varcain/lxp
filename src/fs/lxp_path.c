@@ -133,14 +133,33 @@ static int fsx_lookup(const lxp_file_t *fs, int count, const char *abspath)
 	return -1;
 }
 
+long lxp_path_link_target(const char *link, const char *target, size_t len, char *out,
+			  size_t outlen)
+{
+	char raw[LXP_PATH_MAX];
+	size_t rl = 0;
+	if (len == 0 || target[0] != '/') { /* relative to the link's own directory */
+		const char *base = strrchr(link, '/');
+		rl = base ? (size_t)(base - link + 1) : 0;
+		if (rl >= sizeof(raw))
+			return -LXP_ENAMETOOLONG;
+		memcpy(raw, link, rl);
+	}
+	if (rl + len >= sizeof(raw))
+		return -LXP_ENAMETOOLONG;
+	memcpy(raw + rl, target, len);
+	raw[rl + len] = '\0';
+	return normalize_abs(raw, out, outlen);
+}
+
 /*
- * Follow symlinks from rootfs index `idx` (up to 8 hops), normalizing each
- * target against the link's own directory (so e.g. /sbin/init -> ../bin/busybox
+ * Follow symlinks from rootfs index `idx` (up to LXP_SYMLOOP_MAX hops), each target
+ * normalized against the link's own directory (so e.g. /sbin/init -> ../bin/busybox
  * resolves to /bin/busybox). Returns the final non-symlink index, or -1.
  */
 static int fsx_follow(const lxp_file_t *fs, int count, int idx)
 {
-	for (int hop = 0; hop < 8 && idx >= 0; hop++) {
+	for (int hop = 0; hop < LXP_SYMLOOP_MAX && idx >= 0; hop++) {
 		const lxp_file_t *lnk = &fs[idx];
 		if ((lxp_file_mode(lnk) & LXP_S_IFMT) != LXP_S_IFLNK)
 			return idx;
@@ -148,20 +167,8 @@ static int fsx_follow(const lxp_file_t *fs, int count, int idx)
 		size_t tl = lnk->size;
 		if (!tgt || tl == 0)
 			return -1;
-		char raw[LXP_PATH_MAX], abs[LXP_PATH_MAX];
-		size_t rl = 0;
-		if (tgt[0] != '/') { /* relative to the link's own directory */
-			const char *base = strrchr(lnk->path, '/');
-			rl = base ? (size_t)(base - lnk->path + 1) : 0;
-			if (rl >= sizeof(raw))
-				return -1;
-			memcpy(raw, lnk->path, rl);
-		}
-		if (rl + tl >= sizeof(raw))
-			return -1;
-		memcpy(raw + rl, tgt, tl);
-		raw[rl + tl] = '\0';
-		if (normalize_abs(raw, abs, sizeof(abs)) < 0)
+		char abs[LXP_PATH_MAX];
+		if (lxp_path_link_target(lnk->path, tgt, tl, abs, sizeof(abs)) < 0)
 			return -1;
 		idx = fsx_lookup(fs, count, abs);
 	}

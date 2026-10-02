@@ -229,6 +229,22 @@ static long overlay_readlink(lxp_proc_t *p, const char *path, char *out, size_t 
 	return (long)n;
 }
 
+long lxp_overlay_foreign_link(lxp_proc_t *p, const char *path, char *out, size_t cap)
+{
+	int wi = lxp_wfs_find(path);
+	if (wi >= 0) {
+		if ((lxp_wnode_at(wi)->mode & LXP_S_IFMT) != LXP_S_IFLNK)
+			return 0;
+	} else {
+		int fi = lxp_fs_lookup(p, path);
+		if (fi < 0 || (lxp_file_mode(&p->fs[fi]) & LXP_S_IFMT) != LXP_S_IFLNK ||
+		    lxp_fs_follow(p, fi) >= 0)
+			return 0; /* not a link, or one that stays in the rootfs */
+	}
+	long n = overlay_readlink(p, path, out, cap);
+	return n > 0 ? n : 0;
+}
+
 /* A rootfs file cannot be written, but a directory can take new names. */
 static long overlay_access(lxp_proc_t *p, const char *path, int mode)
 {

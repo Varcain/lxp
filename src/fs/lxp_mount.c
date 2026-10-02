@@ -18,6 +18,7 @@
 #endif
 
 #include <stddef.h>
+#include <string.h>
 
 static const char *proc_point(void)
 {
@@ -71,6 +72,25 @@ const lxp_mount_ops_t *lxp_mount_of(const lxp_proc_t *p, const char *path)
 		if (!best->ops->holds || best->ops->holds(p, path))
 			return best->ops;
 		below = best_len;
+	}
+}
+
+long lxp_mount_follow(lxp_proc_t *p, char *abspath)
+{
+	for (int hop = 0;; hop++) {
+		char target[LXP_PATH_MAX];
+		long n = lxp_mount_of(p, abspath) == &lxp_overlay_mount_ops
+				 ? lxp_overlay_foreign_link(p, abspath, target, sizeof(target))
+				 : 0;
+		if (n == 0)
+			return 0;
+		if (hop == LXP_SYMLOOP_MAX)
+			return -LXP_ELOOP;
+		char next[LXP_PATH_MAX];
+		long rc = lxp_path_link_target(abspath, target, (size_t)n, next, sizeof(next));
+		if (rc < 0)
+			return rc;
+		memcpy(abspath, next, strlen(next) + 1);
 	}
 }
 

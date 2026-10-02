@@ -43,6 +43,15 @@ int lxp_fs_lookup(const lxp_proc_t *p, const char *abspath);
 /* Follow symlinks from rootfs index `idx` to the final target index, or -1. */
 int lxp_fs_follow(const lxp_proc_t *p, int idx);
 
+/** How many symlinks a lookup follows before it gives up (ELOOP). */
+#define LXP_SYMLOOP_MAX 8
+
+/** The normalized absolute path that the symlink at @p link leads to, @p target being its
+ *  @p len target bytes (not NUL-terminated); a relative target resolves against the link's
+ *  directory. Written to out[outlen]: 0, or -ENAMETOOLONG. */
+long lxp_path_link_target(const char *link, const char *target, size_t len, char *out,
+			  size_t outlen);
+
 /* Resolve a trusted absolute rootfs path to its final non-symlink index. */
 int lxp_rootfs_resolve_index(const lxp_file_t *fs, int count, const char *abspath);
 

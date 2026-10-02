@@ -179,6 +179,8 @@ static long sys_execve(lxp_proc_t *p, const char *path, char *const argv[], char
 	cap->envc = envc;
 	char execabs[LXP_PATH_MAX];
 	long rr = lxp_resolve_path(p, path, execabs, sizeof(execabs));
+	if (rr == 0)
+		rr = lxp_mount_follow(p, execabs);
 	if (rr < 0)
 		return rr;
 	const uint8_t *image;

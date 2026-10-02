@@ -46,7 +46,19 @@ static long sys_openat(lxp_proc_t *p, int dirfd, const char *path, int flags)
 	long rr = lxp_resolve_path_at(p, dirfd, path, abspath, sizeof(abspath));
 	if (rr < 0)
 		return rr;
-	return lxp_mount_of(p, abspath)->open(p, abspath, flags);
+	const lxp_mount_ops_t *m = lxp_mount_of(p, abspath);
+	if (flags & LXP_O_NOFOLLOW) { /* a symlink as the last component is ELOOP */
+		struct lxp_stat st;
+		if (m->stat && m->stat(p, abspath, 0, &st) == 0 &&
+		    (st.mode & LXP_S_IFMT) == LXP_S_IFLNK)
+			return -LXP_ELOOP;
+	} else {
+		rr = lxp_mount_follow(p, abspath);
+		if (rr < 0)
+			return rr;
+		m = lxp_mount_of(p, abspath);
+	}
+	return m->open(p, abspath, flags);
 }
 
 static long mount_copy_string(lxp_proc_t *p, const char *guest, char *out, size_t capacity)
@@ -240,6 +252,8 @@ static long sys_stat_path(lxp_proc_t *p, int dirfd, const char *path, int follow
 		return -LXP_EFAULT; /* path is validated by lxp_resolve_path below */
 	char abspath[LXP_PATH_MAX];
 	long rr = lxp_resolve_path_at(p, dirfd, path, abspath, sizeof(abspath));
+	if (rr == 0 && follow)
+		rr = lxp_mount_follow(p, abspath);
 	if (rr < 0)
 		return rr;
 	return path_stat(p, abspath, follow, (uintptr_t)statbuf, 0);
@@ -316,8 +330,11 @@ static long sys_access(lxp_proc_t *p, int dirfd, const char *path, int mode)
 	char abspath[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
 	long rr = resolve_in_mount(p, dirfd, path, abspath, &m);
+	if (rr == 0)
+		rr = lxp_mount_follow(p, abspath);
 	if (rr < 0)
 		return rr;
+	m = lxp_mount_of(p, abspath);
 	if (m->access)
 		return m->access(p, abspath, mode);
 	struct lxp_stat st;
@@ -498,10 +515,13 @@ static long sys_statx(lxp_proc_t *p, int dirfd, const char *path, int flags, voi
 		return -LXP_EFAULT;
 	if (plen > 0 && !(flags & LXP_AT_EMPTY_PATH)) {
 		char abspath[LXP_PATH_MAX];
+		int follow = !(flags & LXP_AT_SYMLINK_NOFOLLOW);
 		long rr = lxp_resolve_path_at(p, dirfd, path, abspath, sizeof(abspath));
+		if (rr == 0 && follow)
+			rr = lxp_mount_follow(p, abspath);
 		if (rr < 0)
 			return rr;
-		return path_stat(p, abspath, !(flags & LXP_AT_SYMLINK_NOFOLLOW), (uintptr_t)buf, 1);
+		return path_stat(p, abspath, follow, (uintptr_t)buf, 1);
 	}
 	lxp_ofd_t *s = lxp_fd_description(p, dirfd);
 	if (!s)
@@ -727,8 +747,11 @@ long lxp_sys_chdir(lxp_proc_t *proc, const long a[6])
 	char abspath[LXP_PATH_MAX];
 	const lxp_mount_ops_t *m;
 	long rr = resolve_in_mount(proc, LXP_AT_FDCWD, (const char *)(uintptr_t)a[0], abspath, &m);
+	if (rr == 0)
+		rr = lxp_mount_follow(proc, abspath);
 	if (rr < 0)
 		return rr;
+	m = lxp_mount_of(proc, abspath);
 	if (m->chdir)
 		return m->chdir(proc, abspath);
 	struct lxp_stat st;

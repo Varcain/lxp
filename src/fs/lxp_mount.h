@@ -70,6 +70,17 @@ typedef struct lxp_mount_ops {
 /** The mount that answers the normalized absolute @p path; never NULL. */
 const lxp_mount_ops_t *lxp_mount_of(const lxp_proc_t *p, const char *path);
 
+/** Follow @p abspath (LXP_PATH_MAX bytes) through the symlinks the root overlay cannot
+ *  follow itself, rewriting it to where they lead: 0, -ELOOP after LXP_SYMLOOP_MAX links,
+ *  or -ENAMETOOLONG. Links that stay in the rootfs are left to the overlay, which follows
+ *  them while keeping the name the caller used. */
+long lxp_mount_follow(lxp_proc_t *p, char *abspath);
+
+/** The target of the symlink at @p path when the overlay cannot follow it itself (a tmpfs
+ *  link, or a rootfs link leading out of the rootfs), written to @p out without a NUL:
+ *  its length, or 0 for any other name. (src/fs/lxp_overlay.c) */
+long lxp_overlay_foreign_link(lxp_proc_t *p, const char *path, char *out, size_t cap);
+
 /** Whether @p path is at or below a mountpoint that mount(2) cannot cover: /proc, /dev
  * and the netfs mount. The root and the hostfs point (which mount(2) moves) are free. */
 int lxp_mount_occupied(const char *path);
