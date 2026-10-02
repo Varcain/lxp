@@ -1158,6 +1158,46 @@ static void test_conf_time(void **state)
 	assert_int_equal(SC(&p, LXP_NR_clock_gettime, 1, (long)(uintptr_t)lxp_conf_bad_ptr(fx), 0,
 			    0, 0, 0),
 			 -LXP_EFAULT);
+
+	/* There is no RTC, so the wall clock is settable: clock_settime64, clock_settime and
+	 * settimeofday move what CLOCK_REALTIME and gettimeofday read from then on. */
+	assert_int_equal(SC(&p, LXP_NR_clock_gettime64, 1, (long)(uintptr_t)ts64, 0, 0, 0, 0), 0);
+	int64_t mono_before = ts64[0];
+	int64_t *set64 = lxp_conf_alloc(fx, 2 * sizeof(int64_t));
+	set64[0] = 1893456000; /* 2030-01-01 */
+	set64[1] = 0;
+	assert_int_equal(SC(&p, LXP_NR_clock_settime64, 0, (long)(uintptr_t)set64, 0, 0, 0, 0), 0);
+	assert_int_equal(SC(&p, LXP_NR_clock_gettime64, 0, (long)(uintptr_t)ts64, 0, 0, 0, 0), 0);
+	assert_true(ts64[0] >= 1893456000 && ts64[0] < 1893456000 + 5);
+	assert_int_equal(SC(&p, LXP_NR_gettimeofday, (long)(uintptr_t)tv, 0, 0, 0, 0, 0), 0);
+	assert_true(tv[0] >= 1893456000 && tv[0] < 1893456000 + 5);
+	ts[0] = 1800000000;
+	ts[1] = 0;
+	assert_int_equal(SC(&p, LXP_NR_clock_settime, 0, (long)(uintptr_t)ts, 0, 0, 0, 0), 0);
+	assert_int_equal(SC(&p, LXP_NR_clock_gettime, 0, (long)(uintptr_t)ts, 0, 0, 0, 0), 0);
+	assert_true(ts[0] >= 1800000000 && ts[0] < 1800000000 + 5);
+	tv[0] = 1790000000;
+	tv[1] = 500000;
+	assert_int_equal(SC(&p, LXP_NR_settimeofday, (long)(uintptr_t)tv, 0, 0, 0, 0, 0), 0);
+	assert_int_equal(SC(&p, LXP_NR_clock_gettime64, 0, (long)(uintptr_t)ts64, 0, 0, 0, 0), 0);
+	assert_true(ts64[0] >= 1790000000 && ts64[0] < 1790000000 + 5);
+	/* settimeofday with only a timezone is accepted and changes nothing. */
+	assert_int_equal(SC(&p, LXP_NR_settimeofday, 0, (long)(uintptr_t)tv, 0, 0, 0, 0), 0);
+	/* Only CLOCK_REALTIME is settable; a sub-second field out of range is -EINVAL. */
+	assert_int_equal(SC(&p, LXP_NR_clock_settime64, 1, (long)(uintptr_t)set64, 0, 0, 0, 0),
+			 -LXP_EINVAL);
+	set64[1] = 1000000000;
+	assert_int_equal(SC(&p, LXP_NR_clock_settime64, 0, (long)(uintptr_t)set64, 0, 0, 0, 0),
+			 -LXP_EINVAL);
+	tv[1] = 1000000;
+	assert_int_equal(SC(&p, LXP_NR_settimeofday, (long)(uintptr_t)tv, 0, 0, 0, 0, 0),
+			 -LXP_EINVAL);
+	assert_int_equal(SC(&p, LXP_NR_clock_settime64, 0, (long)(uintptr_t)lxp_conf_bad_ptr(fx), 0,
+			    0, 0, 0),
+			 -LXP_EFAULT);
+	/* CLOCK_MONOTONIC never moves with the wall clock. */
+	assert_int_equal(SC(&p, LXP_NR_clock_gettime64, 1, (long)(uintptr_t)ts64, 0, 0, 0, 0), 0);
+	assert_true(ts64[0] >= mono_before && ts64[0] < mono_before + 5);
 }
 
 /* =============================== process identity ==================================== */

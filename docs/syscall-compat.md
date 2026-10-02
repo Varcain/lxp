@@ -8,7 +8,7 @@ Every syscall the lxp personality answers, cross-checked against the ARM EABI re
 Numbers come from `src/lxp_linux_uapi.h`; dispositions are proved against the
 handlers in `src/lxp_syscall.c` / `src/run/lxp_trap.c` by the coverage guard.
 
-Surface: 144 LXP_NR_* — 104 implemented, 27 benign-stub, 1 refused-eopnotsupp, 12 run-loop-handled, 0 deliberately-enosys.
+Surface: 147 LXP_NR_* — 107 implemented, 27 benign-stub, 1 refused-eopnotsupp, 12 run-loop-handled, 0 deliberately-enosys.
 
 | Number | Name | Disposition | Notes |
 |---:|---|---|---|
@@ -47,6 +47,7 @@ Surface: 144 LXP_NR_* — 104 implemented, 27 benign-stub, 1 refused-eopnotsupp,
 | 65 | getpgrp | benign-stub | returns pid; process group == pid |
 | 66 | setsid | benign-stub | returns pid; no session machinery |
 | 78 | gettimeofday | implemented |  |
+| 79 | settimeofday | implemented | sets CLOCK_REALTIME; the timezone is ignored |
 | 83 | symlink | implemented |  |
 | 85 | readlink | implemented |  |
 | 88 | reboot | implemented | HALT/POWEROFF/RESTART latch the run |
@@ -105,6 +106,7 @@ Surface: 144 LXP_NR_* — 104 implemented, 27 benign-stub, 1 refused-eopnotsupp,
 | 240 | futex | run-loop-handled | co-running threads: WAIT parks, WAKE resumes (lxp_futex) |
 | 248 | exit_group | implemented |  |
 | 256 | set_tid_address | benign-stub | returns a fixed tid |
+| 262 | clock_settime | implemented | CLOCK_REALTIME only (no RTC: the setting lasts while the host runs) |
 | 263 | clock_gettime | implemented | 32-bit time_t |
 | 265 | clock_nanosleep | implemented | parks via the run loop |
 | 266 | statfs64 | implemented | provider-backed mounted-volume capacity; synthetic local namespaces |
@@ -149,6 +151,7 @@ Surface: 144 LXP_NR_* — 104 implemented, 27 benign-stub, 1 refused-eopnotsupp,
 | 384 | getrandom | implemented | host `random_fill`; bounded; fails closed when unavailable |
 | 397 | statx | implemented | mask arg ignored |
 | 403 | clock_gettime64 | implemented | 64-bit time_t |
+| 404 | clock_settime64 | implemented | CLOCK_REALTIME only |
 | 407 | clock_nanosleep_time64 | implemented | parks via the run loop |
 | 412 | utimensat_time64 | benign-stub | times not tracked |
 | 413 | pselect6_time64 | implemented | one fd_set word (fds below 32); sigmask not applied |

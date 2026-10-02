@@ -12,17 +12,39 @@
 #include "lxp_internal.h"
 #include "lxp_linux_uapi.h"
 
-/* There is no RTC: wall-clock time is a fixed base epoch (~2026-06-23) + uptime. */
-#define LXP_BOOT_EPOCH 1782172800ull
+/* There is no RTC: the wall clock starts at a fixed base epoch (~2026-06-23) + uptime and
+ * moves when clock_settime or settimeofday sets it. The offset lasts as long as the host,
+ * like tmpfs. */
+#define LXP_BOOT_EPOCH_NS (1782172800ll * 1000000000ll)
+#define LXP_NS_PER_SEC 1000000000ll
 
-static void now_sec_nsec(int clockid, uint64_t *sec, uint32_t *nsec)
+static int64_t g_realtime_offset_ns;
+
+static int64_t uptime_ns(void)
 {
 	uint64_t ns = 0;
 	lxp_time_ns(&ns);
-	uint64_t up = ns / 1000000000ull;
-	*nsec = (uint32_t)(ns % 1000000000ull);
+	return (int64_t)ns;
+}
+
+static void now_sec_nsec(int clockid, uint64_t *sec, uint32_t *nsec)
+{
 	/* CLOCK_MONOTONIC(1)/_RAW(4)/BOOTTIME(7) → uptime; REALTIME(0) → wall clock. */
-	*sec = (clockid == 0) ? (LXP_BOOT_EPOCH + up) : up;
+	int64_t ns = uptime_ns();
+	if (clockid == 0)
+		ns += LXP_BOOT_EPOCH_NS + g_realtime_offset_ns;
+	*sec = (uint64_t)(ns / LXP_NS_PER_SEC);
+	*nsec = (uint32_t)(ns % LXP_NS_PER_SEC);
+}
+
+/* Make CLOCK_REALTIME read @p sec + @p nsec now: 0, or -EINVAL for a time before 1970,
+ * past what 64-bit nanoseconds hold, or a sub-second part outside a second. */
+static long set_realtime(int64_t sec, int64_t nsec)
+{
+	if (sec < 0 || sec > INT64_MAX / LXP_NS_PER_SEC - 1 || nsec < 0 || nsec >= LXP_NS_PER_SEC)
+		return -LXP_EINVAL;
+	g_realtime_offset_ns = sec * LXP_NS_PER_SEC + nsec - LXP_BOOT_EPOCH_NS - uptime_ns();
+	return 0;
 }
 
 /* Record a wake deadline and ask the run loop to park + delay this proc (the trap
@@ -87,6 +109,41 @@ long lxp_sys_gettimeofday(lxp_proc_t *proc, const long a[6])
 	now_sec_nsec(0, &sec, &nsec);
 	const int32_t tv[2] = {(int32_t)sec, (int32_t)(nsec / 1000u)};
 	return lxp_copy_to_guest(proc, (uintptr_t)a[0], tv, sizeof(tv)) != 0 ? -LXP_EFAULT : 0;
+}
+
+/* (clockid, const struct timespec*) — 32-bit time_t. Only CLOCK_REALTIME is settable. */
+long lxp_sys_clock_settime(lxp_proc_t *proc, const long a[6])
+{
+	int32_t ts[2];
+	if ((int)a[0] != 0)
+		return -LXP_EINVAL;
+	if (lxp_copy_from_guest(proc, ts, (uintptr_t)a[1], sizeof(ts)) != 0)
+		return -LXP_EFAULT;
+	return set_realtime(ts[0], ts[1]);
+}
+
+/* (clockid, const struct __kernel_timespec*) — 64-bit */
+long lxp_sys_clock_settime64(lxp_proc_t *proc, const long a[6])
+{
+	int64_t ts[2];
+	if ((int)a[0] != 0)
+		return -LXP_EINVAL;
+	if (lxp_copy_from_guest(proc, ts, (uintptr_t)a[1], sizeof(ts)) != 0)
+		return -LXP_EFAULT;
+	return set_realtime(ts[0], ts[1]);
+}
+
+/* (const struct timeval*, const struct timezone*). The timezone is accepted and ignored. */
+long lxp_sys_settimeofday(lxp_proc_t *proc, const long a[6])
+{
+	int32_t tv[2];
+	if (!a[0])
+		return 0;
+	if (lxp_copy_from_guest(proc, tv, (uintptr_t)a[0], sizeof(tv)) != 0)
+		return -LXP_EFAULT;
+	if (tv[1] < 0 || tv[1] >= 1000000)
+		return -LXP_EINVAL;
+	return set_realtime(tv[0], (int64_t)tv[1] * 1000);
 }
 
 /* (req, rem) */

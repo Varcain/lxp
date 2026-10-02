@@ -74,8 +74,11 @@ getpriority	run-loop-handled	PRIO_PROCESS/PGRP/USER over the process table
 setpriority	run-loop-handled	PRIO_PROCESS/PGRP/USER over the process table, nice clamped to [-20, 19]
 gettid	implemented	single-threaded: tid == pid
 gettimeofday	implemented
+settimeofday	implemented	sets CLOCK_REALTIME; the timezone is ignored
 clock_gettime	implemented	32-bit time_t
+clock_settime	implemented	CLOCK_REALTIME only (no RTC: the setting lasts while the host runs)
 clock_gettime64	implemented	64-bit time_t
+clock_settime64	implemented	CLOCK_REALTIME only
 nanosleep	implemented	parks via the run loop
 clock_nanosleep	implemented	parks via the run loop
 clock_nanosleep_time64	implemented	parks via the run loop

@@ -97,12 +97,16 @@
 #define LXP_NR_faccessat 334
 #define LXP_NR_faccessat2 439
 
-/* Time: clock_gettime / gettimeofday / nanosleep (+ time64 variants). */
+/* Time: clock_gettime / gettimeofday / nanosleep, the wall-clock setters (+ time64
+ * variants). */
 #define LXP_NR_gettimeofday 78
+#define LXP_NR_settimeofday 79
 #define LXP_NR_nanosleep 162
+#define LXP_NR_clock_settime 262
 #define LXP_NR_clock_gettime 263
 #define LXP_NR_clock_nanosleep 265
 #define LXP_NR_clock_gettime64 403
+#define LXP_NR_clock_settime64 404
 #define LXP_NR_clock_nanosleep_time64 407
 
 /* Writable filesystem mutation. */
