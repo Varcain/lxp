@@ -33,6 +33,9 @@ struct lxp_slot_runtime {
 	lxp_proc_t proc;
 	struct lxp_resume_ctx resume;
 	struct deferred_req deferred;
+	/* r0 the parked syscall was issued with (its first argument): what an SA_RESTART
+	 * restart issues it with again, since the result overwrites the guest's r0. */
+	uint32_t syscall_r0;
 	uint32_t generation;
 	uint8_t host_state;
 	uint8_t runnable;

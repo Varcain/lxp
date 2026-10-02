@@ -259,6 +259,9 @@
 #define LXP_NSIG 65
 #define LXP_SIG_DFL 0
 #define LXP_SIG_IGN 1
+/* struct sigaction sa_flags kept by rt_sigaction */
+#define LXP_SA_RESTORER 0x04000000u
+#define LXP_SA_RESTART 0x10000000u
 #define LXP_SIGINT 2
 #define LXP_SIGQUIT 3
 #define LXP_SIGABRT 6

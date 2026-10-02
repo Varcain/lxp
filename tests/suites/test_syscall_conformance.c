@@ -1288,6 +1288,24 @@ static void test_conf_signal(void **state)
 	assert_int_equal(p.sighand->restorer, 0x9abcdef0);
 	assert_int_equal(act[0], 0xdeadbeef);
 	assert_int_equal(act[2], 0xcafef00d);
+	/* sa_flags: SA_RESTART is kept per signal and reported back, with SA_RESTORER while a
+	 * restorer is registered. */
+	act[0] = 0x1234;
+	act[1] = LXP_SA_RESTART | LXP_SA_RESTORER;
+	act[2] = 0x5678;
+	assert_int_equal(SC(&p, LXP_NR_rt_sigaction, LXP_SIGCHLD, (long)(uintptr_t)act, 0, 0, 0, 0),
+			 0);
+	assert_int_equal(SC(&p, LXP_NR_rt_sigaction, LXP_SIGCHLD, 0, (long)(uintptr_t)oact, 0, 0, 0),
+			 0);
+	assert_int_equal(oact[1], LXP_SA_RESTART | LXP_SA_RESTORER);
+	act[1] = LXP_SA_RESTORER;
+	assert_int_equal(SC(&p, LXP_NR_rt_sigaction, LXP_SIGCHLD, (long)(uintptr_t)act,
+			    (long)(uintptr_t)oact, 0, 0, 0),
+			 0);
+	assert_int_equal(oact[1], LXP_SA_RESTART | LXP_SA_RESTORER);
+	assert_int_equal(SC(&p, LXP_NR_rt_sigaction, LXP_SIGCHLD, 0, (long)(uintptr_t)oact, 0, 0, 0),
+			 0);
+	assert_int_equal(oact[1], LXP_SA_RESTORER);
 	/* an out-of-range signal is -EINVAL. */
 	assert_int_equal(SC(&p, LXP_NR_rt_sigaction, LXP_NSIG, (long)(uintptr_t)act, 0, 0, 0, 0),
 			 -LXP_EINVAL);

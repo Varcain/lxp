@@ -170,6 +170,11 @@ void lxp_flatten_vec(char *buf, const char **ptrs, const char *src_buf, const ui
  * positive, else the members of process group @p pgid when it is positive, else every
  * process. It wakes the coordinator and returns how many were signalled. */
 int lxp_signal_send(const lxp_proc_t *skip, int pid, int pgid, int sig);
+/* Deliver @p sig to the parked proc in @p slot, whose call returns @p ret. -LXP_ERESTARTSYS
+ * (Linux's ERESTARTSYS, never seen by the guest) marks a call the signal interrupted that
+ * may be restarted: a handler with SA_RESTART returns into its svc to issue it again, any
+ * other outcome makes it return -EINTR. */
+#define LXP_ERESTARTSYS 512
 void lxp_deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret);
 void lxp_notify_parent_stopped(int ppid, int cpid, int stopsig);
 void lxp_notify_guest_exit(int slot, const lxp_proc_t *proc);

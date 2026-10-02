@@ -71,7 +71,7 @@ Surface: 144 LXP_NR_* — 104 implemented, 27 benign-stub, 1 refused-eopnotsupp,
 | 168 | poll | implemented |  |
 | 172 | prctl | benign-stub | accepted (inert) |
 | 173 | rt_sigreturn | run-loop-handled | restores the pre-signal frame |
-| 174 | rt_sigaction | implemented | records the per-signal disposition |
+| 174 | rt_sigaction | implemented | records the per-signal disposition and SA_RESTART |
 | 175 | rt_sigprocmask | implemented | maintains the per-proc blocked mask; honored at delivery |
 | 179 | rt_sigsuspend | implemented | LinuxThreads suspend(): parks, returns -EINTR |
 | 180 | pread64 | implemented |  |

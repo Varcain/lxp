@@ -162,6 +162,26 @@ static void lxp_blocked_clear_stop(lxp_proc_t *proc)
 	proc->stop_r0 = 0;
 }
 
+/* What a call parked in a wait of @p kind returns when a caught signal interrupts it: one
+ * that reads, writes or reaps may be restarted (SA_RESTART); a sleep, poll, sigsuspend or
+ * futex wait returns EINTR whatever the handler's flags, as on Linux. */
+static long lxp_blocked_interrupted_result(lxp_wait_kind_t kind)
+{
+	switch (kind) {
+	case LXP_WAIT_CHILD:
+	case LXP_WAIT_PIPE:
+	case LXP_WAIT_CONSOLE:
+	case LXP_WAIT_DEVICE:
+	case LXP_WAIT_SOCKET:
+	case LXP_WAIT_NETFS:
+	case LXP_WAIT_HOSTFS:
+	case LXP_WAIT_PTY:
+		return -LXP_ERESTARTSYS;
+	default:
+		return -LXP_EINTR;
+	}
+}
+
 static void lxp_blocked_interrupt_wait(lxp_proc_t *proc)
 {
 	lxp_wait_kind_t kind = proc->wait.kind;
@@ -232,8 +252,8 @@ static int lxp_blocked_handle_stopped(int slot, lxp_proc_t *proc, struct lxp_blo
 		if (can_deliver) {
 			long ret = stop_r0;
 			if (!ready) {
+				ret = lxp_blocked_interrupted_result(proc->wait.kind);
 				lxp_blocked_interrupt_wait(proc);
-				ret = -LXP_EINTR;
 			}
 			lxp_deliver_signal_parked(slot, proc, LXP_SIGCONT, ret);
 		} else if (ready) {
@@ -273,8 +293,9 @@ static int lxp_blocked_handle_signal(int slot, lxp_proc_t *proc, struct lxp_bloc
 			return 0;
 		proc->pending_sigs &= ~lxp_sig_bit(sig);
 		if (!lxp_sig_swallowed(proc, sig)) {
+			long ret = lxp_blocked_interrupted_result(proc->wait.kind);
 			lxp_blocked_interrupt_wait(proc);
-			lxp_deliver_signal_parked(slot, proc, sig, -LXP_EINTR);
+			lxp_deliver_signal_parked(slot, proc, sig, ret);
 			scan->progress = 1;
 		}
 	}

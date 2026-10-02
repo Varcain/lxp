@@ -27,13 +27,20 @@ long lxp_sys_rt_sigaction(lxp_proc_t *proc, const long a[6])
 		return -LXP_EFAULT;
 	if (uoact && !lxp_guest_access_ok(proc, (void *)uoact, sizeof(act), 1))
 		return -LXP_EFAULT;
+	uint32_t oflags = (lxp_sig_restarts(proc, sig) ? LXP_SA_RESTART : 0u) |
+			  (lxp_sig_restorer_get(proc) ? LXP_SA_RESTORER : 0u);
 	if (uoact &&
 	    (lxp_guest_put_u32(proc, uoact, (uint32_t)lxp_sig_handler_get(proc, sig)) != 0 ||
+	     lxp_guest_put_u32(proc, uoact + 4, oflags) != 0 ||
 	     lxp_guest_put_u32(proc, uoact + 8, (uint32_t)lxp_sig_restorer_get(proc)) != 0))
 		return -LXP_EFAULT;
 	if (uact) {
 		proc->sighand->handler[sig] = act[0];
 		proc->sighand->restorer = act[2];
+		if (act[1] & LXP_SA_RESTART)
+			proc->sighand->restart |= lxp_sig_bit(sig);
+		else
+			proc->sighand->restart &= ~lxp_sig_bit(sig);
 	}
 	return 0;
 }

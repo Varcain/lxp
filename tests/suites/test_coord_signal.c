@@ -468,6 +468,65 @@ static void test_caught_sigcont_interrupts_parked_wait(void **state)
 	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, 0x2221u);
 }
 
+/* Park slot 0 in a @p kind wait whose svc (issued with r0 = 5) sits before pc 0x2221, latch
+ * a caught SIGCHLD whose handler has SA_RESTART when @p restart, and run the blocked scan:
+ * the handler is entered with the interrupted call's return frame saved. */
+static void interrupt_parked_wait(lxp_wait_kind_t kind, int restart)
+{
+	g_lxp_rt.cfg = &g_mock_cfg;
+	make_valid_running_slot(0, 0);
+	lxp_proc_t *proc = &g_lxp_rt.slots[0].proc;
+	proc->sighand->handler[LXP_SIGCHLD] = 0x1234u;
+	proc->sighand->restorer = 0x5678u;
+	if (restart)
+		proc->sighand->restart |= lxp_sig_bit(LXP_SIGCHLD);
+	g_lxp_rt.slots[0].resume.pc = 0x2221u;
+	g_lxp_rt.slots[0].resume.r4_11[3] = LXP_NR_read; /* r7: the syscall number */
+	g_lxp_rt.slots[0].syscall_r0 = 5u;
+	lxp_wait_t wait = {.kind = kind};
+	if (kind == LXP_WAIT_TIMER)
+		wait.data.timer.deadline_us = 1000;
+	assert_int_equal(lxp_wait_begin(proc, &wait), LXP_OK);
+	assert_int_equal(lxp_coordinator_park_slot(0), LXP_OK);
+	lxp_signal_latch(proc, LXP_SIGCHLD);
+
+	struct lxp_blocked_scan scan = lxp_scan_blocked(1);
+	assert_true(scan.progress);
+	assert_int_equal(proc->wait.kind, LXP_WAIT_NONE);
+	assert_int_equal(g_lxp_rt.slots[0].resume.pc, 0x1235u); /* in the handler */
+	assert_int_equal(g_lxp_sig_save[0].depth, 1);
+}
+
+/* With SA_RESTART, the handler returns into the svc of an interrupted read with its first
+ * argument, so the read is issued again (Linux restarts it); a shell reading a command
+ * substitution's output is not cut short by the child's SIGCHLD. */
+static void test_sa_restart_reissues_an_interrupted_read(void **state)
+{
+	(void)state;
+	interrupt_parked_wait(LXP_WAIT_PIPE, 1);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].r0, 5u);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, 0x221fu);
+	/* The restorer clobbers r7, so the frame carries the number the svc needs. */
+	assert_int_equal(g_lxp_sig_save[0].frame[0].r7, LXP_NR_read);
+}
+
+static void test_interrupted_read_without_sa_restart_is_eintr(void **state)
+{
+	(void)state;
+	interrupt_parked_wait(LXP_WAIT_PIPE, 0);
+	assert_int_equal((int32_t)g_lxp_sig_save[0].frame[0].r0, -LXP_EINTR);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, 0x2221u);
+}
+
+/* A sleep, like poll and sigsuspend, returns EINTR whatever the handler's flags. */
+static void test_sa_restart_does_not_restart_a_sleep(void **state)
+{
+	(void)state;
+	interrupt_parked_wait(LXP_WAIT_TIMER, 1);
+	assert_int_equal((int32_t)g_lxp_sig_save[0].frame[0].r0, -LXP_EINTR);
+	assert_int_equal(g_lxp_sig_save[0].frame[0].pc, 0x2221u);
+}
+
 static void test_blocked_caught_sigcont_resumes_boundary_but_stays_pending(void **state)
 {
 	(void)state;
@@ -704,6 +763,10 @@ int test_coord_signal_run(void)
 				       reset_state),
 		cmocka_unit_test_setup(test_caught_sigcont_runs_after_boundary_resume, reset_state),
 		cmocka_unit_test_setup(test_caught_sigcont_interrupts_parked_wait, reset_state),
+		cmocka_unit_test_setup(test_sa_restart_reissues_an_interrupted_read, reset_state),
+		cmocka_unit_test_setup(test_interrupted_read_without_sa_restart_is_eintr,
+				       reset_state),
+		cmocka_unit_test_setup(test_sa_restart_does_not_restart_a_sleep, reset_state),
 		cmocka_unit_test_setup(
 			test_blocked_caught_sigcont_resumes_boundary_but_stays_pending,
 			reset_state),

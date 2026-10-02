@@ -289,6 +289,7 @@ int lxp_proc_resources_fork(lxp_proc_t *child, const lxp_proc_t *parent, uint32_
 		memcpy(child->sighand->handler, parent->sighand->handler,
 		       sizeof(child->sighand->handler));
 		child->sighand->restorer = parent->sighand->restorer;
+		child->sighand->restart = parent->sighand->restart;
 	}
 	return 0;
 

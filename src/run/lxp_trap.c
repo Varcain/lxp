@@ -31,6 +31,7 @@ static void capture_ctx(int s, const struct lxp_frame *f)
 	/* Preserve r1-r3 across the parking syscall (Linux preserves r1-r14; only r0 is
 	 * the return, supplied by the resume). A guest may reuse an arg register after a
 	 * syscall — so leaving these garbage on resume corrupts it (e.g. wait4's options). */
+	g_lxp_rt.slots[s].syscall_r0 = f->r[0];
 	g_lxp_rt.slots[s].resume.r1 = f->r[1];
 	g_lxp_rt.slots[s].resume.r2 = f->r[2];
 	g_lxp_rt.slots[s].resume.r3 = f->r[3];

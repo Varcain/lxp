@@ -110,6 +110,8 @@ typedef struct lxp_sighand {
 	uint16_t refs;
 	uintptr_t handler[LXP_NSIG];
 	uintptr_t restorer;
+	/** Signals whose handler has SA_RESTART, as lxp_sig_bit() masks. */
+	uint64_t restart;
 } lxp_sighand_t;
 
 /** Refcounted NOMMU address-space state. CLONE_VM shares this object; a
@@ -372,6 +374,12 @@ static inline uintptr_t lxp_sig_handler_get(const lxp_proc_t *proc, int sig)
 static inline uintptr_t lxp_sig_restorer_get(const lxp_proc_t *proc)
 {
 	return (proc && proc->sighand) ? proc->sighand->restorer : 0;
+}
+
+/** Whether the handler of @p sig has SA_RESTART. */
+static inline int lxp_sig_restarts(const lxp_proc_t *proc, int sig)
+{
+	return proc && proc->sighand && (proc->sighand->restart & lxp_sig_bit(sig)) != 0;
 }
 
 /** Descriptor introspection for descriptor-aware backing-object layers. */

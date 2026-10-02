@@ -19,7 +19,9 @@
 
 /* Context saved at signal delivery and restored at rt_sigreturn. */
 struct sig_save_s {
-	uint32_t r0, r1, r2, r3, r9, r12, lr, pc, xpsr;
+	/* r7 too: the sa_restorer stub loads rt_sigreturn's number into it. It fills the
+	 * padding before saved_mask, so the frame keeps its size. */
+	uint32_t r0, r1, r2, r3, r7, r9, r12, lr, pc, xpsr;
 	uint64_t saved_mask; /* mask restored when this specific handler returns */
 #if LXP_ENABLE_FPU_CONTEXT
 	/* A signal handler may freely use VFP registers. Preserve the interrupted

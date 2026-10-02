@@ -150,6 +150,7 @@ void lxp_deliver_signal(struct lxp_frame *f, lxp_proc_t *proc, int sig, long ret
 	sv->r1 = f->r[1];
 	sv->r2 = f->r[2];
 	sv->r3 = f->r[3];
+	sv->r7 = f->r[7];
 	sv->r9 =
 		f->r[9]; /* FDPIC GOT of the interrupted code — clobbered below, restored at sigreturn */
 	sv->r12 = f->r[12];
@@ -186,6 +187,7 @@ void lxp_sig_restore(struct lxp_frame *f, lxp_proc_t *proc)
 	f->r[1] = sv->r1;
 	f->r[2] = sv->r2;
 	f->r[3] = sv->r3;
+	f->r[7] = sv->r7; /* the restorer loaded rt_sigreturn's number */
 	f->r[9] =
 		sv->r9; /* FDPIC GOT: the handler ran with its own r9; restore the interrupted code's */
 	f->r[12] = sv->r12;

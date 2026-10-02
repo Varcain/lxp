@@ -202,6 +202,7 @@ static void test_deliver_and_restore(void **st)
 	f.r[1] = 0x11;
 	f.r[2] = 0x22;
 	f.r[3] = 0x33;
+	f.r[7] = 0x77;
 	f.r[12] = 0xcc;
 	f.r[14] = 0x2000; /* interrupted lr */
 	f.r[15] = 0x1000; /* interrupted pc */
@@ -221,8 +222,10 @@ static void test_deliver_and_restore(void **st)
 	assert_int_equal(g_lxp_sig_save[0].frame[0].r2, 0x22);
 	assert_int_equal(g_lxp_sig_save[0].frame[0].r3, 0x33);
 	assert_memory_equal(&g_lxp_sig_save[0].frame[0].fp, &interrupted_fp, sizeof(interrupted_fp));
-	/* Model arbitrary floating-point work by the handler. */
+	/* Model arbitrary floating-point work by the handler, and the sa_restorer stub, which
+	 * loads r7 with rt_sigreturn's number before its svc. */
 	memset(&fp, 0xa5, sizeof(fp));
+	f.r[7] = LXP_NR_rt_sigreturn;
 
 	lxp_sig_restore(&f, &p);
 	assert_int_equal(f.r[15], 0x1000u & ~1u); /* interrupted pc restored */
@@ -230,6 +233,7 @@ static void test_deliver_and_restore(void **st)
 	assert_int_equal(f.r[1], 0x11); /* r1-r3 restored exactly */
 	assert_int_equal(f.r[2], 0x22);
 	assert_int_equal(f.r[3], 0x33);
+	assert_int_equal(f.r[7], 0x77); /* the interrupted code's r7, not the restorer's */
 	assert_int_equal(f.r[12], 0xcc);
 	assert_memory_equal(&fp, &interrupted_fp, sizeof(interrupted_fp));
 	assert_int_equal(g_lxp_sig_save[0].depth, 0);

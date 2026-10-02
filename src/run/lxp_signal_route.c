@@ -47,6 +47,9 @@ int lxp_signal_process_group(int pgid, int sig)
  * reaps it). */
 void lxp_deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret)
 {
+	int restartable = ret == -LXP_ERESTARTSYS;
+	if (restartable)
+		ret = -LXP_EINTR;
 	struct lxp_signal_delivery delivery;
 	enum lxp_signal_action action = lxp_signal_prepare(proc, sig, &delivery);
 	if (action == LXP_SIGNAL_IGNORE) {
@@ -78,11 +81,19 @@ void lxp_deliver_signal_parked(int slot, lxp_proc_t *proc, int sig, long ret)
 	sv->r1 = resume->r1;
 	sv->r2 = resume->r2;
 	sv->r3 = resume->r3;
+	sv->r7 = resume->r4_11[3];
 	sv->r9 = resume->r4_11[5]; /* the parked code's FDPIC GOT; overwritten below (r9) */
 	sv->r12 = resume->r12;
 	sv->lr = resume->lr;
 	sv->pc = resume->pc;		      /* the rt_sigsuspend resume point */
 	sv->xpsr = resume->xpsr | (1u << 24); /* preserve APSR flags + Thumb */
+	if (restartable && lxp_sig_restarts(proc, sig)) {
+		/* SA_RESTART: the handler returns into the 2-byte svc with the call's first
+		 * argument back in r0 (r1-r3 and r7 come from the frame, r4-r6 are preserved
+		 * by the handler), so the call is issued again. */
+		sv->r0 = g_lxp_rt.slots[slot].syscall_r0;
+		sv->pc = resume->pc - 2u;
+	}
 #if LXP_ENABLE_FPU_CONTEXT
 	sv->fp = resume->fp;
 #endif
