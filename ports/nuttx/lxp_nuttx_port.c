@@ -1304,10 +1304,15 @@ fail: /* NuttX refused a vector or the scheduler-note driver */
 static int nuttx_validate_static_mpu(void)
 {
 	struct lxp_cortex_m_mpu_snapshot snapshot;
-	if (lxp_cortex_m_mpu_snapshot_read(&snapshot) != 0 || snapshot.count != 8u ||
+	if (lxp_cortex_m_mpu_snapshot_read(&snapshot) != 0 || snapshot.count < 8u ||
 	    (snapshot.ctrl & (LXP_CORTEX_M_MPU_CTRL_ENABLE | LXP_CORTEX_M_MPU_CTRL_PRIVDEFENA)) !=
 		    (LXP_CORTEX_M_MPU_CTRL_ENABLE | LXP_CORTEX_M_MPU_CTRL_PRIVDEFENA))
 		return 0;
+	/* The port owns regions 0-7. A Cortex-M7 may implement 16 (QEMU's does);
+	 * any region above them would take priority over the port's policy. */
+	for (unsigned i = 8u; i < snapshot.count; i++)
+		if (snapshot.regions[i].enabled)
+			return 0;
 
 	const lxp_nuttx_mpu_region_t *code = &PORT_CONFIG.code_region;
 	const lxp_nuttx_mpu_region_t *pool = &PORT_CONFIG.pool_region;
