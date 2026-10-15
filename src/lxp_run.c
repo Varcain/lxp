@@ -998,6 +998,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 		 * and class names from LXP_LAT_CLASS_LIST in lxp_latency.h so they cannot
 		 * fall out of step. LXP_EV_NONE (0) means "nothing claimed". */
 		struct lxp_claimed_event claimed = lxp_coordinator_claim_event(&event_cursor);
+		int burst_deferred = 0;
 		int es = claimed.slot;
 		int et = claimed.type;
 		/* Lifecycle/control work remains strict. Ordinary guest publications are
@@ -1009,6 +1010,7 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 			es = -1;
 			et = LXP_EV_NONE;
 			guest_event_burst = 0;
+			burst_deferred = 1;
 		}
 #if LXP_ENABLE_LATENCY
 		if (es >= 0 && et) { /* dispatch starts here; closed at the loop top */
@@ -1068,6 +1070,11 @@ static int lxp_run_common(const lxp_os_ops_t *eng, const lxp_run_config_t *cfg,
 #if LXP_ENABLE_NETFS
 		lxp_netfs_tick(now); /* pump the 9P transport: background clunks + lazy reconnect */
 #endif
+		/* The burst cap above deferred an event this pass claimed. Its slot is
+		 * marked pending again, but no post backs that mark: blocking here would
+		 * leave the guest parked until the timeout. */
+		if (burst_deferred)
+			continue;
 		/* Block until a program parks (event_post) or the timeout. NOT a busy 1ms poll —
 		 * that would preempt running programs every tick and reset their time-slice,
 		 * starving a fg command while a CPU-bound background job runs. The timeout is the
