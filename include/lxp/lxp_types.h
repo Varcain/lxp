@@ -20,8 +20,7 @@
 #endif
 
 /* ---- public-API annotation macros ------------------------------------------ */
-#if defined(__BINDGEN__) || defined(__ZIG_CIMPORT__) || defined(__EMSCRIPTEN__) || \
-	defined(__LXP_LINT__)
+#if defined(__BINDGEN__) || defined(__ZIG_CIMPORT__) || defined(__LXP_LINT__)
 #define LXP_NONNULL(...)
 #define LXP_NODISCARD
 #else
