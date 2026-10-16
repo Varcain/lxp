@@ -163,8 +163,7 @@ int lxp_device_map_index(const lxp_proc_t *proc, uintptr_t addr, size_t len);
 
 /* Raise @p sig on the console's foreground process group (src/run/lxp_console_input.c). */
 void lxp_console_signal_fg(int sig);
-void lxp_flatten_vec(char *buf, const char **ptrs, const char *src_buf, const uint16_t *offsets,
-		 int count);
+void lxp_capture_vec(const char **ptrs, const char *src_buf, const uint16_t *offsets, int count);
 /* Where a signal goes (src/run/lxp_signal_route.c). lxp_signal_send latches @p sig on every
  * live process except init and @p skip that matches: the one with @p pid when it is
  * positive, else the members of process group @p pgid when it is positive, else every

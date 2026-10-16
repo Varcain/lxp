@@ -79,42 +79,52 @@ int lxp_cpio_to_rootfs(const uint8_t *cpio, size_t len, lxp_file_t *out, int max
 	return count;
 }
 
-#define LXP_MAX_VEC 32
+/* Copy @p vec's strings upward from @p at; return the first byte past them. */
+static uint8_t *copy_strings(uint8_t *at, const char *const vec[], int count)
+{
+	for (int i = 0; i < count; i++) {
+		size_t n = strlen(vec[i]) + 1;
+		memcpy(at, vec[i], n);
+		at += n;
+	}
+	return at;
+}
+
+/* Store the addresses of the @p count strings laid out from @p at into @p out. */
+static void point_strings(uintptr_t *out, const uint8_t *at, int count)
+{
+	for (int i = 0; i < count; i++) {
+		out[i] = (uintptr_t)at;
+		at += strlen((const char *)at) + 1;
+	}
+}
 
 void *lxp_setup_stack(void *stack, size_t stack_size, int argc,
 		      const char *const argv[], const char *const envp[], int fdpic,
 		      uintptr_t phdr, int phnum, uintptr_t entry, uintptr_t at_base)
 {
-	if (!stack || !argv || argc < 0 || argc > LXP_MAX_VEC)
+	if (!stack || !argv || argc < 0 || argc > LXP_EXEC_MAXARGS)
 		return NULL;
 
 	int envc = 0;
 	while (envp && envp[envc])
 		envc++;
-	if (envc > LXP_MAX_VEC)
+	if (envc > LXP_EXEC_MAXENVS)
 		return NULL;
 
-	uintptr_t argp[LXP_MAX_VEC];
-	uintptr_t envpp[LXP_MAX_VEC];
-	uint8_t *sp = (uint8_t *)stack + stack_size;
+	/* The strings go at the top, argv's below envp's, as on Linux. */
+	size_t bytes = 0;
+	for (int i = 0; i < argc; i++)
+		bytes += strlen(argv[i]) + 1;
+	for (int i = 0; i < envc; i++)
+		bytes += strlen(envp[i]) + 1;
 	uint8_t *floor = (uint8_t *)stack;
-
-	for (int i = envc - 1; i >= 0; i--) {
-		size_t n = strlen(envp[i]) + 1;
-		if (sp - n < floor)
-			return NULL;
-		sp -= n;
-		memcpy(sp, envp[i], n);
-		envpp[i] = (uintptr_t)sp;
-	}
-	for (int i = argc - 1; i >= 0; i--) {
-		size_t n = strlen(argv[i]) + 1;
-		if (sp - n < floor)
-			return NULL;
-		sp -= n;
-		memcpy(sp, argv[i], n);
-		argp[i] = (uintptr_t)sp;
-	}
+	if (bytes > stack_size)
+		return NULL;
+	uint8_t *sp = (uint8_t *)stack + stack_size - bytes;
+	uint8_t *args = sp;
+	uint8_t *envs = copy_strings(args, argv, argc);
+	(void)copy_strings(envs, envp, envc);
 
 	/* AT_RANDOM must fail closed when the host lacks trustworthy entropy. */
 	if (sp - 16 < floor)
@@ -132,11 +142,11 @@ void *lxp_setup_stack(void *stack, size_t stack_size, int argc,
 			return NULL;
 		size_t index = 0;
 		header[index++] = (uintptr_t)argc;
-		for (int i = 0; i < argc; i++)
-			header[index++] = argp[i];
+		point_strings(&header[index], args, argc);
+		index += (size_t)argc;
 		header[index++] = 0;
-		for (int i = 0; i < envc; i++)
-			header[index++] = envpp[i];
+		point_strings(&header[index], envs, envc);
+		index += (size_t)envc;
 		header[index++] = 0;
 		header[index++] = LXP_AT_PHDR;
 		header[index++] = phdr;
@@ -169,11 +179,9 @@ void *lxp_setup_stack(void *stack, size_t stack_size, int argc,
 	header[0] = (uintptr_t)argc;
 	header[1] = (uintptr_t)argv_array;
 	header[2] = (uintptr_t)envp_array;
-	for (int i = 0; i < argc; i++)
-		argv_array[i] = argp[i];
+	point_strings(argv_array, args, argc);
 	argv_array[argc] = 0;
-	for (int i = 0; i < envc; i++)
-		envp_array[i] = envpp[i];
+	point_strings(envp_array, envs, envc);
 	envp_array[envc] = 0;
 	auxv[0] = LXP_AT_PAGESZ;
 	auxv[1] = 4096;

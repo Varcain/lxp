@@ -281,18 +281,20 @@
 #error "LXP_RESOURCE_POOL_COUNT must cover every live task (at least LXP_NSLOT)"
 #endif
 /* An execve() capture per slot: argv/envp entries cost two bytes each, the string
- * buffers their full width. */
+ * buffers their full width. Together the buffers hold POSIX's minimum ARG_MAX (4096
+ * bytes); less breaks NOMMU shells, which re-execute themselves with every shell
+ * variable as an argument. */
 #ifndef LXP_EXEC_MAXARGS
-#define LXP_EXEC_MAXARGS 32
+#define LXP_EXEC_MAXARGS 64
 #endif
 #ifndef LXP_EXEC_ARGBUF
-#define LXP_EXEC_ARGBUF 768
+#define LXP_EXEC_ARGBUF 3072
 #endif
 #ifndef LXP_EXEC_MAXENVS
-#define LXP_EXEC_MAXENVS 24
+#define LXP_EXEC_MAXENVS 32
 #endif
 #ifndef LXP_EXEC_ENVBUF
-#define LXP_EXEC_ENVBUF 512
+#define LXP_EXEC_ENVBUF 1024
 #endif
 /* Sockets open at once across all processes (listeners and clients). A network
  * provider sizes its handle pool to match. */

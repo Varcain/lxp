@@ -277,7 +277,7 @@ void lxp_handle_exec(int slot)
 	const lxp_run_config_t *cfg = g_lxp_rt.cfg;
 	lxp_proc_t *proc = lxp_slot_proc(slot);
 
-	/* Freeze the old image before copying its trusted capture. */
+	/* Freeze the old image before reading its trusted capture. */
 	if (lxp_coordinator_park_slot(slot) != LXP_OK)
 		return;
 	(void)lxp_intent_complete(proc, LXP_INTENT_EXEC);
@@ -290,8 +290,8 @@ void lxp_handle_exec(int slot)
 	int argc = capture->argc;
 	int envc = capture->envc;
 	struct lxp_exec_scratch *scratch = &g_lxp_rt.exec;
-	lxp_flatten_vec(scratch->args, scratch->argv, capture->argv_buf, capture->argv, argc);
-	lxp_flatten_vec(scratch->envs, scratch->envp, capture->env_buf, capture->env, envc);
+	lxp_capture_vec(scratch->argv, capture->argv_buf, capture->argv, argc);
+	lxp_capture_vec(scratch->envp, capture->env_buf, capture->env, envc);
 
 	struct exec_txn tx;
 	lxp_exec_txn_init(&tx, slot);

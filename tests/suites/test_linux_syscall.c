@@ -409,6 +409,49 @@ static void test_lnx_setup_stack(void **state)
 	g_lxp_test_random_result = LXP_OK;
 }
 
+/* The largest vectors execve captures reach the new stack intact: every argument and
+ * variable, in order, with argv's strings below envp's; a stack too small for them fails
+ * closed instead of writing below its floor. */
+static void test_lnx_setup_stack_full_vectors(void **state)
+{
+	(void)state;
+	static uint8_t stk[LXP_EXEC_ARGBUF + LXP_EXEC_ENVBUF + 1024] __attribute__((aligned(8)));
+	static char big[LXP_EXEC_ARGBUF - LXP_EXEC_MAXARGS * 2];
+	static char names[LXP_EXEC_MAXENVS][8];
+	const char *argv[LXP_EXEC_MAXARGS + 1];
+	const char *envp[LXP_EXEC_MAXENVS + 1];
+	memset(big, 'a', sizeof(big) - 1);
+	big[sizeof(big) - 1] = '\0';
+	argv[0] = big;
+	for (int i = 1; i < LXP_EXEC_MAXARGS; i++)
+		argv[i] = "b";
+	argv[LXP_EXEC_MAXARGS] = NULL;
+	for (int i = 0; i < LXP_EXEC_MAXENVS; i++) {
+		snprintf(names[i], sizeof(names[i]), "V%d=%d", i, i);
+		envp[i] = names[i];
+	}
+	envp[LXP_EXEC_MAXENVS] = NULL;
+
+	uintptr_t *sp = lxp_setup_stack(stk, sizeof(stk), LXP_EXEC_MAXARGS, argv, envp, 1, 0, 0,
+					0, 0);
+	assert_non_null(sp);
+	assert_int_equal((int)sp[0], LXP_EXEC_MAXARGS);
+	for (int i = 0; i < LXP_EXEC_MAXARGS; i++)
+		assert_string_equal((char *)sp[1 + i], argv[i]);
+	assert_null((void *)sp[1 + LXP_EXEC_MAXARGS]);
+	const uintptr_t *ev = &sp[2 + LXP_EXEC_MAXARGS];
+	for (int i = 0; i < LXP_EXEC_MAXENVS; i++)
+		assert_string_equal((char *)ev[i], envp[i]);
+	assert_null((void *)ev[LXP_EXEC_MAXENVS]);
+	assert_true(sp[1 + LXP_EXEC_MAXARGS - 1] < ev[0]);
+	assert_true(ev[LXP_EXEC_MAXENVS - 1] < (uintptr_t)stk + sizeof(stk));
+
+	assert_null(lxp_setup_stack(stk, sizeof(big), LXP_EXEC_MAXARGS, argv, envp, 1, 0, 0, 0,
+				    0));
+	assert_null(lxp_setup_stack(stk, sizeof(stk), LXP_EXEC_MAXARGS + 1, argv, envp, 1, 0, 0,
+				    0, 0));
+}
+
 /* Mirrors the kernel struct stat64 prefix through st_size (offset 48). */
 struct test_kstat64 {
 	uint64_t st_dev;
@@ -1396,6 +1439,7 @@ int test_linux_syscall_run(void)
 		cmocka_unit_test(test_lnx_init_stubs),
 		cmocka_unit_test(test_lnx_console_termios_roundtrip),
 		cmocka_unit_test(test_lnx_setup_stack),
+		cmocka_unit_test(test_lnx_setup_stack_full_vectors),
 		cmocka_unit_test(test_lnx_file),
 		cmocka_unit_test(test_dup_and_fork_share_file_offset),
 		cmocka_unit_test(test_clone_resource_sharing_flags),

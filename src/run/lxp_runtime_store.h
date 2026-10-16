@@ -82,12 +82,10 @@ struct lxp_console_typeahead {
 	unsigned count;
 };
 
-/* An exec's flattened argument and environment vectors (src/run/lxp_exec.c), too large
- * for the coordinator's stack. */
+/* An exec's argument and environment vectors (src/run/lxp_exec.c): pointers into the
+ * slot's capture, too many for the coordinator's stack. */
 struct lxp_exec_scratch {
-	char args[LXP_EXEC_ARGBUF];
 	const char *argv[LXP_EXEC_MAXARGS + 1];
-	char envs[LXP_EXEC_ENVBUF];
 	const char *envp[LXP_EXEC_MAXENVS + 1];
 };
 
