@@ -44,8 +44,6 @@
 
 #define TRAMP_STACK_WORDS 192u		  /* tramp prologue; the program uses its own stack */
 #define TRAMP_STORAGE_WORDS 256u	  /* 768-byte stack + 256-byte resume handoff */
-#define SLOT_PRIO (tskIDLE_PRIORITY + 1u) /* below the run-loop task (its creator) */
-#define GUEST_SCHED_PRIO (SLOT_PRIO + 1u) /* no higher than coordinator; above every guest */
 #define GUEST_SCHED_STACK_WORDS 128u /* measured peak: 33 words under QEMU M9 stress */
 #define PORT_CONFIG g_lxp_freertos_port_config
 #define dyn_pools ((uint8_t (*)[LXP_DYN_POOL_SIZE])(void *)PORT_CONFIG.common.dynamic_pools)
@@ -83,9 +81,6 @@ static StackType_t g_sched_stack[GUEST_SCHED_STACK_WORDS];
 static TaskHandle_t g_sched_task;
 static void freertos_park_entry(void *token);
 static int freertos_validate_active_profile(int sidx);
-
-_Static_assert(GUEST_SCHED_PRIO < configMAX_PRIORITIES,
-	       "FreeRTOS needs a native priority between Linux guests and their coordinator");
 
 static lxp_slot_ref_t task_slot_ref(int slot)
 {
@@ -125,7 +120,7 @@ static int current_slot(void)
  * slicing is off. A frequent higher-priority host wakeup would therefore
  * rotate guests independently of their LXP quantum. Keep exactly one guest
  * native-runnable and defer weighted rotation from SysTick to a small
- * privileged task. All guests remain in SLOT_PRIO; this gate cannot raise a
+ * privileged task. All guests remain at guest_priority; this gate cannot raise a
  * Linux process above host service or real-time work. */
 static void freertos_tick_budget_reset(void)
 {
@@ -775,7 +770,7 @@ static int freertos_spawn_common(int sidx, uint32_t generation, int ridx, struct
 		.pcName = nm,
 		.usStackDepth = TRAMP_STACK_WORDS,
 		.pvParameters = desc,
-		.uxPriority = SLOT_PRIO, /* NO portPRIVILEGE_BIT -> UNPRIVILEGED */
+		.uxPriority = PORT_CONFIG.guest_priority, /* NO portPRIVILEGE_BIT -> UNPRIVILEGED */
 		.puxStackBuffer = g_tramp_stacks[sidx],
 		.pxTaskBuffer = &g_tcb[sidx],
 	};
@@ -790,7 +785,7 @@ static int freertos_spawn_common(int sidx, uint32_t generation, int ridx, struct
 		g_slots[sidx].generation = 0;
 		return -1;
 	}
-	/* The coordinator outranks SLOT_PRIO, so the new task cannot execute before
+	/* The coordinator outranks guest_priority, so the new task cannot execute before
 	 * this native TCB readback validates the port's logical-to-PMSAv7
 	 * translation. The first guest SVC separately validates the live install. */
 	if (!freertos_capture_native_profile(sidx)) {
@@ -1109,6 +1104,9 @@ static int freertos_prepare(void)
 	if (!lxp_cortex_m_port_config_valid() ||
 	    !PORT_CONFIG.tick_subscribe || !PORT_CONFIG.tick_unsubscribe ||
 	    !PORT_CONFIG.random_fill ||
+	    PORT_CONFIG.guest_priority <= tskIDLE_PRIORITY ||
+	    PORT_CONFIG.scheduler_priority <= PORT_CONFIG.guest_priority ||
+	    PORT_CONFIG.scheduler_priority >= configMAX_PRIORITIES ||
 	    PORT_CONFIG.rootfs_region_count > LXP_FREERTOS_ROOTFS_REGION_MAX ||
 	    2u + PORT_CONFIG.rootfs_region_count >= portNUM_CONFIGURABLE_REGIONS)
 		return LXP_ERR_INVALID_PARAM;
@@ -1132,7 +1130,7 @@ static int freertos_prepare(void)
 		g_sched_ev = xSemaphoreCreateBinaryStatic(&g_sched_ev_buf);
 	if (!g_ev || !g_sched_ev)
 		return LXP_ERR_NO_MEMORY;
-	if (uxTaskPriorityGet(NULL) < GUEST_SCHED_PRIO)
+	if (uxTaskPriorityGet(NULL) < PORT_CONFIG.scheduler_priority)
 		return LXP_ERR_INVALID_PARAM; /* the coordinator may not run below the scheduler */
 	rc = lxp_cortex_m_port_host_prepare();
 	if (rc != LXP_OK)
@@ -1143,7 +1141,7 @@ static int freertos_prepare(void)
 	freertos_tick_budget_reset();
 	g_sched_task = xTaskCreateStatic(freertos_sched_task_entry, "lxp-sched",
 					 GUEST_SCHED_STACK_WORDS, NULL,
-					 GUEST_SCHED_PRIO | portPRIVILEGE_BIT, g_sched_stack,
+					 PORT_CONFIG.scheduler_priority | portPRIVILEGE_BIT, g_sched_stack,
 					 &g_sched_tcb);
 	if (!g_sched_task)
 		return LXP_ERR_NO_MEMORY;

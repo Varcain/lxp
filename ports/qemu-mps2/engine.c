@@ -115,6 +115,8 @@ const lxp_freertos_port_config_t g_lxp_freertos_port_config = {
 				.texscb = configTEX_S_C_B_SRAM,
 			},
 		},
+	.guest_priority = tskIDLE_PRIORITY + 1u,
+	.scheduler_priority = tskIDLE_PRIORITY + 2u,
 	.guest_quantum_ms = 10u,
 	.tick_subscribe = lxp_qemu_tick_subscribe,
 	.tick_unsubscribe = lxp_qemu_tick_unsubscribe,

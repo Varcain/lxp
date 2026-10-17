@@ -41,6 +41,11 @@ typedef struct lxp_freertos_port_config {
 	uint8_t coordinator_cacheable_map;
 	uint8_t coordinator_rootfs_region;
 	lxp_freertos_rootfs_region_t rootfs_regions[LXP_FREERTOS_ROOTFS_REGION_MAX];
+	/* Native FreeRTOS priorities: every guest task runs at guest_priority, the
+	 * guest scheduler task at scheduler_priority. Require
+	 * idle < guest_priority < scheduler_priority <= the coordinator's priority. */
+	uint8_t guest_priority;
+	uint8_t scheduler_priority;
 	uint32_t guest_quantum_ms;
 
 	/* Board/HAL and host-policy providers. Callbacks execute in the context

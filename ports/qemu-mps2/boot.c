@@ -290,7 +290,7 @@ int main(void)
 			"      -global cortex-m7-arm-cpu.pmsav7-dregion=16 (see ports/qemu-mps2/run.sh).\n");
 		sh_exit(83);
 	}
-	/* The coordinator runs ABOVE the guest slots (SLOT_PRIO) so it preempts a parked
+	/* The coordinator runs ABOVE the guest slots (guest_priority) so it preempts a parked
 	 * guest the instant event_post wakes it. It runs the FDPIC loader + lxp_run
 	 * and touches the cpio, every program region and kernel state, so it must be
 	 * PRIVILEGED (portPRIVILEGE_BIT) under the MPU port — the guests are the only
